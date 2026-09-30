@@ -66,6 +66,22 @@ test("coding replies ignore mood entirely", async () => {
   assert.doesNotMatch(coding.late, /Your mood right now/);
 });
 
+// Part of #700: several low turns in a row from me -> "be gentle, don't
+// pry", even with her mood frozen; never in coding replies.
+test("after several low turns she's told to be gentle and not pry", async () => {
+  const statePath = path.join(process.env.MANA_ACP_MEMORY_DIR, "emotional-state.json");
+  const low = { userAffect: { positivity: -0.6, lastUpdatedAt: new Date().toISOString(), lowTurns: 3 } };
+  fs.writeFileSync(statePath, JSON.stringify(low));
+  try {
+    assert.match((await firstModelCall(frozenStore(), "casual")).late, /Don't pry/);
+    assert.doesNotMatch((await firstModelCall(frozenStore(), "coding")).late, /Don't pry/);
+    fs.writeFileSync(statePath, JSON.stringify({ userAffect: { ...low.userAffect, lowTurns: 2 } }));
+    assert.doesNotMatch((await firstModelCall(frozenStore(), "casual")).late, /Don't pry/);
+  } finally {
+    fs.rmSync(statePath, { force: true });
+  }
+});
+
 test("each reply counts as a chat turn", async () => {
   const store = createMoodStore({ now: () => AFTERNOON });
   await firstModelCall(store, "casual");

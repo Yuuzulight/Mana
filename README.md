@@ -293,7 +293,7 @@ Common troubleshooting:
 
 ## Backend API
 
-The main backend listens on `http://localhost:5005` by default. It only accepts connections from this PC (loopback) unless `MANA_BIND_HOST` says otherwise -- see `node-bot/.env.sample` before setting it, since anything that can reach the backend can make Mana reply and run tools (#670).
+The main backend listens on `http://localhost:5005` by default. It only accepts connections from this PC (loopback) unless `MANA_BIND_HOST` says otherwise -- see `node-bot/.env.sample` before setting it, since anything that can reach the backend can make Mana reply and run tools (#670). Every route also needs an admin key unless it's on the short public list in `node-bot/admin-key.js` (`/health`, the mobile companion's own routes, the API-key routes and the context-push extension): the launchers send their own per-run key, and scripts send `ADMIN_TOKEN` from `node-bot/.env` as the `x-admin-token` header.
 
 Useful endpoints:
 

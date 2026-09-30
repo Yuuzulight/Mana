@@ -354,7 +354,8 @@ test("starting on her own: the oldest labelled issue without her PR, or nothing"
 
 test("20 minutes idle tries an idle start once per idle period", async () => {
   const { createApp } = require("../server");
-  const { withServer } = require("./helpers");
+  const { withServer, useTestAdminToken } = require("./helpers");
+  const fetch = useTestAdminToken();
   let idleStarts = 0;
   const fake = { startIdle: async () => (idleStarts++, { ok: false }), status: () => ({ state: "idle" }) };
   const app = createApp({

@@ -23,6 +23,7 @@ internal static class AnnouncementEmotion
         ["handoff"] = "excited",
         ["self-work"] = "happy",          // a PR ready (not spoken yet)
         ["failed"] = "sad",               // apologetic
+        ["check-in"] = null,              // #1148: gentle -- calm, never sad or cheerful
     };
 
     internal static string? For(string? emotion, string? kind)

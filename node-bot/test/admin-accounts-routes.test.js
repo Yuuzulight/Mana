@@ -64,6 +64,8 @@ test("GET /api/memory returns markdown for a valid key (admin or user role)", as
   });
 });
 
+// With the admin key, so the request gets past the default-deny gate
+// (admin-key.js) to requireAdmin's role check.
 test("POST /admin/accounts rejects a user-role key with 403", async () => {
   const { apiKey } = authStore.createAccount({
     email: "not-admin@example.com",
@@ -75,6 +77,7 @@ test("POST /admin/accounts rejects a user-role key with 403", async () => {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
+        "x-admin-token": LAUNCHER_KEY,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ email: "new@example.com" }),
@@ -105,9 +108,10 @@ async function postAccountAsAdmin(email, extraHeaders) {
   return res;
 }
 
+// Without an admin key the default-deny gate answers first: 401.
 test("POST /admin/accounts rejects an admin-role key from a local request with no admin key (#670)", async () => {
   const res = await postAccountAsAdmin("local-no-key@example.com", {});
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 401);
   assert.match((await res.json()).error, /ADMIN_TOKEN/);
 });
 
@@ -122,9 +126,9 @@ test("POST /admin/accounts: the launcher key doesn't count from another device, 
     "x-admin-token": LAUNCHER_KEY,
     "X-Forwarded-For": "203.0.113.5",
   });
-  assert.equal(forwarded.status, 403);
+  assert.equal(forwarded.status, 401);
   const wrong = await postAccountAsAdmin("local-wrong@example.com", { "x-admin-token": `${LAUNCHER_KEY}x` });
-  assert.equal(wrong.status, 403);
+  assert.equal(wrong.status, 401);
 });
 
 test("POST /admin/accounts rejects an admin-role key from a non-local origin with no ADMIN_TOKEN configured", async () => {
@@ -146,7 +150,7 @@ test("POST /admin/accounts rejects an admin-role key from a non-local origin wit
         },
         body: JSON.stringify({ email: "should-not-be-created@example.com" }),
       });
-      assert.equal(res.status, 403);
+      assert.equal(res.status, 401);
     });
   } finally {
     if (prior === undefined) delete process.env.ADMIN_TOKEN;

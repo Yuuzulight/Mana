@@ -29,25 +29,22 @@ restart on crash (3s delay), and points its stdout/stderr at
 
 ## The one thing you must also change
 
-`windows-launcher` only skips spawning its own copy of node-bot when
-Settings > Connection points somewhere it doesn't consider "loopback"
-(`windows-launcher/backend-config.js`'s `isLoopbackHostname` -- only
-`localhost`, `127.0.0.1`, and `::1` count). **Setting it to
-`http://localhost:5005` does NOT work** -- that's still loopback, and
-windows-launcher will spawn a second, redundant local node-bot on top of
-the service. Use this machine's actual **LAN IP** instead, e.g.
-`http://192.168.1.50:5005`.
+The service listens on this PC only (`MANA_BIND_HOST=127.0.0.1`), and every
+backend route needs an admin key. A launcher's own per-run key only works
+for a node-bot that launcher started, so a launcher using the service needs
+`ADMIN_TOKEN`: set it in `node-bot/.env`, then the same value in the native
+launcher's Settings > Admin token (or as `ADMIN_TOKEN` in the Electron
+launchers' environment).
 
-`desktop-client` needs no change -- it never spawns node-bot itself; it
-already assumes an externally-running backend.
+The native launcher finds a backend already running at
+`http://127.0.0.1:5005` and uses it instead of starting its own.
+`windows-launcher` starts its own node-bot for any loopback address
+(`backend-config.js`'s `isLoopbackHostname`), so don't run it alongside the
+service. `desktop-client` never spawns node-bot itself.
 
-Because the launcher reaches the service by LAN IP, the install script sets
-`MANA_BIND_HOST=0.0.0.0` for it (node-bot otherwise listens on loopback
-only, #670). That means every device on your network can reach the
-backend, and anything that can reach it can make Mana reply and run tools.
-Keep Windows Firewall's rule for `node.exe` limited to Private networks, or
-remove the variable with `nssm edit ManaNodeBot` if you don't use the LAN
-IP trick.
+To reach the service from other devices, change `MANA_BIND_HOST` with
+`nssm edit ManaNodeBot` -- but then every device on your network can reach
+the backend, and anything with the key can make Mana reply and run tools.
 
 ## Why `USE_EMBEDDINGS=1` is set explicitly
 

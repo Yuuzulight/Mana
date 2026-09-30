@@ -15,7 +15,10 @@ const { createApp } = require("../server");
 const { createApprovalGate } = require("../approval-gate");
 const { createSkillsStore } = require("../skills-store");
 const { IDLE_SKILL_WRITE_ACTION } = require("../skill-proposal");
-const { withServer } = require("./helpers");
+const { withServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 
 function tmpDir(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `mana-${label}-`));
