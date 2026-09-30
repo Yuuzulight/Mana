@@ -673,7 +673,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 throw new InvalidOperationException(WebcamCapture.OffMessage);
             }
             ShowCameraBalloon("Mana is looking through your camera", "One snapshot, not saved.", ToolTipIcon.Info);
-            return lastCameraSnapshot = await WebcamCapture.CaptureAsJpegDataUrlAsync();
+            var snapshot = await WebcamCapture.CaptureAsync();
+            lastCameraSnapshot = snapshot.Jpeg;
+            return snapshot.VisionDataUrl;
         }
         catch (Exception ex)
         {
@@ -682,8 +684,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
-    // #962: the last snapshot, in memory only, for "save that".
-    private volatile string? lastCameraSnapshot;
+    // #962: the last snapshot's full-resolution JPEG, in memory only, for
+    // "save that".
+    private volatile byte[]? lastCameraSnapshot;
 
     // #962: vision__save_snapshot (write tier, so smart approval asks first)
     // writes it to Settings > Voice's folder or Pictures\Mana.
