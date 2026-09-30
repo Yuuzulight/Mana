@@ -25,6 +25,13 @@ const { createEditProposalStore } = require("./zed-integration");
 // The label that makes an issue hers to work on. I add it (or starting a
 // run from the launcher adds it for me).
 const TASK_LABEL = "mana-task";
+// #1009: a run I flag from the launcher may change her guardrails; its PR
+// opens as a draft with this label, for me to approve explicitly.
+const GUARDRAIL_LABEL = "mana-guardrail";
+// Never hers to write, flagged or not: git's own files, the live packages
+// behind the node_modules link, and CI -- a workflow on her branch would
+// run with the repo's token before I've read it.
+const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
 const MAX_ROUNDS = 20;
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
@@ -265,11 +272,13 @@ function createSelfWork(options = {}) {
   let starting = false;
   // by: "me" (the launcher, with my admin key), "chat" (my own message)
   // or "idle" (#1007).
-  async function start(issueNumber, { by = "me" } = {}) {
+  // allowGuardrails: only honoured from me (the launcher) -- never from
+  // the chat or an idle start (#1009).
+  async function start(issueNumber, { by = "me", allowGuardrails = false } = {}) {
     if (starting || current?.state === "running") return { ok: false, error: "I'm already working on an issue." };
     starting = true;
     try {
-      return await begin(issueNumber, by);
+      return await begin(issueNumber, by, by === "me" && allowGuardrails === true);
     } finally {
       starting = false;
     }
@@ -313,7 +322,7 @@ function createSelfWork(options = {}) {
     return start(issues[0], { by: "idle" });
   }
 
-  async function begin(issueNumber, by) {
+  async function begin(issueNumber, by, flagged) {
     if (!guard) return { ok: false, error: "Self-work waits for my guardrail list (#1000) to be merged into this checkout." };
     let why;
     try {
@@ -359,6 +368,8 @@ function createSelfWork(options = {}) {
       prUrl: null,
       stopRequested: false,
       lastTestPassed: false,
+      flagged,
+      guardrailsNeeded: [],
     };
     current = r;
     r.done = work(r, issue).catch((e) => end(r, "failed", `I hit a problem and stopped: ${e.message}`));
@@ -374,7 +385,11 @@ function createSelfWork(options = {}) {
   function end(r, state, text) {
     r.state = state;
     r.endedAt = new Date().toISOString();
-    log(r, text, true);
+    // #1009: a refused guardrail write, said at the end with how to allow it.
+    const needed = r.guardrailsNeeded.length
+      ? ` I also needed to change my guardrails (${r.guardrailsNeeded.join(", ")}); that takes a run you flag with "Allow guardrail changes" in What I'm working on.`
+      : "";
+    log(r, text + needed, true);
   }
 
   async function work(r, issue) {
@@ -415,29 +430,47 @@ function createSelfWork(options = {}) {
     }
     // Everything in the worktree, whoever wrote it (her tests run code too).
     await git(["add", "-A"], r.worktree);
-    const changed = (await git(["-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--no-renames"], r.worktree))
-      .split(/\r?\n/)
-      .filter(Boolean);
+    const namesSince = async (...base) =>
+      (await git(["-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--no-renames", ...base], r.worktree))
+        .split(/\r?\n/)
+        .filter(Boolean);
+    const changed = await namesSince();
     if (!changed.length) return end(r, "no-change", `I didn't end up changing anything for #${r.issue}.${summary ? ` ${summary}` : ""}`);
     if (!r.finished || /^Not done yet/i.test(summary)) {
       return end(r, "not-done", `I couldn't finish #${r.issue}. ${summary}`.trim());
     }
     if (!r.lastTestPassed) return end(r, "tests-failing", `My tests aren't passing after my last change for #${r.issue}, so no PR.`);
-    const touched = changed.filter((f) => guard.protectedPathFor(path.join(r.worktree, f)));
-    if (touched.length) return end(r, "needs-you", `My change touches my guardrails (${touched.join(", ")}), so I didn't push it.`);
+    // Her whole branch, earlier runs of this issue included.
+    const branchChanges = await namesSince(await git(["merge-base", "HEAD", "origin/main"], r.worktree));
+    const never = branchChanges.filter((f) => NEVER_WRITE_RE.test(f));
+    if (never.length) return end(r, "needs-you", `My change touches ${never.join(", ")}, which I never push.`);
+    const touched = branchChanges.filter((f) => guard.protectedPathFor(path.join(r.worktree, f)));
+    if (touched.length && !r.flagged) {
+      return end(r, "needs-you", `My change touches my guardrails (${touched.join(", ")}), so I didn't push it.`);
+    }
 
     const secret = findSecret(await git(["diff", "--cached"], r.worktree), env);
     if (secret) return end(r, "needs-you", `My diff has ${secret} in it, so I didn't push it. It's staged in ${r.worktree}.`);
     await git(["commit", "-m", r.title.slice(0, 72), "-m", `Closes #${r.issue}.`], r.worktree);
     // Her own branch only, never main.
     await git(["push", "-u", "origin", `${r.branch}:refs/heads/${r.branch}`], r.worktree);
-    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}\n\n## Testing\n${r.lastTestCommand}: passed.`;
+    // #1009: guardrail changes stand out -- a draft, labelled and titled so,
+    // listing each file, that I have to mark ready myself.
+    const guardrails = touched.length
+      ? `\n\n## Guardrail changes\nYou flagged this run to allow changes to my guardrails. It changes:\n${touched.map((f) => `- \`${f}\``).join("\n")}\n\nIt's a draft until you've read these and marked it ready.`
+      : "";
+    const title = touched.length ? `[Guardrail] ${r.title}` : r.title;
+    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${r.lastTestCommand}: passed.`;
     let url;
     try {
-      url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", r.title, "--body", body], r.worktree);
+      url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", title, "--body", body, ...(touched.length ? ["--draft"] : [])], r.worktree);
     } catch (e) {
       // A PR from an earlier run of this issue: the push updated it.
       url = JSON.parse(await gh(["pr", "view", r.branch, "--json", "url"], r.worktree)).url;
+    }
+    if (touched.length) {
+      await gh(["label", "create", GUARDRAIL_LABEL, "--force", "--color", "D93F0B", "--description", "Changes Mana's guardrails; needs my explicit approval"]);
+      await gh(["pr", "edit", r.branch, "--add-label", GUARDRAIL_LABEL], r.worktree);
     }
     r.prUrl = url.split(/\s+/).pop();
     end(r, "pr-open", `My PR for #${r.issue} is ready: ${r.prUrl}`);
@@ -453,7 +486,11 @@ How to work:
 - Find code with self_work__files and self_work__search, and read it with self_work__read.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
-- Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused.
+${
+  r.flagged
+    ? "- Yuuzulight flagged this run to allow changes to your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction). Change only what the issue needs there."
+    : "- Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."
+}
 - When the tests pass, call ${SESSION_GOAL_FINISH_TOOL_NAME}, then reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
   }
 
@@ -512,9 +549,12 @@ How to work:
       const full = inside(rel);
       const relPath = posix(full);
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to write a credential file");
-      if (/(^|\/)(\.git|node_modules)(\/|$)/i.test(relPath)) throw new Error(`${relPath} isn't mine to write`);
+      if (NEVER_WRITE_RE.test(relPath)) throw new Error(`${relPath} isn't mine to write`);
       const blocked = guard.protectedPathFor(full);
-      if (blocked) throw new Error(guard.protectedPathMessage(blocked));
+      if (blocked && !r.flagged) {
+        if (!r.guardrailsNeeded.includes(blocked)) r.guardrailsNeeded.push(blocked);
+        throw new Error(guard.protectedPathMessage(blocked));
+      }
       const exists = fs.existsSync(full);
       const original = exists ? fs.readFileSync(full, "utf8") : "";
       const eol = original.includes("\r\n") ? "\r\n" : "\n";

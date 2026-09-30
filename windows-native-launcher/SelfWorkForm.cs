@@ -16,6 +16,7 @@ internal sealed class SelfWorkForm : Form
     private readonly ManaBackendClient backendClient;
     private readonly TextBox issueBox = new();
     private readonly Button startButton = new();
+    private readonly CheckBox guardrailsBox = new();
     private readonly Button stopButton = new();
     private readonly Label summaryLabel = new();
     private readonly LinkLabel prLink = new();
@@ -33,7 +34,7 @@ internal sealed class SelfWorkForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         DarkTheme.ApplyForm(this);
 
-        var topRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, ColumnCount = 3, BackColor = DarkTheme.Background };
+        var topRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, ColumnCount = 4, BackColor = DarkTheme.Background };
         issueBox.Dock = DockStyle.Fill;
         issueBox.PlaceholderText = "Issue number for her to work on";
         issueBox.BackColor = DarkTheme.Panel;
@@ -48,12 +49,18 @@ internal sealed class SelfWorkForm : Form
         stopButton.Enabled = false;
         stopButton.Click += async (_, _) => await StopAsync();
         DarkTheme.ApplyButton(stopButton);
+        // #1009: the only way to let a run change her guardrails. Off again after each start.
+        guardrailsBox.Text = "Allow guardrail changes";
+        guardrailsBox.Dock = DockStyle.Fill;
+        guardrailsBox.ForeColor = DarkTheme.Text;
         topRow.Controls.Add(issueBox, 0, 0);
-        topRow.Controls.Add(startButton, 1, 0);
-        topRow.Controls.Add(stopButton, 2, 0);
-        topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-        topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
-        topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+        topRow.Controls.Add(guardrailsBox, 1, 0);
+        topRow.Controls.Add(startButton, 2, 0);
+        topRow.Controls.Add(stopButton, 3, 0);
+        topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
+        topRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15));
 
         noteLabel.Dock = DockStyle.Top;
         noteLabel.Height = 22;
@@ -171,7 +178,8 @@ internal sealed class SelfWorkForm : Form
         noteLabel.Text = "";
         try
         {
-            var refused = await backendClient.StartSelfWorkAsync(issue);
+            var refused = await backendClient.StartSelfWorkAsync(issue, guardrailsBox.Checked);
+            guardrailsBox.Checked = false;
             if (refused is not null && !IsDisposed)
             {
                 noteLabel.Text = refused;
