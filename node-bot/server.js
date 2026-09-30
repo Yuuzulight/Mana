@@ -835,6 +835,11 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
+// #986: held proactive remarks (data/proactive-held.json) survive a restart.
+if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+  require("./proactive").persistTo(path.join(acpMemoryStore.dataDir, "proactive-held.json"));
+}
+
 // #906: the email/calendar accounts from Settings > Calendar & email.
 const mailCalendarSettings = createMailCalendarSettingsStore();
 // #907: the daily briefing (data/briefing.json, Settings > Briefing),
