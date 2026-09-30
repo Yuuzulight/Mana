@@ -49,6 +49,7 @@ const BUILTIN_TIERS = {
   snapshot__list: "read",
   vision__look: "read",
   vision__camera: "read", // #912: behind its own off-by-default toggle in the launcher
+  vision__save_snapshot: "write", // #962: writes a photo to disk, only when I ask
   expression__set: "read",
   session_goal__finish: "read",
   deep_thinking__set: "read",

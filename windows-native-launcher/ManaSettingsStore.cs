@@ -119,6 +119,9 @@ internal sealed class ManaSettingsStore
     // #912: Settings > Voice's camera toggle; off by default.
     public bool CameraSnapshots { get; set; }
 
+    // #962: where "save that" puts a camera snapshot; null = Pictures\Mana.
+    public string? CameraSnapshotFolder { get; set; }
+
     // #911: the folders Mana may move and rename files in (full paths);
     // null = Desktop, Downloads, Pictures and Documents, empty = none.
     // Settings > Desktop (#997) edits it; read again on every move.
