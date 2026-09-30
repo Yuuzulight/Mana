@@ -37,6 +37,20 @@ public class ManaProcessManagerTests
         Assert.Empty(off);
     }
 
+    // Part of #700: the check-ins toggle likewise only ever turns them off.
+    [Fact]
+    public void ApplyNoCheckIns_SetsTheLauncherVariableOnlyWhenOff()
+    {
+        var off = new Dictionary<string, string?>();
+        var on = new Dictionary<string, string?>();
+
+        ManaProcessManager.ApplyNoCheckIns(off, true);
+        ManaProcessManager.ApplyNoCheckIns(on, false);
+
+        Assert.Equal("0", off["MANA_LAUNCHER_CHECK_INS"]);
+        Assert.Empty(on);
+    }
+
     [Fact]
     public void ResolveVenvPython_UsesGivenVenvSubdirUnderRoot()
     {

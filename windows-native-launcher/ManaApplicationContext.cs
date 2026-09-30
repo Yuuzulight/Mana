@@ -128,7 +128,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         this.restoreChat = restoreChat;
         rootDir = FindRootDirectory();
         var settings = ManaSettingsStore.Load();
-        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl, localOnly: settings.LocalOnly);
+        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl, localOnly: settings.LocalOnly, noCheckIns: settings.NoCheckIns);
         backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken, launcherKey: processManager.LauncherKey);
         avatarOverlay = new AvatarOverlayForm(rootDir);
         // #578: ambient indicator, no tray entry -- starts polling

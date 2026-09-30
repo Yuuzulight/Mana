@@ -85,6 +85,7 @@ internal sealed class ManaProcessManager : IDisposable
     private readonly string backendHealthUrl;
     private readonly bool isBackendLocal;
     private readonly bool localOnly;
+    private readonly bool noCheckIns;
 
     // handler: null (the default, and every existing call site's behavior)
     // constructs a real HttpClient for live health checks. Tests pass a
@@ -95,10 +96,11 @@ internal sealed class ManaProcessManager : IDisposable
     // behavior; pass the configured settings.BackendBaseUrl to keep the
     // backend health check consistent with where ManaBackendClient actually
     // points.
-    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null, string? backendBaseUrl = null, bool localOnly = false)
+    public ManaProcessManager(string rootDirectory, HttpMessageHandler? handler = null, string? backendBaseUrl = null, bool localOnly = false, bool noCheckIns = false)
     {
         RootDirectory = rootDirectory;
         this.localOnly = localOnly;
+        this.noCheckIns = noCheckIns;
         http = handler is null ? new HttpClient() : new HttpClient(handler);
         backendHealthUrl = $"{(backendBaseUrl ?? "http://127.0.0.1:5005").TrimEnd('/')}/health";
         // #681: a remote backend URL means that machine starts its own
@@ -622,6 +624,7 @@ internal sealed class ManaProcessManager : IDisposable
             Environment.GetEnvironmentVariable("USE_EMBEDDINGS") ?? "1";
         startInfo.Environment["MANA_LAUNCHER_KEY"] = LauncherKey;
         ApplyLocalOnly(startInfo.Environment, localOnly);
+        ApplyNoCheckIns(startInfo.Environment, noCheckIns);
 
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
@@ -662,6 +665,17 @@ internal sealed class ManaProcessManager : IDisposable
         if (localOnly)
         {
             environment["MANA_LAUNCHER_LOCAL_ONLY"] = "1";
+        }
+    }
+
+    // Part of #700: the Settings > Briefing toggle, same shape as local-only.
+    // Only ever turns Mana's check-ins off; MANA_CHECK_INS=0 in
+    // node-bot/.env is node-bot's own switch.
+    internal static void ApplyNoCheckIns(IDictionary<string, string?> environment, bool noCheckIns)
+    {
+        if (noCheckIns)
+        {
+            environment["MANA_LAUNCHER_CHECK_INS"] = "0";
         }
     }
 
