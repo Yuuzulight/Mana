@@ -60,6 +60,8 @@ function writeJson(filePath, value) {
 function createApprovalGate(options = {}) {
   const dataDir = options.dataDir || DEFAULT_DATA_DIR;
   const alwaysAllowPath = path.join(dataDir, "always-allow.json");
+  // #1154: "never" answers, remembered like always-allow ones.
+  const neverPath = path.join(dataDir, "never-allow.json");
   const now = options.now || (() => new Date().toISOString());
   const makeId = options.makeId || (() => crypto.randomBytes(4).toString("hex"));
   const contentScanEnabled = Boolean(options.contentScanEnabled);
@@ -139,6 +141,33 @@ function createApprovalGate(options = {}) {
       list.push(actionType);
       writeJson(alwaysAllowPath, list);
     }
+    forgetFrom(neverPath, actionType);
+  }
+
+  function isNever(key) {
+    return readJson(neverPath, []).includes(key);
+  }
+
+  function forgetFrom(filePath, key) {
+    const list = readJson(filePath, []);
+    if (list.includes(key)) writeJson(filePath, list.filter((k) => k !== key));
+  }
+
+  // #1154: the remembered answers (always and never), for Settings to list
+  // and revoke. Session grants end on restart anyway.
+  function listRemembered() {
+    return [
+      ...loadAlwaysAllowed().map((key) => ({ key, answer: "always" })),
+      ...readJson(neverPath, []).map((key) => ({ key, answer: "never" })),
+    ];
+  }
+
+  function forget(key) {
+    const known = listRemembered().some((r) => r.key === key) || sessionGrants.has(key);
+    forgetFrom(alwaysAllowPath, key);
+    forgetFrom(neverPath, key);
+    sessionGrants.delete(key);
+    return known;
   }
 
   // #669: the saved tool approval mode (Settings > Approvals), null until
@@ -180,6 +209,11 @@ function createApprovalGate(options = {}) {
   ) {
     if (!actionType) throw new Error("actionType is required");
     const key = grantKey || actionType;
+
+    // #1154: a remembered "never" doesn't ask again.
+    if (isNever(key)) {
+      return { status: "blocked", actionType, never: true, reason: "you said never for this" };
+    }
 
     if (!forceReview && isGranted(key)) {
       const result = await runExecutor(actionType, payload);
@@ -264,7 +298,8 @@ function createApprovalGate(options = {}) {
     return [...pending.values()];
   }
 
-  // decision: "allow-once" | "allow-session" | "always-allow" | "deny"
+  // decision: "allow-once" | "allow-session" | "always-allow" | "deny" |
+  // "never" (#1154: a deny that's remembered for its grant key)
   //
   // #475 review: this is the only place a human's actual decision on a
   // pending request is known -- wrapWithToolCallLog (server.js) only ever
@@ -276,15 +311,22 @@ function createApprovalGate(options = {}) {
     const entry = pending.get(requestId);
     if (!entry) return null;
 
-    if (decision === "deny") {
+    if (decision === "deny" || decision === "never") {
       pending.delete(requestId);
+      if (decision === "never") {
+        const key = entry.grantKey || entry.actionType;
+        const never = readJson(neverPath, []);
+        if (!never.includes(key)) writeJson(neverPath, [...never, key]);
+        forgetFrom(alwaysAllowPath, key);
+        sessionGrants.delete(key);
+      }
       const deniedCount = denialCount(entry.actionType) + 1;
       denialCounts.set(entry.actionType, deniedCount);
       guardianAuditLog.append({
         name: entry.actionType,
         args: entry.payload,
         ok: false,
-        decision: "deny",
+        decision,
         summary: entry.summary,
       });
       if (onDeny) onDeny(entry.actionType);
@@ -342,6 +384,8 @@ function createApprovalGate(options = {}) {
     resetDenials,
     isAlwaysAllowed,
     isGranted,
+    listRemembered,
+    forget,
     getToolApprovalMode,
     setToolApprovalMode,
     guardianAuditLog,

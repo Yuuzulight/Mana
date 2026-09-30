@@ -15,9 +15,13 @@ function describeBrowserAction(action, args) {
   if (action === "click") return `Clicking element ${args?.ref ?? "?"}`;
   if (action === "type") return `Typing into element ${args?.ref ?? "?"}`;
   if (action === "snapshot") return "Reading the current page";
+  if (action === "find") return `Looking for ${args?.description || "something"}`;
   if (action === "select") return `Choosing "${args?.value ?? ""}" in element ${args?.ref ?? "?"}`;
   if (action === "scroll") return `Scrolling ${args?.direction || "down"}`;
   if (action === "back") return "Going back";
+  if (action === "hover") return `Hovering over element ${args?.ref ?? "?"}`;
+  if (action === "press") return `Pressing ${args?.key ?? "?"}`;
+  if (action === "drag") return `Dragging element ${args?.from ?? "?"} to ${args?.to ?? "?"}`;
   if (action === "hand_over") return `Asking you to take over: ${args?.reason || "she needs you"}`;
   return action;
 }
@@ -33,6 +37,9 @@ function createBrowserActivityLog(options = {}) {
   let page = null;
   let turnPages = [];
   let lastReadAt = -Infinity;
+  // #1168: the page that may need the ads/trackers her browser blocked
+  // ({ url, count } | null), for the panel's "Open in my browser".
+  let blocked = null;
 
   function recordActivity({ action, args, status, error } = {}) {
     const entry = {
@@ -62,13 +69,17 @@ function createBrowserActivityLog(options = {}) {
     page = result && typeof result.url === "string" ? { url: result.url, title: String(result.title || "") } : null;
   }
 
+  function recordBlocked(url, count) {
+    blocked = count > 0 && typeof url === "string" ? { url, count } : null;
+  }
+
   function recordTurnPages(pages) {
     turnPages = Array.isArray(pages) ? pages : [];
   }
 
   function getActivity() {
     lastReadAt = clock();
-    return { log, screenshot: latestScreenshot, page, turnPages };
+    return { log, screenshot: latestScreenshot, page, turnPages, blocked };
   }
 
   // Someone's looking at her browser (the Browser panel), so its pages
@@ -83,9 +94,10 @@ function createBrowserActivityLog(options = {}) {
     page = null;
     turnPages = [];
     lastReadAt = -Infinity;
+    blocked = null;
   }
 
-  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, getActivity, isWatched, reset };
+  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, recordBlocked, getActivity, isWatched, reset };
 }
 
 module.exports = { createBrowserActivityLog, describeBrowserAction, MAX_LOG_ENTRIES };

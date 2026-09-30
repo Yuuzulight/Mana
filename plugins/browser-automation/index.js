@@ -1,8 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
+const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
+const trayNotifier = require("../../node-bot/tray-notifier");
 
 // Windows ships Edge (Chromium-based) on every install -- since Mana
 // targets Windows, this is the "already available" browser rather than
@@ -73,6 +75,14 @@ async function getSession(deps = {}) {
   return starting;
 }
 
+function hostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (e) {
+    return "";
+  }
+}
+
 // Mana's profile in installed Edge: headless for her, visible for me.
 async function launch(deps, options) {
   const env = deps.env || process.env;
@@ -100,15 +110,28 @@ async function startSession(deps) {
   // Edge went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());
   let page;
+  const health = { blockedAds: 0, pageErrors: 0 };
   try {
     page = ctx.pages()[0] || (await ctx.newPage());
+    // #1168: what the current page lost to ad blocking, and its script
+    // errors -- together they say the site may need what was blocked.
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) Object.assign(health, { blockedAds: 0, pageErrors: 0 });
+    });
+    page.on("pageerror", () => (health.pageErrors += 1));
     // Images, video and fonts only while the rail's Browser panel is
-    // watching, for its screenshot; she reads and acts without them.
-    await page.route("**/*", (route) =>
-      BLOCKED_RESOURCE_TYPES.has(route.request().resourceType()) && !gateDeps.isWatched?.()
+    // watching, for its screenshot; she reads and acts without them. Ad
+    // and tracker domains never (#1168).
+    await page.route("**/*", (route) => {
+      const request = route.request();
+      if (isAdHost(hostOf(request.url()))) {
+        health.blockedAds += 1;
+        return route.abort();
+      }
+      return BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.()
         ? route.abort()
-        : route.continue(),
-    );
+        : route.continue();
+    });
     // #1139: after I hand back, she carries on where I left off.
     if (resumeUrl) await page.goto(resumeUrl).catch(() => {});
     resumeUrl = null;
@@ -118,7 +141,7 @@ async function startSession(deps) {
   }
   context = ctx;
   activePage = page;
-  session = createBrowserSession({ page });
+  session = createBrowserSession({ page, pageHealth: () => ({ ...health }) });
   checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
   checkTimer.unref?.();
   return session;
@@ -163,8 +186,15 @@ async function handBack() {
   await closing;
 }
 
-function requestHandOver(reason) {
-  needsYou = String(reason || "she needs you").slice(0, 200);
+// #1169: a new request also pops a toast with Take over (the launcher's
+// tray feed), except while a game runs: then it just waits in the panel.
+// She never opens the window herself.
+function requestHandOver(reason, deps = gateDeps) {
+  const text = String(reason || "she needs you").slice(0, 200);
+  if (text === needsYou || takenOver) return;
+  needsYou = text;
+  if (deps.isGaming?.()) return;
+  (deps.notifyTray || trayNotifier.notifyTray)({ type: "browser-hand-over", title: "Mana needs you in her browser", text }).catch?.(() => {});
 }
 
 function takeOverStatus() {

@@ -22,6 +22,12 @@ browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
 - `--disable-gpu` (no VRAM) and `--renderer-process-limit=1`.
 - Images, video and fonts are blocked (`page.route`) unless the rail's
   Browser panel is on screen, for its screenshot.
+- Ad and tracker domains (`ad-hosts.js`, a short hand-kept list) are always
+  blocked (#1168): under site isolation each cross-site ad iframe is its own
+  renderer. When ads were blocked and the page looks broken (script errors,
+  next to nothing to read or use, or an action timing out), her result and
+  the Browser panel say the site may need them, with "Open in my browser".
+  She doesn't retry without blocking.
 - Closes after 5 idle minutes, and never starts (or closes at once) while
   a watched game runs or RAM is above 85% -- self-work's gates.
 
@@ -37,6 +43,37 @@ elements that appeared or went; a new page (or one that mostly changed)
 gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
+
+## Batches (#1160)
+
+`batch { steps }` runs up to five steps (any action but `hand_over`, each
+with its own arguments) in one call. Each step goes through the same site
+check and activity feed as when called alone. The first step that fails
+or needs my OK ends the batch, and she gets a fresh look at the page.
+
+## Finding an element by description (#1156)
+
+`find { description }` ("the Sign in button", "the search box") looks at the
+whole page (not just the 150 elements a snapshot shows) and returns up to
+five best matches with their refs, ranked by the words of each element's
+name, a whole-phrase match, and the kind of element the description names.
+It only reads, so it never asks.
+
+## Hover, keys and drag (#1155)
+
+`hover` (menus that open on hover), `press` (Enter, Escape, Tab, arrows,
+Home/End, PageUp/PageDown, Backspace, Delete, Space, letters, with Shift, or
+Ctrl+A/Z/Y/B/I/U -- never Alt, Meta, F-keys, tab/window shortcuts, or copy,
+cut and paste, which reach my clipboard) and `drag` (one ref onto another).
+Press and drag ask for the site like a click; hover doesn't.
+
+## Asking before acting on a new site (#1154)
+
+The first time she clicks, types or selects on a site (host, `www.`
+dropped), I'm asked in Settings > Approvals: Allow once (that one step),
+Allow for session, Always allow, Deny, or Never. Reading, scrolling, going
+back and opening pages never ask. Always and Never are remembered per site
+(`browser-site:<host>`) and listed under "Remembered answers" with Forget.
 
 ## Take over and hand back (#1139)
 

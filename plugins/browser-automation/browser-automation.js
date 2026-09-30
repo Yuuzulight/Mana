@@ -19,6 +19,35 @@ const INTERACTIVE_ROLES = new Set([
   "switch", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
 const REF_RE = /^(?:f\d+)?e\d+$/;
+// #1155: keys she may press -- the page's own keys, never a shortcut that
+// acts outside it (closing or opening tabs, printing, saving, devtools).
+const NAMED_KEYS = new Map(
+  ["Enter", "Escape", "Tab", "Backspace", "Delete", "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]
+    .map((k) => [k.toLowerCase(), k === "Space" ? " " : k]),
+);
+NAMED_KEYS.set("esc", "Escape");
+NAMED_KEYS.set("return", "Enter");
+// Editing shortcuts only: select all, undo, redo, bold, italic, underline.
+// No copy, cut or paste: those reach my own clipboard.
+const CONTROL_LETTERS = new Set(["a", "z", "y", "b", "i", "u"]);
+
+// "Ctrl+A", "shift+tab", "Enter" -> Playwright's "Control+a", "Shift+Tab",
+// "Enter"; throws on anything else.
+function pageKey(key) {
+  const parts = String(key ?? "").split("+").map((p) => p.trim().toLowerCase());
+  const base = parts.pop();
+  const mods = new Set(parts.map((m) => (m === "ctrl" ? "control" : m)));
+  if (![...mods].every((m) => m === "control" || m === "shift")) {
+    throw new Error(`only Ctrl and Shift combinations are allowed, not "${key}"`);
+  }
+  const named = NAMED_KEYS.get(base);
+  const letter = /^[a-z0-9]$/.test(base) ? base : null;
+  if (!named && !letter) throw new Error(`"${key}" isn't a key she can press (Enter, Escape, Tab, arrows, a letter...)`);
+  if (mods.has("control") && letter && !CONTROL_LETTERS.has(letter)) {
+    throw new Error(`Ctrl+${letter.toUpperCase()} isn't allowed: only the page's editing shortcuts (Ctrl+A/Z/Y/B/I/U)`);
+  }
+  return [...(mods.has("control") ? ["Control"] : []), ...(mods.has("shift") ? ["Shift"] : []), named || letter].join("+");
+}
 
 // The snapshot's interactive lines, flattened: `link "More" [ref=e6]`,
 // `textbox "Search" [ref=e9]: current value`. Lines without a ref can't be
@@ -31,6 +60,45 @@ function interactiveElements(ariaSnapshot) {
     lines.push((match[1] + match[2].replace(/ \[cursor=pointer\]/g, "")).replace(/:$/, ""));
   }
   return lines;
+}
+
+// #1156: the words in a description that name a kind of element, and the
+// snapshot roles they mean.
+const ROLE_WORDS = new Map([
+  ["button", ["button"]], ["link", ["link"]], ["tab", ["tab"]], ["checkbox", ["checkbox"]],
+  ["radio", ["radio"]], ["switch", ["switch", "checkbox"]], ["toggle", ["switch", "checkbox", "button"]],
+  ["slider", ["slider"]], ["option", ["option"]], ["menu", ["menuitem", "combobox", "button"]],
+  ["box", ["textbox", "searchbox", "combobox"]], ["field", ["textbox", "searchbox", "combobox"]],
+  ["input", ["textbox", "searchbox", "combobox"]], ["search", ["searchbox", "textbox"]],
+  ["dropdown", ["combobox", "listbox"]], ["select", ["combobox", "listbox"]],
+]);
+const STOP_WORDS = new Set(["the", "a", "an", "to", "of", "on", "in", "for", "that", "with", "and", "or", "my", "this", "it", "at"]);
+const MAX_MATCHES = 5;
+
+const words = (text) => String(text || "").toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+
+// The snapshot lines that best fit what she describes ("the Sign in
+// button", "the search box"), best first: words of the element's name
+// count most, a whole-phrase match more, a matching kind of element a bit.
+// ponytail: plain word overlap, no stemming or synonyms beyond ROLE_WORDS.
+function findElements(elements, description) {
+  const wanted = words(description).filter((w) => !STOP_WORDS.has(w));
+  const roles = new Set(wanted.flatMap((w) => ROLE_WORDS.get(w) || []));
+  const nameWords = wanted.filter((w) => !ROLE_WORDS.has(w) || !roles.size);
+  const phrase = nameWords.join(" ");
+  const scored = elements.map((line) => {
+    const [, role = "", name = ""] = /^(\w+)(?: "((?:[^"\\]|\\.)*)")?/.exec(line) || [];
+    const have = new Set(words(`${name} ${line.split("]: ")[1] || ""}`));
+    let score = nameWords.filter((w) => have.has(w)).length * 2;
+    if (phrase && name.toLowerCase().includes(phrase)) score += 2;
+    if (roles.has(role)) score += score > 0 || !nameWords.length ? 1 : 0;
+    return { line, score };
+  });
+  return scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_MATCHES)
+    .map((s) => s.line);
 }
 
 // A plain, token-efficient text extraction -- not a screenshot or raw
@@ -67,6 +135,10 @@ function refSelector(ref) {
   return `aria-ref=${id}`;
 }
 
+function blockedNote(count) {
+  return `this site may need the ${count} ad or tracker request${count === 1 ? "" : "s"} that were blocked; the user can open it in their own browser (don't retry without blocking)`;
+}
+
 // options.page: the injected page-like object (see file header).
 function createBrowserSession(options = {}) {
   const page = options.page;
@@ -74,7 +146,32 @@ function createBrowserSession(options = {}) {
     throw new Error("a page-like object ({goto, ariaSnapshot, locator, evaluate, title, url, screenshot}) is required");
   }
   const maxTextChars = Math.max(200, Number(options.maxTextChars) || MAX_PAGE_TEXT_CHARS);
+  // #1168: { blockedAds, pageErrors } for the current page (index.js).
+  const pageHealth = options.pageHealth || (() => ({ blockedAds: 0, pageErrors: 0 }));
   let last = null;
+
+  // Ads or trackers were blocked and the page looks broken (script errors,
+  // or next to nothing to read or use): the count, else 0. She doesn't
+  // retry without blocking; I can open it in my own browser.
+  function blockedMayBreak(elements, text) {
+    const { blockedAds, pageErrors } = pageHealth();
+    const empty = elements.length < 3 && String(text || "").length < 200;
+    return blockedAds > 0 && (pageErrors > 0 || empty) ? blockedAds : 0;
+  }
+
+  // An action that timed out on a page with blocked ads says so too.
+  async function acting(run) {
+    try {
+      return await run();
+    } catch (e) {
+      const { blockedAds } = pageHealth();
+      if (blockedAds > 0 && /timeout/i.test(e?.message || "")) {
+        e.message += ` -- ${blockedNote(blockedAds)}`;
+        e.blockedMayBreak = blockedAds;
+      }
+      throw e;
+    }
+  }
 
   async function snapshot() {
     const [aria, text, title, url, sensitive] = await Promise.all([
@@ -87,8 +184,17 @@ function createBrowserSession(options = {}) {
     const all = interactiveElements(aria);
     const elements = all.slice(0, MAX_ELEMENTS);
     if (all.length > elements.length) elements.push(`(${all.length - elements.length} more not shown)`);
-    last = { url, title, elements, text, ...(sensitive ? { sensitive } : {}) };
+    const blocked = blockedMayBreak(all, text);
+    last = { url, title, elements, text, ...(sensitive ? { sensitive } : {}), ...(blocked ? { blockedMayBreak: blocked } : {}) };
     return last;
+  }
+
+  // #1156: the best-fitting elements for a description, from a fresh look
+  // at the whole page (not just the 150 a snapshot shows).
+  async function find(description) {
+    if (!String(description || "").trim()) throw new Error("say what to look for, like \"the Sign in button\"");
+    const [aria, title, url] = await Promise.all([page.ariaSnapshot({ mode: "ai", depth: SNAPSHOT_DEPTH }), page.title(), page.url()]);
+    return { url, title, description: String(description), matches: findElements(interactiveElements(aria), description) };
   }
 
   // After an action: on the same page, only what changed; on a new page
@@ -109,6 +215,7 @@ function createBrowserSession(options = {}) {
       removed,
       ...(now.text !== before.text ? { text: now.text } : {}),
       ...(now.sensitive ? { sensitive: now.sensitive } : {}),
+      ...(now.blockedMayBreak ? { blockedMayBreak: now.blockedMayBreak } : {}),
     };
   }
 
@@ -122,7 +229,7 @@ function createBrowserSession(options = {}) {
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       throw new Error("only http/https URLs can be navigated to");
     }
-    await page.goto(target.href);
+    await acting(() => page.goto(target.href));
     return snapshot();
   }
 
@@ -137,7 +244,7 @@ function createBrowserSession(options = {}) {
 
   async function click(ref) {
     await refuseIfSensitive();
-    await page.locator(refSelector(ref)).click({ timeout: ACTION_TIMEOUT_MS });
+    await acting(() => page.locator(refSelector(ref)).click({ timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -145,15 +252,17 @@ function createBrowserSession(options = {}) {
   async function type(ref, text, submit = false) {
     await refuseIfSensitive();
     const field = page.locator(refSelector(ref));
-    await field.fill(String(text ?? ""), { timeout: ACTION_TIMEOUT_MS });
-    if (submit) await field.press("Enter", { timeout: ACTION_TIMEOUT_MS });
+    await acting(async () => {
+      await field.fill(String(text ?? ""), { timeout: ACTION_TIMEOUT_MS });
+      if (submit) await field.press("Enter", { timeout: ACTION_TIMEOUT_MS });
+    });
     return afterAction();
   }
 
   // An option's label or value.
   async function select(ref, value) {
     await refuseIfSensitive();
-    await page.locator(refSelector(ref)).selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS });
+    await acting(() => page.locator(refSelector(ref)).selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -164,6 +273,29 @@ function createBrowserSession(options = {}) {
     const { width, height } = page.viewportSize?.() || { width: 1280, height: 720 };
     await page.mouse.move(width / 2, height / 2);
     await page.mouse.wheel(0, (direction === "down" ? 0.8 : -0.8) * height);
+    return afterAction();
+  }
+
+  // #1155: menus that open on hover.
+  async function hover(ref) {
+    await acting(() => page.locator(refSelector(ref)).hover({ timeout: ACTION_TIMEOUT_MS }));
+    return afterAction();
+  }
+
+  // On the element (ref) or wherever the focus is.
+  async function press(key, ref) {
+    const combo = pageKey(key);
+    await refuseIfSensitive();
+    await acting(() => (ref ? page.locator(refSelector(ref)).press(combo, { timeout: ACTION_TIMEOUT_MS }) : page.keyboard.press(combo)));
+    return afterAction();
+  }
+
+  // Sliders, reordering.
+  async function drag(fromRef, toRef) {
+    const from = page.locator(refSelector(fromRef));
+    const to = page.locator(refSelector(toRef));
+    await refuseIfSensitive();
+    await acting(() => from.dragTo(to, { timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -179,7 +311,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, back, snapshot, screenshot };
+  return { navigate, click, type, select, scroll, hover, press, drag, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {
@@ -187,7 +319,10 @@ module.exports = {
   MAX_ELEMENTS,
   createBrowserSession,
   interactiveElements,
+  findElements,
   extractTextInPage,
   sensitiveInPage,
   refSelector,
+  pageKey,
+  blockedNote,
 };

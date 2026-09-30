@@ -85,6 +85,11 @@ test("#669 tiers: built-ins keep their fixed tier and are not content-inspected"
   assert.equal(classifyToolCall("browser_automation__select", { ref: "e3", value: "x" }).tier, "network");
   assert.equal(classifyToolCall("browser_automation__back", {}).tier, "network");
   assert.equal(classifyToolCall("browser_automation__scroll", { direction: "down" }).tier, "read");
+  // #1155: a key or a drag can submit; hovering only moves the mouse.
+  assert.equal(classifyToolCall("browser_automation__press", { key: "Enter" }).tier, "network");
+  assert.equal(classifyToolCall("browser_automation__drag", { from: "e1", to: "e2" }).tier, "network");
+  assert.equal(classifyToolCall("browser_automation__hover", { ref: "e1" }).tier, "read");
+  assert.equal(classifyToolCall("browser_automation__batch", { steps: [] }).tier, "network");
   assert.deepEqual(classifyToolCall("session_search__query", { query: "https://x.com" }).hosts, []);
 });
 

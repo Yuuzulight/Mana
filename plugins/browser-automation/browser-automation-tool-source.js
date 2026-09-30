@@ -5,6 +5,7 @@
 // separate Chromium instances.
 const { createBrowserActivityLog } = require("./browser-automation-activity");
 const { wrapUntrusted } = require("../../node-bot/ai/untrusted-content");
+const { blockedNote } = require("./browser-automation");
 
 const BROWSER_TOOL_PREFIX = "browser_automation__";
 // Gates the *first* tool-calling use, not every individual call -- once a
@@ -15,6 +16,21 @@ const BROWSER_TOOL_PREFIX = "browser_automation__";
 // else in this codebase does either (read_file has never needed approval;
 // an MCP server's tools are approved once, at registration, not per call).
 const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
+// #1154: before she clicks, types or selects on a site the first time, I'm
+// asked (allow once / for the session / always / deny / never), per site.
+// Reading, scrolling and going back never ask.
+const SITE_ACTION_TYPE = "browser-site";
+const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag"]);
+
+// "shop.example.com" from a page URL (www. dropped), or null off the web.
+function siteOf(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.hostname.replace(/^www\./, "") : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 const REF_PARAM = { type: "string", description: "The element's ref from the page snapshot, like e5." };
 function tool(name, description, properties = {}, required = []) {
@@ -29,6 +45,9 @@ const TOOL_SCHEMAS = [
   tool("navigate", "Open an http(s) URL in her browser and read the page.", {
     url: { type: "string", description: "The http(s) URL to open." },
   }, ["url"]),
+  tool("find", "Find elements on the page by description (like \"the Sign in button\" or \"the search box\"): the best matches with their refs.", {
+    description: { type: "string", description: "What you're looking for, in a few words." },
+  }, ["description"]),
   tool("snapshot", "Read the current page again: its interactive elements with their refs, and a short text excerpt."),
   tool("click", "Click an element by its ref.", { ref: REF_PARAM }, ["ref"]),
   tool("type", "Replace the text in a field by its ref; submit presses Enter after.", {
@@ -43,6 +62,15 @@ const TOOL_SCHEMAS = [
   tool("scroll", "Scroll the page by most of a screen, to load more of it.", {
     direction: { type: "string", enum: ["down", "up"] },
   }, ["direction"]),
+  tool("hover", "Move the mouse over an element by its ref, e.g. to open a menu.", { ref: REF_PARAM }, ["ref"]),
+  tool("press", "Press a key or an editing shortcut: Enter, Escape, Tab, arrows, Home/End, PageUp/PageDown, Backspace, Delete, Space, a letter, with Shift, or Ctrl+A/Z/Y/B/I/U.", {
+    key: { type: "string", description: 'Like "Enter", "Escape", "Shift+Tab", "Ctrl+A".' },
+    ref: { type: "string", description: "Optional: the element to press it on; otherwise wherever the focus is." },
+  }, ["key"]),
+  tool("drag", "Drag one element onto another by their refs (sliders, reordering).", {
+    from: REF_PARAM,
+    to: { type: "string", description: "The ref of where to drop it." },
+  }, ["from", "to"]),
   tool("back", "Go back to the previous page."),
   // #1139: the user takes over in a visible window and presses Done.
   tool("hand_over", "Ask the user to take over the browser: for a login, a CAPTCHA, a payment or account change, or when you're stuck. You never type passwords or pay.", {
@@ -51,11 +79,32 @@ const TOOL_SCHEMAS = [
 ];
 const ACTIONS = TOOL_SCHEMAS.map((t) => t.function.name.slice(BROWSER_TOOL_PREFIX.length));
 
+// #1160: up to five steps in one call. A step is any action but hand_over
+// (she says that herself) with that action's own arguments.
+const MAX_BATCH_STEPS = 5;
+const BATCH_ACTIONS = ACTIONS.filter((a) => a !== "hand_over");
+const stepArgs = Object.assign({}, ...TOOL_SCHEMAS.map((t) => t.function.parameters.properties));
+TOOL_SCHEMAS.push(
+  tool("batch", `Run up to ${MAX_BATCH_STEPS} browser steps in one go. It stops at the first step that fails or needs the user's OK, and then shows the page as it is.`, {
+    steps: {
+      type: "array",
+      maxItems: MAX_BATCH_STEPS,
+      items: {
+        type: "object",
+        properties: { action: { type: "string", enum: BATCH_ACTIONS }, ...stepArgs },
+        required: ["action"],
+      },
+    },
+  }, ["steps"]),
+);
+
 // What the model reads: everything from the page sits inside one untrusted
 // frame.
 function describeForModel(result) {
   const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ""];
-  if (result.elements) {
+  if (result.matches) {
+    lines.push(result.matches.length ? `Best matches for "${result.description}":` : `Nothing on the page matches "${result.description}".`, ...result.matches);
+  } else if (result.elements) {
     lines.push("Interactive elements:", ...result.elements);
   } else if (result.added.length || result.removed.length) {
     lines.push("Changed elements (the rest are as in the last snapshot):");
@@ -64,11 +113,14 @@ function describeForModel(result) {
     lines.push("The elements didn't change.");
   }
   if (result.text !== undefined) lines.push("", "Page text (start):", result.text);
-  const framed = wrapUntrusted("browser page", lines.join("\n"));
   // Outside the frame: this is Mana's code talking, not the page.
-  return result.sensitive
-    ? `${framed}\nThis page asks for ${result.sensitive}. That's the user's to do: don't click or type here. The Browser panel now asks them to take over; tell them and wait.`
-    : framed;
+  const notes = [wrapUntrusted("browser page", lines.join("\n"))];
+  if (result.sensitive) {
+    notes.push(`This page asks for ${result.sensitive}. That's the user's to do: don't click or type here. The Browser panel now asks them to take over; tell them and wait.`);
+  }
+  // #1168
+  if (result.blockedMayBreak) notes.push(`Note: ${blockedNote(result.blockedMayBreak)}.`);
+  return notes.join("\n");
 }
 
 function isBrowserAutomationToolName(name) {
@@ -94,6 +146,36 @@ function createBrowserAutomationToolSource(options = {}) {
     throw new Error("an approvalGate is required");
   }
   approvalGate.registerExecutor(APPROVAL_ACTION_TYPE, async () => ({ approved: true }));
+  // "Allow once" lets her next action on that site through.
+  const allowedOnce = new Set();
+
+  // One action type per site, so the gate's grants, "never" and its
+  // three-denials stop are all per site.
+  async function requireSitePermission(session) {
+    const site = siteOf(await session.url());
+    if (!site) throw new Error("open a web page first");
+    const actionType = `${SITE_ACTION_TYPE}:${site}`;
+    if (approvalGate.isGranted(actionType) || allowedOnce.delete(site)) return;
+    approvalGate.registerExecutor(actionType, async () => {
+      allowedOnce.add(site);
+      return { approved: true };
+    });
+    const result = await approvalGate.requestApproval(actionType, {
+      summary: `Let Mana click and type on ${site}`,
+      payload: { site },
+    });
+    if (result.status === "approved") {
+      allowedOnce.delete(site);
+      return;
+    }
+    throw new Error(
+      result.status === "pending"
+        ? `clicking or typing on ${site} needs the user's OK first (request ${result.requestId}); tell them, and try again once they allow it. Reading pages there doesn't need it.`
+        : result.never
+          ? `the user said never for clicking or typing on ${site}; don't act there`
+          : `clicking or typing on ${site} isn't allowed: ${result.reason || "denied"}`,
+    );
+  }
 
   function listToolSchemas() {
     return TOOL_SCHEMAS;
@@ -119,25 +201,62 @@ function createBrowserAutomationToolSource(options = {}) {
     }
 
     const action = qualifiedName.slice(BROWSER_TOOL_PREFIX.length);
-    if (!ACTIONS.includes(action)) {
+    if (action !== "batch" && !ACTIONS.includes(action)) {
       throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
     }
 
-    // #1137: her page loads images only while the Browser panel watches.
     if (action === "hand_over") {
-      requestHandOver(args?.reason);
+      requestHandOver(args?.reason, sessionDeps);
       activityLog.recordActivity({ action, args, status: "ok" });
       return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
     }
+    // #1137: her page loads images only while the Browser panel watches.
     const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched });
+    if (action === "batch") return runBatch(session, args?.steps);
+    const result = await act(session, action, args);
+    await recordScreenshot(session);
+    return describeForModel(result);
+  }
+
+  // #1160: each step as if called alone (site permission, activity feed);
+  // the first failure or needed approval ends the batch with a fresh look
+  // at the page so she can recover.
+  async function runBatch(session, steps) {
+    if (!Array.isArray(steps) || steps.length < 1 || steps.length > MAX_BATCH_STEPS) {
+      throw new Error(`a batch has 1 to ${MAX_BATCH_STEPS} steps`);
+    }
+    let result;
+    for (const [i, step] of steps.entries()) {
+      const stepAction = step?.action;
+      try {
+        if (!BATCH_ACTIONS.includes(stepAction)) throw new Error(`"${stepAction}" isn't a step a batch can take`);
+        result = await act(session, stepAction, step);
+      } catch (e) {
+        const now = await session.snapshot().catch(() => null);
+        await recordScreenshot(session);
+        const head = `Step ${i + 1} of ${steps.length} (${stepAction}) didn't go through: ${e.message}\nThe batch stopped there${i ? ` after ${i} step${i === 1 ? "" : "s"}` : ""}.`;
+        return now ? `${head}\n${describeForModel(now)}` : head;
+      }
+    }
+    await recordScreenshot(session);
+    return `All ${steps.length} steps went through.\n${describeForModel(result)}`;
+  }
+
+  // One action: the site check, the step itself and the activity feed.
+  async function act(session, action, args) {
     let result;
     try {
+      if (ACTS_ON_SITE.has(action)) await requireSitePermission(session);
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
+      else if (action === "find") result = await session.find(args?.description);
       else if (action === "click") result = await session.click(args?.ref);
       else if (action === "type") result = await session.type(args?.ref, args?.text, args?.submit === true);
       else if (action === "select") result = await session.select(args?.ref, args?.value);
       else if (action === "scroll") result = await session.scroll(args?.direction);
+      else if (action === "hover") result = await session.hover(args?.ref);
+      else if (action === "press") result = await session.press(args?.key, args?.ref);
+      else if (action === "drag") result = await session.drag(args?.from, args?.to);
       else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step
@@ -145,12 +264,18 @@ function createBrowserAutomationToolSource(options = {}) {
       // the human watching benefits from seeing where it got stuck. The
       // real error still propagates to the model unchanged.
       activityLog.recordActivity({ action, args, status: "error", error: err.message });
+      if (err.blockedMayBreak) activityLog.recordBlocked(await session.url(), err.blockedMayBreak);
       throw err;
     }
 
     activityLog.recordActivity({ action, args, status: "ok" });
     activityLog.recordPage(result);
-    if (result.sensitive) requestHandOver(`This page asks for ${result.sensitive}.`);
+    activityLog.recordBlocked(result.url, result.blockedMayBreak || 0);
+    if (result.sensitive) requestHandOver(`This page asks for ${result.sensitive}.`, sessionDeps);
+    return result;
+  }
+
+  async function recordScreenshot(session) {
     // Screenshots are for the Browser panel only, taken while it's on
     // screen. Best-effort: a capture failure (page mid-navigation, tab
     // closed) must never break the real tool call it happened alongside.
@@ -165,8 +290,6 @@ function createBrowserAutomationToolSource(options = {}) {
       screenshotBase64 = null;
     }
     activityLog.recordScreenshot(screenshotBase64);
-
-    return describeForModel(result);
   }
 
   return {
@@ -194,6 +317,7 @@ async function buildToolPolicyWithBrowserAutomation(basePolicy, browserToolSourc
 module.exports = {
   BROWSER_TOOL_PREFIX,
   APPROVAL_ACTION_TYPE,
+  SITE_ACTION_TYPE,
   TOOL_SCHEMAS,
   describeForModel,
   isBrowserAutomationToolName,

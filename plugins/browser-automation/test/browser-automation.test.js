@@ -6,9 +6,11 @@ const {
   MAX_ELEMENTS,
   createBrowserSession,
   interactiveElements,
+  findElements,
   extractTextInPage,
   sensitiveInPage,
   refSelector,
+  pageKey,
 } = require("../browser-automation");
 
 // A real `page.ariaSnapshot({ mode: "ai" })` shape: nested roles, refs,
@@ -53,8 +55,13 @@ function createFakePage(overrides = {}) {
         fill: async (text) => state.calls.push(["fill", selector, text]),
         press: async (key) => state.calls.push(["press", selector, key]),
         selectOption: async (value) => state.calls.push(["select", selector, value]),
+        hover: async () => state.calls.push(["hover", selector]),
+        press: async (key) => state.calls.push(["press", selector, key]),
+        dragTo: async (target) => state.calls.push(["drag", selector, target.selector]),
+        selector,
       };
     },
+    keyboard: { press: async (key) => state.calls.push(["key", key]) },
     mouse: {
       move: async (x, y) => state.calls.push(["move", x, y]),
       wheel: async (x, y) => state.calls.push(["wheel", x, y]),
@@ -273,4 +280,123 @@ test("#1139: sensitiveInPage spots password, one-time-code and card fields, and 
   assert.equal(check(['iframe[src*="stripe.com"]']), "payment details");
   assert.equal(check([], "/cart/Checkout"), "payment details");
   assert.equal(check([], "/wiki/Cats"), null);
+});
+
+test("#1168: isAdHost matches listed domains and their subdomains only", () => {
+  const { isAdHost } = require("../ad-hosts");
+  assert.equal(isAdHost("doubleclick.net"), true);
+  assert.equal(isAdHost("securepubads.g.doubleclick.net"), true);
+  assert.equal(isAdHost("connect.facebook.net"), true);
+  assert.equal(isAdHost("facebook.net"), false);
+  assert.equal(isAdHost("notdoubleclick.net"), false);
+  assert.equal(isAdHost("www.bbc.co.uk"), false);
+  assert.equal(isAdHost(""), false);
+});
+
+test("#1168: blocked ads only flag the page when it looks broken: errors or next to nothing there", async () => {
+  let health = { blockedAds: 4, pageErrors: 0 };
+  const page = createFakePage();
+  const session = createBrowserSession({ page, pageHealth: () => health });
+  assert.equal((await session.snapshot()).blockedMayBreak, undefined); // 6 elements, fine
+
+  health = { blockedAds: 4, pageErrors: 1 };
+  assert.equal((await session.snapshot()).blockedMayBreak, 4);
+
+  health = { blockedAds: 4, pageErrors: 0 };
+  page.state.aria = '- button "Only" [ref=e1]';
+  page.state.text = "Loading...";
+  assert.equal((await session.snapshot()).blockedMayBreak, 4);
+
+  health = { blockedAds: 0, pageErrors: 3 };
+  assert.equal((await session.snapshot()).blockedMayBreak, undefined);
+});
+
+test("#1168: an action that times out on a page with blocked ads says the site may need them", async () => {
+  const page = createFakePage();
+  page.locator = () => ({
+    click: async () => {
+      throw new Error("locator.click: Timeout 5000ms exceeded.");
+    },
+  });
+  const noAds = createBrowserSession({ page });
+  await assert.rejects(() => noAds.click("e5"), (e) => !/may need/.test(e.message));
+
+  const session = createBrowserSession({ page, pageHealth: () => ({ blockedAds: 2, pageErrors: 0 }) });
+  await assert.rejects(
+    () => session.click("e5"),
+    (e) => /Timeout 5000ms exceeded\. -- this site may need the 2 ad or tracker requests that were blocked/.test(e.message) && e.blockedMayBreak === 2,
+  );
+});
+
+test("#1155: pageKey allows the page's keys and editing shortcuts, never ones that act outside it", () => {
+  assert.equal(pageKey("Enter"), "Enter");
+  assert.equal(pageKey("esc"), "Escape");
+  assert.equal(pageKey("shift+tab"), "Shift+Tab");
+  assert.equal(pageKey("Ctrl+A"), "Control+a");
+  assert.equal(pageKey("ctrl+shift+z"), "Control+Shift+z");
+  assert.equal(pageKey("space"), " ");
+  assert.equal(pageKey("ArrowDown"), "ArrowDown");
+  assert.throws(() => pageKey("Ctrl+W"), /Ctrl\+W isn't allowed/);
+  assert.throws(() => pageKey("Ctrl+V"), /isn't allowed/); // my clipboard
+  assert.throws(() => pageKey("ctrl+c"), /isn't allowed/);
+  assert.throws(() => pageKey("Ctrl+P"), /isn't allowed/);
+  assert.throws(() => pageKey("Alt+F4"), /only Ctrl and Shift/);
+  assert.throws(() => pageKey("Meta+r"), /only Ctrl and Shift/);
+  assert.throws(() => pageKey("F12"), /isn't a key she can press/);
+  assert.throws(() => pageKey("F5"), /isn't a key she can press/);
+  assert.throws(() => pageKey(""), /isn't a key/);
+});
+
+test("#1155: hover, press (on an element or the focus) and drag act by ref", async () => {
+  const page = createFakePage();
+  const session = createBrowserSession({ page });
+  await session.hover("e3");
+  await session.press("Escape");
+  await session.press("Ctrl+A", "e4");
+  await session.drag("e5", "f1e2");
+  assert.deepEqual(actions(page), [
+    ["hover", "aria-ref=e3"],
+    ["key", "Escape"],
+    ["press", "aria-ref=e4", "Control+a"],
+    ["drag", "aria-ref=e5", "aria-ref=f1e2"],
+  ]);
+  await assert.rejects(() => session.press("Ctrl+W"), /isn't allowed/);
+  await assert.rejects(() => session.drag("e5", "#x"), /isn't a ref/);
+});
+
+test("#1155: on a password or payment page she can't press keys or drag", async () => {
+  const page = createFakePage();
+  page.state.sensitive = "a password";
+  const session = createBrowserSession({ page });
+  await assert.rejects(() => session.press("Enter"), /asks for a password/);
+  await assert.rejects(() => session.drag("e1", "e2"), /asks for a password/);
+  await session.hover("e3");
+  assert.deepEqual(actions(page), [["hover", "aria-ref=e3"]]);
+});
+
+test("#1156: findElements ranks by name words, whole phrases and the kind of element", () => {
+  const elements = [
+    'link "Sign in" [ref=e1]',
+    'button "Sign in" [ref=e2]',
+    'link "Sign up for news" [ref=e3]',
+    'searchbox "Search Wikipedia" [ref=e4]',
+    'button "Search" [ref=e5]',
+    'textbox "Email address" [ref=e6]: me@example.com',
+    'combobox "Language" [ref=e7]',
+  ];
+  assert.deepEqual(findElements(elements, "the Sign in button"), ['button "Sign in" [ref=e2]', 'link "Sign in" [ref=e1]', 'link "Sign up for news" [ref=e3]']);
+  assert.deepEqual(findElements(elements, "the search box").slice(0, 1), ['searchbox "Search Wikipedia" [ref=e4]']);
+  assert.deepEqual(findElements(elements, "email field"), ['textbox "Email address" [ref=e6]: me@example.com']);
+  assert.deepEqual(findElements(elements, "dropdown"), ['combobox "Language" [ref=e7]']);
+  assert.deepEqual(findElements(elements, "shopping cart"), []);
+  assert.equal(findElements(Array.from({ length: 20 }, (_, i) => `link "Item ${i}" [ref=e${i}]`), "item").length, 5);
+});
+
+test("#1156: find looks at the whole page, beyond the snapshot's cap", async () => {
+  const aria = Array.from({ length: MAX_ELEMENTS + 10 }, (_, i) => `- link "Page ${i}" [ref=e${i}]`).concat('- button "Checkout" [ref=e999]').join("\n");
+  const page = createFakePage({ aria });
+  const result = await createBrowserSession({ page }).find("the checkout button");
+  assert.deepEqual(result.matches, ['button "Checkout" [ref=e999]']);
+  assert.equal(result.description, "the checkout button");
+  await assert.rejects(() => createBrowserSession({ page }).find("  "), /say what to look for/);
 });

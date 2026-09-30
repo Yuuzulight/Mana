@@ -7,6 +7,7 @@ const test = require("node:test");
 const { createApprovalGate } = require("../../../node-bot/approval-gate");
 const {
   APPROVAL_ACTION_TYPE,
+  SITE_ACTION_TYPE,
   TOOL_SCHEMAS,
   describeForModel,
   isBrowserAutomationToolName,
@@ -28,6 +29,8 @@ function createFakePage(calls = []) {
     fill: async (text) => calls.push(["fill", selector, text]),
     press: async (key) => calls.push(["press", selector, key]),
     selectOption: async (value) => calls.push(["select", selector, value]),
+    hover: async () => calls.push(["hover", selector]),
+    dragTo: async () => calls.push(["drag", selector]),
   });
   page = {
     sensitive: null,
@@ -42,6 +45,7 @@ function createFakePage(calls = []) {
     },
     locator,
     mouse: { move: async () => {}, wheel: async (x, y) => calls.push(["wheel", y]) },
+    keyboard: { press: async (key) => calls.push(["key", key]) },
     async goBack() {
       calls.push(["back"]);
     },
@@ -74,9 +78,14 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
     schemas.map((s) => s.function.name).sort(),
     [
       "browser_automation__back",
+      "browser_automation__batch",
       "browser_automation__click",
+      "browser_automation__drag",
+      "browser_automation__find",
       "browser_automation__hand_over",
+      "browser_automation__hover",
       "browser_automation__navigate",
+      "browser_automation__press",
       "browser_automation__scroll",
       "browser_automation__select",
       "browser_automation__snapshot",
@@ -262,7 +271,14 @@ async function approvedSource(calls, options = {}) {
   const { source, approvalGate } = createSource({ session, requestHandOver: options.requestHandOver });
   await source.executeTool("browser_automation__snapshot", {}).catch(() => {});
   await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+  source.approvalGate = approvalGate;
   return source;
+}
+
+// #1154: what I'd click in Approvals for the site she's asking about.
+async function answerSite(source, decision) {
+  const pending = source.approvalGate.listPending().find((p) => p.actionType.startsWith(`${SITE_ACTION_TYPE}:`));
+  return source.approvalGate.decide(pending.id, decision);
 }
 
 test("#1138: everything the page says reaches the model inside one untrusted frame", async () => {
@@ -279,6 +295,8 @@ test("#1138: click, type (with submit), select, scroll and back go through the s
   const calls = [];
   const source = await approvedSource(calls);
   await source.executeTool("browser_automation__navigate", { url: "https://example.com" });
+  await source.executeTool("browser_automation__click", { ref: "e2" }).catch(() => {});
+  await answerSite(source, "always-allow");
   await source.executeTool("browser_automation__click", { ref: "e2" });
   await source.executeTool("browser_automation__type", { ref: "[ref=e3]", text: "cats", submit: true });
   await source.executeTool("browser_automation__select", { ref: "f1e4", value: "Large" });
@@ -341,5 +359,156 @@ test("#1139: landing on a password page flags it for the user, with a note outsi
   const result = await source.executeTool("browser_automation__navigate", { url: "https://shop.test/login" });
   assert.match(result, /<\/untrusted-[0-9a-f]{12}>\nThis page asks for a password\. That's the user's to do/);
   assert.deepEqual(asked, ["This page asks for a password."]);
+  // Even on a site I've allowed.
+  await source.executeTool("browser_automation__type", { ref: "e2", text: "x" }).catch(() => {});
+  await answerSite(source, "always-allow");
   await assert.rejects(() => source.executeTool("browser_automation__type", { ref: "e2", text: "hunter2" }), /so it's the user's to do/);
+});
+
+test("#1154: the first click on a site asks; reading doesn't, and allow once lets one action through", async () => {
+  const calls = [];
+  const source = await approvedSource(calls);
+  await source.executeTool("browser_automation__navigate", { url: "https://www.shop.test/" });
+  await source.executeTool("browser_automation__scroll", { direction: "down" });
+
+  await assert.rejects(
+    () => source.executeTool("browser_automation__click", { ref: "e2" }),
+    /clicking or typing on shop\.test needs the user's OK first \(request \w+\)/,
+  );
+  const [pending] = source.approvalGate.listPending();
+  assert.equal(pending.summary, "Let Mana click and type on shop.test");
+  assert.equal(pending.actionType, "browser-site:shop.test");
+  assert.deepEqual(calls, [["wheel", 576]]);
+
+  await answerSite(source, "allow-once");
+  await source.executeTool("browser_automation__click", { ref: "e2" });
+  await assert.rejects(() => source.executeTool("browser_automation__type", { ref: "e2", text: "x" }), /needs the user's OK/);
+  assert.deepEqual(calls.slice(1), [["click", "aria-ref=e2"]]);
+});
+
+test("#1154: always is remembered per site, never stops asking, and forgetting asks again", async () => {
+  const source = await approvedSource([]);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  await source.executeTool("browser_automation__click", { ref: "e2" }).catch(() => {});
+  await answerSite(source, "always-allow");
+  await source.executeTool("browser_automation__click", { ref: "e2" });
+
+  // Another site asks on its own.
+  await source.executeTool("browser_automation__navigate", { url: "https://b.test/" });
+  await source.executeTool("browser_automation__click", { ref: "e2" }).catch(() => {});
+  await answerSite(source, "never");
+  await assert.rejects(() => source.executeTool("browser_automation__click", { ref: "e2" }), /said never for clicking or typing on b\.test/);
+  assert.equal(source.approvalGate.listPending().length, 0);
+  assert.deepEqual(source.approvalGate.listRemembered().filter((r) => r.key.startsWith("browser-site:")), [
+    { key: "browser-site:a.test", answer: "always" },
+    { key: "browser-site:b.test", answer: "never" },
+  ]);
+
+  assert.equal(source.approvalGate.forget("browser-site:b.test"), true);
+  await assert.rejects(() => source.executeTool("browser_automation__click", { ref: "e2" }), /needs the user's OK first/);
+});
+
+test("#1154: denials count per site, so saying no to one site three times doesn't block another", async () => {
+  const source = await approvedSource([]);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  for (let i = 0; i < 3; i += 1) {
+    await source.executeTool("browser_automation__click", { ref: "e2" }).catch(() => {});
+    await answerSite(source, "deny");
+  }
+  await assert.rejects(() => source.executeTool("browser_automation__click", { ref: "e2" }), /isn't allowed: denied 3 times/);
+  await source.executeTool("browser_automation__navigate", { url: "https://b.test/" });
+  await assert.rejects(() => source.executeTool("browser_automation__click", { ref: "e2" }), /needs the user's OK first/);
+});
+
+test("#1168: a page that may need blocked ads gets a note outside its frame, and the panel an Open in my browser", async () => {
+  const { createBrowserSession } = require("../browser-automation");
+  let health = { blockedAds: 3, pageErrors: 1 };
+  const session = createBrowserSession({ page: createFakePage(), pageHealth: () => health });
+  const { source, approvalGate } = createSource({ session });
+  await source.executeTool("browser_automation__snapshot", {}).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+
+  const result = await source.executeTool("browser_automation__navigate", { url: "https://news.test/" });
+  assert.match(result, /<\/untrusted-[0-9a-f]{12}>\nNote: this site may need the 3 ad or tracker requests that were blocked; the user can open it in their own browser \(don't retry without blocking\)\.$/);
+  assert.deepEqual(source.activityLog.getActivity().blocked, { url: "https://news.test/", count: 3 });
+
+  health = { blockedAds: 0, pageErrors: 0 };
+  await source.executeTool("browser_automation__navigate", { url: "https://calm.test/" });
+  assert.equal(source.activityLog.getActivity().blocked, null);
+});
+
+test("#1155: press and drag ask for the site like a click; hover doesn't", async () => {
+  const source = await approvedSource([]);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  assert.match(await source.executeTool("browser_automation__hover", { ref: "e2" }), /URL: https:\/\/a\.test\//);
+  await assert.rejects(() => source.executeTool("browser_automation__press", { key: "Enter" }), /needs the user's OK first/);
+  await answerSite(source, "allow-once");
+  await source.executeTool("browser_automation__press", { key: "Enter" });
+  await assert.rejects(() => source.executeTool("browser_automation__drag", { from: "e1", to: "e2" }), /needs the user's OK first/);
+});
+
+test("#1156: find answers with the best matches inside the page's frame, and asks nothing", async () => {
+  const source = await approvedSource([]);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  const result = await source.executeTool("browser_automation__find", { description: "the Go button" });
+  assert.match(result, /<untrusted-[0-9a-f]{12} source="browser page">\nURL: https:\/\/a\.test\/\nTitle: Fake Page\n\nBest matches for "the Go button":\nbutton "Go" \[ref=e2\]\n<\/untrusted/);
+  assert.match(await source.executeTool("browser_automation__find", { description: "cart" }), /Nothing on the page matches "cart"\./);
+  assert.equal(source.approvalGate.listPending().length, 0);
+});
+
+test("#1160: a batch runs its steps in order and answers with the page after the last", async () => {
+  const calls = [];
+  const source = await approvedSource(calls);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  await source.executeTool("browser_automation__click", { ref: "e2" }).catch(() => {});
+  await answerSite(source, "always-allow");
+  calls.length = 0;
+
+  const result = await source.executeTool("browser_automation__batch", {
+    steps: [
+      { action: "type", ref: "e3", text: "cats", submit: true },
+      { action: "scroll", direction: "down" },
+      { action: "click", ref: "e2" },
+    ],
+  });
+  assert.match(result, /^All 3 steps went through\.\nNote: text in <untrusted-/);
+  assert.deepEqual(calls, [["fill", "aria-ref=e3", "cats"], ["press", "aria-ref=e3", "Enter"], ["wheel", 576], ["click", "aria-ref=e2"]]);
+  assert.deepEqual(source.activityLog.getActivity().log.slice(-3).map((e) => e.action), ["type", "scroll", "click"]);
+});
+
+test("#1160: a batch stops at the first failure, or at a step that needs my OK, and shows the page", async () => {
+  const calls = [];
+  const source = await approvedSource(calls);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+
+  const failed = await source.executeTool("browser_automation__batch", {
+    steps: [{ action: "scroll", direction: "down" }, { action: "hover", ref: "#bad" }, { action: "scroll", direction: "up" }],
+  });
+  assert.match(failed, /^Step 2 of 3 \(hover\) didn't go through: "#bad" isn't a ref.*\nThe batch stopped there after 1 step\.\nNote: text in <untrusted-[\s\S]*Interactive elements:/);
+  assert.deepEqual(calls, [["wheel", 576]]);
+
+  // A new site: the click asks, and nothing after it runs.
+  const asking = await source.executeTool("browser_automation__batch", {
+    steps: [{ action: "click", ref: "e2" }, { action: "type", ref: "e3", text: "x" }],
+  });
+  assert.match(asking, /^Step 1 of 2 \(click\) didn't go through: clicking or typing on a\.test needs the user's OK first/);
+  assert.equal(source.approvalGate.listPending().length, 1);
+  assert.deepEqual(calls, [["wheel", 576]]);
+});
+
+test("#1160: a batch has one to five steps and never hands over or nests", async () => {
+  const source = await approvedSource([]);
+  await assert.rejects(() => source.executeTool("browser_automation__batch", { steps: [] }), /1 to 5 steps/);
+  await assert.rejects(
+    () => source.executeTool("browser_automation__batch", { steps: Array(6).fill({ action: "snapshot" }) }),
+    /1 to 5 steps/,
+  );
+  assert.match(
+    await source.executeTool("browser_automation__batch", { steps: [{ action: "hand_over", reason: "x" }] }),
+    /^Step 1 of 1 \(hand_over\) didn't go through: "hand_over" isn't a step a batch can take/,
+  );
+  assert.match(
+    await source.executeTool("browser_automation__batch", { steps: [{ action: "batch", steps: [] }] }),
+    /"batch" isn't a step/,
+  );
 });

@@ -60,7 +60,9 @@ const BUILTIN_TIERS = {
   speech__remove_word: "read",
   speech__list_words: "read",
   browser_automation__snapshot: "read",
+  browser_automation__find: "read", // #1156: searches the page she's on
   browser_automation__scroll: "read",
+  browser_automation__hover: "read", // #1155: only moves the mouse
   browser_automation__hand_over: "read", // #1139: only asks me, in the Browser panel
   coding__propose_edit: "read",
   reminder__set: "read",
@@ -102,6 +104,9 @@ const BUILTIN_TIERS = {
   browser_automation__type: "network",
   browser_automation__select: "network",
   browser_automation__back: "network",
+  browser_automation__press: "network",
+  browser_automation__drag: "network",
+  browser_automation__batch: "network", // #1160: each step still asks for its site
 };
 
 // Built-ins that already ask through the approval gate themselves
@@ -120,10 +125,15 @@ const SELF_GATED = new Set([
   "browser_automation__click",
   "browser_automation__type",
   "browser_automation__snapshot",
+  "browser_automation__find",
   "browser_automation__select",
   "browser_automation__scroll",
   "browser_automation__back",
   "browser_automation__hand_over",
+  "browser_automation__hover",
+  "browser_automation__press",
+  "browser_automation__drag",
+  "browser_automation__batch",
 ]);
 
 // Once a turn has taken in outside content (a web page, search or wiki

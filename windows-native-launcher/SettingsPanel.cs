@@ -40,6 +40,8 @@ internal sealed class SettingsPanel : UserControl
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
     private readonly ComboBox importedSkillUseBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly ListView approvalsList = new();
+    // #1154: remembered always/never answers, with Forget.
+    private readonly ListView rememberedList = new() { AccessibleName = "Remembered answers" };
     // #669: index-aligned with ToolApprovalModes below.
     private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private static readonly string[] ToolApprovalModes = { "smart", "ask", "off" };
@@ -187,6 +189,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
         await RefreshApprovalsAsync();
+        await RefreshRememberedAsync();
         await RefreshToolApprovalModeAsync();
         await RefreshVoiceTabAsync();
         await (refreshSpeechWords?.Invoke() ?? Task.CompletedTask);
@@ -1091,10 +1094,13 @@ internal sealed class SettingsPanel : UserControl
         var sessionButton = new Button { Text = "Allow for session", AutoSize = true };
         var alwaysAllowButton = new Button { Text = "Always allow" };
         var denyButton = new Button { Text = "Deny" };
+        // #1154: a deny that's remembered (e.g. never act on this site).
+        var neverButton = new Button { Text = "Never" };
         DarkTheme.ApplyButton(allowButton);
         DarkTheme.ApplyButton(sessionButton);
         DarkTheme.ApplyButton(alwaysAllowButton);
         DarkTheme.ApplyButton(denyButton);
+        DarkTheme.ApplyButton(neverButton);
 
         // All four share one guard -- a decision resolves the request
         // server-side, so a second click (this button or a different
@@ -1106,6 +1112,7 @@ internal sealed class SettingsPanel : UserControl
             sessionButton.Enabled = false;
             alwaysAllowButton.Enabled = false;
             denyButton.Enabled = false;
+            neverButton.Enabled = false;
             try
             {
                 await DecideSelectedApprovalAsync(decision);
@@ -1118,6 +1125,7 @@ internal sealed class SettingsPanel : UserControl
                     sessionButton.Enabled = true;
                     alwaysAllowButton.Enabled = true;
                     denyButton.Enabled = true;
+                    neverButton.Enabled = true;
                 }
             }
         }
@@ -1125,10 +1133,26 @@ internal sealed class SettingsPanel : UserControl
         sessionButton.Click += async (_, _) => await DecideAsync("allow-session");
         alwaysAllowButton.Click += async (_, _) => await DecideAsync("always-allow");
         denyButton.Click += async (_, _) => await DecideAsync("deny");
+        neverButton.Click += async (_, _) => await DecideAsync("never");
         buttonRow.Controls.Add(allowButton);
         buttonRow.Controls.Add(sessionButton);
         buttonRow.Controls.Add(alwaysAllowButton);
         buttonRow.Controls.Add(denyButton);
+        buttonRow.Controls.Add(neverButton);
+
+        rememberedList.Dock = DockStyle.Fill;
+        rememberedList.View = View.Details;
+        rememberedList.FullRowSelect = true;
+        rememberedList.Columns.Add("Remembered", 300);
+        rememberedList.Columns.Add("Answer", 80);
+        DarkTheme.ApplyListView(rememberedList);
+        var forgetButton = new Button { Text = "Forget", Dock = DockStyle.Bottom, AccessibleName = "Forget: ask again next time" };
+        DarkTheme.ApplyButton(forgetButton);
+        forgetButton.Click += async (_, _) => await ForgetSelectedAsync();
+        var rememberedPanel = new Panel { Dock = DockStyle.Bottom, Height = 150, BackColor = DarkTheme.Background };
+        rememberedPanel.Controls.Add(rememberedList);
+        rememberedPanel.Controls.Add(forgetButton);
+        rememberedPanel.Controls.Add(new Label { Text = "Remembered answers (always / never)", Dock = DockStyle.Top, Height = 20, ForeColor = DarkTheme.Muted });
 
         toolApprovalModeCombo.Items.AddRange(new object[]
         {
@@ -1150,8 +1174,60 @@ internal sealed class SettingsPanel : UserControl
         var page = new TabPage("Approvals");
         page.Controls.Add(approvalsList);
         page.Controls.Add(buttonRow);
+        page.Controls.Add(rememberedPanel);
         page.Controls.Add(modePanel);
         return page;
+    }
+
+    internal async Task RefreshRememberedAsync()
+    {
+        IReadOnlyList<ManaRememberedApproval> remembered;
+        try
+        {
+            remembered = await backendClient.GetRememberedApprovalsAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load remembered approvals. {ex.Message}");
+            if (!IsDisposed)
+            {
+                ShowLoadFailure(rememberedList, ex.Message);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        rememberedList.Items.Clear();
+        foreach (var entry in remembered)
+        {
+            var item = new ListViewItem(entry.Label) { Tag = entry.Key };
+            item.SubItems.Add(entry.Answer == "never" ? "Never" : "Always");
+            rememberedList.Items.Add(item);
+        }
+    }
+
+    private async Task ForgetSelectedAsync()
+    {
+        if (rememberedList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var key = (string)rememberedList.SelectedItems[0].Tag!;
+        try
+        {
+            await backendClient.ForgetApprovalAsync(key);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to forget '{key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshRememberedAsync();
+        }
     }
 
     private async Task RefreshToolApprovalModeAsync()
@@ -1225,6 +1301,7 @@ internal sealed class SettingsPanel : UserControl
         if (!IsDisposed)
         {
             await RefreshApprovalsAsync();
+            await RefreshRememberedAsync();
         }
     }
 
