@@ -340,21 +340,24 @@ internal static class GlassSurface
         g.Clip = clip;
     }
 
-    // A glass button in the Mana preset, painted over whatever the theme
-    // drew; other presets keep their own look. Call before any Paint handler
-    // that draws on top (an icon).
-    public static void MakeGlassButton(ButtonBase button)
+    // A glass button in the Mana preset (gloss: the mockup's glossy accent
+    // one, for Send), painted over whatever the theme drew; other presets
+    // keep their own look. Call before any Paint handler that draws on top
+    // (an icon). A checked toggle (CheckBox) gets the mockup's lavender "on".
+    public static void MakeGlassButton(ButtonBase button, bool gloss = false)
     {
         button.Paint += (_, e) =>
         {
             if (DarkTheme.IsGlass)
             {
-                PaintGlassButton(e.Graphics, button);
+                PaintGlassButton(e.Graphics, button, gloss);
             }
         };
     }
 
-    private static void PaintGlassButton(Graphics g, ButtonBase button)
+    private static readonly Color GlassOn = Color.FromArgb(217, 238, 231, 248);
+
+    private static void PaintGlassButton(Graphics g, ButtonBase button, bool gloss)
     {
         var bounds = button.ClientRectangle;
         if (bounds.Width <= 0 || bounds.Height <= 0)
@@ -364,15 +367,42 @@ internal static class GlassSurface
         PaintGlowBehind(g, button, bounds);
         var hot = button.Enabled && bounds.Contains(button.PointToClient(Control.MousePosition));
         var down = hot && Control.MouseButtons == MouseButtons.Left;
-        using (var fill = new SolidBrush(down ? Color.FromArgb(215, 255, 255, 255) : hot ? GlassHover : Color.FromArgb(133, 255, 255, 255)))
+        Color ink;
+        if (gloss)
         {
+            // .gloss: #7e74cb -> #6a5fb8 (55%) -> #6258ad, a bright inner top edge.
+            using var fill = new LinearGradientBrush(bounds, Color.Black, Color.Black, LinearGradientMode.Vertical)
+            {
+                InterpolationColors = new ColorBlend
+                {
+                    Colors = new[] { Color.FromArgb(0x7e, 0x74, 0xcb), Color.FromArgb(0x6a, 0x5f, 0xb8), Color.FromArgb(0x62, 0x58, 0xad) },
+                    Positions = new[] { 0f, 0.55f, 1f },
+                },
+            };
             g.FillRectangle(fill, bounds);
+            if (hot)
+            {
+                using var tint = new SolidBrush(down ? Color.FromArgb(36, 0, 0, 0) : Color.FromArgb(28, 255, 255, 255));
+                g.FillRectangle(tint, bounds);
+            }
+            using var edge = new Pen(Color.FromArgb(89, 255, 255, 255));
+            g.DrawLine(edge, bounds.X, bounds.Y, bounds.Right - 1, bounds.Y);
+            ink = Color.White;
         }
-        PaintGlassEdges(g, bounds, null);
+        else
+        {
+            var on = button is CheckBox { Checked: true };
+            using (var fill = new SolidBrush(on ? GlassOn : down ? Color.FromArgb(215, 255, 255, 255) : hot ? GlassHover : Color.FromArgb(133, 255, 255, 255)))
+            {
+                g.FillRectangle(fill, bounds);
+            }
+            PaintGlassEdges(g, bounds, null);
+            ink = on ? DarkTheme.Accent : DarkTheme.Text;
+        }
         if (button.Text.Length > 0)
         {
             var left = button.TextAlign is ContentAlignment.MiddleLeft or ContentAlignment.TopLeft or ContentAlignment.BottomLeft;
-            TextRenderer.DrawText(g, button.Text, button.Font, Rectangle.Inflate(bounds, -12, 0), button.Enabled ? DarkTheme.Text : DarkTheme.Muted,
+            TextRenderer.DrawText(g, button.Text, button.Font, Rectangle.Inflate(bounds, -12, 0), button.Enabled ? ink : DarkTheme.Muted,
                 TextFormatFlags.VerticalCenter | (left ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter) | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
         if (button.Focused && ShowsFocusCues(button))
