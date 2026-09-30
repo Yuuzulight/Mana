@@ -163,7 +163,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #899: above her visible top, not the top of her (framed, bigger) window.
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null);
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
-        captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
+        captionOverlay.Suppressed = !settings.CaptionsShown();
         chatBubbles.BubbleClicked += text =>
         {
             ShowSessionList();
@@ -292,7 +292,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.BalloonTipClicked += (_, _) => balloonClicked?.Invoke();
         sessionListForm.VisibleChanged += (_, _) => SyncAvatarWithChat();
         sessionListForm.Resize += (_, _) => SyncAvatarWithChat(); // minimized or restored
-        avatarOverlay.Clicked += voiceLoop.Wake; // #662
+        // #662: a click wakes her -- but never turns listening back on after
+        // I switched it off (the chat window's mic button still does).
+        avatarOverlay.Clicked += () =>
+        {
+            if (voiceLoop.IsListening)
+            {
+                voiceLoop.Wake();
+            }
+        };
         trayNotifications.Start();
         visionCaptureClient.Start();
         // #991: node-bot's own /restart.
@@ -452,12 +460,21 @@ internal sealed class ManaApplicationContext : ApplicationContext
         bubblesItem.Click += (_, _) =>
         {
             chatBubbles.BubblesOn = bubblesItem.Checked;
-            captionOverlay.Suppressed = bubblesItem.Checked; // #701
             var latest = ManaSettingsStore.Load();
             latest.ChatBubbles = bubblesItem.Checked;
+            latest.Captions ??= !captionOverlay.Suppressed; // pin what's showing now
             latest.Save();
         };
         menu.Items.Add(bubblesItem);
+        var captionsItem = new ToolStripMenuItem("Captions under Mana") { CheckOnClick = true, Checked = !captionOverlay.Suppressed };
+        captionsItem.Click += (_, _) =>
+        {
+            captionOverlay.Suppressed = !captionsItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.Captions = captionsItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(captionsItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -611,6 +628,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
+            chatBubbles.GameRunning = gamingModeActive;
         }
         catch
         {

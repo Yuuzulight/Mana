@@ -107,6 +107,12 @@ internal sealed class ManaSettingsStore
     // chat window isn't in view (tray menu); off by default.
     public bool ChatBubbles { get; set; }
 
+    // The caption bar under the avatar (tray menu), independent of the
+    // bubbles. Null = saved before this toggle, when bubbles on meant no
+    // captions (#701), so CaptionsShown keeps that until it's changed.
+    public bool? Captions { get; set; }
+    public bool CaptionsShown() => Captions ?? !ChatBubbles;
+
     // #684: Electron's "minimized Mana" -- the avatar steps aside while the
     // chat window is open and comes back when it's closed or minimized.
     // Off keeps her always showing. Tray menu.

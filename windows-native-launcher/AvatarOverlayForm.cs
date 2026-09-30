@@ -83,6 +83,7 @@ internal sealed class AvatarOverlayForm : Form
     private CubismModel? cubismModel;
     private CubismRenderer? cubismRenderer;
     private System.Windows.Forms.Timer? renderTimer;
+    private readonly int fpsCap = ReadIntEnv("MANA_AVATAR_FPS", 0); // #683, Electron's knob
     private readonly Stopwatch renderClock = Stopwatch.StartNew();
     private long lastRenderTickMs;
     private float smoothedMouthOpen;
@@ -234,12 +235,9 @@ internal sealed class AvatarOverlayForm : Form
         }
         if (cubismModel is not null && cubismRenderer is not null)
         {
-            // ~60fps: WM_TIMER fires on the ~15.6ms system tick, so 15
-            // lands on every tick (16 would round up to every other one).
-            // MANA_AVATAR_FPS (#683, Electron's knob) can lower that.
-            var fps = ReadIntEnv("MANA_AVATAR_FPS", 0);
+            // RenderFrame re-paces it every tick (RenderIntervalMs).
             var (model, renderer) = (cubismModel, cubismRenderer);
-            renderTimer = new System.Windows.Forms.Timer { Interval = fps > 0 ? Math.Max(15, 1000 / fps) : 15 };
+            renderTimer = new System.Windows.Forms.Timer { Interval = RenderIntervalMs(gameRunning, speaking: false, fpsCap) };
             renderTimer.Tick += (_, _) => RenderFrame(model, renderer);
         }
 
@@ -555,6 +553,11 @@ internal sealed class AvatarOverlayForm : Form
         // doing; Dreaming slowly closes her eyes, Done nods once.
         var shown = CurrentState;
         var speaking = AvatarStateArbiter.IsSpeech(shown);
+        var interval = RenderIntervalMs(gameRunning, speaking, fpsCap);
+        if (renderTimer is { } timer && timer.Interval != interval)
+        {
+            timer.Interval = interval;
+        }
         // Q34: a click gets a quick attentive look -- eyes straight to you
         // (switching to Attentive re-picks the gaze at once) and a head tilt.
         var sinceClick = nowSeconds - attentiveStartedAt;
@@ -669,6 +672,17 @@ internal sealed class AvatarOverlayForm : Form
             mirror = value;
             UpdateRenderTimer();
         }
+    }
+
+    // WM_TIMER fires on the ~15.6ms system tick, so intervals land on whole
+    // ticks: 15 is every tick (~64fps; 16 would round up to every other
+    // one), 31 every 2nd (~32fps), 46 every 3rd (~21fps). Full rate only
+    // while she speaks, ~30 at rest, ~20 while a game runs;
+    // MANA_AVATAR_FPS can only lower it.
+    internal static int RenderIntervalMs(bool gameRunning, bool speaking, int fpsCap)
+    {
+        var interval = gameRunning ? 46 : speaking ? 15 : 31;
+        return fpsCap > 0 ? Math.Max(interval, 1000 / fpsCap) : interval;
     }
 
     private void UpdateRenderTimer()
@@ -816,6 +830,7 @@ internal sealed class AvatarOverlayForm : Form
         {
             return;
         }
+        rescanVisibleTop = true; // idle and talking PNGs may differ
         // Framed like the Live2D model (#899); whole-body is a centred fit,
         // like the old PictureBox's Zoom.
         var width = Math.Max(1, ClientSize.Width);
@@ -863,15 +878,20 @@ internal sealed class AvatarOverlayForm : Form
             }
             previousBitmap = SelectObject(memoryDc, dibBitmap);
             dibSize = size;
+            rescanVisibleTop = true;
         }
 
         using (var pixmap = frame.PeekPixels())
         {
             pixmap.ReadPixels(new SKImageInfo(size.Width, size.Height, SKColorType.Bgra8888, SKAlphaType.Premul), dibBits, size.Width * 4);
         }
-        unsafe
+        if (rescanVisibleTop)
         {
-            visibleTop = FirstOpaqueRow(new ReadOnlySpan<byte>((void*)dibBits, size.Width * size.Height * 4), size.Width, size.Height);
+            rescanVisibleTop = false;
+            unsafe
+            {
+                visibleTop = FirstOpaqueRow(new ReadOnlySpan<byte>((void*)dibBits, size.Width * size.Height * 4), size.Width, size.Height);
+            }
         }
 
         const byte acSrcOver = 0;
@@ -1164,6 +1184,7 @@ internal sealed class AvatarOverlayForm : Form
     public void SetFraming(string? framing, float? scale)
     {
         var size = Frame(framing, scale);
+        rescanVisibleTop = true;
         var settings = ManaSettingsStore.Load();
         if (settings.AvatarLeft is null || settings.AvatarTop is null)
         {
@@ -1201,7 +1222,9 @@ internal sealed class AvatarOverlayForm : Form
     // #899: the first row of the last frame with any of her in it, so
     // captions sit over her head rather than the empty top of the window.
     // Written by Present (UI thread); read like Bounds, a plain field read.
+    // Only rescanned when the size, framing or picture changes, not every frame.
     private int visibleTop;
+    private bool rescanVisibleTop = true;
     public Rectangle VisibleBounds => VisiblePart(Bounds, visibleTop);
 
     internal static Rectangle VisiblePart(Rectangle bounds, int top) =>
