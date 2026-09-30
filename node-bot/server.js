@@ -697,17 +697,22 @@ const pronunciationLexiconStore = createPronunciationLexiconStore({});
 // the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
 const kokoroRuntime = createKokoroRuntime({ env: process.env });
 
-// Issue #914: the active character (Mana by default). Created before
-// ttsRuntime, which speaks in her voice; the launcher hears of each switch
-// on /ws/tray so it can load her Live2D model.
+// Issue #914: the active character (Mana by default, remembered across
+// restarts; in memory under tests). Created before ttsRuntime, which speaks
+// in her voice; the launcher hears of each switch on /ws/tray, and of the
+// current one when it connects, so it can load her Live2D model.
+const characterEvent = (character) => ({
+  type: "character",
+  id: character.id,
+  title: character.name,
+  model: character.live2dModel,
+});
 const characterStore = createCharacterStore({
-  onSwitch: (character) =>
-    notifyTray({
-      type: "character",
-      id: character.id,
-      title: character.name,
-      model: character.live2dModel,
-    }),
+  activeFilePath:
+    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : path.join(__dirname, "data", "active-character.json"),
+  onSwitch: (character) => notifyTray(characterEvent(character)),
 });
 
 const ttsRuntime = createTtsRuntime({
@@ -5998,7 +6003,11 @@ async function startServer() {
   // attach tray websocket server for live tray notifications
   try {
     const trayServer = require("./tray-server");
-    trayServer.registerTrayServer(server, { path: "/ws/tray", requestGuard });
+    trayServer.registerTrayServer(server, {
+      path: "/ws/tray",
+      requestGuard,
+      greeting: () => characterEvent(characterStore.active()),
+    });
     // make broadcast available via app locals for other modules
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
