@@ -1090,6 +1090,30 @@ internal sealed class ManaBackendClient
             ?? new ManaSpeechVocabulary();
     }
 
+    // #907: the daily briefing's settings (node-bot's GET/POST /briefing).
+    public async Task<ManaBriefingSettings> GetBriefingAsync()
+    {
+        using var response = await http.GetAsync("/briefing");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaBriefingSettings>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaBriefingSettings();
+    }
+
+    // A refused change (a bad time) throws with node-bot's error.
+    public async Task<ManaBriefingSettings> UpdateBriefingAsync(ManaBriefingSettings settings)
+    {
+        var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        using var content = new StringContent(JsonSerializer.Serialize(settings, web), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/briefing", content);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(document.RootElement.TryGetProperty("error", out var error) ? error.GetString() : $"HTTP {(int)response.StatusCode}");
+        }
+        return document.RootElement.Deserialize<ManaBriefingSettings>(web) ?? new ManaBriefingSettings();
+    }
+
     // #581: touch=false matches the editor's own "opening to browse/edit
     // isn't the same as Mana actually reaching for it" contract
     // (skills-capability.js's own comment) -- without it, opening a skill
@@ -2594,6 +2618,18 @@ internal sealed class ManaMemoryFactWindow
     public string Text { get; init; } = "";
     public string? ValidFrom { get; init; }
     public string? InvalidatedAt { get; init; }
+}
+
+internal sealed class ManaBriefingSettings
+{
+    public bool Enabled { get; set; } = true;
+    // HH:MM; it goes out the first time I'm at the PC at or after this.
+    public string Time { get; set; } = "08:00";
+    // Of "memory", "reminders", "news", "games", "calendar".
+    public List<string> Sections { get; set; } = new();
+    // Comma-separated news topics, and games for patch/maintenance notices.
+    public string Topics { get; set; } = "";
+    public string Games { get; set; } = "";
 }
 
 internal sealed class ManaSpeechVocabulary
