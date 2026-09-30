@@ -232,11 +232,15 @@ function createLlamaBuildManager(options = {}) {
       throw new Error(`Download failed: HTTP ${response.status} for ${url}`);
     }
     const hash = crypto.createHash("sha256");
+    // #1124: bytes so far, for the Background tasks panel's progress bar.
+    const progress = { done: 0, total: Number(response.headers?.get?.("content-length")) || null, since: Date.now() };
+    if (job) job.download = progress;
     await pipeline(
       Readable.fromWeb(response.body),
       async function* (source) {
         for await (const chunk of source) {
           hash.update(chunk);
+          progress.done += chunk.length;
           yield chunk;
         }
       },
@@ -261,6 +265,7 @@ function createLlamaBuildManager(options = {}) {
           throw new Error(`Checksum mismatch for ${asset.name}: expected ${asset.digest}, got ${actual}. Nothing was installed.`);
         }
         zips.push(zip);
+        job.download = null;
       }
       for (const zip of zips) {
         job.step = `Extracting ${path.basename(zip)}`;

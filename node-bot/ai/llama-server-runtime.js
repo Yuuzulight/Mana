@@ -144,6 +144,8 @@ function createLlamaServerRuntime(options = {}) {
     mmproj: null,
     port: null,
     starting: null,
+    // #1124: { model, since } while `starting` is loading it.
+    loading: null,
     // Settles once the last stopped child has exited (true) or was still
     // running after the stop bound (false); startServer() waits on it.
     stopping: Promise.resolve(true),
@@ -966,6 +968,7 @@ function createLlamaServerRuntime(options = {}) {
       stop(); // startServer() waits for the exit
     }
 
+    state.loading = { model, since: nowMs() };
     state.starting = startServer(model, mmproj, profile);
     try {
       await state.starting;
@@ -1002,6 +1005,7 @@ function createLlamaServerRuntime(options = {}) {
       throw e;
     } finally {
       state.starting = null;
+      state.loading = null;
     }
   }
 
@@ -1757,6 +1761,8 @@ function createLlamaServerRuntime(options = {}) {
       // mid-reply.
       thinking,
       goal = null,
+      // #1124: (round, roundLimit) at the start of each round.
+      onRound = null,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") {
@@ -1921,6 +1927,7 @@ function createLlamaServerRuntime(options = {}) {
 
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
+      onRound?.(round, roundLimit);
       let json;
       try {
         json = await complete(true);
@@ -2262,6 +2269,7 @@ function createLlamaServerRuntime(options = {}) {
       gamingModel: Boolean(state.gamingModel && state.model === env.MANA_GAMING_LLAMA_MODEL),
       port: state.port,
       lastSwapMs: state.lastSwapMs,
+      loading: state.loading,
     };
   }
 

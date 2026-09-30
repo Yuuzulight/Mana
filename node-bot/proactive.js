@@ -98,7 +98,12 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     return held.includes(candidate) ? "held" : "dropped";
   }
 
-  return { offer, flush, persistTo };
+  // #1124: what's waiting, for the launcher's Background tasks panel.
+  function listHeld() {
+    return held.map(({ reason, payload, urgent, expiresAt }) => ({ reason, title: payload.title, text: payload.text, urgent, expiresAt }));
+  }
+
+  return { offer, flush, persistTo, listHeld };
 }
 
 // The process-wide instance; server.js hands it the gaming watch, its file
@@ -133,5 +138,6 @@ module.exports = {
   offer: proactive.offer,
   flush: proactive.flush,
   persistTo: proactive.persistTo,
+  listHeld: proactive.listHeld,
   DAILY_BUDGET,
 };

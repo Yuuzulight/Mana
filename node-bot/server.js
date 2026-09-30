@@ -127,8 +127,10 @@ const { presetsCapability } = require("./capabilities/presets-capability");
 const { personalityCapability } = require("./capabilities/personality-capability");
 const { moodCapability } = require("./capabilities/mood-capability");
 const {
+  createResearchJobStore,
   deepResearchCapability,
 } = require("./capabilities/deep-research-capability");
+const { backgroundTasksCapability } = require("./capabilities/background-tasks-capability");
 const {
   backgroundMemoryCapability,
 } = require("./capabilities/background-memory-capability");
@@ -1142,6 +1144,9 @@ const browserAutomationToolSource = createBrowserAutomationToolSource({
 let BACKGROUND_MEMORY_BLOCK = "";
 let BACKGROUND_MEMORY_LOCK = false;
 let BACKGROUND_MEMORY_META = { files: {} };
+// #1124: Dream Mode's compactor for the Background tasks panel -- when its
+// refresh timer started, its interval, and since when a run is going.
+const DREAM_MODE = { everyMs: 0, scheduledAt: null, runningSince: null };
 // MANA_ACP_MEMORY_DIR moves these with the rest of memory (acp-memory-store).
 const ACP_MEMORY_DIR = process.env.MANA_ACP_MEMORY_DIR || path.join(__dirname, "data", "acp-memory");
 const BACKGROUND_META_PATH = path.join(ACP_MEMORY_DIR, "background_meta.json");
@@ -1533,6 +1538,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       async function runBackgroundCompactor() {
         if (summarizerRunning) return;
         summarizerRunning = true;
+        DREAM_MODE.runningSince = Date.now();
         try {
           const res = await asyncLoadBackgroundMemory();
           const summaries = res && res.summaries ? res.summaries : [];
@@ -1618,6 +1624,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
           );
         } finally {
           summarizerRunning = false;
+          DREAM_MODE.runningSince = null;
         }
       }
 
@@ -1983,6 +1990,7 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       if (refreshMs > 0) {
         // The compactor reloads background memory itself, so one call per tick
         // is enough; reviewing runs on its own (slower) schedule below.
+        Object.assign(DREAM_MODE, { everyMs: refreshMs, scheduledAt: Date.now() });
         setInterval(() => {
           if (backgroundJobsPausedForGaming()) return;
           runBackgroundCompactor().catch((err) =>
@@ -2482,6 +2490,7 @@ function registerRoutes(app, upload, deps = {}) {
     toolCallLogCapability,
     hooksCapability,
     pronunciationLexiconCapability,
+    backgroundTasksCapability,
     // Yellowlight enhancements (#496-#489) — optional plugins wired into capability system
     cloudSyncCapability,
     scheduledExportCapability,
@@ -2567,8 +2576,31 @@ function registerRoutes(app, upload, deps = {}) {
   const agentActivity = createAgentActivity();
   // #675 Q12b: deep thinking Mana turned on herself, per session.
   const deepThinking = createDeepThinkingState();
+  // Deep research's job list, shared with the Background tasks panel.
+  const researchJobs = createResearchJobStore();
+  const isGamingNow = deps.isGaming || gamingWatch.isGaming;
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
+    jobs: researchJobs,
+    // #1124: what GET /background-tasks lists. selfWork is built further
+    // down, hence the getter.
+    backgroundTaskSources: {
+      cron: () => cronSchedulerPlugin.getScheduler(),
+      heartbeat: () => cronSchedulerPlugin.getHeartbeat(),
+      heartbeatEnabled: () => isPluginEnabled(cronSchedulerPlugin, activePluginSettingsStore),
+      isGaming: isGamingNow,
+      proactive: require("./proactive"),
+      briefing,
+      dreamMode: () => DREAM_MODE,
+      embeddings: { status: () => require("./tools/embedding-worker").status() },
+      memoryVault: memoryVaultStatus,
+      researchJobs,
+      selfWork: () => selfWork,
+      agentActivity,
+      llama: llamaServerRuntime,
+      llamaBuilds: deps.llamaBuilds || llamaBuilds,
+      fishWarmup: () => ttsRuntime.getFishWarmupStatus(),
+    },
     // Only cron-scheduler's agent-job executor uses this today -- every
     // other capability builds its own scoped model-reply function above.
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
@@ -2580,7 +2612,7 @@ function registerRoutes(app, upload, deps = {}) {
     isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest,
     approvalGate: activeApprovalGate,
     // #699: heartbeat checks pause while gaming and snapshot their writes.
-    isGaming: deps.isGaming || gamingWatch.isGaming,
+    isGaming: isGamingNow,
     snapshotStore,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
