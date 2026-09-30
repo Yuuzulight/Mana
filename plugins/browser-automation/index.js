@@ -35,11 +35,16 @@ const PROFILE_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "browse
 const LAUNCH_ARGS = ["--disable-gpu", "--renderer-process-limit=1"];
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 const IDLE_CLOSE_MS = 5 * 60 * 1000;
+// #1159: tabs she may have open at once (MANA_BROWSER_MAX_TABS, 1 to 5).
+const DEFAULT_MAX_TABS = 3;
+const SESSION_METHODS = ["navigate", "click", "type", "select", "scroll", "hover", "press", "drag", "back", "find", "snapshot"];
 const CHECK_EVERY_MS = 30 * 1000;
 
 let session = null;
 let context = null;
-let activePage = null;
+// #1159: her open tabs ([{ page, session }]) and which one she's on.
+let tabs = [];
+let current = 0;
 let starting = null;
 let closing = null;
 let checkTimer = null;
@@ -104,47 +109,130 @@ async function launch(deps, options) {
   return chromium.launchPersistentContext(PROFILE_DIR, { executablePath, args: LAUNCH_ARGS, ...options });
 }
 
+// One tab: its page, with the resource blocking and health counters, and
+// the session that reads and acts on it.
+async function setUpTab(page) {
+  const health = { blockedAds: 0, pageErrors: 0 };
+  // #1168: what the current page lost to ad blocking, and its script
+  // errors -- together they say the site may need what was blocked.
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) Object.assign(health, { blockedAds: 0, pageErrors: 0 });
+  });
+  page.on("pageerror", () => (health.pageErrors += 1));
+  // Images, video and fonts only while the rail's Browser panel is
+  // watching, for its screenshot; she reads and acts without them. Ad
+  // and tracker domains never (#1168).
+  await page.route("**/*", (route) => {
+    const request = route.request();
+    if (isAdHost(hostOf(request.url()))) {
+      health.blockedAds += 1;
+      return route.abort();
+    }
+    return BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.()
+      ? route.abort()
+      : route.continue();
+  });
+  return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }) }) };
+}
+
 async function startSession(deps) {
   const env = deps.env || process.env;
   const ctx = await launch(deps, { headless: env.MANA_BROWSER_HEADLESS !== "0" });
   // Edge went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());
-  let page;
-  const health = { blockedAds: 0, pageErrors: 0 };
+  let tab;
   try {
-    page = ctx.pages()[0] || (await ctx.newPage());
-    // #1168: what the current page lost to ad blocking, and its script
-    // errors -- together they say the site may need what was blocked.
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame()) Object.assign(health, { blockedAds: 0, pageErrors: 0 });
-    });
-    page.on("pageerror", () => (health.pageErrors += 1));
-    // Images, video and fonts only while the rail's Browser panel is
-    // watching, for its screenshot; she reads and acts without them. Ad
-    // and tracker domains never (#1168).
-    await page.route("**/*", (route) => {
-      const request = route.request();
-      if (isAdHost(hostOf(request.url()))) {
-        health.blockedAds += 1;
-        return route.abort();
-      }
-      return BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.()
-        ? route.abort()
-        : route.continue();
-    });
+    tab = await setUpTab(ctx.pages()[0] || (await ctx.newPage()));
     // #1139: after I hand back, she carries on where I left off.
-    if (resumeUrl) await page.goto(resumeUrl).catch(() => {});
+    if (resumeUrl) await tab.page.goto(resumeUrl).catch(() => {});
     resumeUrl = null;
   } catch (e) {
     await ctx.close().catch(() => {});
     throw e;
   }
   context = ctx;
-  activePage = page;
-  session = createBrowserSession({ page, pageHealth: () => ({ ...health }) });
+  tabs = [tab];
+  current = 0;
+  session = tabbedSession(deps);
   checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
   checkTimer.unref?.();
   return session;
+}
+
+const currentPage = () => tabs[current]?.page || null;
+
+// #1159: what the tools call -- every page action on the tab she's on,
+// each result listing her tabs once there's more than one, plus
+// tab({ do: "open" | "switch" | "close" }).
+function tabbedSession(deps) {
+  const env = deps.env || process.env;
+  const maxTabs = Math.min(5, Math.max(1, Math.floor(Number(env.MANA_BROWSER_MAX_TABS)) || DEFAULT_MAX_TABS));
+
+  async function withTabs(result) {
+    if (tabs.length < 2) return result;
+    const list = await Promise.all(tabs.map(async (t, i) => `${i + 1}. ${await t.page.title()} -- ${await t.page.url()}${i === current ? " (current)" : ""}`));
+    return { ...result, tabs: list };
+  }
+
+  function tabNumber(number) {
+    const n = Number(number);
+    if (!Number.isInteger(n) || n < 1 || n > tabs.length) throw new Error(`there's no tab ${number}; she has ${tabs.length}`);
+    return n - 1;
+  }
+
+  async function open(url) {
+    if (tabs.length >= maxTabs) throw new Error(`${tabs.length} tabs are open, the most she may have; close one first`);
+    // The RAM gate applies to every tab she adds.
+    const blocked = blocker(gateDeps);
+    if (blocked) throw new Error(`no new tab while ${blocked}`);
+    const tab = await setUpTab(await context.newPage());
+    try {
+      const result = await tab.session.navigate(url);
+      tabs.push(tab);
+      current = tabs.length - 1;
+      return withTabs(result);
+    } catch (e) {
+      await tab.page.close().catch(() => {});
+      throw e;
+    }
+  }
+
+  async function close(number) {
+    const i = tabNumber(number);
+    if (tabs.length === 1) throw new Error("that's her only tab");
+    const [tab] = tabs.splice(i, 1);
+    if (current > i || current === tabs.length) current -= 1;
+    await tab.page.close().catch(() => {});
+    return withTabs(await tabs[current].session.snapshot());
+  }
+
+  async function tab(args = {}) {
+    if (args.do === "open") return open(args.url);
+    if (args.do === "switch") {
+      current = tabNumber(args.number);
+      return withTabs(await tabs[current].session.snapshot());
+    }
+    if (args.do === "close") return close(args.number);
+    throw new Error('do must be "open", "switch" or "close"');
+  }
+
+  const facade = { tab, screenshot: () => tabs[current].session.screenshot(), url: () => currentPage().url() };
+  for (const name of SESSION_METHODS) {
+    facade[name] = async (...args) => withTabs(await tabs[current].session[name](...args));
+  }
+  return facade;
+}
+
+// #1159: when her task (the reply) ends, only the tab she's on stays --
+// popups a site opened by itself go too.
+async function closeExtraTabs() {
+  if (!tabs.length) return;
+  const keep = tabs[current];
+  const extra = new Set([...tabs.map((t) => t.page), ...(context?.pages?.() || [])]);
+  extra.delete(keep.page);
+  tabs = [keep];
+  current = 0;
+  await Promise.all([...extra].map((page) => page.close().catch(() => {})));
 }
 
 // #1139: Chromium can't turn a headless session visible, so Take over
@@ -156,7 +244,7 @@ async function takeOver(deps = {}, fallbackUrl = null) {
   if (takenOver || opening) return;
   opening = true;
   try {
-    let url = activePage ? await activePage.url() : null;
+    let url = currentPage() ? await currentPage().url() : null;
     if (!/^https?:/i.test(url || "")) url = /^https?:/i.test(fallbackUrl || "") ? fallbackUrl : null;
     await closeSession();
     // No viewport emulation (the page fits the window), and no "controlled
@@ -213,7 +301,8 @@ function forget() {
   clearInterval(checkTimer);
   checkTimer = null;
   context = null;
-  activePage = null;
+  tabs = [];
+  current = 0;
   session = null;
 }
 
@@ -335,6 +424,7 @@ module.exports = {
   resolveExecutablePath,
   checkSession,
   closeSession,
+  closeExtraTabs,
   takeOver,
   handBack,
   requestHandOver,

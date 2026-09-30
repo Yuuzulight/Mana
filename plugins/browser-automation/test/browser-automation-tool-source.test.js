@@ -89,6 +89,7 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
       "browser_automation__scroll",
       "browser_automation__select",
       "browser_automation__snapshot",
+      "browser_automation__tab",
       "browser_automation__type",
     ],
   );
@@ -511,4 +512,10 @@ test("#1160: a batch has one to five steps and never hands over or nests", async
     await source.executeTool("browser_automation__batch", { steps: [{ action: "batch", steps: [] }] }),
     /"batch" isn't a step/,
   );
+});
+
+test("#1159: the model sees her tabs inside the page's frame", () => {
+  const text = describeForModel({ url: "https://b.test/", title: "B", tabs: ["1. A -- https://a.test/", "2. B -- https://b.test/ (current)"], elements: [] });
+  assert.match(text, /Title: B\nTabs:\n1\. A -- https:\/\/a\.test\/\n2\. B -- https:\/\/b\.test\/ \(current\)\n\nInteractive elements:/);
+  assert.match(text, /<\/untrusted-[0-9a-f]{12}>$/);
 });

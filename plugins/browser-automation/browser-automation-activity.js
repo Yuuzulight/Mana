@@ -19,6 +19,10 @@ function describeBrowserAction(action, args) {
   if (action === "select") return `Choosing "${args?.value ?? ""}" in element ${args?.ref ?? "?"}`;
   if (action === "scroll") return `Scrolling ${args?.direction || "down"}`;
   if (action === "back") return "Going back";
+  if (action === "tab") {
+    if (args?.do === "open") return `Opening a tab at ${args?.url || "an unknown URL"}`;
+    return `${args?.do === "close" ? "Closing" : "Switching to"} tab ${args?.number ?? "?"}`;
+  }
   if (action === "hover") return `Hovering over element ${args?.ref ?? "?"}`;
   if (action === "press") return `Pressing ${args?.key ?? "?"}`;
   if (action === "drag") return `Dragging element ${args?.from ?? "?"} to ${args?.to ?? "?"}`;
