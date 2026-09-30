@@ -98,6 +98,13 @@ test("editing an existing fact's note applies it directly as a vault edit; a pin
   t.store.setFactPinned(approvals[0].payload.key, approvals[0].payload.pinned);
   t.vault.sync();
   assert.equal(parseNote(t.read("Facts/gpu.md")).header.pinned, true);
+
+  // Unpinning only takes it out of the prompt: applied directly, no ask.
+  t.write("Facts/gpu.md", t.read("Facts/gpu.md").replace("pinned: true", "pinned: false"));
+  t.vault.sync();
+  assert.equal(t.fact("gpu").pinned, undefined);
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.pinned, false);
+  assert.equal(approvals.length, 1);
 });
 
 test("a note keeps its own header lines, its line breaks and a BOM doesn't break it", () => {
