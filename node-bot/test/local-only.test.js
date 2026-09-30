@@ -57,3 +57,22 @@ test("the launcher's toggle turns local-only mode on too", () => {
   assert.equal(isLocalOnly({ MANA_LOCAL_ONLY: "1" }), true);
   assert.equal(isLocalOnly({ MANA_LOCAL_ONLY: "0", MANA_LAUNCHER_LOCAL_ONLY: "1" }), true);
 });
+
+test("bridges say they're blocked in local-only mode; a LAN Matrix homeserver still works", () => {
+  const matrix = { MANA_MATRIX_ACCESS_TOKEN: "t", MANA_MATRIX_USER_ID: "@mana:x" };
+  const cases = [
+    ["discord-bot", { MANA_DISCORD_BOT_TOKEN: "t" }, /Discord bot's connection to discord\.com/],
+    ["telegram-bridge", { MANA_TELEGRAM_BOT_TOKEN: "t" }, /Telegram bridge's connection to api\.telegram\.org/],
+    ["matrix-bridge", { ...matrix, MANA_MATRIX_HOMESERVER_URL: "https://matrix.org" }, /Matrix bridge's connection to matrix\.org/],
+  ];
+  for (const [plugin, env, reason] of cases) {
+    const { getHealth } = require(`../../plugins/${plugin}`);
+    assert.equal(getHealth({ env }).status, "configured", plugin);
+    const blocked = getHealth({ env: { ...env, MANA_LOCAL_ONLY: "1" } });
+    assert.equal(blocked.status, "unavailable", plugin);
+    assert.match(blocked.message, /^Local-only mode is on/, plugin);
+    assert.match(blocked.message, reason, plugin);
+  }
+  const lan = { ...matrix, MANA_MATRIX_HOMESERVER_URL: "http://192.168.1.5:8008", MANA_LOCAL_ONLY: "1" };
+  assert.equal(require("../../plugins/matrix-bridge").getHealth({ env: lan }).status, "configured");
+});

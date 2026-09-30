@@ -35,6 +35,12 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # #937: Folio comes from a local package folder (nuget.config). Build
+      # it from the commit the launcher pins; both repos are public.
+      - name: Pack Folio
+        shell: pwsh
+        run: ./windows-native-launcher/pack-folio.ps1
+
       - name: Build
         working-directory: ./windows-native-launcher
         shell: pwsh

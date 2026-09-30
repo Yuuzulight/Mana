@@ -72,11 +72,14 @@ cd C:\ManaAI\Mana\node-bot
 npm install
 
 cd C:\ManaAI\Mana\windows-native-launcher
+powershell -File pack-folio.ps1
 dotnet build
 dotnet run
 ```
 
-Requires the .NET 10 SDK (not just the runtime). For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md) and [docs/native_launcher_plan.md](docs/native_launcher_plan.md) for native-launcher-specific build notes. `windows-launcher` (Electron) still works and is kept as a fallback — see [Status](#status).
+Requires the .NET 10 SDK (not just the runtime) and git. `pack-folio.ps1` builds the [Folio](https://github.com/Yuuzulight/Folio) packages that draw HTML artifacts into `windows-native-launcher\folio-feed`, the local package source in `nuget.config`, from the Folio commit the launcher pins. Run it again whenever the pin changes. To bump Folio, set `FolioCommit` in `ManaNativeLauncher.csproj` to a Folio commit on main and `FolioVersion` to `0.1.0-m1.N`, where N is `git rev-list --count <commit>` in Folio; the script stops if the two don't match.
+
+For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md) and [docs/native_launcher_plan.md](docs/native_launcher_plan.md) for native-launcher-specific build notes. `windows-launcher` (Electron) still works and is kept as a fallback — see [Status](#status).
 
 ## Highlights
 

@@ -5,7 +5,9 @@ const fs = require("node:fs");
 const { createAcpAutonomousLoop } = require("./acp-autonomous-loop");
 const { createAcpBackendBridge } = require("./acp-backend-bridge");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const { isInsideRoot } = require("./acp-path-guard");
 const { createAcpTestRunner } = require("./acp-test-runner");
+const { canonical } = require("./protected-paths");
 
 const ACP_PROTOCOL_VERSION = 1;
 const AGENT_NAME = "Mana";
@@ -248,6 +250,34 @@ function createJsonRpcError(id, code, message) {
       message,
     },
   };
+}
+
+// #1003: mana/test/run's cwd must be inside the session's repo root, or in
+// a git worktree of it: a .git file pointing into root/.git/worktrees/,
+// whose entry points back. Compared by real path (#1001), like the file tools.
+function isTestCwdAllowed(cwd, root) {
+  if (isInsideRoot(cwd, root)) return true;
+  let dir;
+  try {
+    dir = fs.realpathSync.native(cwd);
+  } catch {
+    return false;
+  }
+  for (;;) {
+    const dotGit = path.join(dir, ".git");
+    if (fs.existsSync(dotGit)) {
+      try {
+        const entry = path.resolve(dir, /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, "utf8"))[1]);
+        const back = fs.readFileSync(path.join(entry, "gitdir"), "utf8").trim();
+        return isInsideRoot(entry, path.join(root, ".git", "worktrees")) &&
+          canonical(path.resolve(entry, back)) === canonical(dotGit);
+      } catch {
+        return false; // a .git folder, or not a worktree's .git file
+      }
+    }
+    if (path.dirname(dir) === dir) return false;
+    dir = path.dirname(dir);
+  }
 }
 
 function isAutonomousEnabled(env = process.env) {
@@ -539,11 +569,19 @@ function createManaAcpAgent(options = {}) {
             "autonomous mode is disabled",
           );
         }
+        const root =
+          sessions.get(message.params?.sessionId)?.cwd || workspace?.path || process.cwd();
+        const cwd = path.resolve(root, String(message.params?.cwd || "."));
+        if (!isTestCwdAllowed(cwd, root)) {
+          return createJsonRpcError(
+            message.id,
+            -32000,
+            "cwd must be inside the session's repo or one of its worktrees",
+          );
+        }
         return createJsonRpcResult(
           message.id,
-          await testRunner.run(message.params?.command, {
-            cwd: message.params?.cwd,
-          }),
+          await testRunner.run(message.params?.command, { cwd }),
         );
       }
       if (message.method === "mana/agent/run") {

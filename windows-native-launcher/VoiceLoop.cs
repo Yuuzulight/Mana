@@ -381,7 +381,7 @@ internal sealed class VoiceLoop : IDisposable
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
         wakeRearmMs = ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS"));
         speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
-        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"));
+        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"), settings.SpeakerThreshold);
         voiceprint = speakerGateMode == SpeakerGateMode.Off ? null : settings.Voiceprint;
         if (voiceprint is not null)
         {
@@ -1396,10 +1396,10 @@ internal sealed class VoiceLoop : IDisposable
         {
             Console.WriteLine($"VoiceLoop: sending {images!.Count} image(s), {images.Sum(i => i.Length) / 1024} KB.");
             chatLog?.AppendUserMessage(trimmed, images);
-            await SpeakReplyAsync(trimmed, images: images);
+            await SpeakReplyAsync(trimmed, images: images, source: "typed");
             return true;
         }
-        await DispatchCommandAsync(trimmed, wasInterruption, held: null, nested: false);
+        await DispatchCommandAsync(trimmed, wasInterruption, held: null, nested: false, typed: true);
         return true;
     }
 
@@ -1667,7 +1667,7 @@ internal sealed class VoiceLoop : IDisposable
     // from the quick-entry popup), since neither the barge-in
     // classification/hold-resume dispatch below nor the final reply cares
     // whether commandText came from STT or was typed directly.
-    private async Task DispatchCommandAsync(string commandText, bool wasInterruption, List<string>? held, bool nested)
+    private async Task DispatchCommandAsync(string commandText, bool wasInterruption, List<string>? held, bool nested, bool typed = false)
     {
         if (string.IsNullOrWhiteSpace(commandText))
         {
@@ -1703,7 +1703,7 @@ internal sealed class VoiceLoop : IDisposable
                 // classification needed since there's nothing left to
                 // resume/discard against. Mirrors windows-launcher's
                 // handleBargeInTrigger wasNested branch.
-                await SpeakReplyAsync(commandText, screenText, voice: true);
+                await SpeakReplyAsync(commandText, screenText, source: typed ? "typed" : "voice");
                 return;
             }
 
@@ -1753,7 +1753,7 @@ internal sealed class VoiceLoop : IDisposable
                         // interruption's own ProcessTurnAsync to
                         // discard/consume (the `nested` branch above);
                         // only clear it and resume when it truly completed.
-                        var answerCompleted = await SpeakReplyAsync(commandText, screenText, voice: true);
+                        var answerCompleted = await SpeakReplyAsync(commandText, screenText, source: typed ? "typed" : "voice");
                         if (answerCompleted)
                         {
                             lock (stateLock)
@@ -1777,7 +1777,7 @@ internal sealed class VoiceLoop : IDisposable
             }
         }
 
-        await SpeakReplyAsync(commandText, screenText, voice: true);
+        await SpeakReplyAsync(commandText, screenText, source: typed ? "typed" : "voice");
     }
 
     // #513: the early-exit counterpart to the dispatch at the bottom of
@@ -1818,15 +1818,13 @@ internal sealed class VoiceLoop : IDisposable
     // #661: every reply goes through here, so this is where the avatar
     // shows Thinking (until she starts speaking -- speech outranks it),
     // and the short Done beat once a reply finishes naturally.
-    // #911: voice -- a spoken turn (ProcessTurnAsync), which may run
-    // desktop actions mid-game.
-    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, bool voice = false)
+    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? source = null)
     {
         lastError = null; // #687: a new reply clears the status line's error
         avatarOverlay.SetActivity(AvatarState.Thinking, true);
         try
         {
-            var reply = SpeakReplyCoreAsync(commandText, screenText, image, images, voice);
+            var reply = SpeakReplyCoreAsync(commandText, screenText, image, images, source);
             currentReply = reply; // #665: a ducked interruption waits on this after stopping her
             var completed = await reply;
             if (completed)
@@ -1842,7 +1840,7 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
-    private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, bool voice)
+    private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, string? source)
     {
         string? reply;
         bool changed;
@@ -1853,7 +1851,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder, voice);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder, source);
             if (stopMana)
             {
                 stopManaThinking = false;
@@ -1875,6 +1873,12 @@ internal sealed class VoiceLoop : IDisposable
             // vision for an unrelated reply error on a normal text turn.
             var message = image is not null || images is { Count: > 0 } ? VisionHotkeyMessages.DescribeError(ex.Message) : ex.Message;
             Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {message}");
+            if (BackendRestart is { } restart)
+            {
+                await restart;
+                await SayReplyFailedAsync(RestartedMidReplyMessage, RestartedMidReplyMessage);
+                return false;
+            }
             lastError = $"Reply failed: {message}";
             // #666: say so instead of dropping the turn silently. The raw
             // error stays in the console; vision turns keep DescribeError's
@@ -1947,11 +1951,11 @@ internal sealed class VoiceLoop : IDisposable
 
         // One face for the whole reply (#623: the reply's own emotion tag
         // when the model gave one; the streaming path above switches per
-        // sentence instead).
+        // sentence instead). #964: the tag also paces her voice (Qwen3-TTS).
         var emotion = streamingReplyPlayer.FinalEmotion;
         var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
 
-        var next = backendClient.SynthesizeAsync(chunks[0]);
+        var next = backendClient.SynthesizeAsync(chunks[0], emotion);
         for (var i = 0; i < chunks.Count; i++)
         {
             byte[] chunkWav;
@@ -1970,7 +1974,7 @@ internal sealed class VoiceLoop : IDisposable
                 ReturnToIdle();
                 return false;
             }
-            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1]) : Task.FromResult(Array.Empty<byte>());
+            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1], emotion) : Task.FromResult(Array.Empty<byte>());
 
             bool completedNaturally;
             var cutOff = false;
@@ -2069,6 +2073,14 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
+    internal const string RestartedMidReplyMessage = "Sorry, I restarted in the middle of that. Could you ask me again?";
+
+    // #991: set while the launcher restarts node-bot. A reply the restart
+    // cut off waits for it, then says so instead of the generic failure.
+    public Task? BackendRestart { get; set; }
+
+    // #964: said a little slower and lower, like an apology.
+    private const string ReplyFailedEmotion = "sad";
 
     // #905: a line nobody just asked for (a reminder firing), said through
     // the same player as replies, with SayReplyFailedAsync's mode handling.
@@ -2118,15 +2130,15 @@ internal sealed class VoiceLoop : IDisposable
     // #666: a failed reply is shown in the chat and spoken once, with the
     // same mode handling as the non-streamed fallback above. If TTS is what
     // failed, the chat line is all the user gets -- still not silence.
-    private async Task SayReplyFailedAsync(string chatText)
+    private async Task SayReplyFailedAsync(string chatText, string spoken = ReplyFailedMessage)
     {
         chatLog?.AppendReplySentence(chatText);
         try
         {
-            var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage);
+            var wav = await backendClient.SynthesizeAsync(spoken, ReplyFailedEmotion);
             OnTalkingStateChanged(true);
-            captions?.ShowSentence(ReplyFailedMessage);
-            bubbles?.ShowSentence(ReplyFailedMessage);
+            captions?.ShowSentence(spoken);
+            bubbles?.ShowSentence(spoken);
             var completedNaturally = await audioPlayer.PlayAsync(wav);
             OnTalkingStateChanged(false);
             if (!completedNaturally)
