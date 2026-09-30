@@ -14,7 +14,8 @@
 //      "handoff": "Aoi here, taking over from {previous}." }]
 //
 // An entry with a built-in id only overrides the fields it sets. Relative
-// paths are relative to the file's folder. The active character is not
+// paths are relative to the file's folder; voice clips must be under it
+// (tools/qwen3tts_service.py refuses any other file). The active character is not
 // persisted: a restart brings Mana back.
 //
 // Facts about the user stay shared; each character's mood and personality

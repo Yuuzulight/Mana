@@ -28,6 +28,9 @@ MODEL_DIR = os.environ.get("QWEN3_TTS_MODEL_DIR") or os.path.join(
 )
 REF_AUDIO = os.environ.get("QWEN3_TTS_REF_AUDIO") or os.environ.get("FISH_TTS_REF_AUDIO", "")
 REF_TEXT = os.environ.get("QWEN3_TTS_REF_TEXT") or os.environ.get("FISH_TTS_REF_TEXT", "")
+# #914: other characters' clips live under node-bot/data (beside
+# characters.json), so a request can't point the service at any other file.
+VOICES_DIR = os.path.realpath(os.path.join(HERE, "..", "node-bot", "data"))
 # The same setting node-bot calls; only its port is used here, the bind is
 # always loopback.
 PORT = urlsplit(os.environ.get("QWEN3_TTS_URL") or "http://127.0.0.1:5012").port or 5012
@@ -83,8 +86,10 @@ def synthesize_wav(tts, text, language, ref_audio=None, ref_text=None):
         raise ValueError("No text provided")
     if bool(ref_audio) != bool(ref_text):
         raise ValueError("ref_audio and ref_text go together")
-    if ref_audio and not os.path.isfile(ref_audio):
-        raise ValueError(f"Reference clip not found: {ref_audio}")
+    if ref_audio:
+        ref_audio = os.path.realpath(ref_audio)
+        if not ref_audio.startswith(VOICES_DIR + os.sep) or not os.path.isfile(ref_audio):
+            raise ValueError(f"Reference clip must be a file under {VOICES_DIR}")
     with lock:
         try:
             wavs, sample_rate = tts.generate_voice_clone(

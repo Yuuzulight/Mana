@@ -58,7 +58,10 @@ def run():
         assert len(fake.calls) == 3
 
         # #914: another character's voice, per request, on the same model.
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as clip:
+        outside = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        outside.close()
+        svc.VOICES_DIR = os.path.realpath(tempfile.mkdtemp())
+        with tempfile.NamedTemporaryFile(suffix=".wav", dir=svc.VOICES_DIR, delete=False) as clip:
             pass
         try:
             voice = {"ref_audio": clip.name, "ref_text": "Evil Mana's line."}
@@ -68,9 +71,14 @@ def run():
             assert client.post("/synthesize", json={"text": "Hi", "ref_audio": clip.name}).status_code == 400
             missing = {"ref_audio": clip.name + ".gone", "ref_text": "x"}
             assert client.post("/synthesize", json={"text": "Hi", **missing}).status_code == 400
+            # Only clips under node-bot/data, never any file the caller names.
+            elsewhere = {"ref_audio": outside.name, "ref_text": "x"}
+            assert client.post("/synthesize", json={"text": "Hi", **elsewhere}).status_code == 400
             assert len(fake.calls) == 4
         finally:
             os.remove(clip.name)
+            os.remove(outside.name)
+            os.rmdir(svc.VOICES_DIR)
 
     assert client.get("/health").json()["ok"] is True
     # #904: a real call on this process, so the ctypes signatures are
