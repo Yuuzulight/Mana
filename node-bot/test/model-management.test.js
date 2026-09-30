@@ -6,6 +6,7 @@ const test = require("node:test");
 
 const {
   createModelManagement,
+  detectGpu,
   detectGpuVramMb,
   detectGpuVramUsageMb,
   detectSystemMemoryMb,
@@ -374,6 +375,55 @@ test("detectGpuVramMb parses nvidia-smi output and returns null on failure", () 
     detectGpuVramMb(() => ({ error: new Error("ENOENT"), status: null })),
     null,
   );
+});
+
+// Fakes nvidia-smi (missing unless given) and the two `reg query` calls.
+function fakeGpuSpawn({ smi = null, driverDesc = "", qwMemorySize = "" } = {}) {
+  return (bin, args) => {
+    if (bin === "nvidia-smi") {
+      return smi ? { status: 0, stdout: smi } : { error: new Error("ENOENT"), status: null };
+    }
+    const out = args.includes("DriverDesc") ? driverDesc : qwMemorySize;
+    return out ? { status: 0, stdout: `\r\n${out}\r\nEnd of search: 1 match(es) found.\r\n` } : { status: 1, stdout: "" };
+  };
+}
+const CLASS = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}";
+
+test("detectGpu: nvidia-smi first, with name, VRAM and CUDA", () => {
+  const gpu = detectGpu({ spawnSync: fakeGpuSpawn({ smi: "NVIDIA GeForce RTX 5080, 16303\n" }), platform: "win32" });
+  assert.deepEqual(gpu, { vendor: "nvidia", name: "NVIDIA GeForce RTX 5080", vramMb: 16303, cuda: true, sharedMemory: false });
+});
+
+test("detectGpu: without nvidia-smi, reads 64-bit VRAM and name from the display adapter registry keys", () => {
+  const spawnSync = fakeGpuSpawn({
+    driverDesc:
+      `${CLASS}\\0000\r\n    DriverDesc    REG_SZ    AMD Radeon(TM) Graphics\r\n\r\n` +
+      `${CLASS}\\0001\r\n    DriverDesc    REG_SZ    AMD Radeon RX 7900 XTX\r\n\r\n` +
+      `${CLASS}\\0002\r\n    DriverDesc    REG_SZ    Microsoft Basic Display Adapter`,
+    qwMemorySize:
+      `${CLASS}\\0000\r\n    HardwareInformation.qwMemorySize    REG_QWORD    0x20000000\r\n\r\n` +
+      `${CLASS}\\0001\r\n    HardwareInformation.qwMemorySize    REG_QWORD    0x600000000`,
+  });
+  // 24 GB -- past the 4 GB WMI AdapterRAM cap; the APU is skipped for it.
+  assert.deepEqual(detectGpu({ spawnSync, platform: "win32" }), {
+    vendor: "amd", name: "AMD Radeon RX 7900 XTX", vramMb: 24576, cuda: false, sharedMemory: false,
+  });
+});
+
+test("detectGpu: an integrated GPU is flagged as shared memory, not counted as VRAM", () => {
+  const spawnSync = fakeGpuSpawn({
+    driverDesc: `${CLASS}\\0000\r\n    DriverDesc    REG_SZ    Intel(R) Iris(R) Xe Graphics`,
+    qwMemorySize: `${CLASS}\\0000\r\n    HardwareInformation.qwMemorySize    REG_QWORD    0x80000000`,
+  });
+  assert.deepEqual(detectGpu({ spawnSync, platform: "win32" }), {
+    vendor: "intel", name: "Intel(R) Iris(R) Xe Graphics", vramMb: null, cuda: false, sharedMemory: true,
+  });
+});
+
+test("detectGpu: null when nothing is found, off Windows without nvidia-smi, or on a throw", () => {
+  assert.equal(detectGpu({ spawnSync: fakeGpuSpawn(), platform: "win32" }), null);
+  assert.equal(detectGpu({ spawnSync: fakeGpuSpawn({ driverDesc: `${CLASS}\\0000\r\n    DriverDesc    REG_SZ    AMD Radeon RX 6600` }), platform: "linux" }), null);
+  assert.equal(detectGpu({ spawnSync: () => { throw new Error("boom"); }, platform: "win32" }), null);
 });
 
 test("detectGpuVramUsageMb parses used/free nvidia-smi output and returns null on failure", () => {
