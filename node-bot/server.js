@@ -893,7 +893,7 @@ function whisperThreads() {
 const whisperServer = createWhisperServer({
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
-  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
+  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() }),
   threads: whisperThreads,
   language: whisperLanguage,
   beamSize: WHISPER_BEAM_SIZE,
@@ -2555,6 +2555,7 @@ function registerRoutes(app, upload, deps = {}) {
         memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+        whisperLanguage: whisperLanguage(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2576,6 +2577,7 @@ function registerRoutes(app, upload, deps = {}) {
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
       memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+      whisperLanguage: whisperLanguage(),
     }),
   });
   if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {
@@ -2796,7 +2798,7 @@ function registerRoutes(app, upload, deps = {}) {
       ttsBin: TTS_BIN,
       ttsProvider: TTS_PROVIDER,
       whisperBin: whisperDiscovery.findWhisperBin({ env }),
-      whisperModel: whisperDiscovery.findWhisperModel({ env }),
+      whisperModel: whisperDiscovery.findWhisperModel({ env, language: whisperLanguage() }),
     });
     Object.assign(
       components,
@@ -3432,7 +3434,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   function runWhisperCli(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
@@ -3545,7 +3547,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   async function runWhisperCliPartial(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
