@@ -46,6 +46,11 @@ class SynthesizeBody(BaseModel):
     text: str
     # A detectTtsLanguage() name ("english", "japanese", ...) or "auto".
     language: str | None = None
+    # #914: another character's voice -- a reference clip and its exact
+    # transcript, both or neither. The same model clones it; only the first
+    # sentence in a new voice pays to encode the clip.
+    ref_audio: str | None = None
+    ref_text: str | None = None
 
 
 def patch_rope_theta():
@@ -69,17 +74,24 @@ def patch_rope_theta():
         ROPE_INIT_FUNCTIONS["default"] = default_rope_parameters
 
 
-def synthesize_wav(tts, text, language):
+def synthesize_wav(tts, text, language, ref_audio=None, ref_text=None):
     """One clone generation -> WAV bytes. faster-qwen3-tts caches the encoded
     reference per (ref_audio, ref_text), so only the first call pays for it."""
     import torch
 
     if not text.strip():
         raise ValueError("No text provided")
+    if bool(ref_audio) != bool(ref_text):
+        raise ValueError("ref_audio and ref_text go together")
+    if ref_audio and not os.path.isfile(ref_audio):
+        raise ValueError(f"Reference clip not found: {ref_audio}")
     with lock:
         try:
             wavs, sample_rate = tts.generate_voice_clone(
-                text=text, language=language or "auto", ref_audio=REF_AUDIO, ref_text=REF_TEXT
+                text=text,
+                language=language or "auto",
+                ref_audio=ref_audio or REF_AUDIO,
+                ref_text=ref_text or REF_TEXT,
             )
         finally:
             # Hand the generation's scratch VRAM back (peaks ~1 GB above
@@ -135,7 +147,7 @@ def health():
 @app.post("/synthesize")
 def synthesize(body: SynthesizeBody):
     try:
-        wav = synthesize_wav(model, body.text, body.language)
+        wav = synthesize_wav(model, body.text, body.language, body.ref_audio, body.ref_text)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
