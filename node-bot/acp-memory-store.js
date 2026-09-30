@@ -6,6 +6,7 @@ const { cosine } = require("./tools/vector-store");
 const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
 const { redactSensitive } = require("./utils/sensitive-text");
+const { artifactOf } = require("./artifact-history");
 const { UNTRUSTED_RULE, wrapUntrustedInline } = require("./ai/untrusted-content");
 
 function ensureDir(dir) {
@@ -1951,6 +1952,10 @@ function createAcpMemoryStore(options = {}) {
     // history's labels; turns from before carry none.
     const speaker = cleanText(input.speaker, 60);
     if (speaker) turn.speaker = speaker;
+    // #1142: the reply's artifact verbatim, for the Artifacts panel after a
+    // restart (artifact-history.js); the text above loses its line breaks.
+    const artifact = artifactOf(redactSensitive(input.assistant));
+    if (artifact) turn.artifact = artifact;
     // Optional (issue #153): only the tool-calling reply path ever has
     // these, so most turns simply omit the field rather than storing an
     // empty array on every single turn.

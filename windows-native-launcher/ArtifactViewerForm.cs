@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Folio;
 using Folio.Skia;
@@ -38,7 +39,13 @@ internal enum ArtifactOpen
 }
 
 // #1120: an artifact as the chat recorded it -- which chat, and when.
-internal sealed record ArtifactEntry(VersionedArtifact Artifact, string? SessionId, DateTime At);
+// #1142: one read back from a saved chat comes with its Title and, until
+// it's opened, no content: Load reads it (ArtifactViewerForm.LoadThreadAsync).
+internal sealed record ArtifactEntry(VersionedArtifact Artifact, string? SessionId, DateTime At)
+{
+    public string? Title { get; init; }
+    public Func<Task<string?>>? Load { get; init; }
+}
 
 internal sealed class ArtifactViewerForm : Form
 {
@@ -129,6 +136,52 @@ internal sealed class ArtifactViewerForm : Form
             }
             Open(entry, source: how == ArtifactOpen.Source);
         };
+    }
+
+    // #1142: when this run started. Saved chats' artifacts from before it are
+    // read back (AddHistory); later ones arrived here through Add.
+    public DateTime StartedAt { get; } = DateTime.Now;
+    public event Action? HistoryAdded;
+
+    // #1142: a saved chat's past artifacts (oldest first, not loaded yet),
+    // listed with the rest and older than this run's.
+    public void AddHistory(IReadOnlyList<ArtifactEntry> past)
+    {
+        if (past.Count > 0)
+        {
+            entries.InsertRange(0, past);
+            HistoryAdded?.Invoke();
+        }
+    }
+
+    // #1142: reads the content of the entry's thread's saved versions. False
+    // when one couldn't be read; it's tried again next time. UI thread only.
+    public async Task<bool> LoadThreadAsync(ArtifactEntry entry)
+    {
+        var ok = true;
+        foreach (var saved in ThreadOf(entry).Where(e => e.Load is not null))
+        {
+            string? content;
+            try
+            {
+                content = await saved.Load!();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ArtifactViewerForm: couldn't read a saved artifact. {ex.Message}");
+                content = null;
+            }
+            var at = entries.IndexOf(saved);
+            if (content is null)
+            {
+                ok = false;
+            }
+            else if (at >= 0) // not already loaded by another call meanwhile
+            {
+                entries[at] = saved with { Artifact = saved.Artifact with { Content = content }, Load = null };
+            }
+        }
+        return ok;
     }
 
     // #1120: the entry's version thread, oldest first.

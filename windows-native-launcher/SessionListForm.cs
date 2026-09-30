@@ -339,7 +339,12 @@ internal sealed partial class SessionListForm : Form
         toolPanel.Add("docs", "Docs", null, () => docsPanel = new DocsPanel(ManaApplicationContext.FindRootDirectory()));
         // #1120: the Artifacts panel. A new artifact in the chat selects
         // itself there when it's open, else puts a dot on the icon.
-        RegisterRailTool("artifacts", "artifacts", "Artifacts", () => artifactsPanel = new ArtifactsPanel(artifacts, () => voiceLoop.CurrentSessionId));
+        RegisterRailTool("artifacts", "artifacts", "Artifacts", () =>
+        {
+            artifactsPanel = new ArtifactsPanel(artifacts, () => voiceLoop.CurrentSessionId);
+            _ = ReadArtifactHistoryAsync();
+            return artifactsPanel;
+        });
         artifacts.Added += OnArtifactAdded;
         // #1125: its Self-work section opens the "What I'm working on" window (#1016).
         RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient));
@@ -1299,6 +1304,7 @@ internal sealed partial class SessionListForm : Form
         _ = RefreshAsync();
         _ = RefreshContextMeterAsync();
         _ = LoadHistoryAsync(sessionId);
+        _ = ReadArtifactHistoryAsync();
     }
 
     private const int HistoryTurns = 50;
@@ -1605,6 +1611,7 @@ internal sealed partial class SessionListForm : Form
         }
         listError = null; // loaded, so an earlier load error is stale
         ShowSessions();
+        _ = ReadArtifactHistoryAsync();
     }
 
     private void SetListError(string? error, Func<Task>? retry = null)
@@ -1749,6 +1756,44 @@ internal sealed partial class SessionListForm : Form
         if (e.Item.Focused && list.Focused && GlassSurface.ShowsFocusCues(list))
         {
             ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -2, -1));
+        }
+    }
+
+    // #1142: once the Artifacts panel exists, the open chat's and the ten
+    // most recent chats' past artifacts are read back from the saved chats,
+    // each chat once: titles and versions only, content when one is opened.
+    private readonly HashSet<string> artifactHistoryRead = new();
+
+    private async Task ReadArtifactHistoryAsync()
+    {
+        if (artifactsPanel is null)
+        {
+            return;
+        }
+        var ids = sessions.Select(s => s.SessionId).Take(10).Prepend(activeSessionId).OfType<string>().Where(artifactHistoryRead.Add).ToList();
+        foreach (var id in ids)
+        {
+            IReadOnlyList<ManaSavedArtifact> saved;
+            try
+            {
+                saved = await backendClient.GetSessionArtifactsAsync(id, artifacts.StartedAt);
+            }
+            catch (Exception ex)
+            {
+                artifactHistoryRead.Remove(id); // try again next time
+                Console.WriteLine($"SessionListForm: couldn't read a chat's artifacts. {ex.Message}");
+                continue;
+            }
+            if (IsDisposed)
+            {
+                return;
+            }
+            artifacts.AddHistory(saved.Select(a => new ArtifactEntry(
+                new VersionedArtifact(a.Language, "", $"{id}/{a.ThreadId}", a.VersionIndex), id, SessionListFormatter.ParseTurnTime(a.At).ToLocalTime())
+            {
+                Title = a.Title,
+                Load = () => backendClient.GetSessionArtifactContentAsync(id, a.Turn),
+            }).ToList());
         }
     }
 

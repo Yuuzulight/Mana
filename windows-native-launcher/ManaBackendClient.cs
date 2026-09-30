@@ -796,6 +796,37 @@ internal sealed class ManaBackendClient
         };
     }
 
+    // #1142: a saved chat's artifacts from turns saved before `before`,
+    // without their content (node-bot/artifact-history.js). Empty when the
+    // chat isn't stored.
+    public async Task<IReadOnlyList<ManaSavedArtifact>> GetSessionArtifactsAsync(string sessionId, DateTime before)
+    {
+        var since = Uri.EscapeDataString(before.ToUniversalTime().ToString("o"));
+        using var response = await http.GetAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/artifacts?before={since}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Array.Empty<ManaSavedArtifact>();
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        var list = await JsonSerializer.DeserializeAsync<ManaSavedArtifactList>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return list?.Artifacts ?? new List<ManaSavedArtifact>();
+    }
+
+    // #1142: one saved artifact's content; null when it's gone.
+    public async Task<string?> GetSessionArtifactContentAsync(string sessionId, int turn)
+    {
+        using var response = await http.GetAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/artifacts/{turn}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("content", out var content) ? content.GetString() : null;
+    }
+
     // #642: the context meter -- GET /prompt-composition/:sessionId (see
     // node-bot/prompt-composition-report.js). Null on 404: nothing has been
     // assembled for this session yet. A block's Tokens is the tokenizer's
@@ -2655,6 +2686,11 @@ internal sealed class ManaPromptBlock
     public string Name { get; init; } = "";
     public long Tokens { get; init; }
 }
+
+// #1142: GET /sessions/:id/artifacts.
+internal sealed record ManaSavedArtifact(int Turn, string? At, string Language, string Title, string ThreadId, int VersionIndex);
+
+internal sealed record ManaSavedArtifactList(List<ManaSavedArtifact>? Artifacts);
 
 internal sealed class ManaSessionTurn
 {
