@@ -24,6 +24,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { isCredentialPath } = require("./tool-policy");
+const { containsUntrusted } = require("./untrusted-content");
 
 const TIERS = ["read", "low", "write", "network", "install", "destructive"];
 const MODES = ["off", "ask", "smart"];
@@ -112,6 +113,40 @@ const SELF_GATED = new Set([
   "browser_automation__type",
   "browser_automation__snapshot",
 ]);
+
+// Once a turn has taken in outside content (a web page, search or wiki
+// results, an email, the browser tab: ai/untrusted-content.js), that text
+// may be steering the model. For the rest of the turn these read/low-tier
+// tools, which act or read my private things, ask me first, and so does
+// anything that contacts the network (sends data out) -- in every mode,
+// past grants and Guardian (forceReview).
+const ASK_AFTER_UNTRUSTED = new Set([
+  "vision__look",
+  "vision__camera",
+  "email__recent",
+  "email__search",
+  "email__read",
+  "calendar__events",
+  "reminder__set",
+  "reminder__cancel",
+  "read_file",
+  "session_search__query",
+  "coding__propose_edit",
+  "speech__add_word",
+  "speech__remove_word",
+]);
+
+function asksAfterUntrusted(name, risk) {
+  return ASK_AFTER_UNTRUSTED.has(name) || String(name).startsWith("desktop__") || risk.tier === "network";
+}
+
+// Outside content arriving through a tool: a framed result (email,
+// calendar) or the browser automation's pages.
+// ponytail: an MCP server's results don't count (a shell `dir` isn't
+// outside content); frame them too if a web-fetching MCP server gets used.
+function bringsUntrusted(name, result) {
+  return containsUntrusted(result) || String(name).startsWith("browser_automation__");
+}
 
 // Where shell-running MCP tools put their command line and folder.
 const COMMAND_KEYS = ["command", "cmd", "commandLine", "command_line", "script", "shell_command"];
@@ -496,19 +531,25 @@ function resolveToolApprovalMode(...candidates) {
 // tradeoff hooks-store.js's "hook-ask" already documents.
 // options.alwaysReview: further tiers that, like destructive, always go to a
 // human and are never granted (#699: a heartbeat check's install calls).
+//
+// options.untrustedInput: the turn's prompt already holds outside content
+// (see ASK_AFTER_UNTRUSTED below); a tool result can bring some in later.
 function wrapWithRiskGate(policy, approvalGate, options = {}) {
   const mode = resolveToolApprovalMode(options.mode);
   const alwaysReview = options.alwaysReview || [];
   const bindingDeps = options.bindingDeps || {};
+  // One wrap per reply, so this is "for the rest of this turn".
+  let tookInUntrusted = Boolean(options.untrustedInput);
 
-  async function ask(name, args, risk) {
+  async function ask(name, args, risk, afterUntrusted = false) {
     const binding = risk.command ? bindCall(name, args, bindingDeps) : null;
+    const summary = describeCall(name, risk, args);
     const outcome = await approvalGate.requestApproval(`tool-${risk.tier}`, {
-      summary: describeCall(name, risk, args),
+      summary: afterUntrusted ? `after reading outside content this turn: ${summary}` : summary,
       payload: { name, args, ...(binding ? { digest: binding.digest } : {}) },
       scanText: risk.command || undefined,
       grantKey: binding ? `tool-exec:${binding.digest}` : undefined,
-      forceReview: risk.tier === "destructive" || alwaysReview.includes(risk.tier),
+      forceReview: afterUntrusted || risk.tier === "destructive" || alwaysReview.includes(risk.tier),
       details: {
         tier: risk.tier,
         reasons: risk.reasons,
@@ -535,10 +576,15 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
     isKnownTool: policy.isKnownTool,
     executeTool: async (name, args) => {
       const risk = classifyToolCall(name, args);
+      if (tookInUntrusted && asksAfterUntrusted(name, risk)) {
+        return ask(name, args, risk, true);
+      }
       const gated =
         risk.tier === "destructive" ||
         (mode !== "off" && !SELF_GATED.has(name) && !(mode === "smart" && ["read", "low"].includes(risk.tier)));
-      return gated ? ask(name, args, risk) : policy.executeTool(name, args);
+      const result = await (gated ? ask(name, args, risk) : policy.executeTool(name, args));
+      if (bringsUntrusted(name, result)) tookInUntrusted = true;
+      return result;
     },
   };
 }

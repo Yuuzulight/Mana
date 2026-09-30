@@ -225,6 +225,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
+const { containsUntrusted } = require("./ai/untrusted-content");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
 const { createMemoryVault } = require("./memory-vault");
 const {
@@ -4895,6 +4896,9 @@ function registerRoutes(app, upload, deps = {}) {
                     activeApprovalGate.getToolApprovalMode(),
                     (deps.env || process.env).MANA_TOOL_APPROVAL,
                   ),
+                  // A web page, search/wiki results or the browser tab
+                  // (framed by ai/untrusted-content.js) came in with the turn.
+                  untrustedInput: containsUntrusted(promptText),
                 });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one

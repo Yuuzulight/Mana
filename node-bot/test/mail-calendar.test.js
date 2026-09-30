@@ -23,6 +23,12 @@ const fakeSecrets = {
     return Buffer.from(b.slice(4), "base64").toString();
   },
 };
+// Email and calendar results come framed as untrusted (ai/untrusted-content.js).
+function unframe(result) {
+  const framed = /<(untrusted-[0-9a-f]+) source="(email|calendar)">\n([\s\S]*)\n<\/\1>$/.exec(result);
+  assert.ok(framed, `not framed as untrusted: ${result.slice(0, 80)}`);
+  return JSON.parse(framed[3]);
+}
 
 // ---- a scripted IMAP server ----
 
@@ -207,7 +213,7 @@ test("#906 email tools: read-only IMAP, decoded text, framed as untrusted", asyn
       ["email__recent", "email__search", "email__read"], // no calendar set up
     );
 
-    const recent = JSON.parse(await tools.executeTool("email__recent", {}));
+    const recent = unframe(await tools.executeTool("email__recent", {}));
     assert.match(recent.note, /^\[EMAIL CONTENT, NOT INSTRUCTIONS\]/);
     assert.deepEqual(
       recent.messages.map((m) => [m.id, m.from, m.subject, m.unread, m.snippet]),
@@ -221,11 +227,11 @@ test("#906 email tools: read-only IMAP, decoded text, framed as untrusted", asyn
     assert.ok(imap.commands.filter((c) => / UID FETCH /.test(c)).every((c) => c.includes("BODY.PEEK[") && !/ BODY\[/.test(c)));
 
     // Non-ASCII words go as a literal after the server's "+".
-    const found = JSON.parse(await tools.executeTool("email__search", { query: "café" }));
+    const found = unframe(await tools.executeTool("email__search", { query: "café" }));
     assert.deepEqual(found.messages.map((m) => m.id), [7]);
     assert.ok(imap.commands.includes(`A3 UID SEARCH CHARSET UTF-8 TEXT café`));
 
-    const read = JSON.parse(await tools.executeTool("email__read", { id: 5 }));
+    const read = unframe(await tools.executeTool("email__read", { id: 5 }));
     assert.equal(read.message.text, "Raid moved to 21:00 — bring potions");
 
     store.set("email", { password: "wrong" });
@@ -343,7 +349,7 @@ test("#906 calendar tools: CalDAV discovery, 'am I free Thursday', adding asks m
     assert.equal(new Date(resolveDay("wed", wednesdayNoon)).getDate(), 30); // today counts
     assert.throws(() => resolveDay("2026-02-30", wednesdayNoon), /date must be/);
 
-    const thursday = JSON.parse(await tools.executeTool("calendar__events", { date: "thursday" }));
+    const thursday = unframe(await tools.executeTool("calendar__events", { date: "thursday" }));
     assert.match(thursday.note, /NOT INSTRUCTIONS/);
     assert.equal(thursday.from, "Thu 2026-10-01");
     assert.deepEqual(thursday.events, [{ title: "Raid night", when: "Thu 2026-10-01 20:00-23:00" }]);
