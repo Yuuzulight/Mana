@@ -32,6 +32,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly TextBox factsSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search memory", AccessibleName = "Search memory" };
     private System.Collections.Generic.IReadOnlyList<ManaPlugin> plugins = Array.Empty<ManaPlugin>();
     private System.Collections.Generic.IReadOnlyList<ManaMemoryFact> facts = Array.Empty<ManaMemoryFact>();
+    // #935: Memory Facts' vault row.
+    private readonly Label vaultStatusLabel = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+    private readonly Button vaultSyncButton = new() { Text = "Sync now", AutoSize = true, Enabled = false };
     private readonly ListView skillsList = new();
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
@@ -484,9 +487,34 @@ internal sealed class SettingsPanel : UserControl
         StyleSearchBox(factsSearch);
         factsSearch.TextChanged += (_, _) => ShowFacts();
 
+        // #935: the Obsidian vault sync's status, and a sync right now.
+        DarkTheme.ApplyButton(vaultSyncButton);
+        vaultSyncButton.Click += async (_, _) =>
+        {
+            vaultSyncButton.Enabled = false;
+            try
+            {
+                ShowVaultStatus(await backendClient.SyncMemoryVaultAsync());
+                await RefreshMemoryFactsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SettingsPanel: vault sync failed. {ex.Message}");
+                if (!IsDisposed)
+                {
+                    vaultStatusLabel.Text = $"Vault sync failed: {ex.Message}";
+                    vaultSyncButton.Enabled = true;
+                }
+            }
+        };
+        var vaultRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = DarkTheme.Background };
+        vaultRow.Controls.Add(vaultSyncButton);
+        vaultRow.Controls.Add(vaultStatusLabel);
+
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
         page.Controls.Add(factsSearch);
+        page.Controls.Add(vaultRow);
         page.Controls.Add(editButton);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
@@ -617,8 +645,61 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
+    private async Task RefreshVaultStatusAsync()
+    {
+        try
+        {
+            ShowVaultStatus(await backendClient.GetMemoryVaultStatusAsync());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load the vault status. {ex.Message}");
+            if (!IsDisposed)
+            {
+                vaultStatusLabel.Text = $"Vault status unavailable: {ex.Message}";
+            }
+        }
+    }
+
+    private void ShowVaultStatus(ManaVaultStatus status)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+        vaultStatusLabel.Text = DescribeVault(status, DateTimeOffset.Now);
+        vaultSyncButton.Enabled = status.VaultDir is not null;
+    }
+
+    // #935: the Memory Facts tab's vault line, in Doctor's terms.
+    internal static string DescribeVault(ManaVaultStatus status, DateTimeOffset now)
+    {
+        if (status.VaultDir is null)
+        {
+            return "Obsidian vault sync is off. Set MANA_VAULT_DIR in node-bot/.env to turn it on.";
+        }
+        var mode = status.Mode switch
+        {
+            "watching" => "watching for changes",
+            "polling" => "file watcher down, checking every 60 s",
+            _ => "not running",
+        };
+        var last = status.LastSyncAt is { } at ? $"last sync {Math.Max(0, (int)(now - at).TotalSeconds)} s ago" : "not synced yet";
+        var text = $"Vault: {status.VaultDir} -- {mode}, {status.Notes} notes, {last}.";
+        if (status.Error is not null)
+        {
+            text += $"\nError: {status.Error}";
+        }
+        if (status.Skipped.Count > 0)
+        {
+            text += $"\nSkipped {status.Skipped.Count}: " + string.Join("; ", status.Skipped.Select(s => $"{s.File} ({s.Reason})"));
+        }
+        return text;
+    }
+
     private async Task RefreshMemoryFactsAsync()
     {
+        await RefreshVaultStatusAsync();
         try
         {
             facts = await backendClient.GetMemoryFactsAsync();

@@ -973,6 +973,28 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #935: the Obsidian vault sync's status; VaultDir is null when it's off.
+    public async Task<ManaVaultStatus> GetMemoryVaultStatusAsync()
+    {
+        using var response = await http.GetAsync("/admin/memory/vault");
+        return await ReadVaultStatusAsync(response);
+    }
+
+    // #935: "Sync now" -- syncs at once and returns the new status.
+    public async Task<ManaVaultStatus> SyncMemoryVaultAsync()
+    {
+        using var response = await http.PostAsync("/admin/memory/vault/sync", null);
+        return await ReadVaultStatusAsync(response);
+    }
+
+    private static async Task<ManaVaultStatus> ReadVaultStatusAsync(HttpResponseMessage response)
+    {
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaVaultStatus>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaVaultStatus();
+    }
+
     // #529: index-only listing (GET /skills), not full skill bodies --
     // matches skills-capability.js's own "cheap call" framing. Editing a
     // skill's full content is a much bigger form than a lean settings
@@ -2820,6 +2842,24 @@ internal sealed class ManaSpeechVocabulary
     // "en" or "auto"; EnvLanguage (WHISPER_LANGUAGE) wins when set.
     public string Language { get; init; } = "en";
     public string? EnvLanguage { get; init; }
+}
+
+// #935: GET /admin/memory/vault (memory-vault.js getStatus()).
+internal sealed class ManaVaultStatus
+{
+    public string? VaultDir { get; init; }
+    // "watching", "polling" (the file watcher is down) or "stopped".
+    public string? Mode { get; init; }
+    public int Notes { get; init; }
+    public DateTimeOffset? LastSyncAt { get; init; }
+    public string? Error { get; init; }
+    public List<ManaVaultSkippedNote> Skipped { get; init; } = new();
+}
+
+internal sealed class ManaVaultSkippedNote
+{
+    public string File { get; init; } = "";
+    public string Reason { get; init; } = "";
 }
 
 // #950: GET /mail-calendar. Null when that account isn't set up;

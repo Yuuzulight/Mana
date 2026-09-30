@@ -134,6 +134,7 @@ const {
 const {
   memoryFactsCapability,
 } = require("./capabilities/memory-facts-capability");
+const { memoryVaultCapability } = require("./capabilities/memory-vault-capability");
 const {
   retrieverAdminCapability,
 } = require("./capabilities/retriever-admin-capability");
@@ -2324,6 +2325,7 @@ function registerRoutes(app, upload, deps = {}) {
     createCharactersCapability(characterStore),
     backgroundMemoryCapability,
     memoryFactsCapability,
+    memoryVaultCapability,
     retrieverAdminCapability,
     skillsCapability,
     approvalGateCapability,
@@ -2519,6 +2521,7 @@ function registerRoutes(app, upload, deps = {}) {
     fetchPage: deps.fetchPage || fetchPage,
     wikiLookup: deps.wikiLookup || wikiLookup,
     checkAdminAuth,
+    getMemoryVault: () => memoryVault,
     runBackgroundReviewerPublic: deps.runBackgroundReviewerPublic || runBackgroundReviewerPublic,
     runSkillProposalPublic: deps.runSkillProposalPublic || runSkillProposalPublic,
     asyncLoadBackgroundMemory: deps.asyncLoadBackgroundMemory || asyncLoadBackgroundMemory,

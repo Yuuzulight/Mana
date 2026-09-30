@@ -33,6 +33,9 @@ const DEBOUNCE_MS = 1500;
 // apart found it missing (applyDeletion); until then applyDeletion WAITs.
 const MISSING_GRACE_MS = 30 * 1000;
 const WAIT = "wait";
+// A sync this often whatever the watcher does (poll()): the fallback when
+// it's down, and a catch-up for events it missed.
+const POLL_MS = 60 * 1000;
 // The header fields Mana writes (renderNote); any other key is the user's.
 const OWN_FIELDS = new Set(["status", "pinned", "trigger", "paused", "since", "source"]);
 // An archived note the user deleted: kept deleted, not written again.
@@ -197,6 +200,8 @@ function createMemoryVault(options = {}) {
   let viewsTimer = null;
   let lastJournalAt = null;
   let started = false;
+  let pollTimer = null;
+  let watchedIno = null;
   // Note id -> when a sync first found Mana's note missing (applyDeletion).
   const missingSince = new Map();
 
@@ -540,9 +545,9 @@ function createMemoryVault(options = {}) {
   // Facts/ and its two subfolders, .md files only. (Re)started after each
   // sync, so a Facts/ folder deleted and recreated is watched again.
   function watch() {
-    if (options.watch === false || watcher) return;
+    if (options.watch === false || watcher || !started) return;
     try {
-      watcher = fs.watch(full(FOLDERS.active), { recursive: true }, (event, filename) => {
+      const w = fs.watch(full(FOLDERS.active), { recursive: true }, (event, filename) => {
         const parts = filename ? String(filename).split(/[\\/]/) : null;
         const inScope =
           !parts ||
@@ -550,14 +555,37 @@ function createMemoryVault(options = {}) {
             (parts.length === 1 || (parts.length === 2 && /^(pending|archived)$/i.test(parts[0]))));
         if (inScope) schedule();
       });
-      watcher.on("error", (e) => {
+      w.on("error", (e) => {
         log(`watcher stopped: ${e?.message || e}`);
-        watcher.close();
-        watcher = null;
+        w.close();
+        if (watcher === w) watcher = null;
       });
+      watcher = w;
+      watchedIno = fs.statSync(full(FOLDERS.active)).ino;
     } catch (e) {
+      watcher?.close();
       watcher = null;
     }
+  }
+
+  // Every POLL_MS: a watcher on a Facts/ folder that was since deleted or
+  // replaced hears nothing, so it's restarted; then a sync, which also
+  // restarts a watcher that died and catches whatever it missed.
+  function poll() {
+    if (watcher) {
+      let ino = null;
+      try {
+        ino = fs.statSync(full(FOLDERS.active)).ino;
+      } catch (e) {
+        // Gone: sync() recreates it.
+      }
+      if (ino !== watchedIno) {
+        log("Facts/ was replaced; restarting the file watcher.");
+        watcher.close();
+        watcher = null;
+      }
+    }
+    sync();
   }
 
   // Views/ and Journal/ files Mana created, as vault-relative lower-case
@@ -707,6 +735,12 @@ function createMemoryVault(options = {}) {
     }
   }
 
+  // mode: "watching" (file watcher up), "polling" (it's down: only the
+  // POLL_MS syncs) or "stopped".
+  function getStatus() {
+    return { ...status, mode: !started ? "stopped" : watcher ? "watching" : "polling" };
+  }
+
   function start() {
     started = true;
     store.onFactsChanged(() => schedule());
@@ -714,17 +748,20 @@ function createMemoryVault(options = {}) {
     refreshViews();
     viewsTimer = setInterval(refreshViews, VIEWS_REFRESH_MS);
     viewsTimer.unref?.();
+    pollTimer = setInterval(poll, POLL_MS);
+    pollTimer.unref?.();
   }
 
   function stop() {
     started = false;
     clearTimeout(timer);
     clearInterval(viewsTimer);
+    clearInterval(pollTimer);
     if (watcher) watcher.close();
     watcher = null;
   }
 
-  return { start, stop, sync, refreshViews, writeJournal, getStatus: () => ({ ...status }) };
+  return { start, stop, sync, refreshViews, writeJournal, getStatus };
 }
 
 module.exports = { VIEWS_MARKER, createMemoryVault, noteName, keyFromName, parseNote, renderNote };
