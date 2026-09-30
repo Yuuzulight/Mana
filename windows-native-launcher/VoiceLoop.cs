@@ -1875,6 +1875,12 @@ internal sealed class VoiceLoop : IDisposable
             // vision for an unrelated reply error on a normal text turn.
             var message = image is not null || images is { Count: > 0 } ? VisionHotkeyMessages.DescribeError(ex.Message) : ex.Message;
             Console.WriteLine($"VoiceLoop: reply/stream failed, resuming listening. {message}");
+            if (BackendRestart is { } restart)
+            {
+                await restart;
+                await SayReplyFailedAsync(RestartedMidReplyMessage, RestartedMidReplyMessage);
+                return false;
+            }
             lastError = $"Reply failed: {message}";
             // #666: say so instead of dropping the turn silently. The raw
             // error stays in the console; vision turns keep DescribeError's
@@ -2069,6 +2075,12 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
+    internal const string RestartedMidReplyMessage = "Sorry, I restarted in the middle of that. Could you ask me again?";
+
+    // #991: set while the launcher restarts node-bot. A reply the restart
+    // cut off waits for it, then says so instead of the generic failure.
+    public Task? BackendRestart { get; set; }
+
     // #964: said a little slower and lower, like an apology.
     private const string ReplyFailedEmotion = "sad";
 
@@ -2120,15 +2132,15 @@ internal sealed class VoiceLoop : IDisposable
     // #666: a failed reply is shown in the chat and spoken once, with the
     // same mode handling as the non-streamed fallback above. If TTS is what
     // failed, the chat line is all the user gets -- still not silence.
-    private async Task SayReplyFailedAsync(string chatText)
+    private async Task SayReplyFailedAsync(string chatText, string spoken = ReplyFailedMessage)
     {
         chatLog?.AppendReplySentence(chatText);
         try
         {
-            var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage, ReplyFailedEmotion);
+            var wav = await backendClient.SynthesizeAsync(spoken, ReplyFailedEmotion);
             OnTalkingStateChanged(true);
-            captions?.ShowSentence(ReplyFailedMessage);
-            bubbles?.ShowSentence(ReplyFailedMessage);
+            captions?.ShowSentence(spoken);
+            bubbles?.ShowSentence(spoken);
             var completedNaturally = await audioPlayer.PlayAsync(wav);
             OnTalkingStateChanged(false);
             if (!completedNaturally)
