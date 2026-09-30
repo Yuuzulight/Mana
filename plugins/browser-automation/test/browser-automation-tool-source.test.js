@@ -129,6 +129,8 @@ test("executeTool records a successful action and its screenshot in the activity
   assert.equal(activity.log[0].status, "ok");
   assert.match(activity.log[0].summary, /Navigating to https:\/\/example\.com/);
   assert.equal(activity.screenshot.base64, Buffer.from("fake-jpeg-bytes").toString("base64"));
+  // #1122: the page she's on, for the Browser tool's header and Take over.
+  assert.deepEqual(activity.page, { url: "https://example.com/", title: "Fake Page" });
 });
 
 test("executeTool records a failed action in the activity log and still rejects with the real error", async () => {

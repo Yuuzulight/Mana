@@ -37,8 +37,22 @@ function untrustedSources(text) {
   return [...text.matchAll(/<untrusted-[0-9a-f]{12} source="([^"]*)">/g)].map((m) => m[1]);
 }
 
+// #1122: the web pages and search results a turn took in, for the Browser
+// tool: each frame's links that stand on a line of their own ("URL: ..." or
+// a search hit's link line), not every link in a page's text. Once each.
+function untrustedLinks(text) {
+  if (typeof text !== "string") return [];
+  const links = new Map();
+  for (const frame of text.matchAll(/<(untrusted-[0-9a-f]{12}) source="([^"]*)">([\s\S]*?)<\/\1>/g)) {
+    for (const [, url] of frame[3].matchAll(/^\s*(?:URL:\s*)?(https?:\/\/\S+)\s*$/gm)) {
+      if (!links.has(url)) links.set(url, { source: frame[2], url });
+    }
+  }
+  return [...links.values()];
+}
+
 // The game wiki's frame (tools/web-access.js). A turn whose only outside
 // content is this may still take a screenshot unasked (ai/tool-risk.js).
 const GAME_WIKI_SOURCE = "game wiki";
 
-module.exports = { GAME_WIKI_SOURCE, UNTRUSTED_RULE, untrustedSources, wrapUntrusted, wrapUntrustedInline };
+module.exports = { GAME_WIKI_SOURCE, UNTRUSTED_RULE, untrustedLinks, untrustedSources, wrapUntrusted, wrapUntrustedInline };

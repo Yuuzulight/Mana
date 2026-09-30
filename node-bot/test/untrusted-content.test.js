@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { GAME_WIKI_SOURCE, untrustedSources, wrapUntrusted, wrapUntrustedInline } = require("../ai/untrusted-content");
+const { GAME_WIKI_SOURCE, untrustedLinks, untrustedSources, wrapUntrusted, wrapUntrustedInline } = require("../ai/untrusted-content");
 const { wrapWithRiskGate } = require("../ai/tool-risk");
 const { createApprovalGate } = require("../approval-gate");
 
@@ -42,6 +42,21 @@ function setup(options = {}, alwaysAllow = []) {
   const gate = createApprovalGate({ dataDir });
   return { gate, ran, wrapped: wrapWithRiskGate(policy, gate, { mode: "smart", ...options }) };
 }
+
+test("the links a turn's framed pages and search hits came from, once each, not links inside page text", () => {
+  const prompt = [
+    "Me: what does this say?",
+    wrapUntrusted("web page", "URL: https://p.test/a\nTitle: P\n\nsee https://inline.test here"),
+    wrapUntrusted("web search", "1. A\n   https://a.test/x?q=1\n   snip\n2. P again\n   https://p.test/a"),
+    wrapUntrusted("email", "no links"),
+    "https://outside.test",
+  ].join("\n");
+  assert.deepEqual(untrustedLinks(prompt), [
+    { source: "web page", url: "https://p.test/a" },
+    { source: "web search", url: "https://a.test/x?q=1" },
+  ]);
+  assert.deepEqual(untrustedLinks(null), []);
+});
 
 test("after outside content, tools that act or read private things ask for the rest of the turn", async () => {
   // A clean turn: read-tier tools run without a prompt in smart mode.

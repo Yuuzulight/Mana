@@ -149,3 +149,12 @@ test("#914 a toast names the active character when she isn't Mana", async () => 
     proactive.watchSpeaker(() => null);
   }
 });
+
+test("#1124 held remarks are listed for the Background tasks panel", () => {
+  const { state, p, say } = setup();
+  state.gaming = true;
+  say("build finished", { score: 0.9 });
+  assert.deepEqual(p.listHeld(), [
+    { reason: "test", title: undefined, text: "build finished", urgent: false, expiresAt: state.t + 60 * MINUTE },
+  ]);
+});
