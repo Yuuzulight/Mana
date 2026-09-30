@@ -240,6 +240,10 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
+const { createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
+const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
+const { checkMail } = require("./imap-client");
+const { checkCalendar } = require("./calendar-client");
 const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desktop-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
@@ -828,6 +832,8 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
+// #906: the email/calendar accounts from Settings > Calendar & email.
+const mailCalendarSettings = createMailCalendarSettingsStore();
 // #907: the daily briefing (data/briefing.json, Settings > Briefing),
 // through the proactive engine. The chat model writes it only when it's
 // already loaded. Calendar and mail: #906 isn't in yet -- when it lands it
@@ -3015,6 +3021,36 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(speechState());
   });
 
+  // #906: Settings > Calendar & email. Credentials go in and never come
+  // back out (describe() shows hosts and usernames only). This PC with the
+  // admin key only: the body carries an app password, and Test logs in to
+  // the saved server.
+  function allowMailCalendarRequest(req, res) {
+    if (!checkAdminAuth(req, res)) return false;
+    if (isLocalAdminRequest(req)) return true;
+    res.status(403).json({ ok: false, error: ADMIN_KEY_REQUIRED_ERROR });
+    return false;
+  }
+
+  app.get("/mail-calendar", (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    return res.json({ ok: true, ...mailCalendarSettings.describe() });
+  });
+
+  // { kind: "email", host, port, user, password, mailbox } or { kind:
+  // "calendar", url, user, password }; a blank password or url keeps the
+  // saved one. { kind, clear: true } removes that account.
+  app.post("/mail-calendar", (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    const { kind, clear, ...fields } = req.body || {};
+    try {
+      const state = clear === true ? mailCalendarSettings.clear(kind) : mailCalendarSettings.set(kind, fields);
+      return res.json({ ok: true, ...state });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
   // #907: Settings > Briefing. POST takes any of { enabled, time, sections,
   // topics, games }.
   app.get("/briefing", (req, res) => res.json({ ok: true, ...briefing.settings() }));
@@ -3023,6 +3059,21 @@ function registerRoutes(app, upload, deps = {}) {
       return res.json({ ok: true, ...briefing.update(req.body || {}) });
     } catch (e) {
       return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // { kind }: log in to the saved account and report what went wrong.
+  app.post("/mail-calendar/test", async (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    const kind = req.body?.kind;
+    try {
+      if (kind !== "email" && kind !== "calendar") throw new Error("kind must be email or calendar");
+      const account = mailCalendarSettings.get(kind);
+      if (!account) throw new Error(`${kind} isn't set up`);
+      const result = kind === "email" ? await checkMail(account) : await checkCalendar(account);
+      return res.json({ ok: true, ...(typeof result === "object" ? result : {}) });
+    } catch (e) {
+      return res.json({ ok: false, error: e.message });
     }
   });
 
@@ -4726,6 +4777,11 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #906: my email and calendar, only in my own chat (never a
+            // scheduled reply or a Discord/Telegram bridge).
+            ...(userChat
+              ? [createMailCalendarToolSource({ store: mailCalendarSettings, approvalGate: activeApprovalGate })]
+              : []),
             // #911: media keys, volume, apps, audio output, file moves --
             // only when I'm asking.
             ...(userChat

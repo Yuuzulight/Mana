@@ -62,6 +62,13 @@ const BUILTIN_TIERS = {
   reminder__set: "read",
   reminder__list: "read",
   reminder__cancel: "read",
+  // #906: only reach the mail/calendar server I set up in Settings, and
+  // change nothing there (read-only mailbox, BODY.PEEK).
+  email__recent: "read",
+  email__search: "read",
+  email__read: "read",
+  calendar__events: "read",
+  calendar__add_event: "write",
   // #911 (ai/desktop-tool-source.js): the launcher only focuses a window
   // that's already open, and only opens Start-menu apps. Switching the audio
   // output and moving files are "write": they ask first.
@@ -88,7 +95,8 @@ const BUILTIN_TIERS = {
 };
 
 // Built-ins that already ask through the approval gate themselves
-// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests, browser-
+// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests,
+// calendar-add-event, browser-
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
@@ -97,6 +105,7 @@ const SELF_GATED = new Set([
   "skill__run",
   "snapshot__restore",
   "coding__run_tests",
+  "calendar__add_event",
   "browser_automation__navigate",
   "browser_automation__click",
   "browser_automation__type",
