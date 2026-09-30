@@ -168,9 +168,10 @@ internal static class DesktopActions
     }
 
     // Desktop, Downloads, Pictures and Documents, unless the settings list
-    // other folders. Only full paths count.
+    // other folders (#997: Settings > Desktop; an empty list means none).
+    // Only full local paths count (a hand-edited \server\share doesn't).
     internal static IReadOnlyList<string> AllowedFolders(IReadOnlyList<string>? configured) =>
-        (configured is { Count: > 0 }
+        (configured is not null
             ? configured
             : new[]
             {
@@ -179,7 +180,7 @@ internal static class DesktopActions
                 Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
                 Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             })
-        .Where(f => !string.IsNullOrWhiteSpace(f) && Path.IsPathFullyQualified(f))
+        .Where(f => !string.IsNullOrWhiteSpace(f) && Path.IsPathFullyQualified(f) && !f.StartsWith(@"\\", StringComparison.Ordinal))
         .Select(f => Path.TrimEndingDirectorySeparator(Path.GetFullPath(f)))
         .ToList();
 
@@ -211,11 +212,15 @@ internal static class DesktopActions
             throw new InvalidOperationException($"{path} isn't a plain full path");
         }
         var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
-        var root = roots.FirstOrDefault(r => full.Equals(r, StringComparison.OrdinalIgnoreCase)
-            || full.StartsWith(Path.EndsInDirectorySeparator(r) ? r : r + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        var root = roots.FirstOrDefault(r => IsInside(full, r));
         if (root is null || (!allowRoot && full.Length == root.Length))
         {
             throw new InvalidOperationException($"{path} isn't inside the folders I may use: {string.Join(", ", roots)}");
+        }
+        // Even if a drive root was allowed (#997 only warns about those).
+        if (SystemFolders().Any(s => IsInside(full, s)))
+        {
+            throw new InvalidOperationException($"{path} is a system folder; I never move things there");
         }
         for (var dir = full; dir.Length > root.Length; dir = Path.GetDirectoryName(dir)!)
         {
@@ -225,6 +230,52 @@ internal static class DesktopActions
             }
         }
         return full;
+    }
+
+    // `full` is `root` or somewhere under it.
+    private static bool IsInside(string full, string root) =>
+        full.Equals(root, StringComparison.OrdinalIgnoreCase)
+        || full.StartsWith(Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    private static IEnumerable<string> SystemFolders() =>
+        new[] { Environment.SpecialFolder.Windows, Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
+            .Select(Environment.GetFolderPath)
+            .Where(f => f.Length > 0);
+
+    // #997: Settings > Desktop's check before adding an allowed folder.
+    // Error: not a local folder, or Windows/Program Files. Warning (asks
+    // first): a whole drive, or a folder apps keep their own files in.
+    internal static (string? Error, string? Warning) CheckFolder(string path)
+    {
+        if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\", StringComparison.Ordinal) || path.IndexOf(':', 2) >= 0)
+        {
+            return ("Only a folder on this PC, as a full path.", null);
+        }
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        if (!Directory.Exists(full))
+        {
+            return ($"{full} doesn't exist.", null);
+        }
+        if (new DriveInfo(Path.GetPathRoot(full)!).DriveType == DriveType.Network)
+        {
+            return ("Only a folder on this PC, not a network drive.", null);
+        }
+        if (SystemFolders().Any(s => IsInside(full, s)))
+        {
+            return ($"{full} is a system folder; Mana never moves files there.", null);
+        }
+        if (full.Equals(Path.GetPathRoot(full), StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, $"{full} is a whole drive: Mana could move anything on it (except Windows and Program Files). Add it anyway?");
+        }
+        var profile = Path.TrimEndingDirectorySeparator(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        var appFiles = new[] { Path.Combine(profile, "AppData"), Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData) }
+            .Where(f => f.Length > 0);
+        if (full.Equals(profile, StringComparison.OrdinalIgnoreCase) || appFiles.Any(a => IsInside(full, a)))
+        {
+            return (null, $"{full} holds apps' own files (settings, caches); moving things there can break them. Add it anyway?");
+        }
+        return (null, null);
     }
 
     // The allowed folders, or one folder's contents, newest first. Hidden
