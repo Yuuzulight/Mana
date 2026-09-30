@@ -2199,6 +2199,8 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     idleConsolidationFiredForCurrentIdlePeriod = true;
+    // #1007: 20 minutes away is also when Mana may pick up one of her issues.
+    selfWork.startIdle().catch(() => {});
     triggerIdleConsolidation().catch((err) =>
       console.warn(
         "Idle-triggered consolidation failed:",
@@ -2610,6 +2612,7 @@ function registerRoutes(app, upload, deps = {}) {
     createSelfWork({
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
+      isGaming: deps.isGaming || gamingWatch.isGaming,
     });
   app.get("/self-work", (req, res) => {
     if (!checkAdminAuth(req, res)) return;

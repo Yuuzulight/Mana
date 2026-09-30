@@ -10,6 +10,7 @@
 // ponytail: one run at a time, state in memory -- a backend restart ends
 // the run and leaves the worktree for the next one to pick up.
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 const { resolveWithinRoot, isCredentialPath } = require("./ai/tool-policy");
@@ -29,6 +30,23 @@ const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 const MAX_LIST = 100;
 const MAX_LOG = 30;
+
+// #1007: her budget isn't time. It's how many of her PRs may wait for my
+// review at once; she pauses when that many are open.
+const DEFAULT_MAX_OPEN_PRS = 2;
+const MAX_RAM_PERCENT = 85;
+const RAM_WAIT_MS = 10 * 60 * 1000;
+// A run with this many tool calls in a row and no new change and no new
+// test result is stuck (on top of goal mode's 20-round cap).
+const MAX_STEPS_WITHOUT_PROGRESS = 8;
+// Starting on her own while I'm away stays off until #1001 and the fixes
+// for #1002 (args.approved), #1003 (mana/test/run's cwd) and #1004
+// (acp-path-guard.js) are merged. Flip it then.
+const UNATTENDED_ALLOWED = false;
+
+function systemRamPercent() {
+  return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
+}
 
 // #1000's guardrail list. Until it's merged into this checkout the runner
 // refuses to start: her writes must not reach her own guardrails.
@@ -179,6 +197,11 @@ function createSelfWork(options = {}) {
   const reviewEdit = options.reviewEdit || null;
   const guard = options.protectedPaths === undefined ? loadProtectedPaths() : options.protectedPaths;
   const runTests = options.runTests || runTestCommand;
+  const isGaming = options.isGaming || (() => false);
+  const ramPercent = options.ramPercent || systemRamPercent;
+  const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const maxOpenPrs = Math.max(1, Number(env.MANA_SELF_WORK_MAX_OPEN_PRS) || DEFAULT_MAX_OPEN_PRS);
+  const unattendedAllowed = options.unattendedAllowed ?? UNATTENDED_ALLOWED;
   const onEvent = options.onEvent || ((run, text) => console.log(`[self-work #${run.issue}] ${text}`));
   const proposals = createEditProposalStore();
   let current = null;
@@ -202,7 +225,7 @@ function createSelfWork(options = {}) {
 
   function status() {
     if (!current) return { state: "idle" };
-    const { done, stopRequested, lastTestPassed, ...shown } = current;
+    const { done, stopRequested, lastTestPassed, halt, ...shown } = current;
     return { ...shown, log: [...current.log] };
   }
 
@@ -234,8 +257,53 @@ function createSelfWork(options = {}) {
     }
   }
 
+  // Why she shouldn't start now, or null.
+  async function blocker() {
+    if (isGaming()) return "A game is running, so I'm leaving my code alone.";
+    const ram = ramPercent();
+    if (ram > MAX_RAM_PERCENT) return `RAM is at ${ram}%, so I'm not starting.`;
+    const open = await myOpenPrs();
+    if (open.length >= maxOpenPrs) {
+      return `${open.length} of my PRs are waiting for your review (${open.map((p) => `#${p.number}`).join(", ")}), so I'll wait until you get to them.`;
+    }
+    return null;
+  }
+
+  async function myOpenPrs() {
+    const prs = JSON.parse(await gh(["pr", "list", "--state", "open", "--author", "@me", "--limit", "100", "--json", "number,headRefName"]));
+    return prs.filter((p) => p.headRefName.startsWith("mana/"));
+  }
+
+  // #1007: called once per idle period of 20 minutes or more. Only issues
+  // already labelled for her, without a PR of hers yet.
+  async function startIdle() {
+    if (!unattendedAllowed) return { ok: false, error: "Starting on my own is off until my security fixes are merged." };
+    if (starting || current?.state === "running") return { ok: false, error: "I'm already working on an issue." };
+    let issues;
+    try {
+      const open = await myOpenPrs();
+      issues = JSON.parse(
+        await gh(["issue", "list", "--state", "open", "--label", TASK_LABEL, "--limit", "50", "--json", "number"]),
+      )
+        .map((i) => i.number)
+        .filter((n) => !open.some((p) => p.headRefName.startsWith(`mana/${n}-`)))
+        .sort((a, b) => a - b);
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+    if (!issues.length) return { ok: false, error: "No issue is waiting for me." };
+    return start(issues[0]);
+  }
+
   async function begin(issueNumber) {
     if (!guard) return { ok: false, error: "Self-work waits for my guardrail list (#1000) to be merged into this checkout." };
+    let why;
+    try {
+      why = await blocker();
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+    if (why) return { ok: false, error: why };
     const n = Number(issueNumber);
     if (!Number.isInteger(n) || n <= 0) return { ok: false, error: "Which issue? Give me its number." };
     let issue;
@@ -312,6 +380,7 @@ function createSelfWork(options = {}) {
     });
     const summary = stripAttribution(reply?.content);
 
+    if (r.halt) return end(r, r.halt.state, `${r.halt.text} My work so far is in ${r.worktree}.`);
     if (r.stopRequested) return end(r, "stopped", "I stopped, as you asked. My work so far is in the worktree.");
     if (r.refuted) {
       return end(
@@ -367,6 +436,12 @@ How to work:
   function worktreeTools(r) {
     const root = r.worktree;
     const goal = createSessionGoalToolSource();
+    // #1007's no-progress detector: a step makes progress when it reads
+    // something not read before, changes a file, or gets a new test result.
+    let stepsWithoutProgress = 0;
+    let progressed = false;
+    let lastTestOutcome = null;
+    const looked = new Set();
 
     // Inside the worktree by name and by real path: a link (node_modules)
     // can't carry a write out of it.
@@ -441,6 +516,7 @@ How to work:
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, next, "utf8");
       r.lastTestPassed = false;
+      if (next !== original) progressed = true;
       log(r, `Changed ${relPath}${summary ? `: ${summary}` : ""}`);
       return JSON.stringify({ status: "ok", relativePath: relPath, adversarialReview: review || undefined, diff: proposal.diff.slice(0, 2000) });
     }
@@ -457,6 +533,11 @@ How to work:
         const cls = /(\w+Tests)\.cs$/.exec(target);
         if (cls) command += ` --filter FullyQualifiedName~${cls[1]}`;
       }
+      // Wait out a RAM spike (a game loading, a build) before adding a test run to it.
+      for (let waited = 0; ramPercent() > MAX_RAM_PERCENT; waited += 60000) {
+        if (waited >= RAM_WAIT_MS) return halt("paused", `RAM stayed above ${MAX_RAM_PERCENT}%, so I paused.`);
+        await sleep(60000);
+      }
       log(r, `Running ${command}`);
       const clean = testEnv(env);
       const result = await runTests(command, cwd, {
@@ -465,6 +546,9 @@ How to work:
       });
       const passed = result.exitCode === 0 && !result.timedOut;
       r.lastTestPassed = passed;
+      const outcome = `${passed}|${result.output}`;
+      if (outcome !== lastTestOutcome) progressed = true;
+      lastTestOutcome = outcome;
       r.lastTestCommand = command;
       log(r, `${command}: ${passed ? "passed" : "failed"}`);
       return JSON.stringify({ status: "ok", command, passed, ...result });
@@ -477,22 +561,46 @@ How to work:
       [CODING_EDIT_TOOL_NAME]: edit,
       [CODING_TEST_TOOL_NAME]: tests,
     };
+    // A blocked result ends goal mode (it treats it as waiting on me).
+    function halt(state, text) {
+      r.halt ||= { state, text };
+      return JSON.stringify({ status: "blocked", error: r.halt.text });
+    }
+
+    function dispatch(name, args) {
+      if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
+        r.finished = true;
+        return goal.executeTool(name, args);
+      }
+      if (!(name in executors)) throw new Error(`unknown tool: ${name}`);
+      return executors[name](args || {});
+    }
+
     return {
       tools: [...TOOL_SCHEMAS, ...GOAL_TOOL_SCHEMAS],
       isKnownTool: (name) => name in executors || name === SESSION_GOAL_FINISH_TOOL_NAME,
       async executeTool(name, args) {
         if (r.stopRequested) return JSON.stringify({ status: "blocked", error: "stopped by Yuuzulight" });
-        if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
-          r.finished = true;
-          return goal.executeTool(name, args);
+        if (r.halt) return JSON.stringify({ status: "blocked", error: r.halt.text });
+        if (isGaming()) return halt("paused", "A game started, so I stopped.");
+        if (stepsWithoutProgress >= MAX_STEPS_WITHOUT_PROGRESS) {
+          return halt("stuck", `I went ${MAX_STEPS_WITHOUT_PROGRESS} steps without anything new, so I stopped.`);
         }
-        if (!(name in executors)) throw new Error(`unknown tool: ${name}`);
-        return executors[name](args || {});
+        stepsWithoutProgress += 1;
+        progressed = false;
+        const result = await dispatch(name, args);
+        const key = `${name}:${JSON.stringify(args || {})}`;
+        if (name.startsWith("self_work__") && !looked.has(key)) {
+          looked.add(key);
+          progressed = true;
+        }
+        if (progressed) stepsWithoutProgress = 0;
+        return result;
       },
     };
   }
 
-  return { start, stop, status, _current: () => current };
+  return { start, startIdle, stop, status, _current: () => current };
 }
 
 module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL };

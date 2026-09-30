@@ -44,7 +44,7 @@ const guard = {
 };
 
 // Real git; gh answers from a script and records its calls.
-function fakeExec(ghCalls, { labels = [] } = {}) {
+function fakeExec(ghCalls, { labels = [], prs = [], issues = [] } = {}) {
   const { execFile } = require("node:child_process");
   return (cmd, args, { cwd }) =>
     new Promise((resolve) => {
@@ -54,7 +54,11 @@ function fakeExec(ghCalls, { labels = [] } = {}) {
           ? JSON.stringify({ number: 7, title: "Fix the add helper", body: "add() subtracts.", state: "OPEN", labels })
           : args[0] === "pr" && args[1] === "create"
             ? "https://github.com/x/y/pull/8\n"
-            : "";
+            : args[0] === "pr" && args[1] === "list"
+              ? JSON.stringify(prs)
+              : args[0] === "issue" && args[1] === "list"
+                ? JSON.stringify(issues.map((number) => ({ number })))
+                : "";
         return resolve({ code: 0, stdout: out, stderr: "" });
       }
       execFile(cmd, args, { cwd, windowsHide: true }, (err, stdout, stderr) =>
@@ -87,13 +91,13 @@ const fix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "retu
 const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
 
-function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {} } = {}) {
+function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, ...extra } = {}) {
   const ghCalls = [];
   const testRuns = [];
   const sw = createSelfWork({
     repoRoot: repos.live,
     worktreesDir: repos.worktrees,
-    exec: fakeExec(ghCalls, { labels }),
+    exec: fakeExec(ghCalls, { labels, prs, issues }),
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
     protectedPaths: guard,
     reviewEdit: async () => review,
@@ -104,6 +108,8 @@ function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-
       return { exitCode: passed ? 0 : 1, timedOut: false, output: passed ? "ok" : "not ok" };
     },
     onEvent: () => {},
+    ramPercent: () => 50,
+    ...extra,
   });
   return { sw, ghCalls, testRuns };
 }
@@ -155,7 +161,7 @@ test("a refuted write isn't applied and the run stops to ask me", async () => {
   assert.equal(status.state, "needs-you");
   assert.match(status.step, /add\(1, 1\) returns 3/);
   assert.match(fs.readFileSync(path.join(status.worktree, "node-bot", "util.js"), "utf8"), /a - b/);
-  assert.ok(!ghCalls.some((a) => a[0] === "pr"));
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
 test("writes stay inside her worktree and off her guardrails", async () => {
@@ -188,7 +194,7 @@ test("no PR while the tests fail after her last change", async () => {
   await sw.start(7);
   await sw._current().done;
   assert.equal(sw.status().state, "tests-failing");
-  assert.ok(!ghCalls.some((a) => a[0] === "pr"));
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
 test("Stop ends the run before her next step", async () => {
@@ -214,7 +220,7 @@ test("a guardrail changed by anything in the run (her tests too) isn't pushed", 
   await sw._current().done;
   assert.equal(sw.status().state, "needs-you");
   assert.match(sw.status().step, /node-bot\/approval-gate\.js/);
-  assert.ok(!ghCalls.some((a) => a[0] === "pr"));
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
   assert.throws(() => git(repos.origin, "rev-parse", "--verify", "mana/7-fix-the-add-helper"));
 });
 
@@ -250,4 +256,115 @@ test("the routes need my admin key and reach the runner", async () => {
     assert.deepEqual(await (await fetchAsAdmin(`${baseUrl}/self-work`)).json(), { state: "idle" });
   });
   assert.deepEqual(started, [7]);
+});
+
+// #1007: budget and gating.
+const read = ["self_work__read", { path: "node-bot/util.js" }];
+
+test("she pauses while 2 of her PRs wait for review; other PRs don't count", async () => {
+  const repos = makeRepos();
+  const mine = [{ number: 20, headRefName: "mana/5-a" }, { number: 21, headRefName: "mana/6-b" }];
+  const full = selfWork(repos, { calls: [fix], prs: [...mine, { number: 22, headRefName: "feat/x" }] });
+  const refused = await full.sw.start(7);
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /2 of my PRs are waiting for your review \(#20, #21\)/);
+  const one = selfWork(repos, { calls: [], prs: [mine[0], { number: 22, headRefName: "feat/x" }] });
+  assert.equal((await one.sw.start(7)).ok, true);
+  await one.sw._current().done;
+});
+
+test("no start in a game or above 85% RAM, and a game that starts mid-run pauses her", async () => {
+  const repos = makeRepos();
+  assert.match((await selfWork(repos, { calls: [], isGaming: () => true }).sw.start(7)).error, /game is running/);
+  assert.match((await selfWork(repos, { calls: [], ramPercent: () => 91 }).sw.start(7)).error, /RAM is at 91%/);
+
+  const game = { on: false };
+  const { sw, ghCalls } = selfWork(repos, { calls: [fix, () => (game.on = true), runTests, finish], isGaming: () => game.on });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(sw.status().state, "paused");
+  assert.match(sw.status().step, /A game started/);
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
+});
+
+test("a RAM spike holds her test run until it passes, and pauses her if it doesn't", async () => {
+  const repos = makeRepos();
+  const readings = [50, 90, 90, 60]; // the start check, then the test run's
+  const sleeps = [];
+  const waited = selfWork(repos, {
+    calls: [fix, runTests, finish],
+    ramPercent: () => readings.shift() ?? 60,
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  await waited.sw.start(7);
+  await waited.sw._current().done;
+  assert.equal(waited.sw.status().state, "pr-open");
+  assert.deepEqual(sleeps, [60000, 60000]);
+
+  const repos2 = makeRepos();
+  let ram = 50;
+  const stuck = selfWork(repos2, {
+    calls: [fix, () => (ram = 95), runTests, finish],
+    ramPercent: () => ram,
+    sleep: async () => {},
+  });
+  await stuck.sw.start(7);
+  await stuck.sw._current().done;
+  assert.equal(stuck.sw.status().state, "paused");
+  assert.match(stuck.sw.status().step, /RAM stayed above 85%/);
+});
+
+test("a run going nowhere stops after 8 steps without anything new", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const { sw } = selfWork(repos, { calls: [read, ...Array(9).fill(read), fix], seen });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(sw.status().state, "stuck");
+  const results = seen.filter((s) => s.name).map((s) => s.result || s.error);
+  assert.doesNotMatch(results[8], /blocked/); // the first read plus 8 repeats run
+  assert.match(results[9], /"blocked"/);
+  assert.match(results[10], /"blocked"/); // her fix isn't written once she's stuck
+  assert.match(fs.readFileSync(path.join(sw.status().worktree, "node-bot", "util.js"), "utf8"), /a - b/);
+});
+
+test("starting on her own: off by the hard flag, else the oldest labelled issue without her PR", async () => {
+  const repos = makeRepos();
+  const off = selfWork(repos, { calls: [], issues: [7] });
+  assert.match((await off.sw.startIdle()).error, /off until my security fixes are merged/);
+  assert.equal(off.ghCalls.length, 0);
+
+  const on = selfWork(repos, {
+    calls: [],
+    issues: [9, 3, 7],
+    prs: [{ number: 30, headRefName: "mana/3-old" }],
+    labels: [{ name: "mana-task" }],
+    unattendedAllowed: true,
+  });
+  assert.equal((await on.sw.startIdle()).ok, true);
+  assert.equal(on.sw.status().issue, 7);
+  await on.sw._current().done;
+});
+
+test("20 minutes idle tries an idle start once per idle period", async () => {
+  const { createApp } = require("../server");
+  const { withServer } = require("./helpers");
+  let idleStarts = 0;
+  const fake = { startIdle: async () => (idleStarts++, { ok: false }), status: () => ({ state: "idle" }) };
+  const app = createApp({
+    selfWork: fake,
+    getGamingStatus: () => ({ gamingAppRunning: false }),
+    triggerIdleConsolidation: async () => {},
+  });
+  await withServer(app, async (baseUrl) => {
+    const report = (idleSeconds) =>
+      fetch(`${baseUrl}/internal/idle-report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idleSeconds }) });
+    await report(60);
+    await report(1300);
+    await report(1400);
+    assert.equal(idleStarts, 1);
+    await report(10);
+    await report(1300);
+    assert.equal(idleStarts, 2);
+  });
 });
