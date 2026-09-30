@@ -173,7 +173,7 @@ public class ToolPanelHostTests : IDisposable
         throw new InvalidOperationException($"No matching {typeof(T).Name}.");
     }
 
-    private static void RunSta(Action body)
+    internal static void RunSta(Action body)
     {
         Exception? error = null;
         var thread = new Thread(() =>

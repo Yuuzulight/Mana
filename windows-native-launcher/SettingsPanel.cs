@@ -126,6 +126,7 @@ internal sealed class SettingsPanel : UserControl
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
+            page.AutoScroll = true; // #1119: fixed-width rows scroll in the narrow tool panel
         }
         // #922: leaving the Voice tab mid-enrolment cancels it, like closing Settings.
         tabs.Deselected += (_, e) =>
@@ -135,8 +136,50 @@ internal sealed class SettingsPanel : UserControl
                 enrolmentCancel?.Cancel();
             }
         };
+        // #1119: so does the tool panel hiding it (it isn't closed any more).
+        VisibleChanged += (_, _) =>
+        {
+            if (!Visible)
+            {
+                enrolmentCancel?.Cancel();
+            }
+        };
         Controls.Add(tabs);
+
+        // #1119: in the chat window's tool panel the tab strip won't fit, so
+        // below NarrowWidth a dropdown picks the tab and the strip folds away.
+        pagePicker.Items.AddRange(tabs.TabPages.Cast<TabPage>().Select(p => p.Text).ToArray<object>());
+        pagePicker.SelectedIndex = 0;
+        pagePicker.SelectedIndexChanged += (_, _) => tabs.SelectedIndex = pagePicker.SelectedIndex;
+        tabs.SelectedIndexChanged += (_, _) => pagePicker.SelectedIndex = tabs.SelectedIndex;
+        var stripSize = Size.Empty;
+        bool? wasNarrow = null;
+        SizeChanged += (_, _) =>
+        {
+            var narrow = Width < NarrowWidth;
+            if (wasNarrow == narrow)
+            {
+                return;
+            }
+            wasNarrow = narrow;
+            if (narrow)
+            {
+                stripSize = tabs.ItemSize; // measured once there's a handle
+            }
+            pagePicker.Visible = narrow;
+            tabs.SizeMode = narrow ? TabSizeMode.Fixed : TabSizeMode.Normal;
+            tabs.ItemSize = narrow ? new Size(0, 1) : stripSize;
+        };
+        Controls.Add(pagePicker);
     }
+
+    internal const int NarrowWidth = 560;
+    private readonly ComboBox pagePicker = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList, Visible = false, AccessibleName = "Settings section", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+    internal ComboBox PagePicker => pagePicker; // tests
+
+    // #1119: Settings > Presets' active choice, as it's saved, so a
+    // non-modal Settings applies it to the next reply.
+    public Action<string?>? ActivePresetChanged { get; set; }
 
     public async Task RefreshAllAsync()
     {
@@ -2156,7 +2199,14 @@ internal sealed class SettingsPanel : UserControl
         logsTextBox.Font = new Font(FontFamily.GenericMonospace, 9);
 
         RefreshLogsTab();
-        logRefreshTimer.Tick += (_, _) => RefreshLogsTab();
+        // Only while it's in view: Settings in the tool panel lives as long as the app (#1119).
+        logRefreshTimer.Tick += (_, _) =>
+        {
+            if (logsTextBox.Visible)
+            {
+                RefreshLogsTab();
+            }
+        };
         logRefreshTimer.Start();
 
         return new TabPage("Logs") { Controls = { logsTextBox } };
@@ -2423,7 +2473,7 @@ internal sealed class SettingsPanel : UserControl
         return page;
     }
 
-    private static void SaveActivePresetId(string? presetId)
+    private void SaveActivePresetId(string? presetId)
     {
         var settings = ManaSettingsStore.Load();
         if (settings.ActivePresetId == presetId)
@@ -2432,6 +2482,7 @@ internal sealed class SettingsPanel : UserControl
         }
         settings.ActivePresetId = presetId;
         settings.Save();
+        ActivePresetChanged?.Invoke(presetId);
     }
 
     private async Task CreatePresetAsync()
