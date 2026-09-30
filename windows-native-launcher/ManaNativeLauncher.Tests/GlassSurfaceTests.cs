@@ -62,4 +62,22 @@ public class GlassSurfaceTests
         Assert.Equal(GlassSurface.GlassFill, card.BackColor);
         Assert.Equal(Color.Transparent, button.BackColor);
     }
+
+    // The #652 mockup's timing: a 9s cycle per surface, its delay apart, the
+    // band crossing in the last 30% (2.7s).
+    [Theory]
+    [InlineData(1000, 2200, null)]    // before its delay
+    [InlineData(2200 + 6299, 2200, null)] // still resting
+    [InlineData(2200 + 6300, 2200, 0f)]
+    [InlineData(2200 + 7650, 2200, 0.5f)] // halfway, eased
+    [InlineData(2200 + 9000 + 6300, 2200, 0f)] // and again next cycle
+    public void SheenAt_FollowsTheMockupsCycle(long elapsedMs, int delayMs, float? expected)
+    {
+        var progress = GlassShimmer.SheenAt(elapsedMs, delayMs);
+        Assert.Equal(expected is null, progress is null);
+        if (expected is float value)
+        {
+            Assert.Equal(value, progress!.Value, 3);
+        }
+    }
 }
