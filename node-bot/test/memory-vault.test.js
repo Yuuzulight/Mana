@@ -617,3 +617,46 @@ test("views and the journal never create a missing vault", async () => {
   assert.equal(await vault.writeJournal(), false);
   assert.equal(fs.existsSync(path.join(root, "nope")), false);
 });
+
+test("with the watcher down, a 60 s poll still brings edits in, and the status says polling", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  const v = setup();
+  v.store.rememberFact({ key: "gpu", text: "RTX 4080.", origin: { kind: "user_stated" } });
+  const vault = createMemoryVault({ store: v.store, vaultDir: v.vaultDir, watch: false, log: () => {} });
+  assert.equal(vault.getStatus().mode, "stopped");
+  vault.start();
+  assert.equal(vault.getStatus().mode, "polling");
+  v.write("Facts/gpu.md", v.read("Facts/gpu.md").replace("RTX 4080.", "RTX 5080."));
+  t.mock.timers.tick(59 * 1000);
+  assert.equal(v.fact("gpu").text, "RTX 4080.");
+  t.mock.timers.tick(1000);
+  assert.equal(v.fact("gpu").text, "RTX 5080.");
+  const check = runDoctorChecks({ memoryVault: vault.getStatus() }).checks.find((c) => c.id === "memory-vault");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /file watcher is down, so it checks every 60 s/);
+  vault.stop();
+  assert.equal(vault.getStatus().mode, "stopped");
+});
+
+test(
+  "the poll restarts a watcher whose Facts/ folder was replaced",
+  { skip: process.platform === "win32" && "Windows won't rename a watched folder" },
+  (t) => {
+    t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+    const v = setup();
+    const logs = [];
+    const vault = createMemoryVault({ store: v.store, vaultDir: v.vaultDir, log: (m) => logs.push(m) });
+    vault.start();
+    try {
+      assert.equal(vault.getStatus().mode, "watching");
+      fs.renameSync(v.note("Facts"), v.note("Facts-old"));
+      fs.mkdirSync(v.note("Facts"));
+      t.mock.timers.tick(60 * 1000);
+      // Caught by the inode check, or by the watcher's own error event.
+      assert.ok(logs.some((m) => /^Facts\/ was replaced; restarting|^watcher stopped/.test(m)), logs.join("\n"));
+      assert.equal(vault.getStatus().mode, "watching");
+    } finally {
+      vault.stop();
+    }
+  },
+);
