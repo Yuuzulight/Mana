@@ -690,21 +690,30 @@ internal sealed class ManaProcessManager : IDisposable
         }
     }
 
-    // Fresh log file per launch (truncated, not appended) -- matches
-    // start_fish_speech_native.ps1's own -RedirectStandardOutput/-Error
-    // behavior, which overwrites on each run rather than accumulating
-    // forever. Best-effort only: a log directory that can't be written to
-    // must never prevent the service itself from starting.
-    private static void AttachLineLogger(Process process, bool isError, string logPath)
+    // Fresh log file per launch rather than accumulating forever, but the
+    // previous run's log is kept as *.prev.log: a crash is only looked at
+    // after the next launch, which used to truncate the log that had it.
+    // Best-effort only: a log directory that can't be written to must
+    // never prevent the service itself from starting.
+    internal static void StartLogFile(string logPath)
     {
         try
         {
+            if (File.Exists(logPath))
+            {
+                File.Move(logPath, Path.ChangeExtension(logPath, ".prev.log"), overwrite: true);
+            }
             File.WriteAllText(logPath, string.Empty);
         }
         catch
         {
             // Best effort.
         }
+    }
+
+    private static void AttachLineLogger(Process process, bool isError, string logPath)
+    {
+        StartLogFile(logPath);
 
         DataReceivedEventHandler handler = (_, e) =>
         {
