@@ -19,22 +19,27 @@ namespace ManaNativeLauncher.Tests;
 // browser.
 public class BrowserToolTests
 {
-    private static string Activity(string lastAt) => $$"""
+    private const string NotTakenOver = """{"active":false,"needsYou":null}""";
+
+    private static string Activity(string lastAt, string takeOver = NotTakenOver) => $$"""
         {"log":[{"action":"navigate","status":"ok","summary":"Navigating to https://shop.test/","at":"{{lastAt}}"}],
          "screenshot":null,
          "page":{"url":"https://shop.test/cart","title":"Cart"},
-         "turnPages":[{"source":"web search","url":"https://a.test/x"},{"source":"web page","url":"javascript:alert(1)"}]}
+         "turnPages":[{"source":"web search","url":"https://a.test/x"},{"source":"web page","url":"javascript:alert(1)"}],
+         "takeOver":{{takeOver}}}
         """;
 
     private static ManaBackendClient Backend(List<string> requests, Func<string> activity) =>
         new(new FakeHttpMessageHandler(request =>
         {
             var path = request.RequestUri!.AbsolutePath;
-            requests.Add($"{request.Method} {path}");
+            var body = request.Content?.ReadAsStringAsync().Result;
+            requests.Add(body is { Length: > 2 } ? $"{request.Method} {path} {body}" : $"{request.Method} {path}");
             var json = path switch
             {
                 "/browser-automation/activity" => activity(),
                 "/browser/close" => """{"ok":true}""",
+                "/browser/take-over" or "/browser/hand-back" => NotTakenOver,
                 _ => null,
             };
             return json is null
@@ -50,9 +55,17 @@ public class BrowserToolTests
         Assert.Equal("Cart", activity.PageTitle);
         Assert.Equal(["web search", "web page"], activity.TurnPages.Select(p => p.Source));
 
+        Assert.False(activity.TakenOver);
+        Assert.Null(activity.NeedsYou);
+
         var before = await Backend([], () => """{"log":[],"screenshot":null}""").GetBrowserAutomationActivityAsync();
         Assert.Null(before.PageUrl);
         Assert.Empty(before.TurnPages);
+        Assert.False(before.TakenOver);
+
+        var asking = await Backend([], () => Activity("t1", """{"active":true,"needsYou":"Log in"}""")).GetBrowserAutomationActivityAsync();
+        Assert.True(asking.TakenOver);
+        Assert.Equal("Log in", asking.NeedsYou);
     }
 
     [Theory]
@@ -64,7 +77,7 @@ public class BrowserToolTests
     public void OnlyWebPagesOpen(string? url, bool opens) => Assert.Equal(opens, BrowserTool.IsWebUrl(url));
 
     [Fact]
-    public void Tool_ShowsThePage_TakesOver_OpensOnlyWebLinks_AndStops()
+    public void Tool_ShowsThePage_OpensOnlyWebLinks_AndStops()
     {
         RunSta(() =>
         {
@@ -82,7 +95,6 @@ public class BrowserToolTests
             Assert.Equal(["https://a.test/x", "javascript:alert(1)"], pages.Items.Cast<ListViewItem>().Select(i => i.SubItems[1].Text));
 
             var takeOver = tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Take over");
-            Click(takeOver);
             _ = pages.Handle; // SelectedItems needs the native list
             foreach (ListViewItem item in pages.Items)
             {
@@ -91,7 +103,7 @@ public class BrowserToolTests
                 item.Selected = false;
             }
             // The javascript: link from outside content never opens.
-            Assert.Equal(["https://shop.test/cart", "https://a.test/x"], opened);
+            Assert.Equal(["https://a.test/x"], opened);
 
             var stop = tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Stop");
             Click(stop);
@@ -103,6 +115,45 @@ public class BrowserToolTests
             lastAt = "t2";
             Pump(tool.RefreshAsync());
             Assert.Contains(tool.Controls.OfType<Label>(), l => l.Text == "Cart");
+        });
+    }
+
+    [Fact]
+    public void Tool_TakesOverInAWindow_ShowsWhySheAsked_AndHandsBackOnDone()
+    {
+        RunSta(() =>
+        {
+            var requests = new List<string>();
+            var takeOverState = """{"active":false,"needsYou":"Log in to the shop"}""";
+            using var tool = new BrowserTool(Backend(requests, () => Activity("t1", takeOverState)));
+            var opened = new List<string>();
+            tool.OpenUrl = opened.Add;
+            Label Title() => tool.Controls.OfType<Label>().Last(); // added last: the title
+            Button TakeOverButton() => tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Dock == DockStyle.Left);
+
+            Pump(tool.RefreshAsync());
+            Assert.Equal("She needs you: Log in to the shop", Title().Text);
+            var button = TakeOverButton();
+            Assert.Equal("Take over", button.Text);
+
+            // Take over asks the backend for the window at her page; it never
+            // opens my own browser.
+            Click(button);
+            Pump(() => requests.Contains("""POST /browser/take-over {"url":"https://shop.test/cart"}""") && button.Enabled);
+            takeOverState = """{"active":true,"needsYou":null}""";
+            Pump(tool.RefreshAsync());
+            Assert.Equal("Done", button.Text);
+            Assert.Equal("Done: hand her browser back", button.AccessibleName);
+            Assert.Equal("You have her browser. Press Done when you're finished.", Title().Text);
+            Assert.True(button.Enabled);
+
+            Click(button);
+            Pump(() => requests.Contains("POST /browser/hand-back") && button.Enabled);
+            takeOverState = NotTakenOver;
+            Pump(tool.RefreshAsync());
+            Assert.Equal("Take over", button.Text);
+            Assert.Equal("Cart", Title().Text);
+            Assert.Empty(opened);
         });
     }
 

@@ -61,6 +61,7 @@ const BUILTIN_TIERS = {
   speech__list_words: "read",
   browser_automation__snapshot: "read",
   browser_automation__scroll: "read",
+  browser_automation__hand_over: "read", // #1139: only asks me, in the Browser panel
   coding__propose_edit: "read",
   reminder__set: "read",
   reminder__list: "read",
@@ -122,6 +123,7 @@ const SELF_GATED = new Set([
   "browser_automation__select",
   "browser_automation__scroll",
   "browser_automation__back",
+  "browser_automation__hand_over",
 ]);
 
 // Once a turn has taken in outside content (a web page, search or wiki

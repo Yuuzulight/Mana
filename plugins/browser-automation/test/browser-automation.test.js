@@ -7,6 +7,7 @@ const {
   createBrowserSession,
   interactiveElements,
   extractTextInPage,
+  sensitiveInPage,
   refSelector,
 } = require("../browser-automation");
 
@@ -30,7 +31,7 @@ const ARIA = `- generic [active] [ref=e1]:
 // A fake Playwright page: ariaSnapshot/evaluate return what the test
 // sets, and locator(selector) records the actions taken on it.
 function createFakePage(overrides = {}) {
-  const state = { url: "about:blank", aria: overrides.aria ?? ARIA, text: overrides.text ?? "page text", calls: [] };
+  const state = { url: "about:blank", aria: overrides.aria ?? ARIA, text: overrides.text ?? "page text", sensitive: null, calls: [] };
   return {
     state,
     async goto(url) {
@@ -43,6 +44,7 @@ function createFakePage(overrides = {}) {
     },
     async evaluate(fn, arg) {
       if (fn === extractTextInPage) return state.text.slice(0, arg);
+      if (fn === sensitiveInPage) return state.sensitive;
       throw new Error("unexpected evaluate() call in test");
     },
     locator(selector) {
@@ -232,4 +234,43 @@ test("extractTextInPage trims, squeezes blank runs and truncates document.body.i
   } finally {
     delete global.document;
   }
+});
+
+test("#1139: on a password or payment page she reads, but never clicks, types or selects", async () => {
+  const page = createFakePage();
+  const session = createBrowserSession({ page });
+  page.state.sensitive = "a password";
+  const result = await session.navigate("https://example.com/login");
+  assert.equal(result.sensitive, "a password");
+
+  await assert.rejects(() => session.type("e4", "hunter2"), /asks for a password, so it's the user's to do/);
+  await assert.rejects(() => session.click("e5"), /hand it over/);
+  page.state.sensitive = "payment details";
+  await assert.rejects(() => session.select("e8", "Visa"), /asks for payment details/);
+  assert.deepEqual(actions(page), [["goto", "https://example.com/login"]]);
+
+  // She can still leave.
+  page.state.sensitive = null;
+  await session.back();
+  await session.click("e5");
+  assert.deepEqual(actions(page).slice(1), [["back"], ["click", "aria-ref=e5", { timeout: 5000 }]]);
+});
+
+test("#1139: sensitiveInPage spots password, one-time-code and card fields, and checkout URLs", () => {
+  function check(selectorsPresent, pathname = "/") {
+    global.document = { querySelector: (s) => (selectorsPresent.some((p) => s.includes(p)) ? {} : null) };
+    global.location = { pathname };
+    try {
+      return sensitiveInPage();
+    } finally {
+      delete global.document;
+      delete global.location;
+    }
+  }
+  assert.equal(check(['input[type="password" i]']), "a password");
+  assert.equal(check(['[autocomplete~="one-time-code"]']), "a password");
+  assert.equal(check(['[autocomplete*="cc-"]']), "payment details");
+  assert.equal(check(['iframe[src*="stripe.com"]']), "payment details");
+  assert.equal(check([], "/cart/Checkout"), "payment details");
+  assert.equal(check([], "/wiki/Cats"), null);
 });

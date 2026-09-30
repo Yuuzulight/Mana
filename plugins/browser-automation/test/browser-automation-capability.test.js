@@ -108,6 +108,7 @@ function createFakeChromium(pageOverrides = {}) {
     async ariaSnapshot() { return '- button "Go" [ref=e1]'; },
     async evaluate(fn) {
       if (fn === extractTextInPage) return "page text";
+      if (fn.name === "sensitiveInPage") return null;
       throw new Error("unexpected evaluate() call in test");
     },
     async title() { return "Example"; },
@@ -252,4 +253,109 @@ test("plugin metadata matches the shape other Mana plugins use", () => {
   assert.equal(browserAutomationPlugin.key, "browserAutomation");
   assert.equal(browserAutomationPlugin.category, "Web");
   assert.equal(browserAutomationPlugin.defaultEnabled, false);
+});
+
+// Separate fakes for her headless Edge and my visible window, handed out
+// in launch order; each records where its page went.
+function createFakeEdge() {
+  const launches = [];
+  function makeContext(headless) {
+    let closeListener = null;
+    const page = {
+      gone: [],
+      _url: "about:blank",
+      async route() {},
+      async goto(url) { this.gone.push(url); this._url = url; },
+      async url() { return this._url; },
+    };
+    return {
+      headless,
+      page,
+      closed: 0,
+      pages: () => [page],
+      on: (event, fn) => { if (event === "close") closeListener = fn; },
+      async close() { this.closed += 1; closeListener?.(); },
+    };
+  }
+  const chromium = {
+    async launchPersistentContext(dir, options) {
+      const ctx = makeContext(options.headless);
+      launches.push({ dir, options, ctx });
+      return ctx;
+    },
+  };
+  return { chromium, launches };
+}
+
+test("#1139: take over reopens her profile visibly at her page; Done hands it back headless at mine", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeEdge();
+  const deps = { env: FAKE_ENV, chromium, ramPercent: () => 50 };
+  await browserAutomationPlugin.getSession(deps);
+  launches[0].ctx.page._url = "https://shop.test/cart";
+  browserAutomationPlugin.requestHandOver("Log in to the shop");
+  assert.deepEqual(browserAutomationPlugin.takeOverStatus(), { active: false, needsYou: "Log in to the shop" });
+
+  await browserAutomationPlugin.takeOver(deps);
+  assert.equal(launches[0].ctx.closed, 1);
+  assert.equal(launches[1].dir, browserAutomationPlugin.PROFILE_DIR);
+  assert.equal(launches[1].options.headless, false);
+  assert.equal(launches[1].options.viewport, null);
+  assert.deepEqual(launches[1].options.ignoreDefaultArgs, ["--enable-automation"]);
+  assert.deepEqual(launches[1].ctx.page.gone, ["https://shop.test/cart"]);
+  assert.deepEqual(browserAutomationPlugin.takeOverStatus(), { active: true, needsYou: null });
+
+  // She waits while I have it, and a second click doesn't open another window.
+  await assert.rejects(() => browserAutomationPlugin.getSession(deps), /the user has the browser/);
+  await browserAutomationPlugin.takeOver(deps);
+  assert.equal(launches.length, 2);
+  // Nor does the idle check close my window.
+  await browserAutomationPlugin.checkSession();
+  assert.equal(launches[1].ctx.closed, 0);
+
+  launches[1].ctx.page._url = "https://shop.test/account";
+  await browserAutomationPlugin.handBack();
+  assert.equal(launches[1].ctx.closed, 1);
+  assert.deepEqual(browserAutomationPlugin.takeOverStatus(), { active: false, needsYou: null });
+
+  await browserAutomationPlugin.getSession(deps);
+  assert.equal(launches[2].options.headless, true);
+  assert.deepEqual(launches[2].ctx.page.gone, ["https://shop.test/account"]);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#1139: closing the window myself counts as Done; with no page of hers, take over opens the panel's page", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeEdge();
+  const deps = { env: FAKE_ENV, chromium, ramPercent: () => 50 };
+  await browserAutomationPlugin.takeOver(deps, "javascript:alert(1)");
+  assert.deepEqual(launches[0].ctx.page.gone, []);
+  await launches[0].ctx.close();
+  assert.equal(browserAutomationPlugin.takeOverStatus().active, false);
+
+  await browserAutomationPlugin.takeOver(deps, "https://shop.test/cart");
+  assert.deepEqual(launches[1].ctx.page.gone, ["https://shop.test/cart"]);
+  await browserAutomationPlugin.handBack();
+});
+
+test("#1139: the take-over and Done routes are local and admin-only", async () => {
+  const { chromium, launches } = createFakeEdge();
+  let adminOk = false;
+  const app = buildApp({
+    isLocalRestartRequest: () => true,
+    checkAdminAuth: (req, res) => adminOk || (res.status(401).json({ error: "admin key required" }), false),
+    env: FAKE_ENV,
+    chromium,
+    ramPercent: () => 50,
+  });
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await postJson(`${baseUrl}/browser/take-over`, {})).response.status, 401);
+    assert.equal(launches.length, 0);
+    adminOk = true;
+    const { payload } = await postJson(`${baseUrl}/browser/take-over`, { url: "https://shop.test/" });
+    assert.deepEqual(payload, { active: true, needsYou: null });
+    const done = await postJson(`${baseUrl}/browser/hand-back`, {});
+    assert.deepEqual(done.payload, { active: false, needsYou: null });
+  });
+  assert.equal(launches[0].ctx.closed, 1);
 });

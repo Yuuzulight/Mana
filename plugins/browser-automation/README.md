@@ -38,6 +38,20 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Take over and hand back (#1139)
+
+Chromium can't turn a headless session visible, so **Take over** (the
+Browser panel's button) closes hers and opens the same profile as a normal
+Edge window at her page. I do the login, CAPTCHA or payment there myself;
+nothing I type goes to the model. **Done** closes the window (so does
+closing it myself) and she carries on headless, with my login kept, at the
+page I finished on. While I have it, her browser calls wait.
+
+She never types credentials or pays: on a page with a password, one-time
+code or card field, a payment provider's iframe, or a checkout/payment/
+billing URL, her click, type and select are refused, and the panel asks me
+to take over. She can also ask herself (`browser_automation__hand_over`).
+
 ## Routes
 
 - `POST /browser/navigate` -- `{ url }` (http/https only).
@@ -48,6 +62,7 @@ the Browser panel, taken while it's on screen; the model never sees one.
 Each returns `{url, title, elements, text}`, or after an action on the
 same page `{url, title, added, removed, text?}`.
 - `POST /browser/close` -- ends the session.
+- `POST /browser/take-over` -- `{ url? }`, and `POST /browser/hand-back` (admin key too).
 
 All local-only (same loopback check `/admin/restart` and the
 brain-provider test route already use) -- this drives a real browser, so
