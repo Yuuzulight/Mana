@@ -13,7 +13,18 @@
 // Sources come in as context.backgroundTaskSources (server.js); any of
 // them may be missing, and one that throws is left out of the list rather
 // than failing it.
+const rateLimit = require("express-rate-limit");
 const { cancelResearchJob } = require("./deep-research-capability");
+
+// server.js's app-wide limiter already covers these; a route-local one is
+// what CodeQL can see (same as memory-facts-capability.js). The panel polls
+// every 3 s, well under it.
+const backgroundTasksRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: Number(process.env.MANA_RATE_LIMIT_MAX || 300),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const KEY = "backgroundTasks";
 
@@ -315,12 +326,12 @@ function registerBackgroundTasksRoutes(app, context = {}) {
   const { checkAdminAuth } = context;
   if (typeof checkAdminAuth !== "function") throw new Error("background tasks need checkAdminAuth");
 
-  app.get("/background-tasks", (req, res) => {
+  app.get("/background-tasks", backgroundTasksRateLimiter, (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ tasks: listBackgroundTasks(sources) });
   });
 
-  app.post("/background-tasks/:id/cancel", (req, res) => {
+  app.post("/background-tasks/:id/cancel", backgroundTasksRateLimiter, (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     const cancelled = cancelBackgroundTask(sources, req.params.id);
     if (cancelled === null) return res.status(404).json({ error: "no such background task" });
