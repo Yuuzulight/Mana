@@ -1973,27 +1973,6 @@ function parseTasklistCsvLine(line) {
   return values;
 }
 
-function getRunningProcessNames() {
-  if (process.platform !== "win32") {
-    return [];
-  }
-
-  const result = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
-    encoding: "utf8",
-    maxBuffer: 5 * 1024 * 1024,
-    windowsHide: true,
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || "tasklist failed");
-  }
-
-  return parseTasklistNames(result.stdout);
-}
-
 function parseTasklistNames(stdout) {
   return (stdout || "")
     .split(/\r?\n/)
@@ -2002,17 +1981,14 @@ function parseTasklistNames(stdout) {
     .map((name) => name.toLowerCase());
 }
 
+// The gaming watch's cached answer (polled every 30 s with a non-blocking
+// tasklist), never a fresh tasklist: this runs on every spoken reply and
+// every launcher status poll, and a spawnSync here stalled the event loop.
 function getGamingStatus() {
-  // Quick rundown: if one watched game process is running, Mana uses the lighter idle loop.
-  const runningProcesses = getRunningProcessNames();
-  const watchedNames = new Set(GAMING_PROCESS_NAMES);
-  const matchedProcesses = [
-    ...new Set(runningProcesses.filter((name) => watchedNames.has(name))),
-  ];
-
+  const game = gamingWatch.game();
   return {
-    gamingAppRunning: matchedProcesses.length > 0,
-    matchedProcesses,
+    gamingAppRunning: gamingWatch.isGaming(),
+    matchedProcesses: game ? [game] : [],
     watchedProcesses: GAMING_PROCESS_NAMES,
   };
 }
