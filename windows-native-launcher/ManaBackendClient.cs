@@ -2052,6 +2052,75 @@ internal sealed class ManaBackendClient
     }
 
     // #646: admin-gated (checkAdminAuth) like the proposal approve route.
+    // #1011: node-bot opens an issue and a revert PR for a merged PR
+    // (admin-gated). MergeCommit is what the rollback checks against.
+    public async Task<ManaRevertResult> RevertPrAsync(int pr)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { pr }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/updates/revert", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        string? Text(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        return new ManaRevertResult { PrUrl = Text("prUrl"), MergeCommit = Text("mergeCommit"), Error = Text("error") };
+    }
+
+    // #1008: Mana's work on her own code. All three are admin-gated.
+    public async Task<ManaSelfWorkStatus> GetSelfWorkAsync()
+    {
+        using var response = await http.GetAsync("/self-work");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        string? Text(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        var log = new List<string>();
+        if (root.TryGetProperty("log", out var logElement) && logElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in logElement.EnumerateArray())
+            {
+                if (entry.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                {
+                    log.Add(text.GetString()!);
+                }
+            }
+        }
+        return new ManaSelfWorkStatus
+        {
+            State = Text("state") ?? "idle",
+            Issue = root.TryGetProperty("issue", out var issue) && issue.ValueKind == JsonValueKind.Number ? issue.GetInt32() : null,
+            Title = Text("title"),
+            Branch = Text("branch"),
+            Worktree = Text("worktree"),
+            Step = Text("step"),
+            PrUrl = Text("prUrl"),
+            Log = log,
+        };
+    }
+
+    // Null when she started, else why not (a PR limit, a game, RAM...).
+    // #1009: allowGuardrails flags the run: she may change her guardrails,
+    // and the PR opens as a labelled draft.
+    public async Task<string?> StartSelfWorkAsync(int issue, bool allowGuardrails = false)
+    {
+        var payload = allowGuardrails ? JsonSerializer.Serialize(new { issue, allowGuardrails }) : JsonSerializer.Serialize(new { issue });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/self-work/start", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        return root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True
+            ? null
+            : root.TryGetProperty("error", out var error) ? error.GetString() : "She didn't start.";
+    }
+
+    public async Task StopSelfWorkAsync()
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/self-work/stop", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task StopAgentRunAsync(string id)
     {
         var payload = JsonSerializer.Serialize(new { id });
@@ -2591,6 +2660,28 @@ internal sealed class ManaBrowserAutomationLogEntry
     public string Status { get; init; } = "";
     public string Summary { get; init; } = "";
     public string At { get; init; } = "";
+}
+
+// #1011: POST /updates/revert's answer.
+internal sealed class ManaRevertResult
+{
+    public string? PrUrl { get; init; }
+    public string? MergeCommit { get; init; }
+    public string? Error { get; init; }
+}
+
+// #1008: GET /self-work (node-bot/self-work.js). State is "idle" when she
+// hasn't worked on her own code since the backend started.
+internal sealed class ManaSelfWorkStatus
+{
+    public string State { get; init; } = "idle";
+    public int? Issue { get; init; }
+    public string? Title { get; init; }
+    public string? Branch { get; init; }
+    public string? Worktree { get; init; }
+    public string? Step { get; init; }
+    public string? PrUrl { get; init; }
+    public IReadOnlyList<string> Log { get; init; } = [];
 }
 
 // #646: one entry from GET /agent/activity (node-bot/agent-activity.js).

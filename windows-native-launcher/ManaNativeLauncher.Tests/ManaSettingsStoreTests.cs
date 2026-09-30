@@ -201,4 +201,14 @@ public class ManaSettingsStoreTests
             Directory.Delete(directory, recursive: true);
         }
     }
+
+    // Captions and bubbles are separate toggles; a file saved before the
+    // captions toggle keeps #701's "bubbles on = no captions".
+    [Theory]
+    [InlineData(null, false, true)]
+    [InlineData(null, true, false)]
+    [InlineData(true, true, true)]
+    [InlineData(false, false, false)]
+    public void CaptionsShown_IsIndependentOfBubblesOnceSet(bool? captions, bool bubbles, bool expected) =>
+        Assert.Equal(expected, new ManaSettingsStore { Captions = captions, ChatBubbles = bubbles }.CaptionsShown());
 }

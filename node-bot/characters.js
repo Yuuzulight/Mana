@@ -15,15 +15,15 @@
 //
 // An entry with a built-in id only overrides the fields it sets. Relative
 // paths are relative to the file's folder; voice clips must be under it
-// (tools/qwen3tts_service.py refuses any other file). The active character is not
-// persisted: a restart brings Mana back.
+// (tools/qwen3tts_service.py refuses any other file). The active character
+// is remembered across restarts (options.activeFilePath).
 //
 // Facts about the user stay shared; each character's mood and personality
 // layer are her own (perCharacter below, wired in server.js).
 const fs = require("node:fs");
 const path = require("node:path");
 const { AsyncLocalStorage } = require("node:async_hooks");
-const { MANA_PERSONA } = require("./persona");
+const { MANA_PERSONA, SPOKEN_STYLE } = require("./persona");
 
 const DEFAULT_ID = "mana";
 const DEFAULT_FILE_PATH = path.join(__dirname, "data", "characters.json");
@@ -72,16 +72,27 @@ function normalize(entry, baseDir, builtIn) {
 
 // options.filePath: injectable for tests. options.onSwitch(character,
 // previous) runs after every change of the active character.
+// options.activeFilePath: where the active character's id is kept so a
+// restart brings her back; omit it to keep it in memory only.
 // options.isGaming: whether a game is being played (group mode pauses);
 // options.onGroupChange(partner or null) runs whenever the character
 // replying alongside the active one changes.
 function createCharacterStore(options = {}) {
   const filePath = options.filePath || DEFAULT_FILE_PATH;
+  const activeFilePath = options.activeFilePath || null;
   const onSwitch = options.onSwitch || (() => {});
   const isGaming = options.isGaming || (() => false);
   const onGroupChange = options.onGroupChange || (() => {});
   const builtIn = BUILT_IN.map((c) => ({ ...c, voice: null, live2dModel: null }));
   let activeId = DEFAULT_ID;
+  if (activeFilePath) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(activeFilePath, "utf8"))?.id;
+      if (typeof saved === "string" && ID_PATTERN.test(saved)) activeId = saved;
+    } catch (e) {
+      // no file yet (or a broken one): Mana
+    }
+  }
   // Read again only when the file changes: active() runs every turn and
   // every spoken sentence, and a bad file should warn once, not each time.
   let cache = { mtimeMs: null, characters: builtIn };
@@ -138,6 +149,14 @@ function createCharacterStore(options = {}) {
     if (character.id !== previous.id) {
       // Switching to the partner keeps the duo: the previous one takes her place.
       if (group.partner === character.id) group.partner = previous.id;
+      if (activeFilePath) {
+        try {
+          fs.mkdirSync(path.dirname(activeFilePath), { recursive: true });
+          fs.writeFileSync(activeFilePath, JSON.stringify({ id: activeId }), "utf8");
+        } catch (e) {
+          console.warn(`couldn't save the active character (${e.message})`);
+        }
+      }
       onSwitch(character, previous);
       reportGroup();
     }
@@ -277,6 +296,11 @@ function personaOf(character) {
   return `${character.persona}\n\nOther instructions here may call you Mana; they mean you, ${character.name}.`;
 }
 
+// persona.js's DEFAULT_SYSTEM_PROMPT for a character: the prompt of every
+// model call that doesn't build its own (proactive lines like the daily
+// briefing and screen remarks, fallbacks), so those speak as her too.
+const defaultPromptOf = (character) => `${personaOf(character)} ${SPOKEN_STYLE}`;
+
 // A store with the same methods whose calls go to the active character's
 // own instance, made by create(id) on first use -- so every existing caller
 // of the mood/personality store gets the active character's without change.
@@ -302,6 +326,7 @@ module.exports = {
   DEFAULT_FILE_PATH,
   characterFilePath,
   createCharacterStore,
+  defaultPromptOf,
   handoffLine,
   perCharacter,
   personaOf,

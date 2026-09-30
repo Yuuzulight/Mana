@@ -375,7 +375,7 @@ internal static class DarkTheme
     }
 
     // Relative luminance (WCAG), 0 = black, 1 = white.
-    private static double Luminance(Color c)
+    internal static double Luminance(Color c)
     {
         static double Channel(int v)
         {
