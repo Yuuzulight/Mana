@@ -40,9 +40,8 @@ function run(cmd, args, opts={}){
 // It used to also trigger on GITHUB_EVENT_NAME === 'pull_request' (and a
 // refs/pull/ GITHUB_REF), which made it involuntary: every pull request
 // silently ran two files out of ~94 regardless of what the workflow asked
-// for. fast-node-tests.yml sets the variable and still gets its two files;
-// heavy-ci.yml sets nothing, so a run/full-ci-labelled pull request now
-// runs the whole suite instead of being reduced behind the label's back.
+// for. No workflow sets it any more: every pull request runs the whole
+// suite (fast-node-tests.yml), and so does a main push (heavy-ci.yml).
 //
 // Measured before this change: a labelled PR's "Heavy Node tests" finished
 // in 13s (the two-file path) while the same job on a main push took 44s.

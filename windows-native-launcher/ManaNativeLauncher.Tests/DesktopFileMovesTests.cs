@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using Mana.NativeLauncher;
 using Xunit;
@@ -54,6 +55,39 @@ public sealed class DesktopFileMovesTests : IDisposable
         // a folder that doesn't exist yet is not a new file name
         Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a }, Path.Combine(pictures, "Cats"), exact: false, Roots));
         Assert.True(File.Exists(a));
+    }
+
+    [Fact]
+    public void MoveFiles_RenamesByCaseOnly()
+    {
+        var a = Touch(downloads, "cat.png");
+        var folder = Directory.CreateDirectory(Path.Combine(downloads, "cats")).FullName;
+
+        DesktopActions.MoveFiles(new[] { a }, Path.Combine(downloads, "Cat.png"), exact: false, Roots);
+        DesktopActions.MoveFiles(new[] { folder }, Path.Combine(downloads, "Cats"), exact: false, Roots);
+
+        Assert.Equal(new[] { "Cat.png", "Cats" }, new DirectoryInfo(downloads).GetFileSystemInfos().Select(e => e.Name).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    // new_folder makes "to" first (write tier, so it's approved with the move),
+    // but only inside a folder that exists.
+    [Fact]
+    public void MoveFiles_CreatesTheDestinationFolderWhenAsked()
+    {
+        var a = Touch(downloads, "shot1.png");
+        var b = Touch(downloads, "shot2.png");
+        var cats = Path.Combine(pictures, "Cats");
+
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a, b }, cats, exact: false, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a, b }, Path.Combine(pictures, "Pets", "Cats"), exact: false, Roots, newFolder: true));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a, b }, Path.Combine(outside, "Cats"), exact: false, Roots, newFolder: true));
+        Assert.False(Directory.Exists(cats));
+
+        DesktopActions.MoveFiles(new[] { a, b }, cats, exact: false, Roots, newFolder: true);
+
+        Assert.True(File.Exists(Path.Combine(cats, "shot1.png")));
+        Assert.True(File.Exists(Path.Combine(cats, "shot2.png")));
+        Assert.False(Directory.Exists(Path.Combine(outside, "Cats")));
     }
 
     [Fact]
