@@ -218,3 +218,17 @@ test("buildToolPolicyWithBrowserAutomation merges base and browser-automation to
   const snapshotResult = JSON.parse(await merged.executeTool("browser_automation__snapshot", {}));
   assert.equal(snapshotResult.title, "Fake Page");
 });
+
+test("#1137: executeTool tells the session whether the Browser panel is watching", async () => {
+  let seenDeps = null;
+  const { createBrowserSession } = require("../browser-automation");
+  const session = createBrowserSession({ page: createFakePage() });
+  const { source, approvalGate } = createSource({ getSession: async (deps) => ((seenDeps = deps), session) });
+  await source.executeTool("browser_automation__snapshot", {}).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+
+  await source.executeTool("browser_automation__snapshot", {});
+  assert.equal(seenDeps.isWatched(), false);
+  source.activityLog.getActivity();
+  assert.equal(seenDeps.isWatched(), true);
+});

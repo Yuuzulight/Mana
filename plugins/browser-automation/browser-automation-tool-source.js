@@ -115,7 +115,8 @@ function createBrowserAutomationToolSource(options = {}) {
       throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
     }
 
-    const session = await getSession(sessionDeps);
+    // #1137: her page loads images only while the Browser panel watches.
+    const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched });
     let result;
     try {
       if (action === "navigate") result = await session.navigate(args?.url);

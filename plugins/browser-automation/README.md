@@ -14,6 +14,17 @@ browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
 `playwright install chromium`-downloaded browser, instead.
 `MANA_BROWSER_HEADLESS=0` shows the window instead of running headless.
 
+## One light, persistent session (#1137)
+
+- Mana's own profile in `node-bot/data/browser-profile`
+  (`launchPersistentContext`), so a site I log in to stays logged in.
+- Started on her first browser call; one context, one page.
+- `--disable-gpu` (no VRAM) and `--renderer-process-limit=1`.
+- Images, video and fonts are blocked (`page.route`) unless the rail's
+  Browser panel is on screen, for its screenshot.
+- Closes after 5 idle minutes, and never starts (or closes at once) while
+  a watched game runs or RAM is above 85% -- self-work's gates.
+
 ## Ref-based interaction, not coordinates
 
 `POST /browser/navigate` and every action route return a `snapshot`:

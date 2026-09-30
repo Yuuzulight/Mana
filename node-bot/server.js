@@ -1161,6 +1161,8 @@ const hooksStore = createHooksStore({});
 const browserAutomationToolSource = createBrowserAutomationToolSource({
   getSession: browserAutomationPlugin.getSession,
   approvalGate,
+  // #1137: her browser closes (or never starts) while I'm gaming.
+  sessionDeps: { isGaming: () => gamingWatch.isGaming() },
 });
 
 // Background memory block that can be refreshed periodically from ACP session files.
