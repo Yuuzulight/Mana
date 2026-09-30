@@ -47,6 +47,28 @@ public class ManaBackendClientTests
         Assert.Null(await nullClient.GetTtsOverrideAsync());
     }
 
+    // #914: the tray's Character submenu and switching.
+    [Fact]
+    public async Task Characters_ListAndSwitchWithTheHandoffLine()
+    {
+        var requests = new List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath} {request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()}");
+            var json = request.Method == HttpMethod.Get
+                ? "{\"active\":\"mana\",\"characters\":[{\"id\":\"mana\",\"name\":\"Mana\",\"live2dModel\":null},{\"id\":\"evil-mana\",\"name\":\"Evil Mana\",\"live2dModel\":null}]}"
+                : "{\"character\":{\"id\":\"evil-mana\"},\"handoff\":\"Evil Mana here.\"}";
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var (active, characters) = await client.GetCharactersAsync();
+        Assert.Equal("mana", active);
+        Assert.Equal(new[] { ("mana", "Mana"), ("evil-mana", "Evil Mana") }, characters);
+        Assert.Equal("Evil Mana here.", await client.SetCharacterAsync("evil-mana"));
+        Assert.Equal("POST /characters/active {\"id\":\"evil-mana\"}", requests[^1]);
+    }
+
     [Fact]
     public async Task SetTtsOverrideAsync_PostsTheProviderOrNull()
     {
@@ -1091,6 +1113,33 @@ public class ManaBackendClientTests
         var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.UpdateSpeechAsync(new { heard = "Immortal", term = "Imouto" }));
         Assert.Equal(HttpStatusCode.Conflict, ex.StatusCode);
         Assert.Equal("\"Immortal\" may be an ordinary word", ex.Message);
+    }
+
+    [Fact]
+    public async Task UpdateBriefingAsync_PostsTheSettingsAndSurfacesARefusal()
+    {
+        string? body = null;
+        var status = HttpStatusCode.OK;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(status)
+            {
+                Content = new StringContent(status == HttpStatusCode.OK
+                    ? "{\"ok\":true,\"enabled\":true,\"time\":\"07:30\",\"sections\":[\"news\"],\"topics\":\"GPUs\",\"games\":\"FFXIV\"}"
+                    : "{\"ok\":false,\"error\":\"time must be HH:MM, e.g. 08:00\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var saved = await client.UpdateBriefingAsync(new ManaBriefingSettings { Time = "7:30", Sections = new() { "news" }, Topics = "GPUs", Games = "FFXIV" });
+        Assert.Equal("{\"enabled\":true,\"time\":\"7:30\",\"sections\":[\"news\"],\"topics\":\"GPUs\",\"games\":\"FFXIV\"}", body);
+        Assert.Equal("07:30", saved.Time);
+        Assert.Equal(new[] { "news" }, saved.Sections);
+
+        status = HttpStatusCode.BadRequest;
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.UpdateBriefingAsync(new ManaBriefingSettings { Time = "8am" }));
+        Assert.Equal("time must be HH:MM, e.g. 08:00", ex.Message);
     }
 
     [Fact]

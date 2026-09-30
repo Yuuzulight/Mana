@@ -21,7 +21,7 @@ const TOOL_SCHEMAS = [
         properties: {
           kind: {
             type: "string",
-            enum: ["file", "memory-session", "memory-fact", "skill"],
+            enum: ["file", "memory-session", "memory-fact", "skill", "file-move"],
             description: "Optional: only list snapshots of this kind. Omit to see every kind.",
           },
         },

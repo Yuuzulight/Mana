@@ -155,7 +155,7 @@ const {
   REFLECT_SYSTEM_PROMPT,
   COMPRESS_SYSTEM_PROMPT,
 } = require("./tools/deep-research");
-const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
+const { fetchPage, isWebAccessEnabled, searchWeb, wikiLookup } = require("./tools/web-access");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 const {
   DEFAULT_BIND_HOST,
@@ -202,8 +202,18 @@ const { createMemoryGraph } = require("./memory-graph");
 const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
-const { createPersonalityStore } = require("./personality-store");
-const { createMoodStore, moodPromptBlock } = require("./mood-store");
+const {
+  createPersonalityStore,
+  DEFAULT_FILE_PATH: DEFAULT_PERSONALITY_FILE,
+} = require("./personality-store");
+const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
+const {
+  characterFilePath,
+  createCharacterStore,
+  perCharacter,
+  personaOf,
+} = require("./characters");
+const { createCharactersCapability } = require("./capabilities/characters-capability");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -214,6 +224,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 const { buildToolPolicy } = require("./ai/tool-source");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
+const { createMemoryVault } = require("./memory-vault");
 const {
   loadSessionSummaries,
   runCompactorStage,
@@ -229,6 +240,11 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
+const { createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
+const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
+const { checkMail } = require("./imap-client");
+const { checkCalendar } = require("./calendar-client");
+const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desktop-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
@@ -255,6 +271,8 @@ const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
+const { createBriefing } = require("./briefing");
+const { loadGameWikis } = require("./game-wikis");
 const {
   normalizeLlamaModelProfile,
   pickPreferredLlamaModel,
@@ -451,9 +469,12 @@ const DEFAULT_GAMING_PROCESS_NAMES = [
   "ffxivlauncher.exe",
   "ffxivlauncher64.exe",
 ];
-const GAMING_PROCESS_NAMES = parseGamingProcessNames(
-  process.env.GAMING_PROCESS_NAMES,
-);
+// #908: the wikis game questions are answered from (data/game-wikis.json on
+// top of game-wikis.js's defaults). #945: every game listed there is watched too.
+const gameWikis = loadGameWikis(path.join(__dirname, "data", "game-wikis.json"));
+const GAMING_PROCESS_NAMES = [
+  ...new Set([...parseGamingProcessNames(process.env.GAMING_PROCESS_NAMES), ...gameWikis.processes]),
+];
 const vtubeStudio = VTUBE_STUDIO_ENABLED
   ? new VTubeStudioClient({ url: VTUBE_STUDIO_URL })
   : null;
@@ -535,7 +556,8 @@ const gamingWatch = createGamingWatch({
       maxBuffer: 5 * 1024 * 1024,
       windowsHide: true,
     });
-    return parseTasklistNames(stdout).some((name) => GAMING_PROCESS_NAMES.includes(name));
+    // #908: which one, for currentGame().
+    return parseTasklistNames(stdout).find((name) => GAMING_PROCESS_NAMES.includes(name)) || false;
   },
   onGameStart: () => {
     console.log("Watched game started: stopping the memory embedder, reranker and Python retriever");
@@ -673,8 +695,22 @@ const pronunciationLexiconStore = createPronunciationLexiconStore({});
 // the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
 const kokoroRuntime = createKokoroRuntime({ env: process.env });
 
+// Issue #914: the active character (Mana by default). Created before
+// ttsRuntime, which speaks in her voice; the launcher hears of each switch
+// on /ws/tray so it can load her Live2D model.
+const characterStore = createCharacterStore({
+  onSwitch: (character) =>
+    notifyTray({
+      type: "character",
+      id: character.id,
+      title: character.name,
+      model: character.live2dModel,
+    }),
+});
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
+  getVoice: () => characterStore.active().voice,
   baseDir: __dirname,
   nowMs,
   logPerf,
@@ -701,6 +737,8 @@ const memoryGraph = createMemoryGraph();
 // getEditorIntegrations) -- one store means one place to eventually list
 // "everything that's undoable right now", not three disconnected pools.
 const snapshotStore = createSnapshotStore({});
+// #911: undoing a desktop__move_files moves the files back.
+registerFileMoveRestorer(snapshotStore, visionCaptureBridge);
 
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
@@ -794,6 +832,35 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
+// #906: the email/calendar accounts from Settings > Calendar & email.
+const mailCalendarSettings = createMailCalendarSettingsStore();
+// #907: the daily briefing (data/briefing.json, Settings > Briefing),
+// through the proactive engine. The chat model writes it only when it's
+// already loaded. Calendar and mail: #906 isn't in yet -- when it lands it
+// passes its today's-events-and-unread-mail lines as `calendar`; until
+// then that section is skipped.
+const briefing = createBriefing({
+  filePath: path.join(acpMemoryStore.dataDir, "briefing.json"),
+  listFacts: () => acpMemoryStore.listFacts(),
+  listJobs: () => cronSchedulerPlugin.getScheduler().listJobs(),
+  searchWeb: (query, options) => {
+    if (!isWebAccessEnabled()) throw new Error("web access is off");
+    return searchWeb(query, options);
+  },
+  runLocalReply: (prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens),
+  offer: (candidate) => require("./proactive").offer(candidate),
+});
+// "Sitting down": the launchers' idle report (every 60 s) saw input this recently.
+const BRIEFING_ACTIVE_SECONDS = 120;
+const briefingOnActive =
+  process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT ? briefing.maybeRun : () => {};
+// #908: the game I'm playing, if its wiki is known: the one in front (the
+// native launcher's foreground report), else the watched game that's running.
+function currentGame() {
+  const front = require("./foreground").getForeground();
+  return gameWikis.gameFor(front && front.app) || gameWikis.gameFor(gamingWatch.game());
+}
+
 function whisperLanguage() {
   return resolveWhisperLanguage(process.env.WHISPER_LANGUAGE, speechVocabulary.language());
 }
@@ -871,15 +938,24 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
 const presetsStore = createPresetsStore({});
 // Issue #357: the editable personality layer, persisted so an adjustment
 // survives a restart. persona.js owns the immutable core and no storage.
-const personalityStore = createPersonalityStore({});
+// #914: each character has her own (and her own mood below); both delegate
+// to the active character's store.
+const personalityStore = perCharacter(
+  characterStore,
+  (id) => createPersonalityStore({ filePath: characterFilePath(DEFAULT_PERSONALITY_FILE, id) }),
+  ["get", "set", "revert", "clear"],
+);
 // Issue #700: Mana's mood, persisted beside emotional-state.json (in memory
 // under tests, so they never touch the real data dir).
-const moodStore = createMoodStore({
-  filePath:
-    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
-      ? null
-      : path.join(acpMemoryStore.dataDir, "mood-state.json"),
-});
+const moodFilePath =
+  process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+    ? null
+    : path.join(acpMemoryStore.dataDir, "mood-state.json");
+const moodStore = perCharacter(
+  characterStore,
+  (id) => createMoodStore({ filePath: characterFilePath(moodFilePath, id) }),
+  ["get", "record", "recordTurn", "reset", "setFrozen"],
+);
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -1158,6 +1234,44 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   }
 
   return notes;
+}
+
+function currentMemoryNotes() {
+  const entityIndexPath = path.join(acpMemoryStore.dataDir, "entity-index.json");
+  let entityIndex = {};
+  if (fs.existsSync(entityIndexPath)) {
+    entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
+  }
+  const facts = BACKGROUND_MEMORY_META.important_facts || [];
+  const connections = BACKGROUND_MEMORY_META.connections || [];
+  return buildMemoryNotes(entityIndex, facts, connections);
+}
+
+// #935: the vault's read-only Views/ -- the MEMORY.md summary, Mana's mood
+// (level words only, so it changes when her mood does, not every minute)
+// and the per-entity notes /api/memory/notes serves.
+function buildVaultViews(mood) {
+  let summary = "_(no summary yet)_\n";
+  try {
+    summary = fs.readFileSync(MEMORY_MD_PATH, "utf8");
+  } catch (e) {
+    // Not written yet.
+  }
+  const moodBody = [
+    "# Mana's mood",
+    "",
+    `Right now: ${mood.summary}.`,
+    "",
+    `- Energy: ${levelWord(mood.energy)}`,
+    `- Sociability: ${levelWord(mood.sociability)}`,
+    `- Stress: ${levelWord(mood.stress)}`,
+    "",
+  ].join("\n");
+  return [
+    { rel: "Views/Summary.md", body: summary },
+    { rel: "Views/Mood.md", body: moodBody },
+    ...currentMemoryNotes().map((note) => ({ rel: `Views/Entities/${note.slug}.md`, body: note.body })),
+  ];
 }
 
 async function writeMemoryMarkdown() {
@@ -2012,6 +2126,10 @@ function registerRoutes(app, upload, deps = {}) {
           ),
         );
       }
+      // #935: the vault journal's entry for this session, written after
+      // the compactor above (idle is the session's end). It never loads a
+      // model and skips while gaming.
+      if (memoryVault) await memoryVault.writeJournal();
       // Issue #663: unconfirmed facts age into archived. No model call.
       try {
         (deps.acpMemoryStore || acpMemoryStore).archiveExpiredPendingFacts({
@@ -2059,6 +2177,7 @@ function registerRoutes(app, upload, deps = {}) {
   // re-trigger it on every ~60s report.
   app.post("/internal/idle-report", (req, res) => {
     const idleSeconds = Number(req.body?.idleSeconds) || 0;
+    if (idleSeconds < BRIEFING_ACTIVE_SECONDS) briefingOnActive();
     const thresholdSeconds =
       Number(process.env.MANA_IDLE_THRESHOLD_MS || 20 * 60 * 1000) / 1000;
 
@@ -2186,6 +2305,7 @@ function registerRoutes(app, upload, deps = {}) {
     presetsCapability,
     personalityCapability,
     moodCapability,
+    createCharactersCapability(characterStore),
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -2223,6 +2343,27 @@ function registerRoutes(app, upload, deps = {}) {
     "memory-write",
     createMemoryWriteExecutor({ acpMemoryStore, approvalGate: activeApprovalGate }),
   );
+  // #935: two-way sync with the Obsidian vault (MANA_VAULT_DIR). A new
+  // note asks for the user's OK under its own action type, so denying one
+  // never counts against (or grants) Mana's own memory writes.
+  activeApprovalGate.registerExecutor("memory-vault-note", (payload) => acpMemoryStore.rememberFact(payload));
+  let memoryVault = null;
+  if (process.env.MANA_VAULT_DIR && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+    try {
+      memoryVault = createMemoryVault({
+        store: acpMemoryStore,
+        vaultDir: process.env.MANA_VAULT_DIR,
+        approvalGate: activeApprovalGate,
+        buildViews: () => buildVaultViews(activeMoodStore.get()),
+        runModel: (prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens),
+        isGaming: () => gamingWatch.isGaming(),
+      });
+      memoryVault.start();
+    } catch (e) {
+      console.warn("Memory vault sync failed to start:", e?.message || e);
+    }
+  }
+  const memoryVaultStatus = () => (memoryVault ? memoryVault.getStatus() : { vaultDir: null });
 
   // Lets acpMemoryStore's summarizeFn (built at module load time, long
   // before registerRoutes ever runs) reach the real runOpenAIReply --
@@ -2397,6 +2538,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
       });
@@ -2418,6 +2560,7 @@ function registerRoutes(app, upload, deps = {}) {
     doctorOptions: () => ({
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+      memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
     }),
   });
@@ -2878,6 +3021,62 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(speechState());
   });
 
+  // #906: Settings > Calendar & email. Credentials go in and never come
+  // back out (describe() shows hosts and usernames only). This PC with the
+  // admin key only: the body carries an app password, and Test logs in to
+  // the saved server.
+  function allowMailCalendarRequest(req, res) {
+    if (!checkAdminAuth(req, res)) return false;
+    if (isLocalAdminRequest(req)) return true;
+    res.status(403).json({ ok: false, error: ADMIN_KEY_REQUIRED_ERROR });
+    return false;
+  }
+
+  app.get("/mail-calendar", (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    return res.json({ ok: true, ...mailCalendarSettings.describe() });
+  });
+
+  // { kind: "email", host, port, user, password, mailbox } or { kind:
+  // "calendar", url, user, password }; a blank password or url keeps the
+  // saved one. { kind, clear: true } removes that account.
+  app.post("/mail-calendar", (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    const { kind, clear, ...fields } = req.body || {};
+    try {
+      const state = clear === true ? mailCalendarSettings.clear(kind) : mailCalendarSettings.set(kind, fields);
+      return res.json({ ok: true, ...state });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // #907: Settings > Briefing. POST takes any of { enabled, time, sections,
+  // topics, games }.
+  app.get("/briefing", (req, res) => res.json({ ok: true, ...briefing.settings() }));
+  app.post("/briefing", (req, res) => {
+    try {
+      return res.json({ ok: true, ...briefing.update(req.body || {}) });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // { kind }: log in to the saved account and report what went wrong.
+  app.post("/mail-calendar/test", async (req, res) => {
+    if (!allowMailCalendarRequest(req, res)) return;
+    const kind = req.body?.kind;
+    try {
+      if (kind !== "email" && kind !== "calendar") throw new Error("kind must be email or calendar");
+      const account = mailCalendarSettings.get(kind);
+      if (!account) throw new Error(`${kind} isn't set up`);
+      const result = kind === "email" ? await checkMail(account) : await checkCalendar(account);
+      return res.json({ ok: true, ...(typeof result === "object" ? result : {}) });
+    } catch (e) {
+      return res.json({ ok: false, error: e.message });
+    }
+  });
+
   app.get("/gaming/status", (req, res) => {
     try {
       return res.json({
@@ -3040,7 +3239,7 @@ function registerRoutes(app, upload, deps = {}) {
       }
 
       // fallback: synthesize audio and estimate timings locally
-      const audio = await ttsRuntime.synthesizeReply(text);
+      const audio = await ttsRuntime.synthesizeReply(text, opts.emotion);
       if (
         captionServer &&
         typeof captionServer.broadcastCaption === "function"
@@ -3802,6 +4001,7 @@ function registerRoutes(app, upload, deps = {}) {
     let selectedSystemPrompt = persona.buildPersonaPrompt(
       sessionId,
       personalityStore.get().traits,
+      personaOf(characterStore.active()),
     );
     // Issue #623: per-sentence emotion tags for the avatar. Static text, so
     // it sits in the cached prefix; every reply path below strips the tags.
@@ -4577,6 +4777,25 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #906: my email and calendar, only in my own chat (never a
+            // scheduled reply or a Discord/Telegram bridge).
+            ...(userChat
+              ? [createMailCalendarToolSource({ store: mailCalendarSettings, approvalGate: activeApprovalGate })]
+              : []),
+            // #911: media keys, volume, apps, audio output, file moves --
+            // only when I'm asking.
+            ...(userChat
+              ? [
+                  createDesktopToolSource({
+                    bridge: visionCaptureBridge,
+                    isGaming: deps.isGaming || gamingWatch.isGaming,
+                    voice: replyMeta.voice === true,
+                    snapshotStore,
+                  }),
+                ]
+              : []),
+            // #907: "brief me".
+            ...(userChat ? [briefing.toolSource] : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({
@@ -5104,6 +5323,7 @@ function registerRoutes(app, upload, deps = {}) {
     UNIVERSALIS_DEFAULT_WORLD,
     TTS_PROVIDER,
     SCREEN_CONTEXT_MAX_CHARS,
+    currentGame: deps.currentGame || currentGame,
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     capabilities,
@@ -5287,17 +5507,7 @@ function registerRoutes(app, upload, deps = {}) {
   // plugin) instead of one flat markdown blob.
   app.get("/api/memory/notes", authMiddleware, async (req, res) => {
     try {
-      const entityIndexPath = path.join(
-        acpMemoryStore.dataDir,
-        "entity-index.json",
-      );
-      let entityIndex = {};
-      if (fs.existsSync(entityIndexPath)) {
-        entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
-      }
-      const facts = BACKGROUND_MEMORY_META.important_facts || [];
-      const connections = BACKGROUND_MEMORY_META.connections || [];
-      res.json(buildMemoryNotes(entityIndex, facts, connections));
+      res.json(currentMemoryNotes());
     } catch (e) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -5859,6 +6069,7 @@ if (require.main === module) {
 module.exports = {
   createApp,
   buildMemoryNotes,
+  buildVaultViews,
   buildSkillsIndexBlock,
   checkEmotionalReflexes,
   DEEP_RESEARCH_SUBTASK_PROFILE,
