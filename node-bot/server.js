@@ -298,6 +298,7 @@ const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtim
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
+const { crisisInstruction, withCrisisInstruction } = require("./utils/crisis-check");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -4219,6 +4220,11 @@ function registerRoutes(app, upload, deps = {}) {
     if (replyMeta && replyMeta.systemPatch) {
       selectedSystemPrompt = `${selectedSystemPrompt}\n\n${replyMeta.systemPatch}`;
     }
+    // A message about suicide or self-harm gets a care-and-hotlines note for
+    // this turn -- per turn, so last, like the mode text. Every chat path
+    // (typed, voice, stream, mobile) builds its prompt here.
+    const crisisNote = crisisInstruction(transcript, deps.env || process.env);
+    if (crisisNote) selectedSystemPrompt = `${selectedSystemPrompt}\n\n${crisisNote}`;
 
     // Issue #282: memory (session summary/recent-turns, cross-session
     // facts) becomes its own positionable system-role messages -- "early"
@@ -5609,9 +5615,10 @@ function registerRoutes(app, upload, deps = {}) {
   // instead of only talking to Mana's own bespoke routes. Proxies straight
   // through to the persistent llama-server's own OpenAI endpoint; unlike
   // runLocalAssistantReply this does not inject Mana's persona system
-  // prompt, since external clients bring their own messages.
+  // prompt, since external clients bring their own messages -- apart from
+  // the crisis note (utils/crisis-check.js) when the last user message needs it.
   app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
-    if (!llamaServerRuntime.isEnabled()) {
+    if (!activeLlamaServerRuntime.isEnabled()) {
       return res.status(503).json({
         error: {
           message:
@@ -5620,7 +5627,7 @@ function registerRoutes(app, upload, deps = {}) {
       });
     }
     try {
-      const upstream = await llamaServerRuntime.proxyChatCompletion(req.body);
+      const upstream = await activeLlamaServerRuntime.proxyChatCompletion(withCrisisInstruction(req.body, deps.env || process.env));
       res.status(upstream.status);
       const contentType = upstream.headers.get("content-type");
       if (contentType) res.type(contentType);
@@ -5634,7 +5641,7 @@ function registerRoutes(app, upload, deps = {}) {
       // killing the persistent llama-server process out from under the
       // client. Reschedule once the response is actually done so the idle
       // window is measured from real completion, not dispatch time.
-      res.on("close", () => llamaServerRuntime.scheduleIdleShutdown());
+      res.on("close", () => activeLlamaServerRuntime.scheduleIdleShutdown());
       Readable.fromWeb(upstream.body).pipe(res);
     } catch (e) {
       res.status(502).json({ error: { message: e?.message || String(e) } });
