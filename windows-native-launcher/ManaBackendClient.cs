@@ -1865,7 +1865,36 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
-    // decision: "allow-once" | "allow-session" | "always-allow" | "deny" -- node-bot
+    // #1154: the remembered always/never answers, for Settings > Approvals.
+    public async Task<IReadOnlyList<ManaRememberedApproval>> GetRememberedApprovalsAsync()
+    {
+        using var response = await http.GetAsync("/approvals/remembered");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var remembered = new List<ManaRememberedApproval>();
+        if (document.RootElement.TryGetProperty("remembered", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in list.EnumerateArray())
+            {
+                remembered.Add(new ManaRememberedApproval
+                {
+                    Key = entry.TryGetProperty("key", out var key) ? key.GetString() ?? "" : "",
+                    Answer = entry.TryGetProperty("answer", out var answer) ? answer.GetString() ?? "" : "",
+                });
+            }
+        }
+        return remembered;
+    }
+
+    public async Task ForgetApprovalAsync(string key)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { key }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/approvals/remembered/forget", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // decision: "allow-once" | "allow-session" | "always-allow" | "deny" | "never" -- node-bot
     // validates this itself and 400s on anything else, so this client
     // doesn't duplicate that validation.
     public async Task DecideApprovalAsync(string id, string decision)
@@ -2821,6 +2850,17 @@ internal sealed class ManaSkillDetail
 }
 
 // #529: GET /approvals/pending.
+// #1154: an always/never answer node-bot remembers. Key is the action type
+// or grant key ("browser-site:shop.test").
+internal sealed class ManaRememberedApproval
+{
+    public string Key { get; init; } = "";
+    public string Answer { get; init; } = "";
+
+    // What Settings shows: a browser site by name, anything else by its key.
+    public string Label => Key.StartsWith("browser-site:", StringComparison.Ordinal) ? $"Browser: {Key["browser-site:".Length..]}" : Key;
+}
+
 internal sealed class ManaPendingApproval
 {
     public string Id { get; init; } = "";

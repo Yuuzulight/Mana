@@ -159,3 +159,42 @@ test("#669 tool approval mode: smart by default, env next, a saved choice wins; 
   });
   assert.equal(createApprovalGate({ dataDir }).getToolApprovalMode(), "off", "persisted");
 });
+
+test("#1154: never is remembered, listed with always, and Forget clears either (admin only)", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  const ask = (site) => {
+    gate.registerExecutor(`browser-site:${site}`, () => "ok");
+    return gate.requestApproval(`browser-site:${site}`, { summary: site, payload: { site } });
+  };
+  await gate.decide((await ask("a.test")).requestId, "always-allow");
+
+  let admin = true;
+  const app = buildApp(gate, { checkAdminAuth: (req, res) => admin || (res.status(401).json({ error: "no" }), false) });
+  await withServer(app, async (baseUrl) => {
+    const b = await ask("b.test");
+    const decided = await fetch(`${baseUrl}/approvals/${b.requestId}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "never" }),
+    });
+    assert.equal((await decided.json()).status, "denied");
+    assert.deepEqual(await ask("b.test"), { status: "blocked", actionType: "browser-site:b.test", never: true, reason: "you said never for this" });
+
+    const listed = await (await fetch(`${baseUrl}/approvals/remembered`)).json();
+    assert.deepEqual(listed.remembered, [
+      { key: "browser-site:a.test", answer: "always" },
+      { key: "browser-site:b.test", answer: "never" },
+    ]);
+
+    const forget = (key) =>
+      fetch(`${baseUrl}/approvals/remembered/forget`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+    assert.deepEqual(await (await forget("browser-site:b.test")).json(), { forgotten: true });
+    assert.equal((await ask("b.test")).status, "pending");
+    assert.deepEqual(await (await forget("browser-site:zzz")).json(), { forgotten: false });
+
+    admin = false;
+    assert.equal((await fetch(`${baseUrl}/approvals/remembered`)).status, 401);
+    assert.equal((await forget("browser-site:a.test")).status, 401);
+  });
+  assert.equal(gate.isGranted("browser-site:a.test"), true);
+});

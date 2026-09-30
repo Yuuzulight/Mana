@@ -62,13 +62,32 @@ function registerApprovalGateRoutes(app, context = {}) {
     return res.json({ mode });
   });
 
+  // #1154: the remembered always/never answers (per-site browser
+  // permissions among them), listed in Settings > Approvals with Forget.
+  app.get("/approvals/remembered", toolModeRateLimiter, (req, res) => {
+    if (!context.checkAdminAuth(req, res)) return;
+    return res.json({ remembered: approvalGate.listRemembered() });
+  });
+
+  app.post("/approvals/remembered/forget", toolModeRateLimiter, (req, res) => {
+    if (!context.checkAdminAuth(req, res)) return;
+    try {
+      const key = requireString(req.body?.key, "key");
+      return res.json({ forgotten: approvalGate.forget(key) });
+    } catch (e) {
+      if (e instanceof ValidationError) return sendValidationError(res, e);
+      return res.status(400).json({ error: e.message || String(e) });
+    }
+  });
+
   app.post("/approvals/:id/decide", async (req, res) => {
     try {
       const id = requireString(req.params?.id, "id");
       const decision = requireString(req.body?.decision, "decision");
       // "allow-session": issue #669's in-memory grant, gone on restart.
-      if (!["allow-once", "allow-session", "always-allow", "deny"].includes(decision)) {
-        throw new ValidationError('decision must be "allow-once", "allow-session", "always-allow", or "deny"');
+      // "never": #1154's remembered deny.
+      if (!["allow-once", "allow-session", "always-allow", "deny", "never"].includes(decision)) {
+        throw new ValidationError('decision must be "allow-once", "allow-session", "always-allow", "deny", or "never"');
       }
       const result = await approvalGate.decide(id, decision);
       if (!result) {
