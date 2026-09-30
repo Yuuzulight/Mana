@@ -583,6 +583,8 @@
   <!-- Live2D Cubism Core is proprietary and fetched at setup time
        (npm run fetch-live2d-core); the avatar stage stays empty when it's
        absent. See ../AVATAR_NOTICE.md. -->
+  <!-- First: every other script's backend fetch() needs its key. -->
+  <script src="backend-key.js"></script>
   <script src="../assets/live2d/live2dcubismcore.min.js"></script>
   <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
   <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>

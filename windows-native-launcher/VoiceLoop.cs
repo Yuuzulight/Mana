@@ -2134,14 +2134,15 @@ internal sealed class VoiceLoop : IDisposable
     // the same player as replies, with SayReplyFailedAsync's mode handling.
     // Waits for her to be idle so it never cuts into a turn; gives up
     // (the toast still showed) if she's busy for a whole minute. #1024:
-    // emotion (AnnouncementEmotion.For) paces it on Qwen3-TTS.
+    // emotion (AnnouncementEmotion.For) paces it on Qwen3-TTS. #1148: idle
+    // also means I'm not mid-sentence (IsQuietForAnnouncement).
     public async Task<bool> SpeakAnnouncementAsync(string text, string? emotion)
     {
         for (var tries = 0; ; tries++)
         {
             lock (stateLock)
             {
-                if (mode == ListenMode.Idle)
+                if (IsQuietForAnnouncement(mode, hasHeardSpeechInSegment))
                 {
                     mode = ListenMode.Processing;
                     break;
@@ -2175,6 +2176,11 @@ internal sealed class VoiceLoop : IDisposable
         ReturnToIdle();
         return true;
     }
+
+    // #1148: no reply in flight or playing, and no speech of mine buffered
+    // in the segment being recorded (Idle alone still records me talking).
+    internal static bool IsQuietForAnnouncement(ListenMode mode, bool heardSpeechInSegment) =>
+        mode == ListenMode.Idle && !heardSpeechInSegment;
 
     // #666: a failed reply is shown in the chat and spoken once, with the
     // same mode handling as the non-streamed fallback above. If TTS is what

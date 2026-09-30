@@ -128,7 +128,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         this.restoreChat = restoreChat;
         rootDir = FindRootDirectory();
         var settings = ManaSettingsStore.Load();
-        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl, localOnly: settings.LocalOnly);
+        processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl, localOnly: settings.LocalOnly, noCheckIns: settings.NoCheckIns);
         backendClient = new ManaBackendClient(baseUrl: settings.BackendBaseUrl, adminToken: settings.AdminToken, launcherKey: processManager.LauncherKey);
         avatarOverlay = new AvatarOverlayForm(rootDir);
         // #578: ambient indicator, no tray entry -- starts polling
@@ -286,7 +286,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
                     ReportAvatarModelProblem();
                 }
             }),
-            onSelfWork: payload => RunOnUi(() => ShowSelfWorkNotice(chatLog, payload)));
+            onSelfWork: payload => RunOnUi(() => ShowSelfWorkNotice(chatLog, payload)),
+            backendClient: backendClient);
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));
