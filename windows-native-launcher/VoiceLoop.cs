@@ -639,6 +639,11 @@ internal sealed class VoiceLoop : IDisposable
     // #687: the chat window's status line (SessionListForm polls it), like
     // Electron's: the last error until the next reply starts, else what she's
     // doing. Read without the lock -- a stale read shows for one poll.
+    // #914: whose sentence is playing (group mode lip-syncs her avatar), and
+    // when a reply's talking ends (her mouth closes too).
+    public string? PlayingCharacter => streamingReplyPlayer.PlayingCharacter;
+    public event Action? TalkingEnded;
+
     public string StatusText => FormatStatus(lastError, IsListening, mode, awake, streamingReplyPlayer.SynthesizingSentence);
 
     internal static string FormatStatus(string? error, bool listening, ListenMode mode, bool awake, int? synthesizing)
@@ -1480,6 +1485,8 @@ internal sealed class VoiceLoop : IDisposable
         // hiss-like never reaches Whisper, and a phantom phrase or
         // noise-only caption is dropped like an empty transcript.
         var transcript = "";
+        short[]? heardSamples = null; // #1107: what Whisper heard, for a kept clip
+        string? sttModel = null, sttLanguage = null;
         if (!prefilterRejected && logEntry.Drop is null)
         {
             var (boosted, gain) = SpeechFilters.ApplySpeechGain(samples, SpeechFilters.GainTargetPeak, SpeechFilters.GainMaxBoost);
@@ -1487,9 +1494,10 @@ internal sealed class VoiceLoop : IDisposable
             logEntry.Drop = SpeechFilters.GetSpeechRejectReason(boosted, SpeechFilters.MinSpeechRms, SpeechFilters.MinSpeechPeak, SpeechFilters.MaxClickyZcr);
             if (logEntry.Drop is null)
             {
+                heardSamples = boosted;
                 try
                 {
-                    (transcript, logEntry.Heard) = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
+                    (transcript, logEntry.Heard, sttModel, sttLanguage) = await backendClient.TranscribeAsync(BuildWavBytes(boosted));
                     logEntry.Whisper = string.IsNullOrWhiteSpace(transcript) ? "empty" : "ok";
                 }
                 catch (Exception ex)
@@ -1604,7 +1612,32 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         VoiceDebugLog.Append(logEntry);
+        KeepClipIfOn(heardSamples!, logEntry, commandText, sttModel, sttLanguage);
         await DispatchCommandAsync(commandText, wasInterruption, held, nested);
+    }
+
+    // #1107: Settings > Voice's "Keep my voice clips for training" (VoiceData),
+    // read at each turn so switching it off stops at once. Saved off the
+    // voice path; a failure only logs.
+    private static void KeepClipIfOn(short[] samples, VoiceSegmentLogEntry logEntry, string commandText, string? model, string? language)
+    {
+        if (!VoiceData.ShouldKeep(logEntry, commandText) || !ManaSettingsStore.Load().KeepVoiceClips)
+        {
+            return;
+        }
+        var clip = new VoiceData.TurnClip(logEntry.Heard ?? logEntry.Transcript!, logEntry.Transcript!, null, language, model,
+            Math.Round(samples.Length / (double)SileroVadRunner.SampleRate, 2), DateTimeOffset.Now);
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                VoiceData.KeepTurn(VoiceData.TurnsFolder, samples, clip, VoiceData.MaxBytes(Environment.GetEnvironmentVariable("MANA_VOICE_DATA_MAX_MB")));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"VoiceLoop: couldn't keep the voice clip. {ex.Message}");
+            }
+        });
     }
 
     // #665: ends a ducked interruption. Returns true if it was real (she's
@@ -1840,6 +1873,21 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
+    // #914: a relationship note or milestone she just made is a chat line
+    // with an Undo button (no approval needed, so I see each one).
+    private void ShowNoted(ReplyStreamEvent noted)
+    {
+        var kind = noted.Kind == "milestone" ? "milestones" : "notes";
+        chatLog?.AppendNoted(noted.CharacterName, NotedLine(noted.Kind, noted.Text ?? "", noted.Date), async () =>
+        {
+            await backendClient.RemoveRelationshipItemAsync(noted.Character ?? "mana", kind, noted.Id ?? "");
+            return "Forgotten.";
+        });
+    }
+
+    internal static string NotedLine(string? kind, string text, string? date) =>
+        kind == "milestone" ? $"I'll remember this: \"{text}\"{(date is null ? "" : $" ({date})")}" : $"Noted: \"{text}\"";
+
     private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, string? source)
     {
         string? reply;
@@ -1851,7 +1899,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder, source);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source, ShowNoted);
             if (stopMana)
             {
                 stopManaThinking = false;
@@ -2181,6 +2229,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             captions?.SpeechEnded();
             bubbles?.SpeechEnded();
+            TalkingEnded?.Invoke();
         }
         lock (stateLock)
         {

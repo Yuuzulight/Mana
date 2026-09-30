@@ -535,7 +535,9 @@ function checkMemoryVault(vault) {
     const files = vault.skipped.map((s) => `${s.file} (${s.reason})`).join("; ");
     return makeCheck("memory-vault", label, "warn", `${vault.vaultDir}: ${vault.notes} notes synced; skipped ${files}.`, vault);
   }
-  return makeCheck("memory-vault", label, "pass", `${vault.vaultDir}: writable, ${vault.notes} notes synced.`, vault);
+  // "polling": the file watcher is down and the 60 s sync covers for it.
+  const polling = vault.mode === "polling" ? " The file watcher is down, so it checks every 60 s." : "";
+  return makeCheck("memory-vault", label, "pass", `${vault.vaultDir}: writable, ${vault.notes} notes synced.${polling}`, vault);
 }
 
 // #889: which chat model llama-server is running, "(gaming model)" while

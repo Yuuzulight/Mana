@@ -512,20 +512,21 @@ test("detectSystemMemoryMb converts bytes to whole megabytes", () => {
   assert.equal(detectSystemMemoryMb(() => NaN), null);
 });
 
-test("recommendModelProfile picks a tier from VRAM when available", () => {
-  assert.equal(recommendModelProfile({ vramMb: 8192, ramMb: 65536 }).profile, "default");
-  assert.equal(recommendModelProfile({ vramMb: 6144, ramMb: 65536 }).profile, "fast");
-  assert.equal(recommendModelProfile({ vramMb: 16384, ramMb: 8192 }).profile, "quality");
+test("recommendModelProfile picks a tier from the VRAM left for the LLM", () => {
+  assert.equal(recommendModelProfile({ vramMb: 4096, ramMb: 65536 }).profile, "fast");
+  assert.equal(recommendModelProfile({ vramMb: 6144, ramMb: 65536 }).profile, "default");
+  assert.equal(recommendModelProfile({ vramMb: 8188, ramMb: 65536 }).profile, "default");
+  assert.equal(recommendModelProfile({ vramMb: 12288, ramMb: 8192 }).profile, "quality");
   assert.match(recommendModelProfile({ vramMb: 6144, ramMb: null }).reason, /nvidia-smi/i);
 });
 
-test("recommendModelProfile treats a real 16GB card as quality despite nvidia-smi under-reporting", () => {
-  // A real 16GB card typically reports ~16000-16300MB via nvidia-smi
-  // (driver/OS reservations), never the full 16384 -- the tier boundary
-  // must sit below that or a genuine 16GB upgrade gets silently
-  // recommended "default" instead of "quality".
-  assert.equal(recommendModelProfile({ vramMb: 16043, ramMb: 8192 }).profile, "quality");
-  assert.equal(recommendModelProfile({ vramMb: 15359, ramMb: 8192 }).profile, "default");
+test("recommendModelProfile subtracts TTS and Whisper VRAM first (#1086)", () => {
+  // 8GB with Fish on: ~3GB left, so fast.
+  const tight = recommendModelProfile({ vramMb: 8188, ramMb: 32768, voiceMb: 5120 + 273 });
+  assert.equal(tight.profile, "fast");
+  assert.match(tight.reason, /~5\.3GB of it held by TTS and Whisper, leaving ~2\.7GB for the LLM/);
+  // A 16GB card keeps quality next to Fish and a medium Whisper model.
+  assert.equal(recommendModelProfile({ vramMb: 16303, ramMb: 32768, voiceMb: 5120 + 2150 }).profile, "quality");
 });
 
 test("recommendModelProfile falls back to system RAM when VRAM is unknown", () => {
@@ -570,10 +571,14 @@ test("model management surfaces and caches a hardware recommendation", () => {
     },
     totalmem: () => 34_359_738_368,
     modelSettingsStore: fakeModelSettingsStore(),
+    // #1086: Fish (5GB) + whisper tiny leave under 1GB of the 6GB.
+    ttsProvider: "fish",
+    whisperModel: path.join("C:", "whisper", "ggml-tiny.en.bin"),
   });
 
   const first = manager.getRecommendedModelProfile();
   assert.equal(first.profile, "fast");
+  assert.match(first.reason, /~5\.3GB of it held by TTS and Whisper/);
   assert.equal(first.label, "Fast fallback");
   assert.deepEqual(first.detected, { vramMb: 6144, ramMb: 32768 });
 
