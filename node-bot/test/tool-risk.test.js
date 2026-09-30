@@ -271,6 +271,10 @@ test("#911 low tier: runs without a prompt in smart mode, asks in ask mode", asy
   const ask = setup({ mode: "ask" });
   assert.equal(JSON.parse(await ask.wrapped.executeTool("desktop__media", { key: "next" })).status, "pending");
   assert.equal(ask.gate.listPending()[0].actionType, "tool-low");
+  // the approval says what it would do
+  const smartWrite = setup({ mode: "smart" });
+  await smartWrite.wrapped.executeTool("desktop__set_audio_output", { name: "Headset" });
+  assert.equal(smartWrite.gate.listPending()[0].summary, 'desktop__set_audio_output (write) -- with {"name":"Headset"}');
 });
 
 test("#669 ask mode: even a read-only call asks; self-gated built-ins pass through", async () => {

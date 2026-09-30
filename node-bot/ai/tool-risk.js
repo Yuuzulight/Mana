@@ -443,9 +443,15 @@ function bindCall(name, args, overrides = {}) {
   return { digest, cwd, executables };
 }
 
-function describeCall(name, risk) {
+// #911: a call without a command line shows its arguments, so approving
+// desktop__set_audio_output says which device.
+function describeCall(name, risk, args) {
   const parts = [`${name} (${risk.tier})`];
   if (risk.command) parts.push(`runs: ${risk.command.slice(0, 200)}`);
+  else if (args && typeof args === "object" && Object.keys(args).length) {
+    const json = JSON.stringify(args);
+    parts.push(`with ${json.length > 300 ? `${json.slice(0, 300)}...` : json}`);
+  }
   if (risk.cwd) parts.push(`in ${risk.cwd}`);
   if (risk.reasons.length) parts.push(`destructive: ${risk.reasons.join(", ")}`);
   if (risk.hosts.length) parts.push(`will contact ${risk.hosts.join(", ")}`);
@@ -484,7 +490,7 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
   async function ask(name, args, risk) {
     const binding = risk.command ? bindCall(name, args, bindingDeps) : null;
     const outcome = await approvalGate.requestApproval(`tool-${risk.tier}`, {
-      summary: describeCall(name, risk),
+      summary: describeCall(name, risk, args),
       payload: { name, args, ...(binding ? { digest: binding.digest } : {}) },
       scanText: risk.command || undefined,
       grantKey: binding ? `tool-exec:${binding.digest}` : undefined,
