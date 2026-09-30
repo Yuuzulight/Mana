@@ -19,18 +19,28 @@ const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "hooks");
-const PHASES = ["pre", "post"];
+// #838 decision 6: "finish" runs when Pipeline B's loop sends finish.
+const PHASES = ["pre", "post", "finish"];
 // #426 sub-project 4: "rollback-on-failure" is run-command's sibling -- same
 // shape (a command that runs after a matching call succeeds), but on
 // failure it also restores the file's pre-write snapshot instead of only
 // logging. Requires the same `command`/`args` fields as run-command.
 // #486: "modify-input" shallow-merges the rule's `set` object over the
 // call's args (see wrapWithInputHooks).
-const ACTIONS_BY_PHASE = { pre: ["deny", "ask", "modify-input"], post: ["run-command", "rollback-on-failure"] };
+const ACTIONS_BY_PHASE = {
+  pre: ["deny", "ask", "modify-input"],
+  post: ["run-command", "rollback-on-failure"],
+  finish: ["run-command"],
+};
 // Fire-and-forget post-hook commands still need a ceiling -- an unbounded
 // prettier/lint command hanging forever would leak a child process per
 // write forever.
 const HOOK_COMMAND_TIMEOUT_MS = 15000;
+// A finish check is typically the test suite and is awaited, so it gets the
+// ACP test runner's default instead (MANA_AGENT_TEST_TIMEOUT_MS's 120 s).
+const FINISH_HOOK_TIMEOUT_MS = 120000;
+// The tail of a finish check's output that goes back to the ACP client.
+const FINISH_HOOK_OUTPUT_CHARS = 2000;
 
 function readRules(filePath) {
   if (!fs.existsSync(filePath)) return [];
@@ -88,13 +98,14 @@ function normalizeRule(rule) {
     throw new Error("rule is required");
   }
   if (!PHASES.includes(rule.phase)) {
-    throw new Error('phase must be "pre" or "post"');
+    throw new Error('phase must be "pre", "post" or "finish"');
   }
   const allowedActions = ACTIONS_BY_PHASE[rule.phase];
   if (!allowedActions.includes(rule.action)) {
     throw new Error(`action for phase "${rule.phase}" must be one of: ${allowedActions.join(", ")}`);
   }
-  const toolName = String(rule.toolName || "").trim();
+  // A finish rule isn't about a tool call; it matches the finish signal.
+  const toolName = String(rule.toolName || (rule.phase === "finish" ? "finish" : "")).trim();
   if (!toolName) {
     throw new Error("toolName is required");
   }
@@ -134,6 +145,20 @@ function createHooksStore(options = {}) {
 
   function listRules() {
     return readRules(filePath);
+  }
+
+  // #838 decision 5: why hooks.json can't be used -- it exists but won't
+  // parse, or isn't an array -- else null. listRules still reads such a file
+  // as "no rules" (Pipeline A); Pipeline B refuses side effects instead.
+  function configError() {
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const raw = fs.readFileSync(filePath, "utf8").trim();
+      if (!raw) return null;
+      return Array.isArray(JSON.parse(raw)) ? null : "hooks.json is not a list of rules";
+    } catch (e) {
+      return `hooks.json is unreadable: ${e.message}`;
+    }
   }
 
   function addRule(rule) {
@@ -228,32 +253,17 @@ function createHooksStore(options = {}) {
     );
   }
 
-  return { dataDir, listRules, addRule, removeRule, setRuleEnabled, updateRule, recordRunOutcome, matchRules };
+  return { dataDir, listRules, configError, addRule, removeRule, setRuleEnabled, updateRule, recordRunOutcome, matchRules };
 }
 
-// #426 sub-project 4: best-effort -- finds the newest "file" snapshot whose
-// key matches this write's basename and restores it. Matched by basename
-// rather than the exact key because the different pipelines record keys in
-// different forms (workspace-relative vs repo-relative) and this function
-// only has the raw args.path a hook rule fired with, not which pipeline it
-// came from. Narrow ceiling: a concurrent unrelated write to a same-named
-// file in a different scope, landing between the write and the rollback,
-// could match the wrong snapshot -- acceptable for a best-effort corrective
-// action, since the rollback is itself a normal restoreSnapshot call and so
-// (per the #475 review fix) backs up whatever it overwrites too.
-function rollbackFile(snapshotStore, resolvedPath) {
-  try {
-    const base = path.basename(resolvedPath);
-    const candidate = snapshotStore
-      .listSnapshots("file")
-      .find((s) => path.basename(String(s.key || "")) === base);
-    if (!candidate) return;
-    Promise.resolve(snapshotStore.restoreSnapshot(candidate.id, { confirmStale: true })).catch((e) => {
-      console.warn(`hook rollback for "${resolvedPath}" failed:`, e?.message || e);
-    });
-  } catch (e) {
-    console.warn(`hook rollback for "${resolvedPath}" failed:`, e?.message || e);
-  }
+// #426 sub-project 4, fixed in #838: restores only the snapshot the call
+// itself recorded (hooks.snapshotId). The old newest-snapshot-with-the-same-
+// basename search could restore an unrelated older file whenever the call
+// took no snapshot (an append, a new file, a proposal not yet applied).
+function rollbackSnapshot(snapshotStore, snapshotId, label) {
+  Promise.resolve()
+    .then(() => snapshotStore.restoreSnapshot(snapshotId, { confirmStale: true }))
+    .catch((e) => console.warn(`hook rollback for "${label}" failed:`, e?.message || e));
 }
 
 // Runs a post-hook's command with execFile (shell: false) -- args are
@@ -264,21 +274,65 @@ function rollbackFile(snapshotStore, resolvedPath) {
 // tool call it ran after; a failing hook command is logged and swallowed,
 // same convention as snapshot-store.js/acp-memory-store.js's
 // catch-and-console.warn on best-effort side work. hooks.hooksStore (if
-// given) records the outcome for later visibility; hooks.snapshotStore (if
-// given) is what a "rollback-on-failure" rule restores from on failure.
+// given) records the outcome for later visibility; a "rollback-on-failure"
+// rule restores hooks.snapshotId from hooks.snapshotStore on failure.
+// hooks.cwd: Pipeline B's paths are repo-relative, so it runs from there.
 function runPostCommandHook(rule, args, execFileFn, hooks = {}) {
   const resolvedPath = String((args && args.path) || "");
   const cmdArgs = (rule.args || []).map((a) => (a === "{path}" ? resolvedPath : a));
-  execFileFn(rule.command, cmdArgs, { timeout: HOOK_COMMAND_TIMEOUT_MS, shell: false }, (err) => {
+  const options = { timeout: HOOK_COMMAND_TIMEOUT_MS, shell: false, ...(hooks.cwd ? { cwd: hooks.cwd } : {}) };
+  execFileFn(rule.command, cmdArgs, options, (err) => {
     if (err) {
       console.warn(`hook ${rule.action} "${rule.command}" failed:`, err.message || err);
     }
     if (hooks.hooksStore) {
       hooks.hooksStore.recordRunOutcome(rule.id, { ok: !err, error: err && (err.message || String(err)) });
     }
-    if (err && rule.action === "rollback-on-failure" && hooks.snapshotStore && resolvedPath) {
-      rollbackFile(hooks.snapshotStore, resolvedPath);
+    if (err && rule.action === "rollback-on-failure") {
+      if (hooks.snapshotStore && hooks.snapshotId) {
+        rollbackSnapshot(hooks.snapshotStore, hooks.snapshotId, resolvedPath);
+      } else {
+        console.warn(`hook rollback for "${resolvedPath}": the call took no snapshot, nothing to roll back`);
+      }
     }
+  });
+}
+
+// The snapshot id a tool reports in its (JSON) result, if any.
+function snapshotIdOf(result) {
+  try {
+    return JSON.parse(result)?.snapshotId || null;
+  } catch {
+    return null;
+  }
+}
+
+// #838 decision 6: runs a finish rule's command and resolves with what the
+// ACP client is told -- never rejects. Same argv-only execFile as the post
+// hooks, but awaited, because the result is the point.
+function runFinishCommand(rule, execFileFn, hooks = {}) {
+  return new Promise((resolve) => {
+    // maxBuffer: a verbose test run can print more than execFile's 1 MB
+    // default, which would kill it and misreport a pass as a failure.
+    const options = {
+      timeout: FINISH_HOOK_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      shell: false,
+      ...(hooks.cwd ? { cwd: hooks.cwd } : {}),
+    };
+    execFileFn(rule.command, (rule.args || []).map(String), options, (err, stdout, stderr) => {
+      const output = `${stdout || ""}${stderr || ""}${err && !stdout && !stderr ? err.message || String(err) : ""}`;
+      if (hooks.hooksStore) {
+        hooks.hooksStore.recordRunOutcome(rule.id, { ok: !err, error: err && (err.message || String(err)) });
+      }
+      resolve({
+        rule: rule.id,
+        command: [rule.command, ...(rule.args || [])].join(" "),
+        ok: !err,
+        exitCode: err ? (typeof err.code === "number" ? err.code : null) : 0,
+        output: output.slice(-FINISH_HOOK_OUTPUT_CHARS),
+      });
+    });
   });
 }
 
@@ -340,7 +394,7 @@ function wrapWithHooks(policy, hooksStore, approvalGate, options = {}) {
       const postRules = hooksStore.matchRules(name, "post", args);
       for (const rule of postRules) {
         if (rule.action === "run-command" || rule.action === "rollback-on-failure") {
-          runPostCommandHook(rule, args, execFileFn, { hooksStore, snapshotStore });
+          runPostCommandHook(rule, args, execFileFn, { hooksStore, snapshotStore, snapshotId: snapshotIdOf(result) });
         }
       }
 
@@ -386,5 +440,6 @@ module.exports = {
   wrapWithInputHooks,
   applyInputRules,
   runPostCommandHook,
+  runFinishCommand,
   HOOK_COMMAND_TIMEOUT_MS,
 };

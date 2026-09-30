@@ -1062,6 +1062,33 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task UpdateBriefingAsync_PostsTheSettingsAndSurfacesARefusal()
+    {
+        string? body = null;
+        var status = HttpStatusCode.OK;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(status)
+            {
+                Content = new StringContent(status == HttpStatusCode.OK
+                    ? "{\"ok\":true,\"enabled\":true,\"time\":\"07:30\",\"sections\":[\"news\"],\"topics\":\"GPUs\",\"games\":\"FFXIV\"}"
+                    : "{\"ok\":false,\"error\":\"time must be HH:MM, e.g. 08:00\"}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var saved = await client.UpdateBriefingAsync(new ManaBriefingSettings { Time = "7:30", Sections = new() { "news" }, Topics = "GPUs", Games = "FFXIV" });
+        Assert.Equal("{\"enabled\":true,\"time\":\"7:30\",\"sections\":[\"news\"],\"topics\":\"GPUs\",\"games\":\"FFXIV\"}", body);
+        Assert.Equal("07:30", saved.Time);
+        Assert.Equal(new[] { "news" }, saved.Sections);
+
+        status = HttpStatusCode.BadRequest;
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.UpdateBriefingAsync(new ManaBriefingSettings { Time = "8am" }));
+        Assert.Equal("time must be HH:MM, e.g. 08:00", ex.Message);
+    }
+
+    [Fact]
     public async Task ReplyAsync_SendsTextAsJsonAndReturnsReply()
     {
         string? path = null;

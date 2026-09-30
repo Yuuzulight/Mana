@@ -7,7 +7,9 @@ const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
 const { previewRestore } = require("./ai/snapshot-tool-source");
-const { createHooksStore, applyInputRules } = require("./hooks-store");
+const { execFile } = require("child_process");
+const { createHooksStore, applyInputRules, runPostCommandHook, runFinishCommand } = require("./hooks-store");
+const { isReviewableFile } = require("./ai/adversarial-verifier");
 const {
   createScratchWorkspaceCopy,
   removeScratchWorkspaceCopy,
@@ -321,9 +323,22 @@ function countToolCall(sessionId, tool) {
 function resetSessionToolCounts(sessionId) {
   if (sessionId === undefined) {
     sessionToolCounts.clear();
+    sessionFilesWritten.clear();
     return true;
   }
+  sessionFilesWritten.delete(String(sessionId || "default"));
   return sessionToolCounts.delete(String(sessionId || "default"));
+}
+
+// #883: the distinct files file_write has changed per session, counted
+// against the agent's maxFilesChanged (MANA_AGENT_MAX_FILES_CHANGED) --
+// shown in the ACP capabilities, but never enforced before.
+const sessionFilesWritten = new Map();
+
+function filesWrittenBy(sessionId) {
+  const key = String(sessionId || "default");
+  if (!sessionFilesWritten.has(key)) sessionFilesWritten.set(key, new Set());
+  return sessionFilesWritten.get(key);
 }
 
 // Issue #419: bounds how many times run_tests may report a genuine failure
@@ -370,6 +385,11 @@ const defaultSnapshotStore = createSnapshotStore({});
 // #838: the same hooks.json as Pipeline A (read on every call, so a rule
 // edited through /hooks applies from the next action).
 const defaultHooksStore = createHooksStore({});
+// #838: the adversarial review is one 200-token call on an already-loaded
+// model; past this the write goes on unreviewed.
+const REVIEW_TIMEOUT_MS = 60 * 1000;
+// #838 decision 5: the tools a broken hooks.json stops. Reads still run.
+const SIDE_EFFECT_TOOLS = new Set(["file_write", "snapshot_restore", "run_tests"]);
 
 // #838: a hook-ask pending request shows the call's args, but a
 // file_write's content can be a whole file -- long strings are cut to the
@@ -386,6 +406,12 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   const testRunner = options.testRunner || defaultTestRunner;
   const snapshotStore = options.snapshotStore || defaultSnapshotStore;
   const hooksStore = options.hooksStore || defaultHooksStore;
+  const execFileFn = options.execFile || execFile;
+  // #838: ({path, before, after, summary}) => review | null -- the backend's
+  // adversarial verifier (acp-backend-bridge.js's reviewEdit). Optional.
+  const reviewWrite = options.reviewWrite || null;
+  // #883: unlimited unless the ACP agent passes its configured limit.
+  const maxFilesChanged = options.maxFilesChanged ?? Infinity;
   const makeScratchCopy =
     options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
   const removeScratchCopy =
@@ -438,7 +464,8 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
 
   // #838: one action's dispatch -- pushes its result onto `results`. The
   // hooks below wrap it in one place instead of in every case.
-  async function runAction(tool, args) {
+  // askApproved: a hook's ask for this call was approved (#838 decision 4).
+  async function runAction(tool, args, { askApproved = false } = {}) {
     if (tool === "local_retrieve") {
       const query = args && args.query ? String(args.query) : "";
       console.error(
@@ -634,23 +661,67 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           return;
         }
 
+        // #883: a new file past the session's limit is refused before any
+        // review or approval; rewriting a file already changed is fine.
+        const filesWritten = filesWrittenBy(sessionId);
+        // Windows paths are case-insensitive: one file, one count.
+        const fileKey = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
+        if (!filesWritten.has(fileKey) && filesWritten.size >= maxFilesChanged) {
+          results.push({
+            tool: "file_write",
+            status: "error",
+            detail: "max_files_changed",
+            cap: maxFilesChanged,
+          });
+          return;
+        }
+
         // Ensure parent directory exists
         await fs.promises.mkdir(path.dirname(resolvedPath), {
           recursive: true,
         });
 
-        // If approval is required, and action not pre-approved via args.approved, create pending request and wait
+        // #838 decision 3: a source-file write gets the adversarial review
+        // first. It only changes anything when it refutes the write; an
+        // unreachable backend or a failed review leaves the write as it was.
+        const relativePath = path.relative(REPO_ROOT, resolvedPath);
+        let review = null;
+        if (reviewWrite && isReviewableFile(relativePath)) {
+          try {
+            const before = await fs.promises.readFile(resolvedPath, "utf8").catch(() => "");
+            // A backend that never answers mustn't hang the step: no review.
+            review = await Promise.race([
+              reviewWrite({
+                path: relativePath,
+                before,
+                after: mode === "append" ? before + content : content,
+                summary: `file_write (${mode})`,
+              }),
+              new Promise((resolve) => setTimeout(() => resolve(null), REVIEW_TIMEOUT_MS).unref()),
+            ]);
+          } catch (e) {
+            console.warn("file_write adversarial review failed:", e?.message || e);
+          }
+        }
+        const refuted = review?.verdict === "refuted";
+
+        // If approval is required, and action not pre-approved via args.approved, create pending request and wait.
+        // #838: a refuted write always asks, whatever FILE_WRITE_REQUIRE_APPROVAL,
+        // args.approved or an approved hook ask say (Q16); otherwise an
+        // approved hook ask already was this write's approval (decision 4).
         const { requireApproval: approvalConfigured } = getApprovalConfig();
-        const requireApproval = approvalConfigured && !(args && args.approved === true);
+        const requireApproval =
+          refuted || (approvalConfigured && !(args && args.approved === true) && !askApproved);
         const approvalReqId = makeApprovalId();
         const preview = String(content).slice(0, 2048);
         const approvalReqPayload = {
           id: approvalReqId,
-          path: path.relative(REPO_ROOT, resolvedPath),
+          path: relativePath,
           requestedPath: resolvedPath,
           mode,
           sessionId: sessionId || null,
           preview,
+          ...(refuted ? { adversarialReview: review } : {}),
           createdAt: new Date().toISOString(),
         };
         const gate = await runApprovalGate("file_write", approvalReqId, approvalReqPayload, requireApproval);
@@ -696,6 +767,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             action: "appended",
             size: newSize,
           });
+          filesWritten.add(fileKey);
           console.error(
             `  ✅ file_write append: ${resolvedPath} (+${Buffer.byteLength(content, "utf8")} bytes)`,
           );
@@ -708,19 +780,22 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           // an unreadable .bak.<timestamp> copy that nothing ever read back
           // -- this makes the write actually undoable via the shared
           // snapshot store's built-in "file" restorer.
+          // #838: reported on the result, so a rollback-on-failure hook
+          // restores exactly this snapshot.
+          let snapshotId = null;
           try {
             const st = await fs.promises.stat(resolvedPath);
             if (st && st.isFile()) {
               const priorContent = await fs.promises.readFile(resolvedPath, "utf8");
               try {
-                snapshotStore.recordSnapshot({
+                snapshotId = snapshotStore.recordSnapshot({
                   kind: "file",
                   key: path.relative(REPO_ROOT, resolvedPath),
                   scope: REPO_ROOT,
                   payload: priorContent,
                   summary: "file_write overwrite",
                   source: "agent",
-                });
+                })?.id || null;
               } catch (snapshotErr) {
                 console.warn(
                   "file_write snapshot failed:",
@@ -751,7 +826,9 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             path: path.relative(REPO_ROOT, resolvedPath),
             action: "overwritten",
             size: finalStat.size,
+            ...(snapshotId ? { snapshotId } : {}),
           });
+          filesWritten.add(fileKey);
           console.error(
             `  ✅ file_write overwrite: ${resolvedPath} (${finalStat.size} bytes)`,
           );
@@ -1105,6 +1182,16 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
 
   for (const action of actions) {
     const tool = action.tool;
+    // #838 decision 5: with a hooks.json that won't parse, a deny rule may
+    // be silently missing, so an unattended loop gets no side effects.
+    if (SIDE_EFFECT_TOOLS.has(tool)) {
+      const configError = hooksStore.configError();
+      if (configError) {
+        console.error(`[Mana Agent Loop] 🛑 ${tool} refused: ${configError}`);
+        results.push({ tool, status: "error", detail: "hooks_config_unreadable" });
+        continue;
+      }
+    }
     // #838: modify-input first, so the #396 cap, deny/ask and every guard
     // inside runAction see the rewritten call, never the original.
     const args = applyInputRules(hooksStore.matchRules(tool, "pre", action.args), tool, action.args);
@@ -1137,6 +1224,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       continue;
     }
     const askRule = preRules.find((rule) => rule.action === "ask");
+    let askApproved = false;
     if (askRule) {
       // Always a human: FILE_WRITE_REQUIRE_APPROVAL and args.approved don't
       // apply to a hook's own ask.
@@ -1155,14 +1243,51 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         continue;
       }
       await archiveOutcome(askId, "approved", gate.approvalMeta, gate.approvalPayload);
+      askApproved = true;
     }
 
-    await runAction(tool, args);
+    const produced = results.length;
+    await runAction(tool, args, { askApproved });
+
+    // #838: post rules, only after a call that actually succeeded -- never
+    // after a denied, rejected or failed one. Fire-and-forget, as in
+    // Pipeline A.
+    const result = results[produced];
+    if (result && result.status === "ok") {
+      for (const rule of hooksStore.matchRules(tool, "post", args)) {
+        if (rule.action === "run-command" || rule.action === "rollback-on-failure") {
+          runPostCommandHook(rule, args, execFileFn, {
+            hooksStore,
+            snapshotStore,
+            snapshotId: result.snapshotId || null,
+            cwd: REPO_ROOT,
+          });
+        }
+      }
+    }
   }
 
   if (finishReason) {
     console.error(`[Mana Agent Loop] 🏁 Model signaled finish: ${finishReason}`);
-    return { status: "finished", reason: finishReason, results };
+    // #838 decision 6: my finish rules (the tests, say) run now and their
+    // results go back to the ACP client. They can't truly block finishing:
+    // finish is only a signal, and the client decides whether to call
+    // mana/agent/run again. A failed check is reported, not enforced.
+    const finishChecks = [];
+    if (hooksStore.configError()) {
+      finishChecks.push({ ok: false, detail: "hooks_config_unreadable" });
+    } else {
+      for (const rule of hooksStore.matchRules("finish", "finish", {})) {
+        if (rule.action !== "run-command") continue;
+        finishChecks.push(await runFinishCommand(rule, execFileFn, { hooksStore, cwd: REPO_ROOT }));
+      }
+    }
+    return {
+      status: "finished",
+      reason: finishReason,
+      results,
+      ...(finishChecks.length ? { finishChecks } : {}),
+    };
   }
 
   // Aggregate successful injected contexts
@@ -1187,9 +1312,20 @@ async function createAcpAutonomousLoop(options = {}) {
   // run tests, and apply file edits. For unit tests we provide a simple noop loop
   // that accepts params and returns an idle result or proxies to a provided runner.
   const runner = options.runner || null;
+  // #883: mana/agent/run calls per session, against maxIterations
+  // (MANA_AGENT_MAX_ITERATIONS) -- shown in the ACP capabilities, never
+  // enforced before. Unlimited when not given.
+  const maxIterations = options.maxIterations ?? Infinity;
+  const iterations = new Map();
 
   return {
     run: async (params = {}) => {
+      const key = String(params?.sessionId || "default");
+      const count = (iterations.get(key) || 0) + 1;
+      iterations.set(key, count);
+      if (count > maxIterations) {
+        return { status: "error", error: "max_iterations_reached", cap: maxIterations };
+      }
       if (runner && typeof runner === "function") {
         try {
           return await runner(params);
@@ -1203,7 +1339,12 @@ async function createAcpAutonomousLoop(options = {}) {
           return await executeAutonomousStep(
             params.modelReply,
             params.sessionId,
-            { testRunner: options.testRunner },
+            {
+              testRunner: options.testRunner,
+              // #838: file_write's adversarial review goes through the backend.
+              reviewWrite: options.backendBridge?.reviewEdit,
+              maxFilesChanged: options.maxFilesChanged,
+            },
           );
         } catch (e) {
           return { status: "error", error: String(e?.message || e) };
