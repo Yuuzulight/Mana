@@ -15,15 +15,16 @@
 //
 // An entry with a built-in id only overrides the fields it sets. Relative
 // paths are relative to the file's folder; voice clips must be under it
-// (tools/qwen3tts_service.py refuses any other file). The active character is not
-// persisted: a restart brings Mana back.
+// (tools/qwen3tts_service.py refuses any other file). The active character
+// is remembered across restarts (options.activeFilePath).
 //
 // Facts about the user stay shared; each character's mood, personality
 // layer and relationship notes are her own (perCharacter below, wired in
 // server.js).
 const fs = require("node:fs");
 const path = require("node:path");
-const { MANA_PERSONA } = require("./persona");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const { MANA_PERSONA, SPOKEN_STYLE } = require("./persona");
 
 const DEFAULT_ID = "mana";
 const DEFAULT_FILE_PATH = path.join(__dirname, "data", "characters.json");
@@ -72,11 +73,27 @@ function normalize(entry, baseDir, builtIn) {
 
 // options.filePath: injectable for tests. options.onSwitch(character,
 // previous) runs after every change of the active character.
+// options.activeFilePath: where the active character's id is kept so a
+// restart brings her back; omit it to keep it in memory only.
+// options.isGaming: whether a game is being played (group mode pauses);
+// options.onGroupChange(partner or null) runs whenever the character
+// replying alongside the active one changes.
 function createCharacterStore(options = {}) {
   const filePath = options.filePath || DEFAULT_FILE_PATH;
+  const activeFilePath = options.activeFilePath || null;
   const onSwitch = options.onSwitch || (() => {});
+  const isGaming = options.isGaming || (() => false);
+  const onGroupChange = options.onGroupChange || (() => {});
   const builtIn = BUILT_IN.map((c) => ({ ...c, voice: null, live2dModel: null }));
   let activeId = DEFAULT_ID;
+  if (activeFilePath) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(activeFilePath, "utf8"))?.id;
+      if (typeof saved === "string" && ID_PATTERN.test(saved)) activeId = saved;
+    } catch (e) {
+      // no file yet (or a broken one): Mana
+    }
+  }
   // Read again only when the file changes: active() runs every turn and
   // every spoken sentence, and a bad file should warn once, not each time.
   let cache = { mtimeMs: null, characters: builtIn };
@@ -115,17 +132,116 @@ function createCharacterStore(options = {}) {
   const get = (id) => list().find((c) => c.id === id) || null;
 
   // Falls back to Mana if the active one was removed from the file.
-  const active = () => get(activeId) || get(DEFAULT_ID);
+  const selected = () => get(activeId) || get(DEFAULT_ID);
+  // Group mode: the character speaking in this async context (one reply,
+  // one /synthesize call) stands in for the active one, so her persona,
+  // mood, personality and voice follow. Outside speakAs it's the active one.
+  const speaking = new AsyncLocalStorage();
+  const active = () => get(speaking.getStore()) || selected();
+  const speakAs = (id, fn) => speaking.run(id, fn);
 
   // Null for an unknown id. Switching to the active character is a no-op
   // (no onSwitch).
   function setActive(id) {
     const character = get(String(id || "").trim().toLowerCase());
     if (!character) return null;
-    const previous = active();
+    const previous = selected();
     activeId = character.id;
-    if (character.id !== previous.id) onSwitch(character, previous);
+    if (character.id !== previous.id) {
+      // Switching to the partner keeps the duo: the previous one takes her place.
+      if (group.partner === character.id) group.partner = previous.id;
+      if (activeFilePath) {
+        try {
+          fs.mkdirSync(path.dirname(activeFilePath), { recursive: true });
+          fs.writeFileSync(activeFilePath, JSON.stringify({ id: activeId }), "utf8");
+        } catch (e) {
+          console.warn(`couldn't save the active character (${e.message})`);
+        }
+      }
+      onSwitch(character, previous);
+      reportGroup();
+    }
     return { character, previous };
+  }
+
+  // Group mode: a partner replies alongside the active character. Off by
+  // default and not saved. Paused while a game is played, unless it was
+  // turned on during that game -- then it stays on until the game ends.
+  let group = { on: false, partner: null, duringGame: false };
+  let reportedPartner = null;
+
+  // The character replying alongside the active one right now, or null.
+  function groupPartner() {
+    if (!group.on || (isGaming() && !group.duringGame)) return null;
+    const partner = get(group.partner);
+    return partner && partner.id !== selected().id ? partner : null;
+  }
+
+  function reportGroup() {
+    const partner = groupPartner();
+    if ((partner?.id ?? null) === reportedPartner) return;
+    reportedPartner = partner?.id ?? null;
+    onGroupChange(partner);
+  }
+
+  // paused: on, but held off by a game.
+  const groupState = () => ({
+    on: group.on,
+    partner: group.partner,
+    paused: group.on && isGaming() && !group.duringGame,
+  });
+
+  // on with a partner id, or without one for the last partner (else the
+  // first character who isn't active). Null for an unknown partner or the
+  // active one herself.
+  function setGroup(on, partnerId) {
+    if (on) {
+      const partner = partnerId
+        ? get(String(partnerId).trim().toLowerCase())
+        : get(group.partner) || list().find((c) => c.id !== selected().id);
+      if (!partner || partner.id === selected().id) return null;
+      group = { on: true, partner: partner.id, duringGame: isGaming() };
+    } else {
+      group = { ...group, on: false, duringGame: false };
+    }
+    reportGroup();
+    return groupState();
+  }
+
+  // server.js calls this when a game starts or ends.
+  function gameChanged() {
+    if (!isGaming()) group.duringGame = false;
+    reportGroup();
+  }
+
+  // The characters a line names, longest names first so "Evil Mana"
+  // doesn't also count as "Mana".
+  function mentioned(message) {
+    let line = String(message || "").toLowerCase();
+    const found = [];
+    for (const c of [...list()].sort((a, b) => b.name.length - a.name.length)) {
+      const pattern = new RegExp(`(?<![\\w'])${nameRegex(c.name)}(?![\\w'])`, "g");
+      if (pattern.test(line)) {
+        found.push(c);
+        line = line.replace(pattern, " ");
+      }
+    }
+    return found;
+  }
+
+  // "group mode on", "start group chat with Evil Mana", "let Evil Mana
+  // join", "turn off group mode": { on, partner (id or null) }, or null.
+  function findGroupRequest(message) {
+    const line = String(message || "").trim().toLowerCase();
+    if (!line || line.length > MAX_SWITCH_REQUEST_CHARS) return null;
+    const named = mentioned(line).find((c) => c.id !== selected().id) || null;
+    if (/\b(?:(?:turn|switch)\s+off|stop|end|disable)\s+(?:the\s+)?group\s+(?:mode|chat)\b|\bgroup\s+(?:mode|chat)\s+off\b/.test(line)) {
+      return { on: false, partner: null };
+    }
+    const asksOn =
+      /\b(?:(?:turn|switch)\s+on|start|enable)\s+(?:a\s+|the\s+)?group\s+(?:mode|chat)\b|\bgroup\s+(?:mode|chat)\s+on\b/.test(line) ||
+      (named && new RegExp(`\\b(?:let|have)\\s+${nameRegex(named.name)}\\s+join\\b`).test(line));
+    return asksOn ? { on: true, partner: named?.id ?? null } : null;
   }
 
   // The character a chat line asks to switch to ("let Evil Mana talk",
@@ -133,11 +249,11 @@ function createCharacterStore(options = {}) {
   function findSwitchRequest(message) {
     const line = String(message || "").trim().toLowerCase();
     if (!line || line.length > MAX_SWITCH_REQUEST_CHARS) return null;
-    const current = active().id;
+    const current = selected().id;
     return (
       list().find((c) => {
         if (c.id === current) return false;
-        const name = c.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+        const name = nameRegex(c.name);
         return [
           `\\b(?:let|have|get|make)\\s+${name}\\s+(?:talk|speak|take over|answer|come out)`,
           `\\b(?:switch|swap|change|go)\\s+(?:back\\s+)?(?:over\\s+)?to\\s+${name}(?![\\w'])`,
@@ -149,8 +265,25 @@ function createCharacterStore(options = {}) {
     );
   }
 
-  return { list, get, active, setActive, findSwitchRequest };
+  return {
+    list,
+    get,
+    active,
+    speakAs,
+    setActive,
+    findSwitchRequest,
+    groupPartner,
+    groupState,
+    setGroup,
+    gameChanged,
+    mentioned,
+    findGroupRequest,
+  };
 }
+
+// A name as regex source, any whitespace between its words.
+const nameRegex = (name) =>
+  name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
 
 function handoffLine(character, previous) {
   const line = character.handoff || `${character.name} here.`;
@@ -163,6 +296,11 @@ function personaOf(character) {
   if (character.id === DEFAULT_ID) return character.persona;
   return `${character.persona}\n\nOther instructions here may call you Mana; they mean you, ${character.name}.`;
 }
+
+// persona.js's DEFAULT_SYSTEM_PROMPT for a character: the prompt of every
+// model call that doesn't build its own (proactive lines like the daily
+// briefing and screen remarks, fallbacks), so those speak as her too.
+const defaultPromptOf = (character) => `${personaOf(character)} ${SPOKEN_STYLE}`;
 
 // A store with the same methods whose calls go to the active character's
 // own instance, made by create(id) on first use -- so every existing caller
@@ -189,6 +327,7 @@ module.exports = {
   DEFAULT_FILE_PATH,
   characterFilePath,
   createCharacterStore,
+  defaultPromptOf,
   handoffLine,
   perCharacter,
   personaOf,
