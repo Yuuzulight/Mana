@@ -47,7 +47,7 @@ const TOOL_SCHEMAS = [
     function: {
       name: `${DESKTOP_TOOL_PREFIX}open_app`,
       description:
-        "Open an app from the user's Start menu, or bring it to the front if it's already open. Only apps with a Start-menu shortcut can be opened.",
+        "Open an app from the user's Start menu (Store apps too), or bring it to the front if it's already open. Only apps in the Start menu can be opened.",
       parameters: { type: "object", properties: { name: APP_NAME }, required: ["name"] },
     },
   },
@@ -100,10 +100,15 @@ const TOOL_SCHEMAS = [
         "Move files or folders into a folder, or rename one, inside the user's allowed folders (see desktop__list_folder). Never overwrites or deletes anything. The user approves it first, and it can be undone with snapshot__restore.",
       parameters: {
         type: "object",
-        // "to" first: models tend to send arguments in schema order, and
-        // the approval prompt cuts off a long list of files, not the destination.
+        // "to" and new_folder first: models tend to send arguments in schema
+        // order, and the approval prompt cuts off a long list of files, not
+        // the destination.
         properties: {
           to: { type: "string", description: "Full path of the folder to move them into, or the new full path when renaming one item." },
+          new_folder: {
+            type: "boolean",
+            description: "true to create \"to\" as a new folder first, inside a folder that already exists.",
+          },
           from: { type: "array", items: { type: "string" }, description: "Full paths of the files or folders to move." },
         },
         required: ["to", "from"],
@@ -142,8 +147,9 @@ function createDesktopToolSource({ bridge, isGaming = () => false, voice = false
     }
     try {
       if (action === "move_files") {
-        // Only the model's two fields: "exact" is for undo alone.
-        const result = await bridge.requestDesktop(action, { to: args?.to, from: args?.from }, MOVE_TIMEOUT_MS);
+        // Only the model's fields: "exact" is for undo alone.
+        const request = { to: args?.to, from: args?.from, ...(args?.new_folder === true ? { new_folder: true } : {}) };
+        const result = await bridge.requestDesktop(action, request, MOVE_TIMEOUT_MS);
         const snapshot = snapshotStore?.recordSnapshot({
           kind: "file-move",
           key: String(args?.to || ""),

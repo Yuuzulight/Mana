@@ -29,7 +29,9 @@ function makeRepos() {
   fs.mkdirSync(path.join(live, "node-bot", "test"), { recursive: true });
   fs.writeFileSync(path.join(live, "node-bot", "util.js"), "function add(a, b) {\n  return a - b;\n}\nmodule.exports = { add };\n");
   fs.writeFileSync(path.join(live, "node-bot", "approval-gate.js"), "// guard\n");
-  fs.writeFileSync(path.join(live, ".gitignore"), "node_modules/\n");
+  // No trailing slash, like the repo's own: the worktree's node_modules is a
+  // link (a symlink off Windows), which "node_modules/" doesn't match.
+  fs.writeFileSync(path.join(live, ".gitignore"), "node_modules\n");
   git(live, "add", "-A");
   git(live, "commit", "-q", "-m", "init");
   git(live, "push", "-q", "origin", "main");
