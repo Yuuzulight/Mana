@@ -2184,6 +2184,9 @@ internal sealed class ManaBackendClient
             }
         }
 
+        // #1168: the page that may need the ads/trackers her browser blocked.
+        var blocked = root.TryGetProperty("blocked", out var blockedElement) && blockedElement.ValueKind == JsonValueKind.Object ? blockedElement : (JsonElement?)null;
+
         // #1139: whether I've taken over her browser, or she's asking me to.
         var takeOver = root.TryGetProperty("takeOver", out var takeOverElement) && takeOverElement.ValueKind == JsonValueKind.Object ? takeOverElement : (JsonElement?)null;
 
@@ -2196,6 +2199,8 @@ internal sealed class ManaBackendClient
             TurnPages = turnPages,
             TakenOver = takeOver is { } o && o.TryGetProperty("active", out var active) && active.ValueKind == JsonValueKind.True,
             NeedsYou = takeOver is { } n ? Text(n, "needsYou") : null,
+            BlockedUrl = blocked is { } b ? Text(b, "url") : null,
+            BlockedCount = blocked is { } c && c.TryGetProperty("count", out var count) && count.TryGetInt32(out var n2) ? n2 : 0,
         };
     }
 
@@ -3058,6 +3063,8 @@ internal sealed class ManaBrowserAutomationActivity
     public IReadOnlyList<ManaWebPageRef> TurnPages { get; init; } = Array.Empty<ManaWebPageRef>();
     public bool TakenOver { get; init; }
     public string? NeedsYou { get; init; }
+    public string? BlockedUrl { get; init; }
+    public int BlockedCount { get; init; }
 }
 
 // #1122: a web page this turn took in (framed as untrusted); Source is the

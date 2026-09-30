@@ -103,6 +103,9 @@ function createFakeChromium(pageOverrides = {}) {
   let closeListener = null;
   const page = {
     routeHandler: null,
+    listeners: {},
+    on(event, fn) { this.listeners[event] = fn; },
+    mainFrame() { return "main"; },
     async route(pattern, handler) { this.routeHandler = handler; },
     async goto(url) { this._url = url; },
     async ariaSnapshot() { return '- button "Go" [ref=e1]'; },
@@ -183,7 +186,7 @@ test("#1137: images, video and fonts are blocked unless the Browser panel is wat
   async function outcome(resourceType) {
     let result = null;
     await page.routeHandler({
-      request: () => ({ resourceType: () => resourceType }),
+      request: () => ({ resourceType: () => resourceType, url: () => "https://site.test/x" }),
       abort: async () => (result = "abort"),
       continue: async () => (result = "continue"),
     });
@@ -264,6 +267,8 @@ function createFakeEdge() {
     const page = {
       gone: [],
       _url: "about:blank",
+      on() {},
+      mainFrame() {},
       async route() {},
       async goto(url) { this.gone.push(url); this._url = url; },
       async url() { return this._url; },
@@ -358,4 +363,36 @@ test("#1139: the take-over and Done routes are local and admin-only", async () =
     assert.deepEqual(done.payload, { active: false, needsYou: null });
   });
   assert.equal(launches[0].ctx.closed, 1);
+});
+
+test("#1168: ad and tracker domains are always blocked and counted per page, which the session sees", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, page } = createFakeChromium();
+  const session = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium, ramPercent: () => 50, isWatched: () => true });
+
+  async function outcome(url, resourceType = "script") {
+    let result = null;
+    await page.routeHandler({
+      request: () => ({ resourceType: () => resourceType, url: () => url }),
+      abort: async () => (result = "abort"),
+      continue: async () => (result = "continue"),
+    });
+    return result;
+  }
+  assert.equal(await outcome("https://securepubads.g.doubleclick.net/tag/js/gpt.js"), "abort");
+  assert.equal(await outcome("https://www.googletagmanager.com/gtm.js"), "abort");
+  assert.equal(await outcome("https://site.test/app.js"), "continue");
+  assert.equal(await outcome("https://site.test/logo.png", "image"), "continue"); // watched
+  page.listeners.pageerror(new Error("adsbygoogle is not defined"));
+
+  // The page is empty and threw: the session flags what was blocked.
+  page.ariaSnapshot = async () => "";
+  page.evaluate = async (fn) => (fn.name === "extractTextInPage" ? "" : null);
+  page._url = "https://site.test/";
+  assert.equal((await session.snapshot()).blockedMayBreak, 2);
+
+  // A new page starts from zero.
+  page.listeners.framenavigated("main");
+  assert.equal((await session.snapshot()).blockedMayBreak, undefined);
+  await browserAutomationPlugin.closeSession();
 });
