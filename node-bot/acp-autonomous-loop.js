@@ -8,7 +8,7 @@ const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
 const { previewRestore } = require("./ai/snapshot-tool-source");
 const { execFile } = require("child_process");
-const { createHooksStore, applyInputRules, runPostCommandHook } = require("./hooks-store");
+const { createHooksStore, applyInputRules, runPostCommandHook, runFinishCommand } = require("./hooks-store");
 const { isReviewableFile } = require("./ai/adversarial-verifier");
 const {
   createScratchWorkspaceCopy,
@@ -1237,7 +1237,25 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
 
   if (finishReason) {
     console.error(`[Mana Agent Loop] 🏁 Model signaled finish: ${finishReason}`);
-    return { status: "finished", reason: finishReason, results };
+    // #838 decision 6: my finish rules (the tests, say) run now and their
+    // results go back to the ACP client. They can't truly block finishing:
+    // finish is only a signal, and the client decides whether to call
+    // mana/agent/run again. A failed check is reported, not enforced.
+    const finishChecks = [];
+    if (hooksStore.configError()) {
+      finishChecks.push({ ok: false, detail: "hooks_config_unreadable" });
+    } else {
+      for (const rule of hooksStore.matchRules("finish", "finish", {})) {
+        if (rule.action !== "run-command") continue;
+        finishChecks.push(await runFinishCommand(rule, execFileFn, { hooksStore, cwd: REPO_ROOT }));
+      }
+    }
+    return {
+      status: "finished",
+      reason: finishReason,
+      results,
+      ...(finishChecks.length ? { finishChecks } : {}),
+    };
   }
 
   // Aggregate successful injected contexts

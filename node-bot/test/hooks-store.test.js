@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createHooksStore, wrapWithHooks, wrapWithInputHooks, runPostCommandHook, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
+const { createHooksStore, wrapWithHooks, wrapWithInputHooks, runPostCommandHook, runFinishCommand, HOOK_COMMAND_TIMEOUT_MS } = require("../hooks-store");
 const { wrapWithRiskGate } = require("../ai/tool-risk");
 const { createApprovalGate } = require("../approval-gate");
 const { createSnapshotStore } = require("../snapshot-store");
@@ -634,4 +634,34 @@ test("#838: configError is null for a missing, empty or valid file, and says why
   fs.writeFileSync(file, "[{ half written");
   assert.match(store.configError(), /unreadable/);
   assert.deepEqual(store.listRules(), [], "Pipeline A still reads it as no rules");
+});
+
+test("#838: a finish rule runs a command; it needs no toolName and has no other actions", () => {
+  const store = createHooksStore({ dataDir: createTempDir() });
+  const rule = store.addRule({ phase: "finish", action: "run-command", command: "npm", args: ["test"] });
+  assert.equal(rule.toolName, "finish");
+  assert.equal(store.matchRules("finish", "finish", {}).length, 1);
+  assert.throws(() => store.addRule({ phase: "finish", action: "deny" }), /must be one of: run-command/);
+  assert.throws(() => store.addRule({ phase: "finish", action: "run-command" }), /command is required/);
+});
+
+test("#838: runFinishCommand reports exit code and the tail of the output, and never rejects", async () => {
+  const rule = { id: "r1", command: "npm", args: ["test"] };
+  let seen = null;
+  const failing = await runFinishCommand(rule, (cmd, args, opts, cb) => {
+    seen = { cmd, args, cwd: opts.cwd, shell: opts.shell, timeout: opts.timeout };
+    cb(Object.assign(new Error("exit 1"), { code: 1 }), "x".repeat(3000) + "2 failing", "");
+  }, { cwd: "C:\repo" });
+  assert.deepEqual(seen, { cmd: "npm", args: ["test"], cwd: "C:\repo", shell: false, timeout: 120000 });
+  assert.equal(failing.ok, false);
+  assert.equal(failing.exitCode, 1);
+  assert.equal(failing.command, "npm test");
+  assert.equal(failing.output.length, 2000);
+  assert.match(failing.output, /2 failing$/);
+
+  const missing = await runFinishCommand(rule, (cmd, args, opts, cb) => cb(Object.assign(new Error("spawn npm ENOENT"), { code: "ENOENT" })));
+  assert.deepEqual([missing.ok, missing.exitCode, missing.output], [false, null, "spawn npm ENOENT"]);
+
+  const passing = await runFinishCommand(rule, (cmd, args, opts, cb) => cb(null, "ok\n", ""));
+  assert.deepEqual([passing.ok, passing.exitCode, passing.output], [true, 0, "ok\n"]);
 });
