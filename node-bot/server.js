@@ -155,7 +155,7 @@ const {
   REFLECT_SYSTEM_PROMPT,
   COMPRESS_SYSTEM_PROMPT,
 } = require("./tools/deep-research");
-const { fetchPage, searchWeb, wikiLookup } = require("./tools/web-access");
+const { fetchPage, isWebAccessEnabled, searchWeb, wikiLookup } = require("./tools/web-access");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 const {
   DEFAULT_BIND_HOST,
@@ -256,6 +256,7 @@ const { createModelSettingsStore } = require("./model-settings-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
+const { createBriefing } = require("./briefing");
 const { loadGameWikis } = require("./game-wikis");
 const {
   normalizeLlamaModelProfile,
@@ -800,6 +801,26 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
+// #907: the daily briefing (data/briefing.json, Settings > Briefing),
+// through the proactive engine. The chat model writes it only when it's
+// already loaded. Calendar and mail: #906 isn't in yet -- when it lands it
+// passes its today's-events-and-unread-mail lines as `calendar`; until
+// then that section is skipped.
+const briefing = createBriefing({
+  filePath: path.join(acpMemoryStore.dataDir, "briefing.json"),
+  listFacts: () => acpMemoryStore.listFacts(),
+  listJobs: () => cronSchedulerPlugin.getScheduler().listJobs(),
+  searchWeb: (query, options) => {
+    if (!isWebAccessEnabled()) throw new Error("web access is off");
+    return searchWeb(query, options);
+  },
+  runLocalReply: (prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens),
+  offer: (candidate) => require("./proactive").offer(candidate),
+});
+// "Sitting down": the launchers' idle report (every 60 s) saw input this recently.
+const BRIEFING_ACTIVE_SECONDS = 120;
+const briefingOnActive =
+  process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT ? briefing.maybeRun : () => {};
 // #908: the game I'm playing, if its wiki is known: the one in front (the
 // native launcher's foreground report), else the watched game that's running.
 function currentGame() {
@@ -2114,6 +2135,7 @@ function registerRoutes(app, upload, deps = {}) {
   // re-trigger it on every ~60s report.
   app.post("/internal/idle-report", (req, res) => {
     const idleSeconds = Number(req.body?.idleSeconds) || 0;
+    if (idleSeconds < BRIEFING_ACTIVE_SECONDS) briefingOnActive();
     const thresholdSeconds =
       Number(process.env.MANA_IDLE_THRESHOLD_MS || 20 * 60 * 1000) / 1000;
 
@@ -2956,6 +2978,17 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(speechState());
   });
 
+  // #907: Settings > Briefing. POST takes any of { enabled, time, sections,
+  // topics, games }.
+  app.get("/briefing", (req, res) => res.json({ ok: true, ...briefing.settings() }));
+  app.post("/briefing", (req, res) => {
+    try {
+      return res.json({ ok: true, ...briefing.update(req.body || {}) });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
   app.get("/gaming/status", (req, res) => {
     try {
       return res.json({
@@ -3118,7 +3151,7 @@ function registerRoutes(app, upload, deps = {}) {
       }
 
       // fallback: synthesize audio and estimate timings locally
-      const audio = await ttsRuntime.synthesizeReply(text);
+      const audio = await ttsRuntime.synthesizeReply(text, opts.emotion);
       if (
         captionServer &&
         typeof captionServer.broadcastCaption === "function"
@@ -4655,6 +4688,8 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #907: "brief me".
+            ...(userChat ? [briefing.toolSource] : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({

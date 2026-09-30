@@ -12,7 +12,7 @@ public class ChatViewTests
     {
         DarkTheme.ApplyPreset("violet", null);
         var view = new ChatView { Dock = System.Windows.Forms.DockStyle.None, Size = new Size(width, height) };
-        view.CreateControl(); // appends are dropped until the handle exists, same as the old chat log
+        view.CreateControl(); // as in the shown chat window
         return view;
     }
 
@@ -175,5 +175,37 @@ public class ChatViewTests
 
         Assert.Equal(new[] { "You", "Mana", "You" }, view.Messages.Select(m => m.Speaker));
         Assert.Equal("Hello there.", view.Messages[1].PlainText);
+    }
+
+    // The launch reopens the last session while the chat window is still
+    // hidden, so the view has no handle yet; its history must still show.
+    [Fact]
+    public void ShowHistory_LandsBeforeTheWindowWasEverShown()
+    {
+        DarkTheme.ApplyPreset("violet", null);
+        using var view = new ChatView();
+
+        view.ShowHistory(new[] { new ManaSessionTurn { User = "are you doing it?", Assistant = "Yes." } });
+
+        Assert.False(view.IsHandleCreated);
+        Assert.Equal(new[] { "You", "Mana" }, view.Messages.Select(m => m.Speaker));
+    }
+
+    // Built before its window, like the app's: a history too long for a
+    // window that's hidden must still lay out (it used to recurse forever),
+    // and the scroll bar laid out at size zero mustn't stick once it fits.
+    [Fact]
+    public void ShowHistory_InAHiddenWindow_LaysOutOnceItsSized()
+    {
+        DarkTheme.ApplyPreset("violet", null);
+        var view = new ChatView();
+        using var form = new System.Windows.Forms.Form { Size = new Size(716, 539) };
+        form.Controls.Add(view);
+        _ = form.Handle;
+
+        view.ShowHistory(Enumerable.Range(0, 40).Select(i => new ManaSessionTurn { User = $"hi {i}", Assistant = $"hello {i}" }).ToArray());
+        view.ShowHistory(new[] { new ManaSessionTurn { User = "are you doing it?" } });
+
+        Assert.Equal(view.ClientSize.Width - 24, view.Messages[0].Bounds.Right); // no room kept for a scroll bar
     }
 }
