@@ -109,7 +109,11 @@ test("speech__ tools add, fix, list and remove only what the user said (#923/#92
   });
   const ordinary = await call("it's Imouto, not immortal", "add_word", { word: "Imouto", heard_as: "immortal" });
   assert.equal(ordinary.needsConfirm, true);
-  assert.match(ordinary.error, /only if they insist/);
+  assert.match(ordinary.error, /only once they say yes/);
+  const modelOnly = await call("Imouto not immortal", "add_word", { word: "Imouto", heard_as: "immortal", confirm: true });
+  assert.equal(modelOnly.needsConfirm, true, "confirm counts only when my own message says yes");
+  assert.deepEqual(speechVocabulary.state().corrections, { "GG Moon": "Gigi Murin" });
+  assert.deepEqual(speechVocabulary.state().words, ["Gigi Murin"], "and saves nothing");
   assert.equal((await call("yes, Imouto not immortal", "add_word", { word: "Imouto", heard_as: "immortal", confirm: true })).ok, true);
 
   assert.deepEqual(await call("", "list_words", {}), {
