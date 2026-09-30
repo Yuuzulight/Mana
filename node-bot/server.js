@@ -2206,6 +2206,12 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     idleConsolidationFiredForCurrentIdlePeriod = true;
+    // #1007: 20 minutes away is also when Mana may pick up one of her
+    // issues. Not in tests, unless they bring their own runner: the real
+    // one asks gh about the real repo.
+    if (deps.selfWork || (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT)) {
+      selfWork.startIdle().catch(() => {});
+    }
     triggerIdleConsolidation().catch((err) =>
       console.warn(
         "Idle-triggered consolidation failed:",
@@ -2617,6 +2623,7 @@ function registerRoutes(app, upload, deps = {}) {
     createSelfWork({
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
+      isGaming: deps.isGaming || gamingWatch.isGaming,
     });
   app.get("/self-work", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
