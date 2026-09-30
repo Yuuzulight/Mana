@@ -285,3 +285,37 @@ test("one prompt: an approved hook ask is the write's approval, unless the revie
   assert.equal(second.adversarialReview.failingCase, "breaks on null");
   assert.equal((await twice).results[0].status, "ok");
 });
+
+// ---- #838 step 5: a broken hooks.json fails closed ----
+
+test("a broken hooks.json refuses file_write, snapshot_restore and run_tests; reads still work", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-pb-broken-"));
+  fs.writeFileSync(path.join(dir, "hooks.json"), "[{ half written");
+  const hooksStore = createHooksStore({ dataDir: dir });
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const res = await executeAutonomousStep(
+      JSON.stringify([
+        { tool: "file_write", args: { path: "src/x.js", content: "x" } },
+        { tool: "snapshot_restore", args: { id: "s1" } },
+        { tool: "run_tests", args: { command: "npm test" } },
+        { tool: "file_read", args: { path: "README.md" } },
+      ]),
+      "pb-broken",
+      { hooksStore },
+    );
+
+    assert.deepEqual(
+      res.results.map((r) => [r.tool, r.status, r.detail]),
+      [
+        ["file_write", "error", "hooks_config_unreadable"],
+        ["snapshot_restore", "error", "hooks_config_unreadable"],
+        ["run_tests", "error", "hooks_config_unreadable"],
+        ["file_read", "ok", undefined],
+      ],
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
