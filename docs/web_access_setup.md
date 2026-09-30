@@ -37,8 +37,14 @@ services once it's set up. Set `MANA_START_SEARXNG=0` to skip that.
 
 Sent to the backend on every `/reply`, in this priority order:
 
-1. **A URL in your message** → she fetches and reads that page (HTML only,
-   3&nbsp;MB read cap, ~6000 characters handed to her prompt).
+1. **A URL in your message** → she fetches and reads that page (3&nbsp;MB
+   read cap, ~8000 characters of Markdown handed to her prompt). She asks
+   for Markdown first and uses it when the site serves it; otherwise she
+   keeps only the page's main content (title, headings, paragraphs, lists,
+   tables, links, images) and drops menus, footers, ads and scripts
+   (`node-bot/tools/html-extract.js`). When there's almost nothing to read
+   without the page's scripts, or it asks to sign in, she's told to open it
+   in her browser instead (`browser_automation__navigate`).
 2. **"wiki"/"wikipedia" in your message** → Wikipedia summary lookup.
 3. **Search phrasing** ("search for...", "look up...", "google...", "what's
    the latest news on...") → SearXNG web search, top 5 results.
@@ -50,7 +56,9 @@ Toggle the whole feature with `MANA_WEB_ACCESS_ENABLED=0`.
 ## API endpoints
 
 - `POST /web/search` — `{ "query": "...", "limit": 5 }`
-- `POST /web/read` — `{ "url": "https://..." }`
+- `POST /web/read` — `{ "url": "https://..." }`; add `"reader": true` for
+  the chat window's reader view (the whole article, with its images fetched
+  through the same SSRF guard and returned as `data:` URLs)
 - `GET /wiki/:term`
 
 ## Safety
@@ -60,9 +68,9 @@ Toggle the whole feature with `MANA_WEB_ACCESS_ENABLED=0`.
   ranges — including `169.254.169.254`, the common cloud metadata address.
   Private/internal targets are refused with a clear error instead of being
   fetched.
-- **Content-type check**: only `text/html` pages are read; PDFs, binaries,
-  etc. are rejected rather than dumped into her prompt as garbage.
-- **Size caps**: page reads stop after 3&nbsp;MB downloaded and 6000
+- **Content-type check**: only HTML and Markdown pages are read; PDFs,
+  binaries, etc. are rejected rather than dumped into her prompt as garbage.
+- **Size caps**: page reads stop after 3&nbsp;MB downloaded and 8000
   characters handed to the model, so a huge page can't blow out her context.
 - Search and page reads only run when your message asks for them (or names a
   URL) — Mana never browses on her own initiative.

@@ -10,9 +10,10 @@ namespace Mana.NativeLauncher;
 // #1122: the chat rail's Browser tool -- BrowserAutomationPanel's view,
 // docked: the page she's on, its latest screenshot and her last steps,
 // with Stop (ends her browser session) and Take over (opens that page in my
-// own browser), plus the web pages this turn took in, each opening in my
-// browser. Polls GET /browser-automation/activity once a second while it's
-// on screen.
+// own browser), plus the web pages this turn took in. Polls
+// GET /browser-automation/activity once a second while it's on screen.
+// #1140: opening one of this turn's pages reads it here, drawn by Folio
+// (ReaderView), in place of the rest until Back.
 internal sealed class BrowserTool : Panel
 {
     private const int PollIntervalMs = 1000;
@@ -24,11 +25,12 @@ internal sealed class BrowserTool : Panel
     private readonly Label urlLabel = new() { Dock = DockStyle.Top, Height = 20, AutoEllipsis = true, ForeColor = DarkTheme.Muted };
     private readonly PictureBox screenshotBox = new() { Dock = DockStyle.Top, Height = 160, SizeMode = PictureBoxSizeMode.Zoom, BackColor = DarkTheme.Background, AccessibleName = "Her browser's latest screenshot" };
     private readonly ListBox stepsBox = new() { Dock = DockStyle.Top, Height = 96, BorderStyle = BorderStyle.None, IntegralHeight = false, AccessibleName = "Her last steps" };
-    private readonly Label pagesLabel = new() { Dock = DockStyle.Top, Height = 22, Text = "Pages she read this turn", ForeColor = DarkTheme.Muted, Padding = new Padding(0, 6, 0, 0) };
+    private readonly Label pagesLabel = new() { Dock = DockStyle.Top, Height = 22, Text = "Pages she read this turn (open one to read it here)", ForeColor = DarkTheme.Muted, Padding = new Padding(0, 6, 0, 0) };
     private readonly ListView pagesList = new() { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HeaderStyle = ColumnHeaderStyle.None, AccessibleName = "Pages she read this turn (outside content)" };
     private readonly Button stopButton = new() { Text = "Stop", Dock = DockStyle.Right, Width = 64, AccessibleName = "Stop: end her browser session" };
     private readonly Button takeOverButton = new() { Text = "Take over", Dock = DockStyle.Left, Width = 84, AccessibleName = "Take over: open this page in my browser" };
     private readonly Font titleFont;
+    private readonly ReaderView reader;
 
     private ManaBrowserAutomationActivity? activity;
     private string? note;
@@ -40,6 +42,8 @@ internal sealed class BrowserTool : Panel
 
     // Tests swap this out so nothing opens a real browser.
     internal Action<string> OpenUrl { get; set; } = url => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+
+    internal ReaderView Reader => reader; // tests
 
     public BrowserTool(ManaBackendClient client)
     {
@@ -58,7 +62,7 @@ internal sealed class BrowserTool : Panel
         {
             if (pagesList.SelectedItems.Count > 0)
             {
-                Open((string)pagesList.SelectedItems[0].Tag!);
+                Read((string)pagesList.SelectedItems[0].Tag!);
             }
         };
 
@@ -70,8 +74,12 @@ internal sealed class BrowserTool : Panel
         buttonRow.Controls.Add(takeOverButton);
         buttonRow.Controls.Add(stopButton);
 
+        reader = new ReaderView(client, () => ShowReader(false)) { Dock = DockStyle.Fill, Visible = false, OpenUrl = url => this.OpenUrl(url) };
+
         // Last added docks first: title and URL on top, then the screenshot,
         // her steps, and this turn's pages filling the rest above the buttons.
+        // The reader, when it's open, is the only one shown.
+        Controls.Add(reader);
         Controls.Add(pagesList);
         Controls.Add(buttonRow);
         Controls.Add(pagesLabel);
@@ -145,6 +153,25 @@ internal sealed class BrowserTool : Panel
         {
             OpenUrl(url!);
         }
+    }
+
+    private void Read(string? url)
+    {
+        if (IsWebUrl(url))
+        {
+            ShowReader(true);
+            _ = reader.ShowAsync(url!);
+        }
+    }
+
+    private void ShowReader(bool on)
+    {
+        SuspendLayout();
+        foreach (Control control in Controls)
+        {
+            control.Visible = (control == reader) == on;
+        }
+        ResumeLayout();
     }
 
     internal static bool IsWebUrl(string? url) =>

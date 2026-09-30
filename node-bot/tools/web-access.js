@@ -9,11 +9,18 @@ const { URL } = require("node:url");
 const { ValidationError } = require("../request-validation");
 const { isLocalOnly, refuseIfLocalOnly } = require("../local-only");
 const { GAME_WIKI_SOURCE, wrapUntrusted } = require("../ai/untrusted-content");
+const { browserReason, extractMainContent } = require("./html-extract");
 
 const DEFAULT_SEARXNG_URL = "http://127.0.0.1:8890";
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_PAGE_BYTES = 3 * 1024 * 1024; // stop reading a page past this size
-const MAX_PAGE_TEXT_CHARS = 6000; // how much page text we hand to the prompt
+// #1140: how much page Markdown we hand to the prompt: about 2-2.5k tokens,
+// a sixth of a 9B model's 16k context.
+const MAX_PAGE_TEXT_CHARS = 8000;
+const READER_TEXT_CHARS = 60000; // the reader view shows the whole article
+const READER_MAX_IMAGES = 12;
+const READER_IMAGE_BYTES = 512 * 1024;
+const READER_IMAGE_TIMEOUT_MS = 5000;
 const MAX_REDIRECTS = 5;
 const GAME_WIKI_PAGE_CHARS = 2000; // #908: a voice answer mid-game needs little
 const GAME_WIKI_BUDGET_MS = 5000; // #945: the whole mid-game lookup; past it she answers without the wiki
@@ -117,68 +124,128 @@ function extractTitle(html) {
 
 // --- Page fetch (manual redirect handling for the SSRF guard above) ----
 
-async function fetchPage(rawUrl, options = {}) {
+// Every hop is re-checked by assertPublicUrl. The last response, and the
+// URL it came from.
+async function guardedFetch(rawUrl, accept, timeoutMs) {
   let target = await assertPublicUrl(rawUrl);
-  let lastResponse = null;
+  let response = null;
   // #945: a caller's timeoutMs covers every redirect hop together.
-  const budget = options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : null;
+  const budget = timeoutMs ? AbortSignal.timeout(timeoutMs) : null;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    lastResponse = await fetch(target.href, {
+    response = await fetch(target.href, {
       redirect: "manual",
-      headers: { "User-Agent": "Mana-local-assistant/1.0" },
+      headers: { "User-Agent": "Mana-local-assistant/1.0", Accept: accept },
       signal: budget || AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
-    if ([301, 302, 303, 307, 308].includes(lastResponse.status)) {
-      const location = lastResponse.headers.get("location");
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("location");
       if (!location) break;
       target = await assertPublicUrl(new URL(location, target).href);
       continue;
     }
     break;
   }
+  return { response, url: target.href };
+}
 
-  if (!lastResponse || !lastResponse.ok) {
-    throw new Error(
-      `Failed to fetch page (${lastResponse ? lastResponse.status : "no response"})`,
-    );
+// The body's bytes, reading no further than maxBytes past (over: it was cut).
+async function readBody(response, maxBytes) {
+  if (!response.body) {
+    const bytes = Buffer.from(typeof response.arrayBuffer === "function" ? await response.arrayBuffer() : await response.text());
+    return { bytes, over: bytes.length > maxBytes };
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytesRead = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    bytesRead += value.length;
+    if (bytesRead > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch (e) {}
+      return { bytes: Buffer.concat(chunks), over: true };
+    }
+  }
+  return { bytes: Buffer.concat(chunks), over: false };
+}
+
+// At a paragraph break when there's one in the budget's last 30%.
+function cutText(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const at = text.lastIndexOf("\n\n", maxChars);
+  return text.slice(0, at > maxChars * 0.7 ? at : maxChars).trimEnd();
+}
+
+// #1140: a page as Markdown. Markdown first (some sites serve it when
+// asked); otherwise the page's main content, extracted Readability-style
+// (tools/html-extract.js), not its menus. needsBrowser says why the
+// browser has to open it instead (little to read without its scripts, or
+// a sign-in), else null. reader: the Browser tool's reader view -- the
+// whole article, with its images fetched here as data: URLs.
+async function fetchPage(rawUrl, options = {}) {
+  const { response, url } = await guardedFetch(rawUrl, "text/markdown, text/html;q=0.9", options.timeoutMs);
+  if (!response || !response.ok) {
+    throw new Error(`Failed to fetch page (${response ? response.status : "no response"})`);
   }
 
-  const contentType = lastResponse.headers.get("content-type") || "";
-  if (!/text\/html|application\/xhtml/i.test(contentType)) {
+  const contentType = response.headers.get("content-type") || "";
+  const markdownServed = /text\/(x-)?markdown/i.test(contentType);
+  if (!markdownServed && !/text\/html|application\/xhtml/i.test(contentType)) {
     throw new ValidationError(`url is not an HTML page (content-type: ${contentType || "unknown"})`);
   }
 
-  const reader = lastResponse.body ? lastResponse.body.getReader() : null;
-  let html = "";
-  if (reader) {
-    const decoder = new TextDecoder("utf-8");
-    let bytesRead = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytesRead += value.length;
-      html += decoder.decode(value, { stream: true });
-      if (bytesRead > MAX_PAGE_BYTES) {
-        try {
-          await reader.cancel();
-        } catch (e) {}
-        break;
-      }
-    }
+  const body = (await readBody(response, MAX_PAGE_BYTES)).bytes.toString("utf8");
+  let title;
+  let text;
+  let needsBrowser = null;
+  if (markdownServed) {
+    text = body.replace(/\r\n/g, "\n").trim();
+    title = (text.match(/^#\s+(.+)$/m) || [])[1] || "";
   } else {
-    html = await lastResponse.text();
+    const page = extractMainContent(body, url);
+    text = page.markdown;
+    title = extractTitle(body) || page.h1;
+    needsBrowser = browserReason(body, text);
   }
 
-  const maxChars = Number(options.maxChars || MAX_PAGE_TEXT_CHARS);
-  const text = htmlToText(html).slice(0, maxChars);
-  return {
-    url: target.href,
-    title: extractTitle(html),
-    text,
-    truncated: htmlToText(html).length > maxChars,
+  const maxChars = Number(options.maxChars || (options.reader ? READER_TEXT_CHARS : MAX_PAGE_TEXT_CHARS));
+  const page = {
+    url,
+    title: title.trim().slice(0, 200),
+    text: cutText(text, maxChars),
+    truncated: text.length > maxChars,
+    needsBrowser,
   };
+  if (options.reader) {
+    page.images = await fetchImages(page.text, url);
+  }
+  return page;
+}
+
+// #1140: the reader view's images, fetched here behind the same SSRF guard
+// so Folio never touches the network: data: URLs keyed by the src as the
+// Markdown writes it. One that fails, is too big or isn't a plain image
+// is left out (the reader shows its alt text).
+async function fetchImages(markdown, pageUrl) {
+  const srcs = [...new Set([...markdown.matchAll(/!\[[^\]]*\]\(([^)\s]+)\)/g)].map((m) => m[1]))].slice(0, READER_MAX_IMAGES);
+  const images = {};
+  await Promise.all(
+    srcs.map(async (src) => {
+      try {
+        const { response } = await guardedFetch(new URL(src, pageUrl).href, "image/png, image/jpeg, image/gif, image/webp", READER_IMAGE_TIMEOUT_MS);
+        const type = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        if (!response.ok || !/^image\/(png|jpeg|gif|webp)$/.test(type)) return;
+        const { bytes, over } = await readBody(response, READER_IMAGE_BYTES);
+        if (!over) images[src] = `data:${type};base64,${bytes.toString("base64")}`;
+      } catch (e) {} // left out: its alt text shows
+    }),
+  );
+  return images;
 }
 
 // --- Web search via local SearXNG --------------------------------------
@@ -365,7 +432,11 @@ async function buildWebContextForPrompt(text, env = process.env, game = null, ty
         page.text,
         page.truncated ? "\n[page content truncated]" : null,
       ].filter(Boolean);
-      return `Page Mana was asked to read:\n${wrapUntrusted("web page", lines.join("\n"))}\n\n`;
+      // #1140: the escalation to the browser, in Mana's own words outside the frame.
+      const escalate = page.needsBrowser
+        ? `[This page needs a browser (${page.needsBrowser}). If you have browser_automation__navigate, open it there instead.]\n\n`
+        : "";
+      return `Page Mana was asked to read:\n${wrapUntrusted("web page", lines.join("\n"))}\n\n${escalate}`;
     } catch (e) {
       return `[Mana tried to open ${url} but it failed: ${e.message}]\n\n`;
     }
