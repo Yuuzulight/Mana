@@ -239,8 +239,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         // #681: answers the model's mid-reply screenshot requests, and
-        // #911's desktop actions (media keys, volume, apps).
-        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, desktopAction: DesktopActions.Run);
+        // #911's desktop actions (media keys, volume, apps, audio output, file moves).
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, settings.DesktopActionFolders));
 
         trayIcon = new NotifyIcon
         {

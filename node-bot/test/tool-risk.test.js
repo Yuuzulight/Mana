@@ -266,6 +266,8 @@ test("#911 low tier: runs without a prompt in smart mode, asks in ask mode", asy
   assert.equal(classifyToolCall("desktop__focus_app", { name: "Discord" }).tier, "read");
   assert.equal(classifyToolCall("desktop__list_audio_outputs", {}).tier, "read");
   assert.equal(classifyToolCall("desktop__set_audio_output", { name: "Headset" }).tier, "write");
+  assert.equal(classifyToolCall("desktop__list_folder", {}).tier, "read");
+  assert.equal(classifyToolCall("desktop__move_files", { from: ["a"], to: "b" }).tier, "write");
   const smart = setup({ mode: "smart" });
   assert.equal(await smart.wrapped.executeTool("desktop__media", { key: "next" }), "ran desktop__media");
   const ask = setup({ mode: "ask" });
