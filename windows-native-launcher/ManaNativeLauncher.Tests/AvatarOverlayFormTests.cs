@@ -52,6 +52,16 @@ public class AvatarOverlayFormTests
         Assert.Equal(new Point(expectedX, expectedY),
             AvatarOverlayForm.KeepInside(new Rectangle(x, y, 234, 288), new Rectangle(0, 0, 1920, 1080)));
 
+    // The tray's Show avatar off wins over everything; on, #684 decides.
+    [Theory]
+    [InlineData(false, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(true, false, true, true)]   // not hiding with chat: always there
+    [InlineData(true, true, true, false)]   // chat open: steps aside
+    [InlineData(true, true, false, true)]
+    public void AvatarVisible_FollowsShowAvatarThenTheChatWindow(bool showAvatar, bool hidesWithChat, bool chatVisible, bool expected) =>
+        Assert.Equal(expected, ManaApplicationContext.AvatarVisible(showAvatar, hidesWithChat, chatVisible, System.Windows.Forms.FormWindowState.Normal));
+
     // #684: "minimized Mana" -- she shows while the chat window is closed or minimized.
     [Theory]
     [InlineData(false, System.Windows.Forms.FormWindowState.Normal, true)]
