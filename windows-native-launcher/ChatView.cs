@@ -41,6 +41,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     private readonly List<Message> messages = new();
     private readonly VScrollBar scrollBar = new() { Dock = DockStyle.Right, Visible = false };
+    // Whether the scroll bar is on. Not read back from scrollBar.Visible,
+    // which stays false while the window is hidden (then Relayout would
+    // keep switching it on forever).
+    private bool scrolling;
     private readonly Font bodyFont = new("Segoe UI", 10F);
     private readonly Dictionary<FontStyle, Font> styledFonts = new(); // bodyFont in bold/italic/strikeout/underline mixes
     private readonly Font headerFont = new("Segoe UI", 11F, FontStyle.Bold);
@@ -57,9 +61,15 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private bool dragSelecting;
     private Bitmap? glow;
     private (Size Size, Point Offset, Size Window, int Theme) glowKey;
+    // The UI thread, captured at construction: the view has no handle until
+    // the chat window is first shown, and appends made before then (the
+    // reopened session's history at launch, voice turns) must still land.
+    private readonly int uiThreadId = Environment.CurrentManagedThreadId;
+    private readonly System.Threading.SynchronizationContext? uiContext;
 
     public ChatView()
     {
+        uiContext = System.Threading.SynchronizationContext.Current; // installed by Control's constructor
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         Dock = DockStyle.Fill;
@@ -306,18 +316,24 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     private void RunOnUiThread(Action action)
     {
-        if (IsDisposed || !IsHandleCreated)
+        if (IsDisposed)
         {
             return;
         }
-        if (InvokeRequired)
+        if (Environment.CurrentManagedThreadId == uiThreadId)
         {
-            // Fire-and-forget, same as ChatLogPanel: an append racing the
-            // window closing is fine to drop.
-            BeginInvoke(action);
+            action();
             return;
         }
-        action();
+        // Fire-and-forget, same as ChatLogPanel: an append racing the
+        // window closing is fine to drop.
+        uiContext?.Post(_ =>
+        {
+            if (!IsDisposed)
+            {
+                action();
+            }
+        }, null);
     }
 
     private void Add(Message message, bool forceScroll)
@@ -357,7 +373,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     // ---- Layout ---------------------------------------------------------
 
-    private int ViewportWidth => Math.Max(1, ClientSize.Width - (scrollBar.Visible ? scrollBar.Width : 0));
+    private int ViewportWidth => Math.Max(1, ClientSize.Width - (scrolling ? scrollBar.Width : 0));
 
     private int MaxBubbleContentWidth => Math.Max(120, Math.Min(640, (int)((ViewportWidth - SideMargin * 2) * 0.72)) - PadX * 2);
 
@@ -382,9 +398,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         contentHeight = y;
 
         var needsScroll = contentHeight > ClientSize.Height;
-        if (scrollBar.Visible != needsScroll)
+        if (scrolling != needsScroll)
         {
-            scrollBar.Visible = needsScroll;
+            scrolling = scrollBar.Visible = needsScroll;
             foreach (var message in messages)
             {
                 message.LaidOutWidth = -1; // viewport width changed with the scrollbar
@@ -689,10 +705,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        if (IsHandleCreated)
-        {
-            Relayout(forceScroll: false); // bubble widths and the scroll range both follow the size
-        }
+        Relayout(forceScroll: false); // bubble widths and the scroll range both follow the size
     }
 
     // ---- Painting -------------------------------------------------------
@@ -718,7 +731,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        var scroll = scrollBar.Visible ? scrollBar.Value : 0;
+        var scroll = scrolling ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
         {
             var message = messages[i];
@@ -736,7 +749,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 using var glass = new SolidBrush(Color.FromArgb(175, fill));
                 g.FillRectangle(glass, bubble);
-                GlassSurface.PaintGlassEdges(g, bubble, null);
+                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this)); // #652: her bubbles shimmer
             }
             else
             {
@@ -861,7 +874,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         // ponytail: only scrolls while the mouse keeps moving past an edge; add a
         // timer if holding still outside the pane should keep scrolling.
-        if (scrollBar.Visible && (e.Y < 0 || e.Y > ClientSize.Height))
+        if (scrolling && (e.Y < 0 || e.Y > ClientSize.Height))
         {
             scrollBar.Value = Math.Clamp(scrollBar.Value + (e.Y < 0 ? -20 : 20), 0, MaxScroll());
         }
@@ -891,7 +904,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         var m = messages[index];
         var x = point.X - m.Bounds.X - PadX;
-        var y = point.Y + (scrollBar.Visible ? scrollBar.Value : 0) - m.Bounds.Y - PadY;
+        var y = point.Y + (scrolling ? scrollBar.Value : 0) - m.Bounds.Y - PadY;
         foreach (var line in m.Lines)
         {
             if (y < line.Y || y >= line.Y + line.Height)
@@ -989,7 +1002,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // Maps a point in the pane to the nearest (message, character offset).
     internal (int Msg, int Offset) TextPositionAt(Point point)
     {
-        var y = point.Y + (scrollBar.Visible ? scrollBar.Value : 0);
+        var y = point.Y + (scrolling ? scrollBar.Value : 0);
         for (var i = 0; i < messages.Count; i++)
         {
             var m = messages[i];
@@ -1096,7 +1109,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // The action button under `point`, as (message, button index), or null.
     private (int Msg, int Action, Rectangle Rect)? ActionAt(Point point)
     {
-        var scroll = scrollBar.Visible ? scrollBar.Value : 0;
+        var scroll = scrolling ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
         {
             var m = messages[i];
@@ -1198,7 +1211,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     internal int HitTest(Point point)
     {
-        var scroll = scrollBar.Visible ? scrollBar.Value : 0;
+        var scroll = scrolling ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
         {
             if (messages[i].Bounds.Contains(point.X, point.Y + scroll))
@@ -1243,7 +1256,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     private void ScrollIntoView(Rectangle bounds)
     {
-        if (!scrollBar.Visible)
+        if (!scrolling)
         {
             return;
         }
@@ -1284,7 +1297,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             case Keys.Alt | Keys.Down when selected >= 0 && messages[selected].Actions.FindIndex(a => a.Menu is not null) is var menuAt and >= 0:
             {
                 var rect = messages[selected].ActionBounds[menuAt];
-                rect.Offset(messages[selected].Bounds.X + PadX, messages[selected].Bounds.Y + PadY - (scrollBar.Visible ? scrollBar.Value : 0));
+                rect.Offset(messages[selected].Bounds.X + PadX, messages[selected].Bounds.Y + PadY - (scrolling ? scrollBar.Value : 0));
                 ShowActionMenu(selected, menuAt, new Point(rect.X, rect.Bottom));
                 e.Handled = true;
                 break;
@@ -1315,7 +1328,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
-        if (scrollBar.Visible)
+        if (scrolling)
         {
             scrollBar.Value = Math.Clamp(scrollBar.Value - e.Delta / 120 * 3 * scrollBar.SmallChange / 2, 0, MaxScroll());
         }
@@ -1367,7 +1380,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         {
             get
             {
-                var scroll = view.scrollBar.Visible ? view.scrollBar.Value : 0;
+                var scroll = view.scrolling ? view.scrollBar.Value : 0;
                 var b = view.messages[index].Bounds;
                 return view.RectangleToScreen(b with { Y = b.Y - scroll });
             }

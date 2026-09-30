@@ -4,13 +4,17 @@
 // main safety layer between the model and the user's machine, so every
 // call is classified before it runs:
 //
-//   read < write < network < install < destructive
+//   read < low < write < network < install < destructive
+//
+// #911: "low" is a small, reversible change on this PC that I'd make
+// without thinking twice (a media key, the volume, opening an app from my
+// Start menu); only built-in tools get it.
 //
 // Pipes and chained commands take their highest segment's tier; anything
 // unrecognized is "write". Destructive calls always go to a human, whatever
 // was granted before. The approval mode (Settings > Approvals, else
 // MANA_TOOL_APPROVAL) decides the rest: "smart" (default) asks for anything
-// above read tier, "ask" for every call, "off" only for destructive ones.
+// above low tier, "ask" for every call, "off" only for destructive ones.
 //
 // ponytail: pattern rules are a tripwire, not a parser -- a command built
 // at run time ($x = 'rm'; & $x -rf) reads as an unknown "write" call, not a
@@ -21,7 +25,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { isCredentialPath } = require("./tool-policy");
 
-const TIERS = ["read", "write", "network", "install", "destructive"];
+const TIERS = ["read", "low", "write", "network", "install", "destructive"];
 const MODES = ["off", "ask", "smart"];
 
 function maxTier(a, b) {
@@ -58,6 +62,24 @@ const BUILTIN_TIERS = {
   reminder__set: "read",
   reminder__list: "read",
   reminder__cancel: "read",
+  // #906: only reach the mail/calendar server I set up in Settings, and
+  // change nothing there (read-only mailbox, BODY.PEEK).
+  email__recent: "read",
+  email__search: "read",
+  email__read: "read",
+  calendar__events: "read",
+  calendar__add_event: "write",
+  // #911 (ai/desktop-tool-source.js): the launcher only focuses a window
+  // that's already open, and only opens Start-menu apps. Switching the audio
+  // output and moving files are "write": they ask first.
+  desktop__focus_app: "read",
+  desktop__list_audio_outputs: "read",
+  desktop__set_audio_output: "write",
+  desktop__list_folder: "read",
+  desktop__move_files: "write",
+  desktop__media: "low",
+  desktop__set_volume: "low",
+  desktop__open_app: "low",
   // #907: no arguments; searches only the topics and games I set in Settings.
   briefing__now: "read",
   memory__remember: "write",
@@ -73,7 +95,8 @@ const BUILTIN_TIERS = {
 };
 
 // Built-ins that already ask through the approval gate themselves
-// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests, browser-
+// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests,
+// calendar-add-event, browser-
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
@@ -82,6 +105,7 @@ const SELF_GATED = new Set([
   "skill__run",
   "snapshot__restore",
   "coding__run_tests",
+  "calendar__add_event",
   "browser_automation__navigate",
   "browser_automation__click",
   "browser_automation__type",
@@ -432,9 +456,15 @@ function bindCall(name, args, overrides = {}) {
   return { digest, cwd, executables };
 }
 
-function describeCall(name, risk) {
+// #911: a call without a command line shows its arguments, so approving
+// desktop__set_audio_output says which device.
+function describeCall(name, risk, args) {
   const parts = [`${name} (${risk.tier})`];
   if (risk.command) parts.push(`runs: ${risk.command.slice(0, 200)}`);
+  else if (args && typeof args === "object" && Object.keys(args).length) {
+    const json = JSON.stringify(args);
+    parts.push(`with ${json.length > 300 ? `${json.slice(0, 300)}...` : json}`);
+  }
   if (risk.cwd) parts.push(`in ${risk.cwd}`);
   if (risk.reasons.length) parts.push(`destructive: ${risk.reasons.join(", ")}`);
   if (risk.hosts.length) parts.push(`will contact ${risk.hosts.join(", ")}`);
@@ -452,7 +482,7 @@ function resolveToolApprovalMode(...candidates) {
 }
 
 // Wraps a {tools, isKnownTool, executeTool} policy (server.js applies it
-// around wrapWithHooks). mode: "smart" (default -- ask, but read-tier calls
+// around wrapWithHooks). mode: "smart" (default -- ask, but read- and low-tier calls
 // run without a prompt), "ask" (every call asks unless its capability/
 // command is granted), "off" (only destructive calls ask). The Guardian
 // pre-check (#284), when enabled, is the optional model confirmation for
@@ -473,7 +503,7 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
   async function ask(name, args, risk) {
     const binding = risk.command ? bindCall(name, args, bindingDeps) : null;
     const outcome = await approvalGate.requestApproval(`tool-${risk.tier}`, {
-      summary: describeCall(name, risk),
+      summary: describeCall(name, risk, args),
       payload: { name, args, ...(binding ? { digest: binding.digest } : {}) },
       scanText: risk.command || undefined,
       grantKey: binding ? `tool-exec:${binding.digest}` : undefined,
@@ -506,7 +536,7 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
       const risk = classifyToolCall(name, args);
       const gated =
         risk.tier === "destructive" ||
-        (mode !== "off" && !SELF_GATED.has(name) && !(mode === "smart" && risk.tier === "read"));
+        (mode !== "off" && !SELF_GATED.has(name) && !(mode === "smart" && ["read", "low"].includes(risk.tier)));
       return gated ? ask(name, args, risk) : policy.executeTool(name, args);
     },
   };
