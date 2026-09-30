@@ -472,8 +472,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
             // A remote backend's Fish Speech isn't this launcher's to restart,
-            // and another selected TTS provider means Fish isn't in use.
-            menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+            // and another selected TTS provider means Fish isn't in use --
+            // #1076: which, with TTS_PROVIDER unset, is only known once the
+            // backend has picked.
+            var restartFishItem = new ToolStripMenuItem("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+            menu.Opening += (_, _) => restartFishItem.Visible = processManager.UsesFishSpeech;
+            menu.Items.Add(restartFishItem);
         }
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
@@ -500,6 +504,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             await processManager.StartAsync((key, available) =>
                 overlay.SetRowStatus(key, available ? "Ready" : "Unavailable", available ? RowState.Ready : RowState.Warn));
+            if (!processManager.UsesFishSpeech)
+            {
+                // #1076: the backend picked another voice (Kokoro without a
+                // CUDA GPU with room for Fish); a no-op without the row.
+                overlay.SetRowStatus("fish-speech", "Not needed", RowState.Ready);
+            }
             // Launched isn't ready: Fish Speech can compile for minutes. Hold
             // the screen (and listening) until her voice actually answers,
             // so the avatar never appears before she can talk.
