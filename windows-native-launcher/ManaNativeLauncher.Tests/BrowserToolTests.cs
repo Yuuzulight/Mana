@@ -21,12 +21,13 @@ public class BrowserToolTests
 {
     private const string NotTakenOver = """{"active":false,"needsYou":null}""";
 
-    private static string Activity(string lastAt, string takeOver = NotTakenOver) => $$"""
+    private static string Activity(string lastAt, string takeOver = NotTakenOver, string blocked = "null") => $$"""
         {"log":[{"action":"navigate","status":"ok","summary":"Navigating to https://shop.test/","at":"{{lastAt}}"}],
          "screenshot":null,
          "page":{"url":"https://shop.test/cart","title":"Cart"},
          "turnPages":[{"source":"web search","url":"https://a.test/x"},{"source":"web page","url":"javascript:alert(1)"}],
-         "takeOver":{{takeOver}}}
+         "takeOver":{{takeOver}},
+         "blocked":{{blocked}}}
         """;
 
     private static ManaBackendClient Backend(List<string> requests, Func<string> activity) =>
@@ -154,6 +155,34 @@ public class BrowserToolTests
             Assert.Equal("Take over", button.Text);
             Assert.Equal("Cart", Title().Text);
             Assert.Empty(opened);
+        });
+    }
+
+    [Fact]
+    public void Tool_OffersMyBrowser_WhenTheSiteMayNeedWhatWasBlocked()
+    {
+        RunSta(() =>
+        {
+            var blocked = """{"url":"https://news.test/a","count":3}""";
+            using var tool = new BrowserTool(Backend([], () => Activity("t1", blocked: blocked)));
+            var opened = new List<string>();
+            tool.OpenUrl = opened.Add;
+            var open = tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Open in my browser");
+
+            // Never shown, so the row's Visible reads false either way: check its note.
+            Label Note() => open.Parent!.Controls.OfType<Label>().Single();
+            Pump(tool.RefreshAsync());
+            Assert.Equal("This site may need the 3 ad/tracker request(s) her browser blocked.", Note().Text);
+            Click(open);
+            Assert.Equal(["https://news.test/a"], opened);
+
+            // Nothing blocked, or not a web page: no offer.
+            blocked = """{"url":"javascript:alert(1)","count":3}""";
+            Pump(tool.RefreshAsync());
+            Assert.Equal("", Note().Text);
+            blocked = "null";
+            Pump(tool.RefreshAsync());
+            Assert.Equal("", Note().Text);
         });
     }
 

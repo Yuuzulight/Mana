@@ -274,3 +274,49 @@ test("#1139: sensitiveInPage spots password, one-time-code and card fields, and 
   assert.equal(check([], "/cart/Checkout"), "payment details");
   assert.equal(check([], "/wiki/Cats"), null);
 });
+
+test("#1168: isAdHost matches listed domains and their subdomains only", () => {
+  const { isAdHost } = require("../ad-hosts");
+  assert.equal(isAdHost("doubleclick.net"), true);
+  assert.equal(isAdHost("securepubads.g.doubleclick.net"), true);
+  assert.equal(isAdHost("connect.facebook.net"), true);
+  assert.equal(isAdHost("facebook.net"), false);
+  assert.equal(isAdHost("notdoubleclick.net"), false);
+  assert.equal(isAdHost("www.bbc.co.uk"), false);
+  assert.equal(isAdHost(""), false);
+});
+
+test("#1168: blocked ads only flag the page when it looks broken: errors or next to nothing there", async () => {
+  let health = { blockedAds: 4, pageErrors: 0 };
+  const page = createFakePage();
+  const session = createBrowserSession({ page, pageHealth: () => health });
+  assert.equal((await session.snapshot()).blockedMayBreak, undefined); // 6 elements, fine
+
+  health = { blockedAds: 4, pageErrors: 1 };
+  assert.equal((await session.snapshot()).blockedMayBreak, 4);
+
+  health = { blockedAds: 4, pageErrors: 0 };
+  page.state.aria = '- button "Only" [ref=e1]';
+  page.state.text = "Loading...";
+  assert.equal((await session.snapshot()).blockedMayBreak, 4);
+
+  health = { blockedAds: 0, pageErrors: 3 };
+  assert.equal((await session.snapshot()).blockedMayBreak, undefined);
+});
+
+test("#1168: an action that times out on a page with blocked ads says the site may need them", async () => {
+  const page = createFakePage();
+  page.locator = () => ({
+    click: async () => {
+      throw new Error("locator.click: Timeout 5000ms exceeded.");
+    },
+  });
+  const noAds = createBrowserSession({ page });
+  await assert.rejects(() => noAds.click("e5"), (e) => !/may need/.test(e.message));
+
+  const session = createBrowserSession({ page, pageHealth: () => ({ blockedAds: 2, pageErrors: 0 }) });
+  await assert.rejects(
+    () => session.click("e5"),
+    (e) => /Timeout 5000ms exceeded\. -- this site may need the 2 ad or tracker requests that were blocked/.test(e.message) && e.blockedMayBreak === 2,
+  );
+});

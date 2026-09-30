@@ -67,6 +67,10 @@ function refSelector(ref) {
   return `aria-ref=${id}`;
 }
 
+function blockedNote(count) {
+  return `this site may need the ${count} ad or tracker request${count === 1 ? "" : "s"} that were blocked; the user can open it in their own browser (don't retry without blocking)`;
+}
+
 // options.page: the injected page-like object (see file header).
 function createBrowserSession(options = {}) {
   const page = options.page;
@@ -74,7 +78,32 @@ function createBrowserSession(options = {}) {
     throw new Error("a page-like object ({goto, ariaSnapshot, locator, evaluate, title, url, screenshot}) is required");
   }
   const maxTextChars = Math.max(200, Number(options.maxTextChars) || MAX_PAGE_TEXT_CHARS);
+  // #1168: { blockedAds, pageErrors } for the current page (index.js).
+  const pageHealth = options.pageHealth || (() => ({ blockedAds: 0, pageErrors: 0 }));
   let last = null;
+
+  // Ads or trackers were blocked and the page looks broken (script errors,
+  // or next to nothing to read or use): the count, else 0. She doesn't
+  // retry without blocking; I can open it in my own browser.
+  function blockedMayBreak(elements, text) {
+    const { blockedAds, pageErrors } = pageHealth();
+    const empty = elements.length < 3 && String(text || "").length < 200;
+    return blockedAds > 0 && (pageErrors > 0 || empty) ? blockedAds : 0;
+  }
+
+  // An action that timed out on a page with blocked ads says so too.
+  async function acting(run) {
+    try {
+      return await run();
+    } catch (e) {
+      const { blockedAds } = pageHealth();
+      if (blockedAds > 0 && /timeout/i.test(e?.message || "")) {
+        e.message += ` -- ${blockedNote(blockedAds)}`;
+        e.blockedMayBreak = blockedAds;
+      }
+      throw e;
+    }
+  }
 
   async function snapshot() {
     const [aria, text, title, url, sensitive] = await Promise.all([
@@ -87,7 +116,8 @@ function createBrowserSession(options = {}) {
     const all = interactiveElements(aria);
     const elements = all.slice(0, MAX_ELEMENTS);
     if (all.length > elements.length) elements.push(`(${all.length - elements.length} more not shown)`);
-    last = { url, title, elements, text, ...(sensitive ? { sensitive } : {}) };
+    const blocked = blockedMayBreak(all, text);
+    last = { url, title, elements, text, ...(sensitive ? { sensitive } : {}), ...(blocked ? { blockedMayBreak: blocked } : {}) };
     return last;
   }
 
@@ -109,6 +139,7 @@ function createBrowserSession(options = {}) {
       removed,
       ...(now.text !== before.text ? { text: now.text } : {}),
       ...(now.sensitive ? { sensitive: now.sensitive } : {}),
+      ...(now.blockedMayBreak ? { blockedMayBreak: now.blockedMayBreak } : {}),
     };
   }
 
@@ -122,7 +153,7 @@ function createBrowserSession(options = {}) {
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       throw new Error("only http/https URLs can be navigated to");
     }
-    await page.goto(target.href);
+    await acting(() => page.goto(target.href));
     return snapshot();
   }
 
@@ -137,7 +168,7 @@ function createBrowserSession(options = {}) {
 
   async function click(ref) {
     await refuseIfSensitive();
-    await page.locator(refSelector(ref)).click({ timeout: ACTION_TIMEOUT_MS });
+    await acting(() => page.locator(refSelector(ref)).click({ timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -145,15 +176,17 @@ function createBrowserSession(options = {}) {
   async function type(ref, text, submit = false) {
     await refuseIfSensitive();
     const field = page.locator(refSelector(ref));
-    await field.fill(String(text ?? ""), { timeout: ACTION_TIMEOUT_MS });
-    if (submit) await field.press("Enter", { timeout: ACTION_TIMEOUT_MS });
+    await acting(async () => {
+      await field.fill(String(text ?? ""), { timeout: ACTION_TIMEOUT_MS });
+      if (submit) await field.press("Enter", { timeout: ACTION_TIMEOUT_MS });
+    });
     return afterAction();
   }
 
   // An option's label or value.
   async function select(ref, value) {
     await refuseIfSensitive();
-    await page.locator(refSelector(ref)).selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS });
+    await acting(() => page.locator(refSelector(ref)).selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -190,4 +223,5 @@ module.exports = {
   extractTextInPage,
   sensitiveInPage,
   refSelector,
+  blockedNote,
 };

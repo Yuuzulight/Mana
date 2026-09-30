@@ -26,6 +26,11 @@ internal sealed class BrowserTool : Panel
     private readonly Label urlLabel = new() { Dock = DockStyle.Top, Height = 20, AutoEllipsis = true, ForeColor = DarkTheme.Muted };
     private readonly PictureBox screenshotBox = new() { Dock = DockStyle.Top, Height = 160, SizeMode = PictureBoxSizeMode.Zoom, BackColor = DarkTheme.Background, AccessibleName = "Her browser's latest screenshot" };
     private readonly ListBox stepsBox = new() { Dock = DockStyle.Top, Height = 96, BorderStyle = BorderStyle.None, IntegralHeight = false, AccessibleName = "Her last steps" };
+    // #1168: a page that may need the ads/trackers her browser blocked,
+    // with "Open in my browser".
+    private readonly Panel blockedRow = new() { Dock = DockStyle.Top, Height = 28, Visible = false, Padding = new Padding(0, 2, 0, 2) };
+    private readonly Label blockedLabel = new() { Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = DarkTheme.Muted, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Button openInMyBrowserButton = new() { Text = "Open in my browser", Dock = DockStyle.Right, Width = 130, AccessibleName = "Open this page in my own browser" };
     private readonly Label pagesLabel = new() { Dock = DockStyle.Top, Height = 22, Text = "Pages she read this turn", ForeColor = DarkTheme.Muted, Padding = new Padding(0, 6, 0, 0) };
     private readonly ListView pagesList = new() { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HeaderStyle = ColumnHeaderStyle.None, AccessibleName = "Pages she read this turn (outside content)" };
     private readonly Button stopButton = new() { Text = "Stop", Dock = DockStyle.Right, Width = 64, AccessibleName = "Stop: end her browser session" };
@@ -68,6 +73,10 @@ internal sealed class BrowserTool : Panel
         DarkTheme.ApplyButton(takeOverButton);
         stopButton.Click += async (_, _) => await StopAsync();
         takeOverButton.Click += async (_, _) => await TakeOverOrHandBackAsync();
+        DarkTheme.ApplyButton(openInMyBrowserButton);
+        openInMyBrowserButton.Click += (_, _) => Open(activity?.BlockedUrl);
+        blockedRow.Controls.Add(blockedLabel);
+        blockedRow.Controls.Add(openInMyBrowserButton);
         var buttonRow = new Panel { Dock = DockStyle.Bottom, Height = 32, Padding = new Padding(0, 4, 0, 0) };
         buttonRow.Controls.Add(takeOverButton);
         buttonRow.Controls.Add(stopButton);
@@ -79,6 +88,7 @@ internal sealed class BrowserTool : Panel
         Controls.Add(pagesLabel);
         Controls.Add(stepsBox);
         Controls.Add(screenshotBox);
+        Controls.Add(blockedRow);
         Controls.Add(urlLabel);
         Controls.Add(titleLabel);
 
@@ -193,6 +203,9 @@ internal sealed class BrowserTool : Panel
             : pageUrl is null ? "She isn't on a page right now."
             : activity!.PageTitle is { Length: > 0 } title ? title : "(untitled page)");
         urlLabel.Text = pageUrl ?? "";
+        var blockedUrl = endedAtStep is null && activity?.BlockedCount > 0 && IsWebUrl(activity.BlockedUrl) ? activity.BlockedUrl : null;
+        blockedRow.Visible = blockedUrl is not null;
+        blockedLabel.Text = blockedUrl is null ? "" : $"This site may need the {activity!.BlockedCount} ad/tracker request(s) her browser blocked.";
         takeOverButton.Text = takenOver ? "Done" : "Take over";
         takeOverButton.AccessibleName = takenOver ? DoneName : TakeOverName;
         takeOverButton.Enabled = takenOver || IsWebUrl(pageUrl) || activity?.NeedsYou is not null;

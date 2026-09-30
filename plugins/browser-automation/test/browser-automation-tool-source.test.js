@@ -411,3 +411,20 @@ test("#1154: denials count per site, so saying no to one site three times doesn'
   await source.executeTool("browser_automation__navigate", { url: "https://b.test/" });
   await assert.rejects(() => source.executeTool("browser_automation__click", { ref: "e2" }), /needs the user's OK first/);
 });
+
+test("#1168: a page that may need blocked ads gets a note outside its frame, and the panel an Open in my browser", async () => {
+  const { createBrowserSession } = require("../browser-automation");
+  let health = { blockedAds: 3, pageErrors: 1 };
+  const session = createBrowserSession({ page: createFakePage(), pageHealth: () => health });
+  const { source, approvalGate } = createSource({ session });
+  await source.executeTool("browser_automation__snapshot", {}).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+
+  const result = await source.executeTool("browser_automation__navigate", { url: "https://news.test/" });
+  assert.match(result, /<\/untrusted-[0-9a-f]{12}>\nNote: this site may need the 3 ad or tracker requests that were blocked; the user can open it in their own browser \(don't retry without blocking\)\.$/);
+  assert.deepEqual(source.activityLog.getActivity().blocked, { url: "https://news.test/", count: 3 });
+
+  health = { blockedAds: 0, pageErrors: 0 };
+  await source.executeTool("browser_automation__navigate", { url: "https://calm.test/" });
+  assert.equal(source.activityLog.getActivity().blocked, null);
+});

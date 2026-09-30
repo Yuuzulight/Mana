@@ -5,6 +5,7 @@
 // separate Chromium instances.
 const { createBrowserActivityLog } = require("./browser-automation-activity");
 const { wrapUntrusted } = require("../../node-bot/ai/untrusted-content");
+const { blockedNote } = require("./browser-automation");
 
 const BROWSER_TOOL_PREFIX = "browser_automation__";
 // Gates the *first* tool-calling use, not every individual call -- once a
@@ -79,11 +80,14 @@ function describeForModel(result) {
     lines.push("The elements didn't change.");
   }
   if (result.text !== undefined) lines.push("", "Page text (start):", result.text);
-  const framed = wrapUntrusted("browser page", lines.join("\n"));
   // Outside the frame: this is Mana's code talking, not the page.
-  return result.sensitive
-    ? `${framed}\nThis page asks for ${result.sensitive}. That's the user's to do: don't click or type here. The Browser panel now asks them to take over; tell them and wait.`
-    : framed;
+  const notes = [wrapUntrusted("browser page", lines.join("\n"))];
+  if (result.sensitive) {
+    notes.push(`This page asks for ${result.sensitive}. That's the user's to do: don't click or type here. The Browser panel now asks them to take over; tell them and wait.`);
+  }
+  // #1168
+  if (result.blockedMayBreak) notes.push(`Note: ${blockedNote(result.blockedMayBreak)}.`);
+  return notes.join("\n");
 }
 
 function isBrowserAutomationToolName(name) {
@@ -191,11 +195,13 @@ function createBrowserAutomationToolSource(options = {}) {
       // the human watching benefits from seeing where it got stuck. The
       // real error still propagates to the model unchanged.
       activityLog.recordActivity({ action, args, status: "error", error: err.message });
+      if (err.blockedMayBreak) activityLog.recordBlocked(await session.url(), err.blockedMayBreak);
       throw err;
     }
 
     activityLog.recordActivity({ action, args, status: "ok" });
     activityLog.recordPage(result);
+    activityLog.recordBlocked(result.url, result.blockedMayBreak || 0);
     if (result.sensitive) requestHandOver(`This page asks for ${result.sensitive}.`);
     // Screenshots are for the Browser panel only, taken while it's on
     // screen. Best-effort: a capture failure (page mid-navigation, tab
