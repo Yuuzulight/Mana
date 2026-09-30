@@ -485,6 +485,62 @@ test("a view path outside Views/ is refused", () => {
   assert.equal(fs.existsSync(t.note("Facts/evil.md")), false);
 });
 
+test("a view never overwrites or removes a file Mana didn't create", () => {
+  const t = setup();
+  const logs = [];
+  const views = { list: [{ rel: "Views/Summary.md", body: "Summary." }, { rel: "Views/Mood.md", body: "Okay." }] };
+  const vault = createMemoryVault({ store: t.store, vaultDir: t.vaultDir, watch: false, log: (m) => logs.push(m), buildViews: () => views.list });
+  fs.mkdirSync(t.note("Views"));
+  t.write("Views/Summary.md", "My own summary.\n");
+  vault.refreshViews();
+  vault.refreshViews();
+  assert.equal(t.read("Views/Summary.md"), "My own summary.\n");
+  assert.ok(t.read("Views/Mood.md").startsWith(VIEWS_MARKER));
+  assert.deepEqual(logs, ['left "views/summary.md" alone: Mana didn\'t create it.']);
+
+  // Her own view stays hers even with the marker line edited away.
+  t.write("Views/Mood.md", "Edited, no marker.\n");
+  views.list = [{ rel: "Views/Mood.md", body: "Great." }];
+  vault.refreshViews();
+  assert.ok(t.read("Views/Mood.md").endsWith("Great."));
+  views.list = [];
+  t.write("Views/Mood.md", "Edited again.\n");
+  vault.refreshViews();
+  assert.equal(fs.existsSync(t.note("Views/Mood.md")), false);
+  assert.equal(t.read("Views/Summary.md"), "My own summary.\n");
+});
+
+test("the journal never writes into a day file Mana didn't create", async () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  fs.mkdirSync(t.note("Journal"));
+  t.write(`Journal/${day}.md`, "# My daily note\n");
+  const { vault } = journalVault(t);
+  assert.equal(await vault.writeJournal(), true);
+  assert.equal(t.read(`Journal/${day}.md`), "# My daily note\n");
+  assert.match(t.read(`Journal/${day} (Mana).md`), /^# \d{4}-\d{2}-\d{2}\n\n## \d{2}:\d{2}\n\nWe talked/);
+
+  // Her own file is appended to later; with both names the user's, nothing.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  t.store.rememberFact({ key: "cpu", text: "Ryzen 9.", origin: { kind: "user_stated" } });
+  const again = journalVault(t, { reply: "Second entry." });
+  assert.equal(await again.vault.writeJournal(), true);
+  assert.match(t.read(`Journal/${day} (Mana).md`), /We talked[\s\S]*Second entry\./);
+  fs.rmSync(t.note("Journal"), { recursive: true });
+  fs.mkdirSync(t.note("Journal"));
+  t.write(`Journal/${day}.md`, "Mine.\n");
+  t.write(`Journal/${day} (Mana).md`, "Also mine.\n");
+  fs.rmSync(path.join(t.root, "memory", "vault-sync.json"));
+  t.store.rememberFact({ key: "ram", text: "64 GB.", origin: { kind: "user_stated" } });
+  const blocked = journalVault(t, { reply: "Third." });
+  assert.equal(await blocked.vault.writeJournal(), false);
+  assert.equal(blocked.calls.length, 0);
+  assert.equal(t.read(`Journal/${day}.md`), "Mine.\n");
+  assert.equal(t.read(`Journal/${day} (Mana).md`), "Also mine.\n");
+});
+
 function journalVault(t, { reply = "We talked about the raid and my new GPU.", gaming = false } = {}) {
   const calls = [];
   const vault = createMemoryVault({

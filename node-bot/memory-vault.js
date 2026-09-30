@@ -446,7 +446,7 @@ function createMemoryVault(options = {}) {
       // than read every missing note as a deletion.
       const fresh = !fs.existsSync(full(FOLDERS.active));
       for (const folder of Object.values(FOLDERS)) fs.mkdirSync(full(folder), { recursive: true });
-      const state = fresh ? { vaultDir, notes: {} } : loadState();
+      const state = fresh ? { ...loadState(), notes: {} } : loadState();
       const onDisk = scanNotes();
       const taken = new Set();
       const takenKeys = new Set();
@@ -560,11 +560,32 @@ function createMemoryVault(options = {}) {
     }
   }
 
+  // Views/ and Journal/ files Mana created, as vault-relative lower-case
+  // paths in vault-sync.json's `created`: she only writes to or removes
+  // those (and, for views written before this list, files starting with
+  // the marker), never a file of the user's that happens to have the name.
+  const relOf = (target) => path.relative(vaultDir, target).split(path.sep).join("/").toLowerCase();
+  function saveCreated(state, created) {
+    const list = [...created].sort();
+    if (JSON.stringify(list) === JSON.stringify(state.created || [])) return;
+    state.created = list;
+    saveState(state);
+  }
+  const noticed = new Set();
+  function leaveAlone(target) {
+    if (noticed.has(target)) return;
+    noticed.add(target);
+    log(`left "${relOf(target)}" alone: Mana didn't create it.`);
+  }
+
   // Rewrites each view whose content changed (an edit of the user's
-  // included) and removes old ones -- only files starting with the marker.
+  // included) and removes old ones -- only Mana's own files.
   function refreshViews() {
     if (!options.buildViews || !vaultExists()) return;
     try {
+      const state = loadState();
+      const created = new Set(state.created || []);
+      const mine = (target, current) => created.has(relOf(target)) || current.startsWith(VIEWS_MARKER);
       const desired = new Map();
       for (const view of options.buildViews()) {
         const target = full(view.rel);
@@ -578,7 +599,12 @@ function createMemoryVault(options = {}) {
         } catch (e) {
           fs.mkdirSync(path.dirname(target), { recursive: true });
         }
+        if (current !== null && !mine(target, current)) {
+          leaveAlone(target);
+          continue;
+        }
         if (current !== content) fs.writeFileSync(target, content, "utf8");
+        created.add(relOf(target));
       }
       for (const dir of [full("Views"), full("Views/Entities")]) {
         let names = [];
@@ -589,14 +615,27 @@ function createMemoryVault(options = {}) {
         }
         for (const name of names) {
           const file = path.join(dir, name);
-          if (!desired.has(file.toLowerCase()) && fs.readFileSync(file, "utf8").startsWith(VIEWS_MARKER)) {
+          if (!desired.has(file.toLowerCase()) && mine(file, fs.readFileSync(file, "utf8"))) {
             fs.unlinkSync(file);
+            created.delete(relOf(file));
           }
         }
       }
+      saveCreated(state, created);
     } catch (e) {
       log(`views not refreshed: ${e?.message || e}`);
     }
+  }
+
+  // Today's journal file: Journal/<day>.md, or "<day> (Mana).md" when the
+  // user (a daily-notes plugin...) already made that one; null when both
+  // are taken.
+  function journalFile(day, created) {
+    return (
+      [`Journal/${day}.md`, `Journal/${day} (Mana).md`].find(
+        (rel) => created.has(rel.toLowerCase()) || !fs.existsSync(full(rel)),
+      ) || null
+    );
   }
 
   // Appends a short diary entry about what happened since the last one
@@ -608,7 +647,13 @@ function createMemoryVault(options = {}) {
     try {
       const nowDate = new Date();
       const day = localDate(nowDate.toISOString());
-      const rel = `Journal/${day}.md`;
+      let state = loadState();
+      let created = new Set(state.created || []);
+      let rel = journalFile(day, created);
+      if (!rel) {
+        leaveAlone(full(`Journal/${day}.md`));
+        return false;
+      }
       const startOfDay = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()).toISOString();
       let since = lastJournalAt;
       if (!since) {
@@ -639,8 +684,20 @@ function createMemoryVault(options = {}) {
 
       const links = [...new Set(facts.map((f) => `[[${noteName(f.key)}]]`))];
       const entry = `## ${nowDate.toTimeString().slice(0, 5)}\n\n${reply}\n${links.length ? `\nFacts: ${links.join(", ")}\n` : ""}\n`;
+      // Again: the user may have made the day's file while the model ran.
+      state = loadState();
+      created = new Set(state.created || []);
+      rel = journalFile(day, created);
+      if (!rel) {
+        leaveAlone(full(`Journal/${day}.md`));
+        return false;
+      }
       fs.mkdirSync(full("Journal"), { recursive: true });
-      if (!fs.existsSync(full(rel))) fs.writeFileSync(full(rel), `# ${day}\n\n`, "utf8");
+      if (!fs.existsSync(full(rel))) {
+        fs.writeFileSync(full(rel), `# ${day}\n\n`, "utf8");
+        created.add(rel.toLowerCase());
+        saveCreated(state, created);
+      }
       fs.appendFileSync(full(rel), entry, "utf8");
       lastJournalAt = nowDate.toISOString();
       return true;
