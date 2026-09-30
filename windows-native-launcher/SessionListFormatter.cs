@@ -27,6 +27,41 @@ internal static class SessionListFormatter
         return parsed.ToLocalTime().ToString("MMM d, h:mm tt", CultureInfo.InvariantCulture);
     }
 
+    // The sidebar's time under each chat, as in the #652 mockup: "just now",
+    // "5 min ago", "2 h ago" (today), "yesterday", the weekday within a
+    // week ("Sat"), then the date. FormatUpdatedAt's full time is its tooltip.
+    public static string FormatRelative(string? iso, DateTimeOffset now)
+    {
+        if (string.IsNullOrEmpty(iso) || !DateTimeOffset.TryParse(iso, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            return "";
+        }
+        var age = now - parsed;
+        var day = parsed.ToLocalTime().Date;
+        var today = now.ToLocalTime().Date;
+        if (age < TimeSpan.FromMinutes(1))
+        {
+            return "just now"; // also a clock a little ahead of this one
+        }
+        if (age < TimeSpan.FromHours(1))
+        {
+            return $"{(int)age.TotalMinutes} min ago";
+        }
+        if (day == today)
+        {
+            return $"{(int)age.TotalHours} h ago";
+        }
+        if (day == today.AddDays(-1))
+        {
+            return "yesterday";
+        }
+        if (day > today.AddDays(-7))
+        {
+            return day.ToString("ddd", CultureInfo.InvariantCulture);
+        }
+        return day.ToString(day.Year == today.Year ? "MMM d" : "MMM d, yyyy", CultureInfo.InvariantCulture);
+    }
+
     // #687: the sidebar's search box -- a case-insensitive title match, like
     // Electron's sidebar filter. Blank shows everything.
     public static bool MatchesSearch(ManaSession session, string query) =>

@@ -252,8 +252,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));
         updateNowRequests = SingleInstance.ListenForUpdate(true, () => RunOnUi(() => ApplyUpdate(now: true)));
-        // #681: answers the model's mid-reply screenshot requests.
-        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync);
+        // #681: answers the model's mid-reply screenshot requests, and
+        // #911's desktop actions (media keys, volume, apps).
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, desktopAction: DesktopActions.Run);
 
         trayIcon = new NotifyIcon
         {

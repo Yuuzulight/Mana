@@ -30,6 +30,30 @@ test("POST /vision/capture-result resolves a pending requestCapture() promise", 
   assert.equal(await capturePromise, "data:image/png;base64,abc");
 });
 
+// #911: a desktop action answers with a result object.
+test("POST /vision/capture-result resolves a desktop request with its result", async () => {
+  const app = createApp({});
+  let capturedRequestId = null;
+  visionCaptureBridge.setSender((message) => {
+    capturedRequestId = message.requestId;
+    return true;
+  });
+  const pending = visionCaptureBridge.requestDesktop("set_volume", { level: 30 });
+
+  await withServer(app, async (baseUrl) => {
+    const post = (body) =>
+      fetch(`${baseUrl}/vision/capture-result`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await post({ requestId: capturedRequestId, result: { level: 30 }, image: "x" })).status, 400);
+    assert.equal((await post({ requestId: capturedRequestId, result: { level: 30 } })).status, 200);
+  });
+
+  assert.deepEqual(await pending, { level: 30 });
+});
+
 test("POST /vision/capture-result rejects a missing requestId or image with a 400", async () => {
   const app = createApp({});
   await withServer(app, async (baseUrl) => {
