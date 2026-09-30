@@ -128,6 +128,10 @@ internal sealed class ManaSettingsStore
     // #912: Settings > Voice's camera toggle; off by default.
     public bool CameraSnapshots { get; set; }
 
+    // #1107: Settings > Voice's "Keep my voice clips for training" (VoiceData);
+    // off by default. Read at each turn, so switching it off stops at once.
+    public bool KeepVoiceClips { get; set; }
+
     // #962: where "save that" puts a camera snapshot; null = Pictures\Mana.
     public string? CameraSnapshotFolder { get; set; }
 
@@ -149,6 +153,13 @@ internal sealed class ManaSettingsStore
     // launch, and whether it was auto-started (Q62: those still rotate).
     public string? LastSessionId { get; set; }
     public bool LastSessionAuto { get; set; }
+
+    // #1118: the chat window's tool panel -- the open rail tool (null =
+    // closed), whether it's pinned (a pinned one reopens on launch), and
+    // its width. See ToolPanelHost.
+    public string? RailTool { get; set; }
+    public bool RailToolPinned { get; set; }
+    public int? RailToolWidth { get; set; }
 
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise

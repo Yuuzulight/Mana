@@ -177,8 +177,9 @@ internal sealed class ManaBackendClient
     public bool IsLocalBackend => http.BaseAddress?.IsLoopback == true;
 
     // #925: Heard is what whisper wrote, only when one of my mishearing
-    // fixes changed it into Transcript.
-    public Task<(string Transcript, string? Heard)> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
+    // fixes changed it into Transcript. #1107: Model (the file name) and
+    // Language, for a kept voice clip's sidecar.
+    public Task<(string Transcript, string? Heard, string? Model, string? Language)> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
 
     // #619: same upload to node-bot's /transcribe-partial (the endpoint
     // windows-launcher's pollPartialTranscript uses) -- async on the server,
@@ -186,7 +187,7 @@ internal sealed class ManaBackendClient
     public async Task<string> TranscribePartialAsync(byte[] wavBytes, CancellationToken cancellationToken) =>
         (await TranscribeAsync("/transcribe-partial", wavBytes, cancellationToken)).Transcript;
 
-    private async Task<(string Transcript, string? Heard)> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
+    private async Task<(string Transcript, string? Heard, string? Model, string? Language)> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
     {
         using var content = new MultipartFormDataContent();
         using var fileContent = new ByteArrayContent(wavBytes);
@@ -198,8 +199,8 @@ internal sealed class ManaBackendClient
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var root = document.RootElement;
-        return (root.GetProperty("transcript").GetString() ?? string.Empty,
-            root.TryGetProperty("heard", out var heard) ? heard.GetString() : null);
+        string? Optional(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        return (root.GetProperty("transcript").GetString() ?? string.Empty, Optional("heard"), Optional("model"), Optional("language"));
     }
 
     // #681: answers a /ws/vision-capture request (VisionCaptureClient).
@@ -238,9 +239,10 @@ internal sealed class ManaBackendClient
 
     // #909: emotion is the sentence's tag, which Qwen3-TTS turns into her
     // speaking rate; null leaves the voice as it is.
-    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null)
+    // #914: character (a reply event's) speaks in her own voice; null, the active one's.
+    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null, string? character = null)
     {
-        var payload = JsonSerializer.Serialize(new { text, emotion });
+        var payload = JsonSerializer.Serialize(new { text, emotion, character });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/synthesize", content);
         response.EnsureSuccessStatusCode();
@@ -973,6 +975,28 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #935: the Obsidian vault sync's status; VaultDir is null when it's off.
+    public async Task<ManaVaultStatus> GetMemoryVaultStatusAsync()
+    {
+        using var response = await http.GetAsync("/admin/memory/vault");
+        return await ReadVaultStatusAsync(response);
+    }
+
+    // #935: "Sync now" -- syncs at once and returns the new status.
+    public async Task<ManaVaultStatus> SyncMemoryVaultAsync()
+    {
+        using var response = await http.PostAsync("/admin/memory/vault/sync", null);
+        return await ReadVaultStatusAsync(response);
+    }
+
+    private static async Task<ManaVaultStatus> ReadVaultStatusAsync(HttpResponseMessage response)
+    {
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaVaultStatus>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaVaultStatus();
+    }
+
     // #529: index-only listing (GET /skills), not full skill bodies --
     // matches skills-capability.js's own "cheap call" framing. Editing a
     // skill's full content is a much bigger form than a lean settings
@@ -1057,8 +1081,9 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("override", out var overrideEl) ? overrideEl.GetString() : null;
     }
 
-    // #914: node-bot's characters (id, name) and the active one's id.
-    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters)> GetCharactersAsync()
+    // #914: node-bot's characters (id, name), the active one's id, and
+    // whether group mode is on.
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, bool GroupOn)> GetCharactersAsync()
     {
         using var response = await http.GetAsync("/characters");
         response.EnsureSuccessStatusCode();
@@ -1068,7 +1093,63 @@ internal sealed class ManaBackendClient
         var characters = root.GetProperty("characters").EnumerateArray()
             .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
             .ToList();
-        return (root.GetProperty("active").GetString() ?? "", characters);
+        var groupOn = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object
+            && group.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True;
+        return (root.GetProperty("active").GetString() ?? "", characters, groupOn);
+    }
+
+    // #914: each character's relationship notes and milestones, for
+    // Settings > Characters.
+    public async Task<IReadOnlyList<ManaCharacterRelationship>> GetRelationshipsAsync()
+    {
+        using var response = await http.GetAsync("/characters/relationships");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        static IReadOnlyList<ManaRelationshipItem> Items(JsonElement character, string name, string kind) =>
+            character.TryGetProperty(name, out var items) && items.ValueKind == JsonValueKind.Array
+                ? items.EnumerateArray().Select(i => new ManaRelationshipItem(
+                    kind,
+                    i.GetProperty("id").GetString() ?? "",
+                    i.GetProperty("text").GetString() ?? "",
+                    i.TryGetProperty("date", out var date) && date.ValueKind == JsonValueKind.String ? date.GetString() : null)).ToList()
+                : [];
+        return document.RootElement.GetProperty("characters").EnumerateArray()
+            .Select(c => new ManaCharacterRelationship(
+                c.GetProperty("id").GetString() ?? "",
+                c.GetProperty("name").GetString() ?? "",
+                Items(c, "notes", "notes"),
+                Items(c, "milestones", "milestones")))
+            .ToList();
+    }
+
+    // #914: edits one note or milestone (kind "notes"/"milestones"); a
+    // milestone's date (YYYY-MM-DD) too.
+    public async Task UpdateRelationshipItemAsync(string characterId, string kind, string itemId, string text, string? date = null)
+    {
+        var payload = date is null ? JsonSerializer.Serialize(new { text }) : JsonSerializer.Serialize(new { text, date });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync(RelationshipItemPath(characterId, kind, itemId), content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task RemoveRelationshipItemAsync(string characterId, string kind, string itemId)
+    {
+        using var response = await http.DeleteAsync(RelationshipItemPath(characterId, kind, itemId));
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static string RelationshipItemPath(string characterId, string kind, string itemId) =>
+        $"/characters/{Uri.EscapeDataString(characterId)}/relationship/{(kind == "milestones" ? "milestones" : "notes")}/{Uri.EscapeDataString(itemId)}";
+
+    // #914: group mode on (with the last partner, else the first other
+    // character) or off.
+    public async Task SetGroupAsync(bool on)
+    {
+        var payload = JsonSerializer.Serialize(new { on });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/characters/group", content);
+        response.EnsureSuccessStatusCode();
     }
 
     // #914: switches character; her handoff line, or null if she already was.
@@ -2270,6 +2351,11 @@ internal sealed class ManaBackendClient
             Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
             Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
             DeepThinking = root.TryGetProperty("deepThinking", out var deepProp) && deepProp.ValueKind == JsonValueKind.True,
+            Character = root.TryGetProperty("character", out var characterProp) && characterProp.ValueKind == JsonValueKind.String ? characterProp.GetString() : null,
+            CharacterName = root.TryGetProperty("characterName", out var characterNameProp) && characterNameProp.ValueKind == JsonValueKind.String ? characterNameProp.GetString() : null,
+            Kind = root.TryGetProperty("kind", out var kindProp) && kindProp.ValueKind == JsonValueKind.String ? kindProp.GetString() : null,
+            Id = root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null,
+            Date = root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind == JsonValueKind.String ? dateProp.GetString() : null,
         };
     }
 }
@@ -2578,7 +2664,22 @@ internal sealed class ReplyStreamEvent
     public string? Phase { get; init; }
     // #675 Q12b: on "final", whether Mana's own deep thinking is on.
     public bool DeepThinking { get; init; }
+    // #914: on "sentence"/"final", the character speaking (id and name) --
+    // in group mode a second final follows with her sister's reaction.
+    public string? Character { get; init; }
+    public string? CharacterName { get; init; }
+    // #914: type "noted" -- a relationship "note" or "milestone" she just
+    // made (Text; a milestone's Date), and its Id for undoing it.
+    public string? Kind { get; init; }
+    public string? Id { get; init; }
+    public string? Date { get; init; }
 }
+
+// #914: GET /characters/relationships -- one character's notes and milestones.
+internal sealed record ManaCharacterRelationship(string Id, string Name, IReadOnlyList<ManaRelationshipItem> Notes, IReadOnlyList<ManaRelationshipItem> Milestones);
+
+// Kind: "notes" or "milestones" (its route); Date only on a milestone.
+internal sealed record ManaRelationshipItem(string Kind, string Id, string Text, string? Date);
 
 // #580: a row from GET /editors/workspace/proposals -- see
 // zed-integration.js's own listProposals.
@@ -2820,6 +2921,24 @@ internal sealed class ManaSpeechVocabulary
     // "en" or "auto"; EnvLanguage (WHISPER_LANGUAGE) wins when set.
     public string Language { get; init; } = "en";
     public string? EnvLanguage { get; init; }
+}
+
+// #935: GET /admin/memory/vault (memory-vault.js getStatus()).
+internal sealed class ManaVaultStatus
+{
+    public string? VaultDir { get; init; }
+    // "watching", "polling" (the file watcher is down) or "stopped".
+    public string? Mode { get; init; }
+    public int Notes { get; init; }
+    public DateTimeOffset? LastSyncAt { get; init; }
+    public string? Error { get; init; }
+    public List<ManaVaultSkippedNote> Skipped { get; init; } = new();
+}
+
+internal sealed class ManaVaultSkippedNote
+{
+    public string File { get; init; } = "";
+    public string Reason { get; init; } = "";
 }
 
 // #950: GET /mail-calendar. Null when that account isn't set up;

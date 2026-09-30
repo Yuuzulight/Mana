@@ -18,12 +18,19 @@ function setup({ approvals } = {}) {
   const approvalGate = approvals
     ? { requestApproval: async (type, request) => approvals.push({ type, ...request }) }
     : null;
-  const vault = createMemoryVault({ store, vaultDir, approvalGate, watch: false, log: (m) => logs.push(m) });
+  const clock = { ms: Date.now() };
+  const vault = createMemoryVault({ store, vaultDir, approvalGate, watch: false, log: (m) => logs.push(m), now: () => clock.ms });
   const note = (rel) => path.join(vaultDir, rel);
   const read = (rel) => fs.readFileSync(note(rel), "utf8");
   const write = (rel, content) => fs.writeFileSync(note(rel), content, "utf8");
   const fact = (key) => store.listFacts().find((f) => f.key === key && f.status !== "stale");
-  return { root, vaultDir, store, vault, logs, note, read, write, fact };
+  // A deleted note counts once it's been missing for two syncs 30 s apart.
+  const syncPastGrace = () => {
+    vault.sync();
+    clock.ms += 31 * 1000;
+    return vault.sync();
+  };
+  return { root, vaultDir, store, vault, logs, note, read, write, fact, clock, syncPastGrace };
 }
 
 test("facts export as notes, and a second sync writes nothing (idempotent first start)", () => {
@@ -63,8 +70,9 @@ test("Mana's changes reach the note; its own writes never come back as edits (lo
   assert.equal(t.store.getFactHistory("gpu").length, historyBefore + 1);
 });
 
-test("editing an existing fact's note applies it directly as a vault edit", () => {
-  const t = setup();
+test("editing an existing fact's note applies it directly as a vault edit; a pin change asks first", () => {
+  const approvals = [];
+  const t = setup({ approvals });
   t.store.rememberFact({ key: "gpu", text: "RTX 4080.", origin: { kind: "user_stated" } });
   t.vault.sync();
   t.write("Facts/gpu.md", t.read("Facts/gpu.md").replace("pinned: false", "pinned: true").replace("RTX 4080.", "RTX 5080,\nwater cooled."));
@@ -73,12 +81,58 @@ test("editing an existing fact's note applies it directly as a vault edit", () =
   const gpu = t.fact("gpu");
   assert.equal(gpu.text, "RTX 5080, water cooled.");
   assert.equal(gpu.status, "active");
-  assert.equal(gpu.pinned, true);
   assert.equal(gpu.origin.kind, "vault_edit");
   assert.equal(gpu.history.at(-1).text, "RTX 4080.");
   // Rewritten in Mana's own form, then quiet.
   assert.equal(parseNote(t.read("Facts/gpu.md")).header.source, "your vault");
   assert.equal(t.vault.sync().applied, 0);
+
+  // Pinned means in every prompt: not until the user's OK in Mana.
+  assert.equal(gpu.pinned, undefined);
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.pinned, false);
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].type, "memory-vault-pin");
+  assert.equal(approvals[0].forceReview, true);
+  assert.deepEqual(approvals[0].payload, { key: "gpu", pinned: true });
+  // Approving runs server.js's executor, setFactPinned.
+  t.store.setFactPinned(approvals[0].payload.key, approvals[0].payload.pinned);
+  t.vault.sync();
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.pinned, true);
+
+  // Unpinning only takes it out of the prompt: applied directly, no ask.
+  t.write("Facts/gpu.md", t.read("Facts/gpu.md").replace("pinned: true", "pinned: false"));
+  t.vault.sync();
+  assert.equal(t.fact("gpu").pinned, undefined);
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.pinned, false);
+  assert.equal(approvals.length, 1);
+});
+
+test("a note keeps its own header lines, its line breaks and a BOM doesn't break it", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 4080.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  const mine = "tags:\n  - hardware\n  - pc\naliases: [graphics card]\n# my comment\ncssclasses:\n- wide";
+  t.write(
+    "Facts/gpu.md",
+    `\uFEFF${t.read("Facts/gpu.md").replace("pinned: false", `pinned: false\n${mine}`).replace("RTX 4080.", "RTX 5080,\n\nwater cooled.")}`,
+  );
+  t.vault.sync();
+  assert.equal(t.fact("gpu").text, "RTX 5080, water cooled.");
+  let note = t.read("Facts/gpu.md");
+  assert.ok(note.includes(`${mine}\n---\n\nRTX 5080,\n\nwater cooled.\n`));
+  assert.match(note, /^---\nstatus: active\npinned: false\n/);
+  assert.equal(parseNote(note).header.tags, undefined);
+  assert.equal(t.vault.sync().applied, 0);
+
+  // Mana's own change replaces the body but keeps the user's header lines.
+  t.store.rememberFact({ key: "gpu", text: "RTX 5090.", action: "patch", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  note = t.read("Facts/gpu.md");
+  assert.ok(note.includes(`${mine}\n---\n\nRTX 5090.\n`));
+  // Moved to Archived/: still kept.
+  t.store.rememberFact({ key: "gpu", action: "archive" });
+  t.vault.sync();
+  assert.ok(t.read("Facts/Archived/gpu.md").includes(mine));
 });
 
 test("a vault edit keeps the untrusted flag and redaction still applies", () => {
@@ -103,6 +157,7 @@ test("a brand-new note becomes a pending fact that asks for the user's OK", () =
   assert.equal(raid.status, "pending");
   assert.equal(raid.pinned, undefined);
   assert.equal(raid.origin.kind, "vault_edit");
+  assert.doesNotMatch(t.store.getRelatedFacts("when is raid night"), /Friday/);
   assert.equal(fs.existsSync(t.note("Facts/raid night.md")), false);
   assert.equal(parseNote(t.read("Facts/Pending/raid night.md")).header.status, "pending");
   assert.equal(approvals.length, 1);
@@ -160,6 +215,14 @@ test("status: archived in the header archives; deleting a note archives; moving 
   assert.equal(parseNote(t.read("Facts/Archived/gpu.md")).header.status, "archived");
 
   fs.unlinkSync(t.note("Facts/cat.md"));
+  // Not yet (a sync tool may be replacing the file), and not written back.
+  assert.equal(t.vault.sync().written, 0);
+  assert.equal(t.fact("cat").status, "active");
+  assert.equal(fs.existsSync(t.note("Facts/cat.md")), false);
+  t.clock.ms += 29 * 1000;
+  t.vault.sync();
+  assert.equal(t.fact("cat").status, "active");
+  t.clock.ms += 2 * 1000;
   t.vault.sync();
   assert.equal(t.fact("cat").status, "archived");
   assert.ok(fs.existsSync(t.note("Facts/Archived/cat.md")));
@@ -173,7 +236,7 @@ test("status: archived in the header archives; deleting a note archives; moving 
 
   // Deleting an archived note leaves the fact archived and the note gone.
   fs.unlinkSync(t.note("Facts/Archived/gpu.md"));
-  assert.equal(t.vault.sync().written, 0);
+  assert.equal(t.syncPastGrace().written, 0);
   assert.equal(t.fact("gpu").status, "archived");
   assert.equal(fs.existsSync(t.note("Facts/Archived/gpu.md")), false);
 });
@@ -298,11 +361,74 @@ test("moving a note into Archived/ archives it; deleting a pending note archives
   t.vault.sync();
   fs.renameSync(t.note("Facts/gpu.md"), t.note("Facts/Archived/gpu.md"));
   fs.unlinkSync(t.note("Facts/Pending/coffee.md"));
-  t.vault.sync();
+  t.syncPastGrace();
   assert.equal(t.fact("gpu").status, "archived");
   assert.equal(parseNote(t.read("Facts/Archived/gpu.md")).header.status, "archived");
   assert.equal(t.fact("coffee").status, "archived");
   assert.ok(fs.existsSync(t.note("Facts/Archived/coffee.md")));
+});
+
+test("a note that's back within the grace period was never deleted", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  const content = t.read("Facts/gpu.md");
+  fs.unlinkSync(t.note("Facts/gpu.md"));
+  t.vault.sync();
+  t.write("Facts/gpu.md", content);
+  t.clock.ms += 31 * 1000;
+  t.vault.sync();
+  // Gone again later: the grace starts over.
+  fs.unlinkSync(t.note("Facts/gpu.md"));
+  t.vault.sync();
+  assert.equal(t.fact("gpu").status, "active");
+  t.clock.ms += 31 * 1000;
+  t.vault.sync();
+  assert.equal(t.fact("gpu").status, "archived");
+});
+
+test("renaming a note renames its fact instead of archiving it and adding a pending one", () => {
+  const approvals = [];
+  const t = setup({ approvals });
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  t.store.setFactPinned("gpu", true);
+  t.vault.sync();
+  const id = t.fact("gpu").id;
+  fs.renameSync(t.note("Facts/gpu.md"), t.note("Facts/graphics card.md"));
+  t.vault.sync();
+  assert.equal(t.fact("gpu"), undefined);
+  const renamed = t.fact("graphics card");
+  assert.deepEqual([renamed.id, renamed.status, renamed.pinned, renamed.text], [id, "active", true, "RTX 5080."]);
+  assert.equal(t.store.getFactHistory("graphics card").at(-1).op, "rename");
+  assert.equal(approvals.length, 0);
+  assert.ok(fs.existsSync(t.note("Facts/graphics card.md")));
+  assert.equal(fs.existsSync(t.note("Facts/gpu.md")), false);
+  assert.deepEqual(t.syncPastGrace(), { applied: 0, written: 0, removed: 0, skipped: [] });
+  assert.equal(t.store.listFacts().length, 1);
+});
+
+test("sync-conflict copies are skipped, never taken in or touched", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  const copies = [
+    "Facts/gpu-DESKTOP-4F2K9.md",
+    "Facts/gpu 2.md",
+    "Facts/gpu.sync-conflict-20260930-101500-ABCDEFG.md",
+    "Facts/gpu (conflicted copy 2026-09-30).md",
+    "Facts/Pending/gpu (Conflicted copy laptop 202609301015).md",
+  ];
+  for (const rel of copies) t.write(rel, t.read("Facts/gpu.md").replace("RTX 5080.", "RTX 4080."));
+  // Ordinary names that only look alike are still new notes.
+  t.write("Facts/raid 2.md", "---\ntags: raid\n---\nSecond raid team.\n");
+  t.write("Facts/gpu-fan.md", "---\ntags: pc\n---\nNoisy.\n");
+  const result = t.vault.sync();
+  assert.deepEqual(result.skipped.map((s) => s.file).sort(), [...copies].sort());
+  assert.ok(result.skipped.every((s) => s.reason === "a sync-conflict copy, ignored"));
+  assert.equal(t.fact("gpu").text, "RTX 5080.");
+  for (const rel of copies) assert.ok(fs.existsSync(t.note(rel)));
+  assert.equal(t.fact("raid 2").status, "pending");
+  assert.equal(t.fact("gpu-fan").status, "pending");
 });
 
 test("restoring is refused while another live fact holds the key", () => {
@@ -364,6 +490,62 @@ test("a view path outside Views/ is refused", () => {
   const vault = viewsVault(t, { list: [{ rel: "Views/../Facts/evil.md", body: "x" }] });
   vault.refreshViews();
   assert.equal(fs.existsSync(t.note("Facts/evil.md")), false);
+});
+
+test("a view never overwrites or removes a file Mana didn't create", () => {
+  const t = setup();
+  const logs = [];
+  const views = { list: [{ rel: "Views/Summary.md", body: "Summary." }, { rel: "Views/Mood.md", body: "Okay." }] };
+  const vault = createMemoryVault({ store: t.store, vaultDir: t.vaultDir, watch: false, log: (m) => logs.push(m), buildViews: () => views.list });
+  fs.mkdirSync(t.note("Views"));
+  t.write("Views/Summary.md", "My own summary.\n");
+  vault.refreshViews();
+  vault.refreshViews();
+  assert.equal(t.read("Views/Summary.md"), "My own summary.\n");
+  assert.ok(t.read("Views/Mood.md").startsWith(VIEWS_MARKER));
+  assert.deepEqual(logs, ['left "views/summary.md" alone: Mana didn\'t create it.']);
+
+  // Her own view stays hers even with the marker line edited away.
+  t.write("Views/Mood.md", "Edited, no marker.\n");
+  views.list = [{ rel: "Views/Mood.md", body: "Great." }];
+  vault.refreshViews();
+  assert.ok(t.read("Views/Mood.md").endsWith("Great."));
+  views.list = [];
+  t.write("Views/Mood.md", "Edited again.\n");
+  vault.refreshViews();
+  assert.equal(fs.existsSync(t.note("Views/Mood.md")), false);
+  assert.equal(t.read("Views/Summary.md"), "My own summary.\n");
+});
+
+test("the journal never writes into a day file Mana didn't create", async () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  fs.mkdirSync(t.note("Journal"));
+  t.write(`Journal/${day}.md`, "# My daily note\n");
+  const { vault } = journalVault(t);
+  assert.equal(await vault.writeJournal(), true);
+  assert.equal(t.read(`Journal/${day}.md`), "# My daily note\n");
+  assert.match(t.read(`Journal/${day} (Mana).md`), /^# \d{4}-\d{2}-\d{2}\n\n## \d{2}:\d{2}\n\nWe talked/);
+
+  // Her own file is appended to later; with both names the user's, nothing.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  t.store.rememberFact({ key: "cpu", text: "Ryzen 9.", origin: { kind: "user_stated" } });
+  const again = journalVault(t, { reply: "Second entry." });
+  assert.equal(await again.vault.writeJournal(), true);
+  assert.match(t.read(`Journal/${day} (Mana).md`), /We talked[\s\S]*Second entry\./);
+  fs.rmSync(t.note("Journal"), { recursive: true });
+  fs.mkdirSync(t.note("Journal"));
+  t.write(`Journal/${day}.md`, "Mine.\n");
+  t.write(`Journal/${day} (Mana).md`, "Also mine.\n");
+  fs.rmSync(path.join(t.root, "memory", "vault-sync.json"));
+  t.store.rememberFact({ key: "ram", text: "64 GB.", origin: { kind: "user_stated" } });
+  const blocked = journalVault(t, { reply: "Third." });
+  assert.equal(await blocked.vault.writeJournal(), false);
+  assert.equal(blocked.calls.length, 0);
+  assert.equal(t.read(`Journal/${day}.md`), "Mine.\n");
+  assert.equal(t.read(`Journal/${day} (Mana).md`), "Also mine.\n");
 });
 
 function journalVault(t, { reply = "We talked about the raid and my new GPU.", gaming = false } = {}) {
@@ -435,3 +617,46 @@ test("views and the journal never create a missing vault", async () => {
   assert.equal(await vault.writeJournal(), false);
   assert.equal(fs.existsSync(path.join(root, "nope")), false);
 });
+
+test("with the watcher down, a 60 s poll still brings edits in, and the status says polling", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  const v = setup();
+  v.store.rememberFact({ key: "gpu", text: "RTX 4080.", origin: { kind: "user_stated" } });
+  const vault = createMemoryVault({ store: v.store, vaultDir: v.vaultDir, watch: false, log: () => {} });
+  assert.equal(vault.getStatus().mode, "stopped");
+  vault.start();
+  assert.equal(vault.getStatus().mode, "polling");
+  v.write("Facts/gpu.md", v.read("Facts/gpu.md").replace("RTX 4080.", "RTX 5080."));
+  t.mock.timers.tick(59 * 1000);
+  assert.equal(v.fact("gpu").text, "RTX 4080.");
+  t.mock.timers.tick(1000);
+  assert.equal(v.fact("gpu").text, "RTX 5080.");
+  const check = runDoctorChecks({ memoryVault: vault.getStatus() }).checks.find((c) => c.id === "memory-vault");
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /file watcher is down, so it checks every 60 s/);
+  vault.stop();
+  assert.equal(vault.getStatus().mode, "stopped");
+});
+
+test(
+  "the poll restarts a watcher whose Facts/ folder was replaced",
+  { skip: process.platform === "win32" && "Windows won't rename a watched folder" },
+  (t) => {
+    t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+    const v = setup();
+    const logs = [];
+    const vault = createMemoryVault({ store: v.store, vaultDir: v.vaultDir, log: (m) => logs.push(m) });
+    vault.start();
+    try {
+      assert.equal(vault.getStatus().mode, "watching");
+      fs.renameSync(v.note("Facts"), v.note("Facts-old"));
+      fs.mkdirSync(v.note("Facts"));
+      t.mock.timers.tick(60 * 1000);
+      // Caught by the inode check, or by the watcher's own error event.
+      assert.ok(logs.some((m) => /^Facts\/ was replaced; restarting|^watcher stopped/.test(m)), logs.join("\n"));
+      assert.equal(vault.getStatus().mode, "watching");
+    } finally {
+      vault.stop();
+    }
+  },
+);
