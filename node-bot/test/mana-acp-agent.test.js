@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
@@ -265,7 +268,7 @@ test("createManaAcpAgent gates test runs and autonomous loop by mode", async () 
     jsonrpc: "2.0",
     id: 32,
     method: "mana/test/run",
-    params: { command: "node --test", cwd: "C:\\ManaAI\\Mana" },
+    params: { command: "node --test" },
   });
   const loopRun = await autonomous.handleJsonRpc({
     jsonrpc: "2.0",
@@ -278,6 +281,50 @@ test("createManaAcpAgent gates test runs and autonomous loop by mode", async () 
   assert.match(loopRejected.error.message, /autonomous mode is disabled/i);
   assert.equal(testRun.result.ok, true);
   assert.equal(loopRun.result.status, "completed");
+});
+
+// #1003: a repo with one real worktree, a forged one whose .git file points
+// into the repo but isn't pointed back to, and a junction out of the repo.
+test("mana/test/run only runs inside the session's repo or its worktrees", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "mana-test-cwd-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const repo = path.join(base, "repo");
+  const wt = path.join(base, "wt");
+  const forged = path.join(base, "forged");
+  const outside = path.join(base, "outside");
+  const entry = path.join(repo, ".git", "worktrees", "wt");
+  for (const dir of [path.join(repo, "sub"), entry, path.join(wt, "sub"), forged, outside]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(path.join(entry, "gitdir"), `${path.join(wt, ".git")}\n`);
+  fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${entry}\n`);
+  fs.writeFileSync(path.join(forged, ".git"), `gitdir: ${entry}\n`);
+  fs.symlinkSync(outside, path.join(repo, "link"), "junction");
+
+  const ran = [];
+  const agent = createManaAcpAgent({
+    env: { MANA_AGENT_AUTONOMOUS: "1" },
+    memoryStore: false,
+    testRunner: {
+      run: async (command, { cwd }) => {
+        ran.push(cwd);
+        return { ok: true };
+      },
+    },
+  });
+  await agent.handleJsonRpc({ jsonrpc: "2.0", id: 1, method: "session/new", params: { sessionId: "s1", cwd: repo } });
+  const run = (cwd) =>
+    agent.handleJsonRpc({ jsonrpc: "2.0", id: 2, method: "mana/test/run", params: { sessionId: "s1", command: "npm test", cwd } });
+
+  for (const cwd of [undefined, "sub", path.join(repo, "sub"), wt, path.join(wt, "sub")]) {
+    assert.equal((await run(cwd)).result?.ok, true, `allowed: ${cwd}`);
+  }
+  assert.deepEqual(ran, [repo, path.join(repo, "sub"), path.join(repo, "sub"), wt, path.join(wt, "sub")]);
+
+  for (const cwd of ["..", outside, forged, path.join(repo, "link"), path.join(repo, "link."), path.join(repo, "link", "sub")]) {
+    assert.match((await run(cwd)).error?.message || "", /inside the session's repo/, `refused: ${cwd}`);
+  }
+  assert.equal(ran.length, 5, "nothing ran for a refused cwd");
 });
 
 // Issue #401: mana/agent/run echoes the session's stored goal back on
