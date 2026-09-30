@@ -150,6 +150,13 @@ internal sealed class ManaSettingsStore
     public string? LastSessionId { get; set; }
     public bool LastSessionAuto { get; set; }
 
+    // #1118: the chat window's tool panel -- the open rail tool (null =
+    // closed), whether it's pinned (a pinned one reopens on launch), and
+    // its width. See ToolPanelHost.
+    public string? RailTool { get; set; }
+    public bool RailToolPinned { get; set; }
+    public int? RailToolWidth { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.
