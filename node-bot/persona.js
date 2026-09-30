@@ -11,7 +11,9 @@ const MANA_PERSONA =
 // CLI-fallback replies) added one extra instruction on top of the shared
 // persona: keep it spoken-conversation-shaped. Composed here rather than
 // re-hardcoded so it can never drift from MANA_PERSONA again.
-const DEFAULT_SYSTEM_PROMPT = `${MANA_PERSONA} Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.`;
+const SPOKEN_STYLE =
+  "Speak naturally for spoken conversation: short sentences, clean wording, minimal rambling, usually one or two short sentences unless the user needs more detail.";
+const DEFAULT_SYSTEM_PROMPT = `${MANA_PERSONA} ${SPOKEN_STYLE}`;
 
 // Session-scoped temporary overrides: a one-off mode switch (e.g. "focused",
 // "quiet") layered on top of MANA_PERSONA for the rest of a session, without
@@ -59,6 +61,7 @@ function buildPersonaPrompt(sessionId, personalityTraits, core = MANA_PERSONA) {
 module.exports = {
   MANA_PERSONA,
   DEFAULT_SYSTEM_PROMPT,
+  SPOKEN_STYLE,
   setPersonaOverride,
   clearPersonaOverride,
   getPersonaOverride,

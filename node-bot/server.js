@@ -211,7 +211,9 @@ const {
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const {
   characterFilePath,
+  DEFAULT_ID: DEFAULT_CHARACTER_ID,
   createCharacterStore,
+  defaultPromptOf,
   perCharacter,
   personaOf,
 } = require("./characters");
@@ -516,8 +518,13 @@ function logPerf(label, startedAt) {
 
 configureFfxivMarketTools({ nowMs, logPerf });
 
+// #914: a call without its own system prompt speaks as the active
+// character (characterStore is created below, before any call).
+const activeDefaultPrompt = () => defaultPromptOf(characterStore.active());
+
 const localLlamaRuntime = createLocalLlamaRuntime({
   env: process.env,
+  systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
   nowMs,
   logPerf,
@@ -531,6 +538,7 @@ const modelSettingsStore = createModelSettingsStore({});
 
 const llamaServerRuntime = createLlamaServerRuntime({
   env: process.env,
+  systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
   nowMs,
   logPerf,
@@ -832,6 +840,12 @@ const acpMemoryStore = createAcpMemoryStore({
 // (data/speech.json), from Settings > Voice or the speech__* tools.
 const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
+});
+
+// #914: proactive toasts name the character saying them when she isn't Mana.
+require("./proactive").watchSpeaker(() => {
+  const character = characterStore.active();
+  return character.id === DEFAULT_CHARACTER_ID ? null : character.name;
 });
 
 // #986: held proactive remarks (data/proactive-held.json) survive a restart.
@@ -3831,7 +3845,7 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
-    const systemPrompt = systemPromptOverride || persona.DEFAULT_SYSTEM_PROMPT;
+    const systemPrompt = systemPromptOverride || activeDefaultPrompt();
 
     const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
     const url = new URL(baseUrl + "/v1/chat/completions");
