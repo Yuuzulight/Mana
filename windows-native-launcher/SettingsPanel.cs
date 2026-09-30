@@ -1596,8 +1596,25 @@ internal sealed class SettingsPanel : UserControl
         combo.SelectedIndex = (int)SpeakerGate.ResolveMode(null, ManaSettingsStore.Load().VoiceprintGate);
         var teach = new Button { Text = "Teach Mana your voice", AutoSize = true };
         var forget = new Button { Text = "Delete my voiceprint", AutoSize = true };
+        // #1112: a reading session for my Whisper fine-tune (TrainingLinesForm),
+        // listening paused while it's open like the enrolment.
+        var trainingLines = new Button { Text = "Record training lines", AutoSize = true };
         DarkTheme.ApplyButton(teach);
         DarkTheme.ApplyButton(forget);
+        DarkTheme.ApplyButton(trainingLines);
+        trainingLines.Click += (_, _) =>
+        {
+            listeningPause?.Pause();
+            try
+            {
+                using var form = new TrainingLinesForm(backendClient);
+                form.ShowDialog(FindForm());
+            }
+            finally
+            {
+                listeningPause?.Resume();
+            }
+        };
         var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
         void ShowEnrolled() => status.Text = ManaSettingsStore.Load().Voiceprint is null ? "Not taught yet -- the setting does nothing until you do." : "Your voice is saved on this PC.";
         ShowEnrolled();
@@ -1638,7 +1655,7 @@ internal sealed class SettingsPanel : UserControl
                 }
                 return cancel.IsCancellationRequested;
             }
-            teach.Enabled = forget.Enabled = false;
+            teach.Enabled = forget.Enabled = trainingLines.Enabled = false;
             try
             {
                 listeningPause?.Pause();
@@ -1679,7 +1696,7 @@ internal sealed class SettingsPanel : UserControl
                 listeningPause?.Resume();
                 if (!teach.IsDisposed)
                 {
-                    teach.Enabled = forget.Enabled = true;
+                    teach.Enabled = forget.Enabled = trainingLines.Enabled = true;
                 }
             }
         };
@@ -1689,6 +1706,7 @@ internal sealed class SettingsPanel : UserControl
         row.Controls.Add(combo);
         row.Controls.Add(teach);
         row.Controls.Add(forget);
+        row.Controls.Add(trainingLines);
         row.Controls.Add(status);
         row.Disposed += (_, _) =>
         {
@@ -1886,7 +1904,8 @@ internal sealed class SettingsPanel : UserControl
     }
 
     // #1107: keep my real spoken turns (VoiceData) for a Whisper fine-tune
-    // later; off by default, read at each turn. The count covers turns\ only.
+    // later; off by default, read at each turn. The count and delete cover
+    // #1112's training lines too, which "Record training lines" records.
     private FlowLayoutPanel BuildVoiceClipsRow()
     {
         var check = new CheckBox
@@ -1899,11 +1918,15 @@ internal sealed class SettingsPanel : UserControl
         var delete = new Button { Text = "Delete my voice clips", AutoSize = true };
         DarkTheme.ApplyButton(delete);
         var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        var folder = VoiceData.TurnsFolder;
+        (int Clips, double Minutes) Totals()
+        {
+            var all = VoiceData.AllFolders.Select(VoiceData.Totals).ToList();
+            return (all.Sum(t => t.Clips), all.Sum(t => t.Minutes));
+        }
         void ShowTotals()
         {
-            var (clips, minutes) = VoiceData.Totals(folder);
-            status.Text = $"{clips} clips, {minutes:F1} min in {folder} (this PC only, never uploaded)";
+            var (clips, minutes) = Totals();
+            status.Text = $"{clips} clips, {minutes:F1} min in {VoiceData.Folder("")} (this PC only, never uploaded)";
         }
         ShowTotals();
 
@@ -1916,7 +1939,7 @@ internal sealed class SettingsPanel : UserControl
         };
         delete.Click += (_, _) =>
         {
-            var (clips, _) = VoiceData.Totals(folder);
+            var (clips, _) = Totals();
             if (clips == 0
                 || MessageBox.Show(this, $"Delete all {clips} of your voice clips? This can't be undone.", "Voice clips", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             {
@@ -1924,7 +1947,10 @@ internal sealed class SettingsPanel : UserControl
             }
             try
             {
-                VoiceData.Delete(folder);
+                foreach (var folder in VoiceData.AllFolders)
+                {
+                    VoiceData.Delete(folder);
+                }
                 ShowTotals();
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
