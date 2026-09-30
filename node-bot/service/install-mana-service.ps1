@@ -51,11 +51,12 @@ nssm set $ServiceName AppStderr (Join-Path $LogDir "service-stderr.log")
 # MANA_BIND_HOST=127.0.0.1: this PC only, like node-bot's own default
 # (#670). Anything that can reach the backend and has the key can make Mana
 # reply and run tools, so it isn't exposed to the network -- see README.md.
+#
+# No WHISPER_MODEL: node-bot picks the installed model (multilingual when
+# the speech language isn't English); node-bot\.env can still pin one.
 $whisperBin = Join-Path $RootDir "tools\whisper\Release\whisper-cli.exe"
-$whisperModel = Join-Path $RootDir "tools\whisper\models\ggml-tiny.en.bin"
 nssm set $ServiceName AppEnvironmentExtra `
     "WHISPER_BIN=$whisperBin" `
-    "WHISPER_MODEL=$whisperModel" `
     "TTS_PROVIDER=fish" `
     "KOKORO_TTS_URL=http://127.0.0.1:5011" `
     "VTUBE_STUDIO_URL=ws://127.0.0.1:8001" `

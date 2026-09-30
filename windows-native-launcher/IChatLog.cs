@@ -12,6 +12,14 @@ internal interface IChatLog
     void AppendUserMessage(string text, IReadOnlyList<string> images) => AppendUserMessage(text);
     void AppendReplySentence(string text);
 
+    // #914: speaker is the character saying it (group mode has two), or
+    // null for the current reply's.
+    void AppendReplySentence(string text, string? speaker) => AppendReplySentence(text);
+
+    // #914: a line saying she noted something about us (speaker: who), with
+    // an Undo button whose run returns the note shown in its place.
+    void AppendNoted(string? speaker, string text, Func<Task<string?>> undo) { }
+
     // #652 part 6: Mana's reply is complete (not interrupted, not failed) --
     // the chat checks then whether the turn left any edits for approval.
     void ReplyFinished() { }

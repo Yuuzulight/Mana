@@ -36,6 +36,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         node: "v22.19.0",
       },
       zedCommandResolver: () => null,
+      gpu: null,
     });
 
     assert.equal(result.ok, false);
@@ -43,7 +44,7 @@ test("doctor checks return structured pass warn and fail results", () => {
     // having enabled it is a valid state, not a warning) -- one more pass
     // than before that check existed.
     assert.equal(result.summary.pass, 7);
-    assert.equal(result.summary.warn, 9);
+    assert.equal(result.summary.warn, 10);
     assert.equal(result.summary.fail, 1);
 
     assert.deepEqual(
@@ -58,6 +59,7 @@ test("doctor checks return structured pass warn and fail results", () => {
         "whisper-config",
         "tts-services",
         "mcp-server",
+        "gpu",
         "recommended-model-profile",
         "mobile-auth",
         "mobile-2fa",
@@ -114,6 +116,38 @@ test("doctor surfaces the injected hardware model recommendation", () => {
   assert.match(check.message, /Fast fallback \(fast\)/);
   assert.match(check.message, /manual profile selection.*unaffected/i);
   assert.deepEqual(check.details.recommendation, fakeRecommendation);
+});
+
+test("doctor GPU row: pass with CUDA, otherwise warns that voice and chat run on CPU", () => {
+  const run = (gpu) =>
+    runDoctorChecks({
+      env: { MANA_ALLOW_REMOTE_AI: "0" },
+      paths: { dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-")) },
+      ports: [],
+      services: [],
+      versions: { node: "v22.19.0" },
+      zedCommandResolver: () => null,
+      gpu,
+    }).checks.find((c) => c.id === "gpu");
+
+  const cuda = run({ vendor: "nvidia", name: "NVIDIA GeForce RTX 5080", vramMb: 16303, cuda: true, sharedMemory: false });
+  assert.equal(cuda.status, "pass");
+  assert.match(cuda.message, /RTX 5080 \(15\.9 GB VRAM\): CUDA available/);
+
+  const none = run(null);
+  assert.equal(none.status, "warn");
+  assert.equal(none.message, "No NVIDIA GPU: voice and chat run on CPU.");
+
+  const amd = run({ vendor: "amd", name: "AMD Radeon RX 7900 XTX", vramMb: 24576, cuda: false, sharedMemory: false });
+  assert.equal(amd.status, "warn");
+  assert.match(amd.message, /found AMD Radeon RX 7900 XTX, 24\.0 GB VRAM.*run on CPU/);
+
+  const igpu = run({ vendor: "intel", name: "Intel(R) Iris(R) Xe Graphics", vramMb: null, cuda: false, sharedMemory: true });
+  assert.match(igpu.message, /integrated, shared memory/);
+
+  const noSmi = run({ vendor: "nvidia", name: "NVIDIA GeForce RTX 3060", vramMb: 12288, cuda: false, sharedMemory: false });
+  assert.equal(noSmi.status, "warn");
+  assert.match(noSmi.message, /nvidia-smi isn't answering/);
 });
 
 test("doctor passes an auto-detected llama-server and only warns when none is found", () => {
@@ -758,4 +792,30 @@ test("async doctor reports Zed external agent backend health", async () => {
       });
     }
   });
+});
+
+test("Doctor warns when a non-English speech language meets an English-only Whisper model", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-whisper-lang-"));
+  const bin = path.join(tempDir, "whisper-cli.exe");
+  const model = path.join(tempDir, "ggml-tiny.en.bin");
+  fs.writeFileSync(bin, "");
+  fs.writeFileSync(model, "");
+  const whisperCheck = (whisperLanguage) =>
+    runDoctorChecks({
+      env: { WHISPER_BIN: bin, WHISPER_MODEL: model },
+      paths: { dataDir: tempDir },
+      whisperToolsDir: tempDir,
+      whisperLanguage,
+      ports: [],
+      services: [],
+      zedCommandResolver: () => null,
+    }).checks.find((check) => check.id === "whisper-config");
+  try {
+    assert.equal(whisperCheck("en").status, "pass");
+    const auto = whisperCheck("auto");
+    assert.equal(auto.status, "warn");
+    assert.match(auto.message, /ggml-tiny\.en\.bin is English-only/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });

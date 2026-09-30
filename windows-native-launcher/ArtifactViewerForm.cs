@@ -37,30 +37,30 @@ internal enum ArtifactOpen
     SaveAs,
 }
 
+// #1120: an artifact as the chat recorded it -- which chat, and when.
+internal sealed record ArtifactEntry(VersionedArtifact Artifact, string? SessionId, DateTime At);
+
 internal sealed class ArtifactViewerForm : Form
 {
-    private readonly List<VersionedArtifact> history = new();
+    private readonly List<ArtifactEntry> entries = new();
     private IReadOnlyList<VersionedArtifact> currentThread = Array.Empty<VersionedArtifact>();
     private int currentIndex;
-    private string? currentMermaidSource;
     private bool showSource; // "View source": HTML stays source while paging through versions
 
     private readonly Label titleLabel = new();
     private readonly Button prevButton = new();
     private readonly Button nextButton = new();
-    private readonly TextBox textBox = new();
-    private readonly Panel diagramPanel = new();
-    // #937: static HTML, drawn by Folio with the system's fonts. Folio loads
-    // nothing but data: images and runs no scripts; pages that need more go
-    // to the browser instead (HtmlArtifact.BrowserReasons).
-    private readonly FolioView htmlView = new()
-    {
-        Dock = DockStyle.Fill,
-        Visible = false,
-        Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() } },
-    };
+    private readonly ArtifactView view = new() { Dock = DockStyle.Fill };
 
-    internal FolioView HtmlView => htmlView; // tests
+    internal FolioView HtmlView => view.HtmlView; // tests
+
+    // #1120: every artifact so far, oldest first, for the chat window's
+    // Artifacts panel; Added is raised (UI thread) for each new one.
+    public IReadOnlyList<ArtifactEntry> Entries => entries;
+    public event Action<ArtifactEntry>? Added;
+
+    // The chat an artifact comes from; set once VoiceLoop exists.
+    public Func<string?>? CurrentSessionId { get; set; }
 
     public ArtifactViewerForm()
     {
@@ -89,35 +89,7 @@ internal sealed class ArtifactViewerForm : Form
         navRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         navRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
 
-        textBox.Multiline = true;
-        textBox.ReadOnly = true;
-        textBox.ScrollBars = ScrollBars.Both;
-        textBox.WordWrap = false;
-        textBox.Font = new Font("Consolas", 10F);
-        textBox.Dock = DockStyle.Fill;
-        textBox.BackColor = DarkTheme.Background;
-        textBox.ForeColor = DarkTheme.Text;
-        textBox.BorderStyle = BorderStyle.None;
-
-        diagramPanel.Dock = DockStyle.Fill;
-        diagramPanel.AutoScroll = true;
-        diagramPanel.BackColor = DarkTheme.Background;
-        diagramPanel.Paint += OnDiagramPaint;
-
-        // A clicked web link opens in the default browser; other schemes
-        // (file:, mailto:, protocol handlers) do nothing.
-        htmlView.LinkActivated += (_, e) =>
-        {
-            e.Handled = true;
-            if (HtmlArtifact.IsWebLink(e.Uri))
-            {
-                Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true })?.Dispose();
-            }
-        };
-
-        Controls.Add(htmlView);
-        Controls.Add(diagramPanel);
-        Controls.Add(textBox);
+        Controls.Add(view);
         Controls.Add(navRow);
     }
 
@@ -138,8 +110,10 @@ internal sealed class ArtifactViewerForm : Form
     // UI thread only.
     public Action<ArtifactOpen> Add(DetectedArtifact detected)
     {
-        var versioned = ArtifactDetector.AssignVersion(detected, history);
-        history.Add(versioned);
+        var versioned = ArtifactDetector.AssignVersion(detected, entries.ConvertAll(e => e.Artifact));
+        var entry = new ArtifactEntry(versioned, CurrentSessionId?.Invoke(), DateTime.Now);
+        entries.Add(entry);
+        Added?.Invoke(entry);
         return how =>
         {
             var html = versioned.Language == "html";
@@ -153,16 +127,31 @@ internal sealed class ArtifactViewerForm : Form
                 SaveAs(versioned);
                 return;
             }
-            showSource = how == ArtifactOpen.Source;
-            var thread = history.Where(a => a.ThreadId == versioned.ThreadId).ToList();
-            ShowThread(thread, thread.IndexOf(versioned));
+            Open(entry, source: how == ArtifactOpen.Source);
         };
     }
 
-    // Only HTML artifacts offer it (their split button's menu).
-    private static void SaveAs(VersionedArtifact artifact)
+    // #1120: the entry's version thread, oldest first.
+    public List<ArtifactEntry> ThreadOf(ArtifactEntry entry) =>
+        entries.Where(e => e.Artifact.ThreadId == entry.Artifact.ThreadId).ToList();
+
+    // Shows the entry's thread at its version in this window.
+    public void Open(ArtifactEntry entry, bool source = false)
     {
-        using var dialog = new SaveFileDialog { FileName = "artifact.html", Filter = "Web page (*.html)|*.html|All files (*.*)|*.*" };
+        showSource = source;
+        var thread = ThreadOf(entry).ConvertAll(e => e.Artifact);
+        ShowThread(thread, thread.IndexOf(entry.Artifact));
+    }
+
+    internal static void SaveAs(VersionedArtifact artifact)
+    {
+        var (extension, kind) = artifact.Language switch
+        {
+            "html" => ("html", "Web page"),
+            "mermaid" => ("mmd", "Mermaid diagram"),
+            _ => ("txt", "Text"),
+        };
+        using var dialog = new SaveFileDialog { FileName = $"artifact.{extension}", Filter = $"{kind} (*.{extension})|*.{extension}|All files (*.*)|*.*" };
         if (dialog.ShowDialog() == DialogResult.OK)
         {
             File.WriteAllText(dialog.FileName, artifact.Content);
@@ -200,6 +189,74 @@ internal sealed class ArtifactViewerForm : Form
         prevButton.Enabled = currentIndex > 0;
         nextButton.Enabled = currentIndex < currentThread.Count - 1;
 
+        if (view.Show(artifact, showSource) is { } whyBrowser)
+        {
+            titleLabel.Text += $" (needs a browser: {whyBrowser} -- source shown)";
+        }
+    }
+}
+
+// #1120: draws one artifact -- a Mermaid flowchart natively, static HTML
+// with Folio, anything else (and HTML Folio can't draw, or its source) as
+// plain monospace text. Shared by the viewer window and the chat window's
+// Artifacts panel so both look the same.
+internal sealed class ArtifactView : Panel
+{
+    private readonly TextBox textBox = new();
+    private readonly Panel diagramPanel = new();
+    private readonly Font textFont = new("Consolas", 10F);
+    private string? currentMermaidSource;
+    // #937: static HTML, drawn by Folio with the system's fonts. Folio loads
+    // nothing but data: images and runs no scripts; pages that need more go
+    // to the browser instead (HtmlArtifact.BrowserReasons).
+    private readonly FolioView htmlView = new()
+    {
+        Dock = DockStyle.Fill,
+        Visible = false,
+        Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() } },
+    };
+
+    internal FolioView HtmlView => htmlView;
+
+    public ArtifactView()
+    {
+        BackColor = DarkTheme.Background;
+        textBox.Multiline = true;
+        textBox.ReadOnly = true;
+        textBox.ScrollBars = ScrollBars.Both;
+        textBox.WordWrap = false;
+        textBox.Font = textFont;
+        textBox.Dock = DockStyle.Fill;
+        textBox.BackColor = DarkTheme.Background;
+        textBox.ForeColor = DarkTheme.Text;
+        textBox.BorderStyle = BorderStyle.None;
+        textBox.AccessibleName = "Artifact source";
+
+        diagramPanel.Dock = DockStyle.Fill;
+        diagramPanel.AutoScroll = true;
+        diagramPanel.BackColor = DarkTheme.Background;
+        diagramPanel.Paint += OnDiagramPaint;
+
+        // A clicked web link opens in the default browser; other schemes
+        // (file:, mailto:, protocol handlers) do nothing.
+        htmlView.LinkActivated += (_, e) =>
+        {
+            e.Handled = true;
+            if (HtmlArtifact.IsWebLink(e.Uri))
+            {
+                Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true })?.Dispose();
+            }
+        };
+
+        Controls.Add(htmlView);
+        Controls.Add(diagramPanel);
+        Controls.Add(textBox);
+    }
+
+    // Returns why an HTML artifact needs a browser (its source is shown
+    // instead), or null. source: show HTML's source even when Folio can draw it.
+    public string? Show(VersionedArtifact artifact, bool source)
+    {
         htmlView.Visible = false;
         if (artifact.Language == "mermaid")
         {
@@ -207,29 +264,34 @@ internal sealed class ArtifactViewerForm : Form
             textBox.Visible = false;
             diagramPanel.Visible = true;
             diagramPanel.Invalidate();
+            return null;
         }
-        else
+        currentMermaidSource = null;
+        diagramPanel.Visible = false;
+        textBox.Visible = true;
+        textBox.Text = artifact.Content; // HTML's source too, when asked for or Folio can't draw it
+        if (artifact.Language != "html" || source)
         {
-            currentMermaidSource = null;
-            diagramPanel.Visible = false;
-            textBox.Visible = true;
-            textBox.Text = artifact.Content; // HTML's source too, when asked for or Folio can't draw it
-            if (artifact.Language == "html" && !showSource)
-            {
-                if (HtmlArtifact.BrowserReasons(artifact.Content) is { } whyBrowser)
-                {
-                    titleLabel.Text += $" (needs a browser: {whyBrowser} -- source shown)";
-                }
-                else
-                {
-                    htmlView.LoadHtml(artifact.Content);
-                    textBox.Visible = false;
-                    htmlView.Visible = true;
-                }
-            }
+            return null;
         }
+        if (HtmlArtifact.BrowserReasons(artifact.Content) is { } whyBrowser)
+        {
+            return whyBrowser;
+        }
+        htmlView.LoadHtml(artifact.Content);
+        textBox.Visible = false;
+        htmlView.Visible = true;
+        return null;
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            textFont.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 
     private void OnDiagramPaint(object? sender, PaintEventArgs e)
     {

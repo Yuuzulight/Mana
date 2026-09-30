@@ -5,10 +5,11 @@ const path = require("node:path");
 const { createEditorIntegrations } = require("./zed-integration");
 const { assertLocalAiPolicy } = require("./mana-acp-agent");
 const { isMcpServerEnabled } = require("./mcp-server");
-const { createModelManagement } = require("./model-management");
+const { createModelManagement, getGpu } = require("./model-management");
 const {
   findWhisperBin,
   findWhisperModel,
+  isEnglishOnlyWhisperModel,
 } = require("./whisper-discovery");
 
 const DEFAULT_NODE_MAJOR = 18;
@@ -109,6 +110,26 @@ function checkMcpServer(env) {
   );
 }
 
+// #1065: Mana's GPU paths (llama.cpp, Whisper, Fish Speech) are CUDA-only,
+// so anything but a working NVIDIA GPU means CPU. Supported, but slower --
+// a warn, not a fail.
+function checkGpu(gpu) {
+  if (gpu?.cuda) {
+    const vramGb = (gpu.vramMb / 1024).toFixed(1);
+    return makeCheck("gpu", "GPU", "pass", `${gpu.name} (${vramGb} GB VRAM): CUDA available for chat and voice.`, { gpu });
+  }
+  let message = "No NVIDIA GPU: voice and chat run on CPU.";
+  if (gpu?.vendor === "nvidia") {
+    message = `${gpu.name} found, but nvidia-smi isn't answering (check the NVIDIA driver): voice and chat run on CPU.`;
+  } else if (gpu) {
+    const memory = gpu.sharedMemory
+      ? "integrated, shared memory"
+      : gpu.vramMb ? `${(gpu.vramMb / 1024).toFixed(1)} GB VRAM` : "VRAM unknown";
+    message = `No NVIDIA GPU (found ${gpu.name}, ${memory}; Mana's GPU acceleration is CUDA-only): voice and chat run on CPU.`;
+  }
+  return makeCheck("gpu", "GPU", "warn", message, { gpu: gpu || null });
+}
+
 function checkRecommendedModelProfile(modelManagement) {
   const recommendation = modelManagement.getRecommendedModelProfile();
   return makeCheck(
@@ -168,9 +189,10 @@ function checkLlamaServerBinary(env, findLlamaServerBin) {
 // via a setup wizard) counts as configured even with no env var at all.
 // `toolsDir` is injectable so tests can point it at an empty directory
 // instead of this machine's real tools/whisper/.
-function checkWhisperConfig(env, toolsDir) {
+// language: the spoken language whisper runs with ("en", "auto", ...).
+function checkWhisperConfig(env, toolsDir, language = env.WHISPER_LANGUAGE || "en") {
   const bin = findWhisperBin({ env, toolsDir });
-  const model = findWhisperModel({ env, toolsDir });
+  const model = findWhisperModel({ env, toolsDir, language });
 
   if (!bin && !model) {
     return makeCheck(
@@ -178,6 +200,16 @@ function checkWhisperConfig(env, toolsDir) {
       "Whisper config",
       "warn",
       "Whisper is not configured. Voice transcription will be unavailable.",
+    );
+  }
+
+  if (bin && model && language !== "en" && isEnglishOnlyWhisperModel(model)) {
+    return makeCheck(
+      "whisper-config",
+      "Whisper config",
+      "warn",
+      `Speech language is "${language}", but ${path.basename(model)} is English-only, so everything is transcribed as English. Use a multilingual model (e.g. ggml-large-v3-turbo) via WHISPER_MODEL.`,
+      { bin, model, language },
     );
   }
 
@@ -503,7 +535,9 @@ function checkMemoryVault(vault) {
     const files = vault.skipped.map((s) => `${s.file} (${s.reason})`).join("; ");
     return makeCheck("memory-vault", label, "warn", `${vault.vaultDir}: ${vault.notes} notes synced; skipped ${files}.`, vault);
   }
-  return makeCheck("memory-vault", label, "pass", `${vault.vaultDir}: writable, ${vault.notes} notes synced.`, vault);
+  // "polling": the file watcher is down and the 60 s sync covers for it.
+  const polling = vault.mode === "polling" ? " The file watcher is down, so it checks every 60 s." : "";
+  return makeCheck("memory-vault", label, "pass", `${vault.vaultDir}: writable, ${vault.notes} notes synced.${polling}`, vault);
 }
 
 // #889: which chat model llama-server is running, "(gaming model)" while
@@ -823,12 +857,13 @@ function runDoctorChecks(options = {}) {
       env.LLAMA_VISION_MODEL || "",
       "LLAMA_VISION_MODEL is not configured. Mana auto-detects vision GGUF models under tools/llama; image replies stay unavailable until one is installed. See docs/vision_setup.md.",
     ),
-    checkWhisperConfig(env, options.whisperToolsDir),
+    checkWhisperConfig(env, options.whisperToolsDir, options.whisperLanguage),
     checkTtsServices(options.services || []),
     checkFishTtsWarmup(options.fishTtsWarmup),
     checkSessionSearchVectorIndex(options.sessionSearchVectorEnabled),
     checkPromptComposition(options.promptComposition),
     checkMcpServer(env),
+    checkGpu(options.gpu !== undefined ? options.gpu : getGpu()),
     checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),
     checkMobile2fa(env),

@@ -240,11 +240,18 @@ test("dry run -> approval -> quiet runs stay silent; writes are listed in the ne
   const [pending] = gate.listPending();
   assert.match(pending.summary, /Dry run would say: I'd append today's line\./);
   assert.match(pending.summary, /Would also run: fs__write_file \[write\]/);
+  // #1124: the Background tasks panel sees it waiting.
+  assert.deepEqual(
+    hb.listChecks().map(({ text, approved, awaitingApproval }) => ({ text, approved, awaitingApproval })),
+    [{ text: "append a line to Q:\\Notes\\journal.md", approved: false, awaitingApproval: true }],
+  );
   clock += 60 * 60 * 1000;
   await hb.runDue(); // still waiting: no second dry run
   assert.equal(gate.listPending().length, 1);
 
   await gate.decide(pending.id, "allow-once");
+  assert.equal(hb.listChecks()[0].awaitingApproval, false);
+  assert.equal(hb.listChecks()[0].nextRunAt, clock + 30 * 60 * 1000);
   clock += 31 * 60 * 1000;
   gaming = true;
   replies.push("NOTHING_TO_REPORT");

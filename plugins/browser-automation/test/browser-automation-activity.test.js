@@ -55,6 +55,18 @@ test("reset clears both the log and the latest screenshot", () => {
   assert.equal(activity.screenshot, null);
 });
 
+test("the current page and this turn's fetched pages are kept until the next ones, and reset clears them", () => {
+  const log = createBrowserActivityLog();
+  log.recordPage({ url: "https://a.test/", title: "A", text: "not kept" });
+  log.recordTurnPages([{ source: "web search", url: "https://b.test/" }]);
+  assert.deepEqual(log.getActivity().page, { url: "https://a.test/", title: "A" });
+  assert.deepEqual(log.getActivity().turnPages, [{ source: "web search", url: "https://b.test/" }]);
+  log.recordTurnPages(undefined);
+  assert.deepEqual(log.getActivity().turnPages, []);
+  log.reset();
+  assert.equal(log.getActivity().page, null);
+});
+
 test("describeBrowserAction covers every known action and falls back to the raw name", () => {
   const { describeBrowserAction } = require("../browser-automation-activity");
   assert.match(describeBrowserAction("navigate", { url: "https://x.test" }), /Navigating to https:\/\/x\.test/);

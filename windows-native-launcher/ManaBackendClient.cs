@@ -190,8 +190,9 @@ internal sealed class ManaBackendClient
     public bool IsLocalBackend => http.BaseAddress?.IsLoopback == true;
 
     // #925: Heard is what whisper wrote, only when one of my mishearing
-    // fixes changed it into Transcript.
-    public Task<(string Transcript, string? Heard)> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
+    // fixes changed it into Transcript. #1107: Model (the file name) and
+    // Language, for a kept voice clip's sidecar.
+    public Task<(string Transcript, string? Heard, string? Model, string? Language)> TranscribeAsync(byte[] wavBytes) => TranscribeAsync("/transcribe-only", wavBytes, default);
 
     // #619: same upload to node-bot's /transcribe-partial (the endpoint
     // windows-launcher's pollPartialTranscript uses) -- async on the server,
@@ -199,7 +200,7 @@ internal sealed class ManaBackendClient
     public async Task<string> TranscribePartialAsync(byte[] wavBytes, CancellationToken cancellationToken) =>
         (await TranscribeAsync("/transcribe-partial", wavBytes, cancellationToken)).Transcript;
 
-    private async Task<(string Transcript, string? Heard)> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
+    private async Task<(string Transcript, string? Heard, string? Model, string? Language)> TranscribeAsync(string route, byte[] wavBytes, CancellationToken cancellationToken)
     {
         using var content = new MultipartFormDataContent();
         using var fileContent = new ByteArrayContent(wavBytes);
@@ -211,8 +212,8 @@ internal sealed class ManaBackendClient
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var root = document.RootElement;
-        return (root.GetProperty("transcript").GetString() ?? string.Empty,
-            root.TryGetProperty("heard", out var heard) ? heard.GetString() : null);
+        string? Optional(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        return (root.GetProperty("transcript").GetString() ?? string.Empty, Optional("heard"), Optional("model"), Optional("language"));
     }
 
     // #681: answers a /ws/vision-capture request (VisionCaptureClient).
@@ -251,9 +252,10 @@ internal sealed class ManaBackendClient
 
     // #909: emotion is the sentence's tag, which Qwen3-TTS turns into her
     // speaking rate; null leaves the voice as it is.
-    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null)
+    // #914: character (a reply event's) speaks in her own voice; null, the active one's.
+    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null, string? character = null)
     {
-        var payload = JsonSerializer.Serialize(new { text, emotion });
+        var payload = JsonSerializer.Serialize(new { text, emotion, character });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/synthesize", content);
         response.EnsureSuccessStatusCode();
@@ -986,6 +988,28 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #935: the Obsidian vault sync's status; VaultDir is null when it's off.
+    public async Task<ManaVaultStatus> GetMemoryVaultStatusAsync()
+    {
+        using var response = await http.GetAsync("/admin/memory/vault");
+        return await ReadVaultStatusAsync(response);
+    }
+
+    // #935: "Sync now" -- syncs at once and returns the new status.
+    public async Task<ManaVaultStatus> SyncMemoryVaultAsync()
+    {
+        using var response = await http.PostAsync("/admin/memory/vault/sync", null);
+        return await ReadVaultStatusAsync(response);
+    }
+
+    private static async Task<ManaVaultStatus> ReadVaultStatusAsync(HttpResponseMessage response)
+    {
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaVaultStatus>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaVaultStatus();
+    }
+
     // #529: index-only listing (GET /skills), not full skill bodies --
     // matches skills-capability.js's own "cheap call" framing. Editing a
     // skill's full content is a much bigger form than a lean settings
@@ -1070,8 +1094,9 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("override", out var overrideEl) ? overrideEl.GetString() : null;
     }
 
-    // #914: node-bot's characters (id, name) and the active one's id.
-    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters)> GetCharactersAsync()
+    // #914: node-bot's characters (id, name), the active one's id, and
+    // whether group mode is on.
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, bool GroupOn)> GetCharactersAsync()
     {
         using var response = await http.GetAsync("/characters");
         response.EnsureSuccessStatusCode();
@@ -1081,7 +1106,63 @@ internal sealed class ManaBackendClient
         var characters = root.GetProperty("characters").EnumerateArray()
             .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
             .ToList();
-        return (root.GetProperty("active").GetString() ?? "", characters);
+        var groupOn = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object
+            && group.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True;
+        return (root.GetProperty("active").GetString() ?? "", characters, groupOn);
+    }
+
+    // #914: each character's relationship notes and milestones, for
+    // Settings > Characters.
+    public async Task<IReadOnlyList<ManaCharacterRelationship>> GetRelationshipsAsync()
+    {
+        using var response = await http.GetAsync("/characters/relationships");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        static IReadOnlyList<ManaRelationshipItem> Items(JsonElement character, string name, string kind) =>
+            character.TryGetProperty(name, out var items) && items.ValueKind == JsonValueKind.Array
+                ? items.EnumerateArray().Select(i => new ManaRelationshipItem(
+                    kind,
+                    i.GetProperty("id").GetString() ?? "",
+                    i.GetProperty("text").GetString() ?? "",
+                    i.TryGetProperty("date", out var date) && date.ValueKind == JsonValueKind.String ? date.GetString() : null)).ToList()
+                : [];
+        return document.RootElement.GetProperty("characters").EnumerateArray()
+            .Select(c => new ManaCharacterRelationship(
+                c.GetProperty("id").GetString() ?? "",
+                c.GetProperty("name").GetString() ?? "",
+                Items(c, "notes", "notes"),
+                Items(c, "milestones", "milestones")))
+            .ToList();
+    }
+
+    // #914: edits one note or milestone (kind "notes"/"milestones"); a
+    // milestone's date (YYYY-MM-DD) too.
+    public async Task UpdateRelationshipItemAsync(string characterId, string kind, string itemId, string text, string? date = null)
+    {
+        var payload = date is null ? JsonSerializer.Serialize(new { text }) : JsonSerializer.Serialize(new { text, date });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync(RelationshipItemPath(characterId, kind, itemId), content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task RemoveRelationshipItemAsync(string characterId, string kind, string itemId)
+    {
+        using var response = await http.DeleteAsync(RelationshipItemPath(characterId, kind, itemId));
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static string RelationshipItemPath(string characterId, string kind, string itemId) =>
+        $"/characters/{Uri.EscapeDataString(characterId)}/relationship/{(kind == "milestones" ? "milestones" : "notes")}/{Uri.EscapeDataString(itemId)}";
+
+    // #914: group mode on (with the last partner, else the first other
+    // character) or off.
+    public async Task SetGroupAsync(bool on)
+    {
+        var payload = JsonSerializer.Serialize(new { on });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/characters/group", content);
+        response.EnsureSuccessStatusCode();
     }
 
     // #914: switches character; her handoff line, or null if she already was.
@@ -2031,7 +2112,35 @@ internal sealed class ManaBackendClient
             screenshotBase64 = base64Element.GetString();
         }
 
-        return new ManaBrowserAutomationActivity { Log = log, ScreenshotBase64 = screenshotBase64 };
+        // #1122: the page she's on, and the web pages this turn took in.
+        string? Text(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var page = root.TryGetProperty("page", out var pageElement) && pageElement.ValueKind == JsonValueKind.Object ? pageElement : (JsonElement?)null;
+        var turnPages = new List<ManaWebPageRef>();
+        if (root.TryGetProperty("turnPages", out var pagesElement) && pagesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in pagesElement.EnumerateArray())
+            {
+                turnPages.Add(new ManaWebPageRef { Source = Text(entry, "source") ?? "", Url = Text(entry, "url") ?? "" });
+            }
+        }
+
+        return new ManaBrowserAutomationActivity
+        {
+            Log = log,
+            ScreenshotBase64 = screenshotBase64,
+            PageUrl = page is { } p ? Text(p, "url") : null,
+            PageTitle = page is { } t ? Text(t, "title") : null,
+            TurnPages = turnPages,
+        };
+    }
+
+    // #1122: Stop in the Browser tool -- ends her browser session
+    // (plugins/browser-automation's POST /browser/close).
+    public async Task CloseBrowserSessionAsync()
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/browser/close", content);
+        response.EnsureSuccessStatusCode();
     }
 
     // #646: the chat tool loop's live runs -- no auth, a read-only status
@@ -2140,6 +2249,123 @@ internal sealed class ManaBackendClient
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/agent/stop", content);
         response.EnsureSuccessStatusCode();
+    }
+
+    // #1121: the commands Mana runs (node-bot/terminal-feed.js), newest
+    // first and without their output. Admin-gated.
+    public async Task<IReadOnlyList<ManaTerminalRun>> GetTerminalRunsAsync()
+    {
+        using var response = await http.GetAsync("/terminal/runs");
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var runs = new List<ManaTerminalRun>();
+        if (document.RootElement.TryGetProperty("runs", out var runsElement) && runsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in runsElement.EnumerateArray())
+            {
+                runs.Add(ReadTerminalRun(element));
+            }
+        }
+        return runs;
+    }
+
+    // One run with its output; null once it has dropped off the feed.
+    public async Task<ManaTerminalRun?> GetTerminalRunAsync(string id)
+    {
+        using var response = await http.GetAsync($"/terminal/runs/{Uri.EscapeDataString(id)}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return ReadTerminalRun(document.RootElement);
+    }
+
+    // Through the stop path of whatever ran it; false when nothing could.
+    public async Task<bool> StopTerminalRunAsync(string id)
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/terminal/runs/{Uri.EscapeDataString(id)}/stop", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.TryGetProperty("stopped", out var stopped) && stopped.ValueKind == JsonValueKind.True;
+    }
+
+    private static ManaTerminalRun ReadTerminalRun(JsonElement e)
+    {
+        string Text(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()! : "";
+        long? Number(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : null;
+        bool Flag(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+        return new ManaTerminalRun
+        {
+            Id = Text("id"),
+            Source = Text("source"),
+            Command = Text("command"),
+            Cwd = Text("cwd"),
+            StartedAt = Number("startedAt") ?? 0,
+            Output = Text("output"),
+            DroppedChars = Number("droppedChars") ?? 0,
+            ExitCode = (int?)Number("exitCode"),
+            DurationMs = Number("durationMs"),
+            Running = Flag("running"),
+            Stoppable = Flag("stoppable"),
+            Stopped = Flag("stopped"),
+        };
+    }
+
+    // #1125: everything Mana is doing or has scheduled (node-bot's
+    // capabilities/background-tasks-capability.js, #1124). Admin-gated.
+    public async Task<IReadOnlyList<ManaBackgroundTask>> GetBackgroundTasksAsync()
+    {
+        using var response = await http.GetAsync("/background-tasks");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var tasks = new List<ManaBackgroundTask>();
+        if (!document.RootElement.TryGetProperty("tasks", out var list) || list.ValueKind != JsonValueKind.Array)
+        {
+            return tasks;
+        }
+        foreach (var e in list.EnumerateArray())
+        {
+            string? Text(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            DateTimeOffset? Time(string name) => DateTimeOffset.TryParse(Text(name), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var t) ? t : null;
+            ManaTaskProgress? progress = null;
+            if (e.TryGetProperty("progress", out var p) && p.ValueKind == JsonValueKind.Object
+                && p.TryGetProperty("done", out var done) && done.ValueKind == JsonValueKind.Number
+                && p.TryGetProperty("total", out var total) && total.ValueKind == JsonValueKind.Number && total.GetDouble() > 0)
+            {
+                progress = new ManaTaskProgress(done.GetDouble(), total.GetDouble(), p.TryGetProperty("unit", out var unit) && unit.ValueKind == JsonValueKind.String ? unit.GetString() : null);
+            }
+            tasks.Add(new ManaBackgroundTask
+            {
+                Id = Text("id") ?? "",
+                Kind = Text("kind") ?? "",
+                Title = Text("title") ?? "",
+                Status = Text("status") ?? "",
+                StartedAt = Time("startedAt"),
+                NextRunAt = Time("nextRunAt"),
+                Progress = progress,
+                EtaSeconds = e.TryGetProperty("etaSeconds", out var eta) && eta.ValueKind == JsonValueKind.Number ? eta.GetDouble() : null,
+                Detail = Text("detail"),
+                CanCancel = e.TryGetProperty("canCancel", out var cancel) && cancel.ValueKind == JsonValueKind.True,
+            });
+        }
+        return tasks;
+    }
+
+    // False when the task already ended or can't be stopped now (404/409).
+    public async Task<bool> CancelBackgroundTaskAsync(string id)
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/background-tasks/{Uri.EscapeDataString(id)}/cancel", content);
+        if (response.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Conflict)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
     }
 
     // #577: node-bot's deep-research job store (capabilities/deep-research-
@@ -2283,6 +2509,11 @@ internal sealed class ManaBackendClient
             Name = root.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? nameProp.GetString() : null,
             Phase = root.TryGetProperty("phase", out var phaseProp) && phaseProp.ValueKind == JsonValueKind.String ? phaseProp.GetString() : null,
             DeepThinking = root.TryGetProperty("deepThinking", out var deepProp) && deepProp.ValueKind == JsonValueKind.True,
+            Character = root.TryGetProperty("character", out var characterProp) && characterProp.ValueKind == JsonValueKind.String ? characterProp.GetString() : null,
+            CharacterName = root.TryGetProperty("characterName", out var characterNameProp) && characterNameProp.ValueKind == JsonValueKind.String ? characterNameProp.GetString() : null,
+            Kind = root.TryGetProperty("kind", out var kindProp) && kindProp.ValueKind == JsonValueKind.String ? kindProp.GetString() : null,
+            Id = root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null,
+            Date = root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind == JsonValueKind.String ? dateProp.GetString() : null,
         };
     }
 }
@@ -2591,7 +2822,22 @@ internal sealed class ReplyStreamEvent
     public string? Phase { get; init; }
     // #675 Q12b: on "final", whether Mana's own deep thinking is on.
     public bool DeepThinking { get; init; }
+    // #914: on "sentence"/"final", the character speaking (id and name) --
+    // in group mode a second final follows with her sister's reaction.
+    public string? Character { get; init; }
+    public string? CharacterName { get; init; }
+    // #914: type "noted" -- a relationship "note" or "milestone" she just
+    // made (Text; a milestone's Date), and its Id for undoing it.
+    public string? Kind { get; init; }
+    public string? Id { get; init; }
+    public string? Date { get; init; }
 }
+
+// #914: GET /characters/relationships -- one character's notes and milestones.
+internal sealed record ManaCharacterRelationship(string Id, string Name, IReadOnlyList<ManaRelationshipItem> Notes, IReadOnlyList<ManaRelationshipItem> Milestones);
+
+// Kind: "notes" or "milestones" (its route); Date only on a milestone.
+internal sealed record ManaRelationshipItem(string Kind, string Id, string Text, string? Date);
 
 // #580: a row from GET /editors/workspace/proposals -- see
 // zed-integration.js's own listProposals.
@@ -2665,6 +2911,17 @@ internal sealed class ManaBrowserAutomationActivity
 {
     public IReadOnlyList<ManaBrowserAutomationLogEntry> Log { get; init; } = Array.Empty<ManaBrowserAutomationLogEntry>();
     public string? ScreenshotBase64 { get; init; }
+    public string? PageUrl { get; init; }
+    public string? PageTitle { get; init; }
+    public IReadOnlyList<ManaWebPageRef> TurnPages { get; init; } = Array.Empty<ManaWebPageRef>();
+}
+
+// #1122: a web page this turn took in (framed as untrusted); Source is the
+// frame's label ("web page", "web search", ...).
+internal sealed class ManaWebPageRef
+{
+    public string Source { get; init; } = "";
+    public string Url { get; init; } = "";
 }
 
 internal sealed class ManaBrowserAutomationLogEntry
@@ -2697,7 +2954,50 @@ internal sealed class ManaSelfWorkStatus
     public IReadOnlyList<string> Log { get; init; } = [];
 }
 
+// #1125: one entry from GET /background-tasks. Status is running,
+// scheduled, waiting, paused, done or failed. No Progress on a running task
+// means the backend can't measure it (an indeterminate bar); EtaSeconds is
+// only there when it can be estimated from the rate so far.
+internal sealed class ManaBackgroundTask
+{
+    public string Id { get; init; } = "";
+    public string Kind { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string Status { get; init; } = "";
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? NextRunAt { get; init; }
+    public ManaTaskProgress? Progress { get; init; }
+    public double? EtaSeconds { get; init; }
+    public string? Detail { get; init; }
+    public bool CanCancel { get; init; }
+}
+
+// Unit: "files", "bytes", "sources", "rounds", or "ms" for a countdown.
+internal sealed record ManaTaskProgress(double Done, double Total, string? Unit)
+{
+    public double Fraction => Math.Clamp(Done / Total, 0, 1);
+}
+
 // #646: one entry from GET /agent/activity (node-bot/agent-activity.js).
+// #1121: one entry of GET /terminal/runs (node-bot/terminal-feed.js).
+// Output is only filled by GetTerminalRunAsync.
+internal sealed class ManaTerminalRun
+{
+    public string Id { get; init; } = "";
+    public string Source { get; init; } = "";
+    public string Command { get; init; } = "";
+    public string Cwd { get; init; } = "";
+    public long StartedAt { get; init; }
+    public string Output { get; init; } = "";
+    public long DroppedChars { get; init; }
+    public int? ExitCode { get; init; }
+    public long? DurationMs { get; init; }
+    public bool Running { get; init; }
+    public bool Stoppable { get; init; }
+    // Ended by Stop (its process tree killed).
+    public bool Stopped { get; init; }
+}
+
 internal sealed class ManaAgentRun
 {
     public string Id { get; init; } = "";
@@ -2833,6 +3133,24 @@ internal sealed class ManaSpeechVocabulary
     // "en" or "auto"; EnvLanguage (WHISPER_LANGUAGE) wins when set.
     public string Language { get; init; } = "en";
     public string? EnvLanguage { get; init; }
+}
+
+// #935: GET /admin/memory/vault (memory-vault.js getStatus()).
+internal sealed class ManaVaultStatus
+{
+    public string? VaultDir { get; init; }
+    // "watching", "polling" (the file watcher is down) or "stopped".
+    public string? Mode { get; init; }
+    public int Notes { get; init; }
+    public DateTimeOffset? LastSyncAt { get; init; }
+    public string? Error { get; init; }
+    public List<ManaVaultSkippedNote> Skipped { get; init; } = new();
+}
+
+internal sealed class ManaVaultSkippedNote
+{
+    public string File { get; init; } = "";
+    public string Reason { get; init; } = "";
 }
 
 // #950: GET /mail-calendar. Null when that account isn't set up;

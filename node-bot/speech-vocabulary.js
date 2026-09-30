@@ -58,7 +58,8 @@ function clean(raw, what) {
   return term;
 }
 
-function createSpeechVocabulary({ filePath }) {
+// onCorrection({ heard, term }): after a mishearing fix is saved (#1107).
+function createSpeechVocabulary({ filePath, onCorrection = () => {} }) {
   let loadError = null;
   const data = { words: [], corrections: {}, language: "en" };
   try {
@@ -132,13 +133,15 @@ function createSpeechVocabulary({ filePath }) {
           { needsConfirm: true },
         );
       }
-      return update((d) => {
+      const fix = update((d) => {
         for (const key of Object.keys(d.corrections)) {
           if (same(key)(heard)) delete d.corrections[key];
         }
         d.corrections[heard] = term;
         return { heard, term };
       });
+      onCorrection(fix);
+      return fix;
     },
 
     removeCorrection(heardRaw) {

@@ -54,8 +54,10 @@ test("POST /reply/stream emits sentence events then one final event", async () =
 
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") || "", /application\/x-ndjson/);
-    assert.deepEqual(events[0], { type: "sentence", text: "Hello there." });
-    assert.deepEqual(events[1], { type: "sentence", text: "How can I help?", emotion: "questioning" });
+    // #914: each says who's speaking.
+    const mana = { character: "mana", characterName: "Mana" };
+    assert.deepEqual(events[0], { type: "sentence", text: "Hello there.", ...mana });
+    assert.deepEqual(events[1], { type: "sentence", text: "How can I help?", emotion: "questioning", ...mana });
     assert.equal(events.length, 3);
     assert.equal(events[2].type, "final");
     assert.equal(events[2].reply, "Hello there. How can I help?");

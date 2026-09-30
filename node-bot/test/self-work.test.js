@@ -29,7 +29,9 @@ function makeRepos() {
   fs.mkdirSync(path.join(live, "node-bot", "test"), { recursive: true });
   fs.writeFileSync(path.join(live, "node-bot", "util.js"), "function add(a, b) {\n  return a - b;\n}\nmodule.exports = { add };\n");
   fs.writeFileSync(path.join(live, "node-bot", "approval-gate.js"), "// guard\n");
-  fs.writeFileSync(path.join(live, ".gitignore"), "node_modules/\n");
+  // No trailing slash, like the repo's own: the worktree's node_modules is a
+  // link (a symlink off Windows), which "node_modules/" doesn't match.
+  fs.writeFileSync(path.join(live, ".gitignore"), "node_modules\n");
   git(live, "add", "-A");
   git(live, "commit", "-q", "-m", "init");
   git(live, "push", "-q", "origin", "main");
@@ -44,18 +46,19 @@ const guard = {
 };
 
 // Real git; gh answers from a script and records its calls.
-function fakeExec(ghCalls, { labels = [], prs = [], issues = [], author = "Yuuzulight" } = {}) {
+function fakeExec(ghCalls, { labels = [], prs = [], issues = [], author = "Yuuzulight", login = "Yuuzulight" } = {}) {
   const { execFile } = require("node:child_process");
   return (cmd, args, { cwd }) =>
     new Promise((resolve) => {
       if (cmd === "gh") {
         ghCalls.push(args);
+        if (args[0] === "api" && args[1] === "user" && !login) return resolve({ code: 1, stdout: "", stderr: "not logged in" });
         const out = args[0] === "issue" && args[1] === "view"
           ? JSON.stringify({ number: 7, title: "Fix the add helper", body: "add() subtracts.", state: "OPEN", labels, author: { login: author } })
           : args[0] === "pr" && args[1] === "create"
             ? "https://github.com/x/y/pull/8\n"
             : args[0] === "api" && args[1] === "user"
-              ? "Yuuzulight\n"
+              ? `${login}\n`
             : args[0] === "pr" && args[1] === "list"
               ? JSON.stringify(prs)
               : args[0] === "issue" && args[1] === "list"
@@ -73,6 +76,7 @@ function fakeExec(ghCalls, { labels = [], prs = [], issues = [], author = "Yuuzu
 function scriptedLoop(calls, answer, seen = []) {
   return async (prompt, policy, opts) => {
     seen.push({ prompt, opts });
+    opts.onRound?.(1, opts.maxRounds);
     for (const call of calls) {
       if (typeof call === "function") {
         call();
@@ -93,13 +97,13 @@ const fix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "retu
 const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
 
-function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, ...extra } = {}) {
+function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
   const ghCalls = [];
   const testRuns = [];
   const sw = createSelfWork({
     repoRoot: repos.live,
     worktreesDir: repos.worktrees,
-    exec: fakeExec(ghCalls, { labels, prs, issues, author }),
+    exec: fakeExec(ghCalls, { labels, prs, issues, author, login }),
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
     protectedPaths: guard,
     reviewEdit: async () => review,
@@ -145,6 +149,9 @@ test("an issue goes from worktree to a pushed branch and a PR, never main", asyn
   assert.ok(!ghCalls.some((a) => a.includes("merge")), "she never merges");
   // Goal mode, capped at 20 rounds; tests ran in the worktree, without the backend's keys.
   assert.equal(seen[0].opts.maxRounds, 20);
+  // #1124: the round she's on, for the Background tasks panel.
+  assert.equal(status.round, 1);
+  assert.equal(status.maxRounds, 20);
   assert.match(seen[0].opts.goal, /^Implement issue #7/);
   assert.equal(testRuns[0].command, "node --test test/util.test.js");
   assert.equal(testRuns[0].cwd, path.join(worktree, "node-bot"));
@@ -375,7 +382,7 @@ test("chat: only a number from my message, and only my issue or a labelled one",
   const call = (sw, message, issue) => sw.chatToolSource(message).executeTool("self_work__start", { issue }).then(JSON.parse);
 
   const stranger = selfWork(repos, { calls: [], author: "someone-else" });
-  assert.match((await call(stranger.sw, "work on #7 please", 8)).error, /#8 isn't in Yuuzulight's message/);
+  assert.match((await call(stranger.sw, "work on #7 please", 8)).error, /#8 isn't in their message/);
   assert.match((await call(stranger.sw, "work on #7 please", 7)).error, /isn't one of yours and has no mana-task label/);
   assert.ok(!stranger.ghCalls.some((a) => a[0] === "issue" && a[1] === "edit"));
 
@@ -466,4 +473,37 @@ test("not even a flagged run writes or pushes CI files", async () => {
   assert.equal(sw.status().state, "needs-you");
   assert.match(sw.status().step, /\.github\/x\.yml, which I never push/);
   assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
+});
+
+test("her prompts name the repo owner: my override, else my gh login (looked up once), else origin's owner", async () => {
+  const repos = makeRepos();
+  const userLookups = (ghCalls) => ghCalls.filter((a) => a[0] === "api" && a[1] === "user").length;
+
+  const seen = [];
+  const byLogin = selfWork(repos, { calls: [finish], seen, login: "octo" });
+  await byLogin.sw.start(7, { allowGuardrails: true });
+  await byLogin.sw._current().done;
+  await byLogin.sw.start(7, { allowGuardrails: true });
+  await byLogin.sw._current().done;
+  assert.match(seen[0].prompt, /- octo flagged this run/);
+  assert.equal(userLookups(byLogin.ghCalls), 1);
+
+  const overridden = [];
+  const byEnv = selfWork(repos, {
+    calls: [finish],
+    seen: overridden,
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_OWNER: "Someone" },
+  });
+  await byEnv.sw.start(7, { allowGuardrails: true });
+  await byEnv.sw._current().done;
+  assert.match(overridden[0].prompt, /- Someone flagged this run/);
+  assert.equal(userLookups(byEnv.ghCalls), 0);
+
+  // No gh login: the chat check takes the owner from origin's URL (a
+  // local path shaped like one, so nothing reaches the network).
+  git(repos.live, "remote", "set-url", "origin", `${repos.base.replaceAll("\\", "/")}/RepoOwner/Mana.git`);
+  const byRemote = selfWork(repos, { calls: [], author: "RepoOwner", login: null });
+  await byRemote.sw.chatToolSource("work on #7").executeTool("self_work__start", { issue: 7 });
+  await byRemote.sw._current().done;
+  assert.ok(byRemote.ghCalls.some((a) => a[0] === "issue" && a[1] === "edit"), "RepoOwner's issue counts as mine");
 });

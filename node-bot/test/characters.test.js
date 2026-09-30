@@ -1,5 +1,6 @@
 // Issue #914: characters are prompts -- profiles, switching from chat or
-// the tray, per-character mood/personality, and her voice on Qwen3-TTS.
+// the tray, per-character mood/personality, her voice on Qwen3-TTS, and
+// remembering who was active across a restart.
 const assert = require("node:assert/strict");
 const express = require("express");
 const fs = require("node:fs");
@@ -12,11 +13,13 @@ process.env.MANA_ACP_MEMORY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mana-ch
 const {
   characterFilePath,
   createCharacterStore,
+  defaultPromptOf,
   handoffLine,
   perCharacter,
   personaOf,
 } = require("../characters");
 const { createCharactersCapability } = require("../capabilities/characters-capability");
+const { DEFAULT_SYSTEM_PROMPT } = require("../persona");
 const { createMoodStore } = require("../mood-store");
 const { createTtsRuntime } = require("../tts-runtime");
 const { withServer, useTestAdminToken } = require("./helpers");
@@ -41,6 +44,8 @@ test("Mana is the default; Evil Mana is built in and uses Mana's voice and model
   assert.match(personaOf(evil), /^You are Evil Mana/);
   assert.match(personaOf(evil), /may call you Mana; they mean you, Evil Mana/);
   assert.equal(personaOf(store.get("mana")), store.get("mana").persona);
+  assert.equal(defaultPromptOf(store.get("mana")), DEFAULT_SYSTEM_PROMPT, "Mana's is unchanged");
+  assert.match(defaultPromptOf(evil), /^You are Evil Mana[\s\S]*Speak naturally for spoken conversation/);
 });
 
 test("characters.json adds characters and overrides only the fields it sets", () => {
@@ -59,6 +64,38 @@ test("characters.json adds characters and overrides only the fields it sets", ()
   assert.equal(evil.live2dModel, path.join(path.dirname(filePath), "m", "evil.model3.json"));
   assert.equal(store.get("halfvoice").voice, null, "a clip without its transcript is no voice");
   assert.equal(handoffLine(store.get("aoi"), store.get("evil-mana")), "Aoi here, after Evil Mana.");
+});
+
+test("the active character survives a restart", () => {
+  const filePath = tempFile();
+  const activeFilePath = path.join(path.dirname(filePath), "active-character.json");
+  createCharacterStore({ filePath, activeFilePath }).setActive("evil-mana");
+  assert.equal(createCharacterStore({ filePath, activeFilePath }).active().id, "evil-mana");
+  fs.writeFileSync(activeFilePath, JSON.stringify({ id: "gone" }));
+  assert.equal(createCharacterStore({ filePath, activeFilePath }).active().id, "mana", "a removed one falls back to Mana");
+  fs.writeFileSync(activeFilePath, "{ broken");
+  assert.equal(createCharacterStore({ filePath, activeFilePath }).active().id, "mana");
+});
+
+test("a tray client that connects is told the active character", async () => {
+  delete require.cache[require.resolve("../tray-server")];
+  const trayServer = require("../tray-server");
+  const WebSocket = require("ws");
+  const server = require("node:http").createServer();
+  trayServer.registerTrayServer(server, { greeting: () => ({ type: "character", id: "evil-mana" }) });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/ws/tray`);
+    const first = await new Promise((resolve, reject) => {
+      socket.on("message", (data) => resolve(JSON.parse(data.toString())));
+      socket.on("error", reject);
+    });
+    socket.close();
+    assert.deepEqual(first, { type: "character", id: "evil-mana" });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("a broken characters.json falls back to the built-ins, and edits are picked up", () => {
@@ -137,6 +174,80 @@ test("routes list and switch; a chat request answers with the handoff line", asy
   assert.equal(store.active().id, "mana");
 });
 
+test("group mode: off by default, paused by a game unless turned on during it", () => {
+  let gaming = false;
+  const reported = [];
+  const store = createCharacterStore({
+    filePath: tempFile(),
+    isGaming: () => gaming,
+    onGroupChange: (partner) => reported.push(partner?.id ?? null),
+  });
+  assert.equal(store.groupPartner(), null);
+  assert.equal(store.setGroup(true, "mana"), null, "not the active one");
+  assert.equal(store.setGroup(true, "nobody"), null);
+  assert.deepEqual(store.setGroup(true), { on: true, partner: "evil-mana", paused: false });
+
+  gaming = true;
+  store.gameChanged();
+  assert.equal(store.groupPartner(), null, "paused while gaming");
+  assert.deepEqual(store.groupState(), { on: true, partner: "evil-mana", paused: true });
+  store.setGroup(true);
+  assert.equal(store.groupPartner()?.id, "evil-mana", "turned on during the game");
+  gaming = false;
+  store.gameChanged();
+  gaming = true;
+  store.gameChanged();
+  assert.equal(store.groupPartner(), null, "the next game pauses it again");
+  gaming = false;
+  store.gameChanged();
+
+  store.setActive("evil-mana");
+  assert.equal(store.groupPartner()?.id, "mana", "switching to the partner keeps the duo");
+  store.setGroup(false);
+  assert.equal(store.groupPartner(), null);
+  assert.deepEqual(reported, ["evil-mana", null, "evil-mana", null, "evil-mana", "mana", null]);
+});
+
+test("group mode from chat and the route; names are found longest first", async () => {
+  const store = createCharacterStore({ filePath: tempFile() });
+  assert.deepEqual(store.mentioned("Evil Mana, what do you think?").map((c) => c.id), ["evil-mana"]);
+  assert.deepEqual(store.mentioned("Mana and Evil Mana").map((c) => c.id), ["evil-mana", "mana"]);
+  assert.deepEqual(store.mentioned("manager's report"), []);
+  assert.deepEqual(store.findGroupRequest("turn on group mode"), { on: true, partner: null });
+  assert.deepEqual(store.findGroupRequest("start a group chat with Evil Mana"), { on: true, partner: "evil-mana" });
+  assert.deepEqual(store.findGroupRequest("let Evil Mana join us"), { on: true, partner: "evil-mana" });
+  assert.deepEqual(store.findGroupRequest("group mode off"), { on: false, partner: null });
+  assert.equal(store.findGroupRequest("what's a group chat?"), null);
+  assert.equal(store.findSwitchRequest("let Evil Mana join"), null, "joining isn't switching");
+
+  const capability = createCharactersCapability(store);
+  assert.deepEqual(capability.onUserInput({ text: "let Evil Mana join" }), { reply: "Okay, Evil Mana is joining us~" });
+  assert.equal(store.groupPartner()?.id, "evil-mana");
+  assert.equal(store.active().id, "mana");
+  assert.deepEqual(capability.onUserInput({ text: "stop group mode" }), { reply: "Okay, just me again~" });
+
+  const app = express();
+  app.use(express.json());
+  capability.registerRoutes(app);
+  await withServer(app, async (baseUrl) => {
+    const post = (body) =>
+      fetch(`${baseUrl}/characters/group`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await post({})).status, 400);
+    assert.equal((await post({ on: true, partner: "nobody" })).status, 404);
+    assert.deepEqual((await (await post({ on: true, partner: "evil-mana" })).json()).group, {
+      on: true,
+      partner: "evil-mana",
+      paused: false,
+    });
+    assert.equal((await (await fetch(`${baseUrl}/characters`)).json()).group.on, true);
+    assert.equal((await (await post({ on: false })).json()).group.on, false);
+  });
+});
+
 test("Qwen3-TTS gets the active character's reference clip, or none for the service's own voice", async () => {
   const bodies = [];
   let voice = null;
@@ -180,5 +291,138 @@ test("the reply's system prompt is the active character's persona", async () => 
     await app.locals.buildAssistantReply("hi", "", "", "default", "sess-characters", "casual", null, {});
     assert.match(prompts[0], /^You are Evil Mana/);
     assert.doesNotMatch(prompts[0], /You are Mana, an original/);
+    // Group mode's speaker-labelled history: the turn says who answered.
+    assert.equal(app.locals.acpMemoryStore.getSession("sess-characters").turns.at(-1).speaker, "Evil Mana");
+  });
+});
+
+test("speakAs stands a character in for the active one, only inside it", async () => {
+  const store = createCharacterStore({ filePath: tempFile() });
+  const inside = await store.speakAs("evil-mana", async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    return store.active().id;
+  });
+  assert.equal(inside, "evil-mana");
+  assert.equal(store.active().id, "mana");
+  assert.equal(store.speakAs("nobody", () => store.active().id), "mana");
+});
+
+test("group mode: two replies per message, taking turns, the second only for casual chat", async () => {
+  const { createApp } = require("../server");
+  let next = {};
+  let reactionGate = null;
+  const reactions = [];
+  const app = createApp({
+    llamaServerRuntime: { isEnabled: () => true },
+    buildAssistantReply: async (text, screen, market, profile, sessionId, mode, preset, replyMeta, onSentence) => {
+      replyMeta.mode = next.mode || "casual";
+      replyMeta.streamedMatchesFinal = !next.rewritten;
+      if (next.tool) replyMeta.onToolCall({ name: "web_search", phase: "start" });
+      const reply = next.reply || `re: ${text}`;
+      onSentence?.(reply);
+      return reply;
+    },
+    buildGroupReaction: async ({ sister, reply }) => {
+      reactions.push(`to ${sister.id}: ${reply}`);
+      if (reactionGate) await reactionGate;
+      return "Hmph, I'd have said it better.";
+    },
+  });
+  await withServer(app, async (baseUrl) => {
+    const post = (route, body) =>
+      fetch(`${baseUrl}${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const say = async (text, options = {}) => {
+      next = options;
+      const body = await (await post("/reply/stream", { text, sessionId: "sess-group" })).text();
+      return body
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .map((e) => `${e.type}:${e.character}`);
+    };
+    await post("/characters/active", { id: "mana" });
+    assert.deepEqual(await say("hi"), ["sentence:mana", "final:mana"], "group mode is off");
+    await post("/characters/group", { on: true, partner: "evil-mana" });
+    try {
+      assert.deepEqual(await say("hello both"), ["sentence:mana", "final:mana", "sentence:evil-mana", "final:evil-mana"]);
+      assert.deepEqual(reactions, ["to mana: re: hello both"]);
+      // Evil Mana spoke last, so Mana answers first again; a task turn gets no reaction.
+      assert.deepEqual(await say("set a timer", { mode: "everyday" }), ["sentence:mana", "final:mana"]);
+      assert.deepEqual(await say("how are you?"), ["sentence:evil-mana", "final:evil-mana", "sentence:mana", "final:mana"]);
+      assert.deepEqual((await say("Evil Mana, your turn"))[0], "sentence:evil-mana", "the one I name answers first");
+      assert.deepEqual(await say("look it up", { tool: true }), ["tool:undefined", "sentence:evil-mana", "final:evil-mana"], "no reaction after tool use");
+      assert.deepEqual((await say("tell me a story", { reply: "x".repeat(400) })).length, 2, "nor after a long reply");
+      assert.deepEqual((await say("again?", { rewritten: true })).length, 2, "nor after one the client must speak afresh");
+
+      // I type again while the reaction is being made: it's dropped.
+      let open;
+      reactionGate = new Promise((resolve) => (open = resolve));
+      const pending = say("first");
+      while (!reactions.includes("to evil-mana: re: first") && !reactions.includes("to mana: re: first")) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      reactionGate = null;
+      await say("second", { mode: "everyday" });
+      open();
+      assert.equal((await pending).length, 2);
+    } finally {
+      await post("/characters/group", { on: false });
+    }
+  });
+});
+
+test("/synthesize speaks in the voice of the event's character", async () => {
+  const { registerCoreRoutes } = require("../server-routes");
+  const store = createCharacterStore({ filePath: tempFile() });
+  const app = express();
+  app.use(express.json());
+  registerCoreRoutes(app, { single: () => (req, res, next) => next() }, {
+    TTS_PROVIDER: "qwen3tts",
+    characters: store,
+    synthesizeReply: async () => Buffer.from(store.active().id),
+  });
+  await withServer(app, async (baseUrl) => {
+    const say = async (body) =>
+      (await fetch(`${baseUrl}/synthesize`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).text();
+    assert.equal(await say({ text: "hi", character: "evil-mana" }), "evil-mana");
+    assert.equal(await say({ text: "hi" }), "mana");
+  });
+});
+
+test("a group reaction is short, in the partner's persona, and saved as her turn", async () => {
+  const { createApp } = require("../server");
+  const calls = [];
+  const app = createApp({
+    llamaServerRuntime: { isEnabled: () => true },
+    buildAssistantReply: async (text, s, m, p, sessionId, mode, preset, replyMeta, onSentence) => {
+      replyMeta.mode = "casual";
+      replyMeta.streamedMatchesFinal = true;
+      onSentence?.("I'm the smart one.");
+      return "I'm the smart one.";
+    },
+    runLocalAssistantReply: async (prompt, maxTokens, profile, system) => {
+      calls.push({ prompt, maxTokens, system });
+      return "[happy] Sure you are, sis.";
+    },
+  });
+  await withServer(app, async (baseUrl) => {
+    const post = (route, body) =>
+      fetch(`${baseUrl}${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/characters/active", { id: "mana" });
+    await post("/characters/group", { on: true, partner: "evil-mana" });
+    try {
+      const events = (await (await post("/reply/stream", { text: "which of you is smarter?", sessionId: "sess-reaction" })).text())
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(events.at(-1), { type: "final", reply: "Sure you are, sis.", ttsConfigured: events.at(-1).ttsConfigured, changed: false, character: "evil-mana", characterName: "Evil Mana" });
+      assert.equal(calls[0].maxTokens, 60);
+      assert.match(calls[0].system, /^You are Evil Mana/);
+      assert.match(calls[0].prompt, /Your sister Mana answered: "I'm the smart one\."/);
+      const turn = app.locals.acpMemoryStore.getSession("sess-reaction").turns.at(-1);
+      assert.deepEqual([turn.user, turn.assistant, turn.speaker], ["", "Sure you are, sis.", "Evil Mana"]);
+    } finally {
+      await post("/characters/group", { on: false });
+    }
   });
 });

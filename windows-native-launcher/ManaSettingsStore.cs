@@ -100,17 +100,26 @@ internal sealed class ManaSettingsStore
     public int? AvatarTop { get; set; }
 
     // #689: Settings > Hotkeys -- action key (HotkeyBindings.Actions) to a
-    // combination like "Ctrl+Alt+W", "" = off; a missing key uses the default.
+    // combination like "Ctrl+Alt+Shift+W", "" = off; a missing key uses the default.
     public Dictionary<string, string>? Hotkeys { get; set; }
 
     // #701: Mana's spoken sentences as bubbles beside the avatar while the
     // chat window isn't in view (tray menu); off by default.
     public bool ChatBubbles { get; set; }
 
+    // The caption bar under the avatar (tray menu), independent of the
+    // bubbles. Null = saved before this toggle, when bubbles on meant no
+    // captions (#701), so CaptionsShown keeps that until it's changed.
+    public bool? Captions { get; set; }
+    public bool CaptionsShown() => Captions ?? !ChatBubbles;
+
     // #684: Electron's "minimized Mana" -- the avatar steps aside while the
     // chat window is open and comes back when it's closed or minimized.
     // Off keeps her always showing. Tray menu.
     public bool AvatarHidesWithChat { get; set; } = true;
+
+    // The tray's Show avatar: off keeps the overlay hidden.
+    public bool ShowAvatar { get; set; } = true;
 
     // #574/#688: gaming-mode detection (tray menu and Settings >
     // Performance); off ignores the backend's watched-game scan.
@@ -118,6 +127,10 @@ internal sealed class ManaSettingsStore
 
     // #912: Settings > Voice's camera toggle; off by default.
     public bool CameraSnapshots { get; set; }
+
+    // #1107: Settings > Voice's "Keep my voice clips for training" (VoiceData);
+    // off by default. Read at each turn, so switching it off stops at once.
+    public bool KeepVoiceClips { get; set; }
 
     // #962: where "save that" puts a camera snapshot; null = Pictures\Mana.
     public string? CameraSnapshotFolder { get; set; }
@@ -140,6 +153,13 @@ internal sealed class ManaSettingsStore
     // launch, and whether it was auto-started (Q62: those still rotate).
     public string? LastSessionId { get; set; }
     public bool LastSessionAuto { get; set; }
+
+    // #1118: the chat window's tool panel -- the open rail tool (null =
+    // closed), whether it's pinned (a pinned one reopens on launch), and
+    // its width. See ToolPanelHost.
+    public string? RailTool { get; set; }
+    public bool RailToolPinned { get; set; }
+    public int? RailToolWidth { get; set; }
 
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise

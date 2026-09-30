@@ -7,6 +7,7 @@ const { createAcpBackendBridge } = require("./acp-backend-bridge");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { isInsideRoot } = require("./acp-path-guard");
 const { createAcpTestRunner } = require("./acp-test-runner");
+const { terminalFeed } = require("./terminal-feed");
 const { canonical } = require("./protected-paths");
 
 const ACP_PROTOCOL_VERSION = 1;
@@ -884,6 +885,23 @@ if (require.main === module) {
       `${JSON.stringify(buildZedAgentServerConfig(), null, 2)}${os.EOL}`,
     );
   } else if (process.argv.includes("--acp")) {
+    // #1121: the commands this agent runs show in the chat rail's Terminal
+    // tool. Batched once a second (a verbose test run prints hundreds of
+    // lines; one request each would trip the backend's rate limit), in
+    // order; a backend that isn't up just misses them.
+    const bridge = createAcpBackendBridge({ backendUrl: process.env.MANA_BACKEND_URL });
+    let queue = [];
+    let flushTimer = null;
+    let sent = Promise.resolve();
+    terminalFeed.subscribe((event) => {
+      queue.push(event);
+      flushTimer ??= setTimeout(() => {
+        const events = queue;
+        queue = [];
+        flushTimer = null;
+        sent = sent.then(() => bridge.reportTerminalEvents(events)).catch(() => {});
+      }, 1000);
+    });
     createStdioAcpServer();
   } else {
     printHelp();

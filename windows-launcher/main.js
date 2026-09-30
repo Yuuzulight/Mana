@@ -81,11 +81,6 @@ const DEFAULT_WHISPER_BIN = path.join(
   "Release",
   "whisper-cli.exe",
 );
-const DEFAULT_WHISPER_MODEL = path.join(
-  WHISPER_DIR,
-  "models",
-  "ggml-tiny.en.bin",
-);
 const HIDE_MAIN_WINDOW_AFTER_STARTUP =
   process.env.HIDE_MAIN_WINDOW_AFTER_STARTUP !== "0";
 const AVATAR_SIZE = {
@@ -609,7 +604,9 @@ function startWindowsServices() {
       MANA_LAUNCHER_KEY: BACKEND_KEY,
       // Quick note: these defaults let the launcher transcribe without a separate setup shell.
       WHISPER_BIN: process.env.WHISPER_BIN || DEFAULT_WHISPER_BIN,
-      WHISPER_MODEL: process.env.WHISPER_MODEL || DEFAULT_WHISPER_MODEL,
+      // No WHISPER_MODEL default: node-bot picks the installed model
+      // (multilingual when the speech language isn't English); an
+      // inherited one still passes through above.
       TTS_PROVIDER: process.env.TTS_PROVIDER || "fish",
       KOKORO_TTS_URL:
         process.env.KOKORO_TTS_URL || "http://127.0.0.1:5011",

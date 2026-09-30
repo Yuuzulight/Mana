@@ -148,6 +148,8 @@ module.exports = {
   registerRoutes: registerCronSchedulerRoutes,
   // #905: server.js's reminder tools share the routes' job list.
   getScheduler,
+  // #1124: null until the scheduler is built (at route registration).
+  getHeartbeat: () => heartbeat,
   getHealth: (deps = {}) => {
     const cron = getScheduler(deps);
     const jobs = cron.listJobs();
