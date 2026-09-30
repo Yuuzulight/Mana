@@ -7,6 +7,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const zlib = require("node:zlib");
 const { resolveExecutable } = require("./ai/tool-risk");
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
@@ -419,11 +420,17 @@ const SCRIPT_RE = /\.(sh|bash|zsh|py|js|mjs|cjs|ts|ps1|psm1|bat|cmd|vbs|rb|pl|ph
 function readSkillFolder(dir) {
   const root = path.resolve(String(dir || ""));
   if (!fs.existsSync(path.join(root, SKILL_MD))) throw new Error(`no ${SKILL_MD} in ${root}`);
-  const paths = listFolderFiles(root);
+  return describeSkillImport(listFolderFiles(root), (rel) => fs.readFileSync(path.join(root, rel)), path.basename(root));
+}
+
+// Shared by folder and zip import. readData(rel, budget) returns a file's
+// bytes; budget is how many may still fit, so a zip entry can stop inflating
+// there instead of unpacking a zip bomb.
+function describeSkillImport(paths, readData, fallbackName) {
   if (paths.length > MAX_IMPORT_FILES) throw new Error(`skill folder has more than ${MAX_IMPORT_FILES} files`);
   let total = 0;
   const files = paths.map((rel) => {
-    const data = fs.readFileSync(path.join(root, rel));
+    const data = readData(rel, MAX_IMPORT_BYTES - total);
     total += data.length;
     if (total > MAX_IMPORT_BYTES) throw new Error(`skill folder is larger than ${MAX_IMPORT_BYTES / 1024} KB`);
     const encoding = data.includes(0) ? "base64" : "utf8";
@@ -431,7 +438,7 @@ function readSkillFolder(dir) {
   });
   const skillFile = files.find((file) => file.path === SKILL_MD);
   if (!skillFile || skillFile.encoding !== "utf8") throw new Error(`${SKILL_MD} is not readable text`);
-  const skill = parseSkillFile(skillFile.content, path.basename(root));
+  const skill = parseSkillFile(skillFile.content, fallbackName);
   return {
     name: skill.name,
     description: skill.description,
@@ -444,6 +451,80 @@ function readSkillFolder(dir) {
       ...missingHostRequirements(skill, { platform: "", env: {}, hasBin: () => false }),
     ],
   };
+}
+
+// The central directory of a zip: entry name -> { method, compressed }.
+// Stored (0) and deflated (8) entries only -- what every common zipper
+// writes. No zip64 (a skill is at most 512 KB anyway), no encryption.
+function readZipEntries(buffer) {
+  const eocd = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) throw new Error("no zip directory");
+  const count = buffer.readUInt16LE(eocd + 10);
+  let offset = buffer.readUInt32LE(eocd + 16);
+  const entries = new Map();
+  for (let i = 0; i < count; i++) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) throw new Error("damaged zip directory");
+    const flags = buffer.readUInt16LE(offset + 8);
+    const method = buffer.readUInt16LE(offset + 10);
+    const size = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    // Windows PowerShell's Compress-Archive writes "\" separators.
+    const name = buffer.toString("utf8", offset + 46, offset + 46 + nameLength).replaceAll("\\", "/");
+    offset += 46 + nameLength + buffer.readUInt16LE(offset + 30) + buffer.readUInt16LE(offset + 32);
+    if (name.endsWith("/")) continue;
+    if (flags & 1) throw new Error("it's encrypted");
+    if (buffer.readUInt32LE(localOffset) !== 0x04034b50) throw new Error("damaged zip entry");
+    const start = localOffset + 30 + buffer.readUInt16LE(localOffset + 26) + buffer.readUInt16LE(localOffset + 28);
+    entries.set(name, { method, compressed: buffer.subarray(start, start + size) });
+  }
+  return entries;
+}
+
+// #664 (Q21): a zipped skill folder -- SKILL.md at the top, or inside one
+// top-level folder (how GitHub and most zippers pack a folder). Read in
+// memory, never unpacked to disk: only an approved import writes files
+// (importSkill), and the same dot-entry, count and size rules as a folder
+// apply. A path that tries to leave the folder refuses the whole zip.
+const MAX_ZIP_BYTES = 16 * MAX_IMPORT_BYTES;
+
+function readSkillZip(zipPath) {
+  const file = path.resolve(String(zipPath || ""));
+  if (fs.statSync(file).size > MAX_ZIP_BYTES) throw new Error(`zip is larger than ${MAX_ZIP_BYTES / 1024 / 1024} MB`);
+  return readSkillZipBuffer(fs.readFileSync(file), path.basename(file));
+}
+
+// subdir (link import, #664): the skill's folder inside the zip's one
+// top-level folder, e.g. "skills/weather" in a GitHub repo zip.
+function readSkillZipBuffer(buffer, zipName, subdir = "") {
+  let entries;
+  try {
+    entries = readZipEntries(buffer);
+  } catch (e) {
+    throw new Error(`${zipName} isn't a zip Mana can read (${e.message})`);
+  }
+  const names = [...entries.keys()];
+  const unsafe = names.find((name) => name.startsWith("/") || name.includes(":") || name.split("/").includes(".."));
+  if (unsafe) throw new Error(`zip entry "${unsafe}" points outside the skill folder`);
+  const kept = names.filter((name) => !name.startsWith("__MACOSX/") && !name.split("/").some((seg) => seg.startsWith(".")));
+  const tops = [...new Set(kept.map((name) => name.split("/")[0]))];
+  const inTop = tops.length === 1 ? `${tops[0]}/${subdir ? `${subdir}/` : ""}` : null;
+  const prefix = !subdir && kept.includes(SKILL_MD) ? "" : inTop && kept.includes(`${inTop}${SKILL_MD}`) ? inTop : null;
+  if (prefix === null) throw new Error(`no ${SKILL_MD} at the top of ${zipName}${subdir ? ` under ${subdir}` : ""}`);
+  const paths = kept.filter((name) => name.startsWith(prefix)).map((name) => name.slice(prefix.length));
+  const readData = (rel, budget) => {
+    const { method, compressed } = entries.get(prefix + rel);
+    if (method === 0) return compressed;
+    if (method !== 8) throw new Error(`zip entry "${rel}" uses an unsupported compression method`);
+    try {
+      return zlib.inflateRawSync(compressed, { maxOutputLength: Math.max(budget, 0) + 1 });
+    } catch (e) {
+      if (e.code === "ERR_BUFFER_TOO_LARGE") throw new Error(`skill folder is larger than ${MAX_IMPORT_BYTES / 1024} KB`);
+      throw new Error(`zip entry "${rel}" is damaged (${e.message})`);
+    }
+  };
+  const fallbackName = prefix ? prefix.slice(0, -1).split("/").pop() : zipName.replace(/\.zip$/i, "");
+  return describeSkillImport(paths, readData, fallbackName);
 }
 
 function createSkillsStore(options = {}) {
@@ -962,6 +1043,9 @@ module.exports = {
   serializeSkillFile,
   evaluateSkillAvailability,
   readSkillFolder,
+  readSkillZip,
+  readSkillZipBuffer,
+  MAX_ZIP_BYTES,
   slugify,
   extractSkillScript,
   extractSkillInputs,

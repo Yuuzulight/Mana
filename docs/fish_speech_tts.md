@@ -284,9 +284,14 @@ Live GPU/CPU hotswap (parking S1-mini's weights in system RAM)
   `tools/server/views.py` exposes the route. Because this patches
   third-party vendored code, re-applying it is needed if the submodule pin
   ever moves.
-- Cost: ~4-4.5GB of system RAM while parked (comfortably affordable on a
-  32GB machine with ~14GB free under normal load), and a few seconds each
-  way to actually move the tensors across PCIe.
-- Not yet wired into the automatic gaming switch above (that only flips
-  `setProviderOverride`) — worth doing as a follow-up if VRAM pressure on
-  the game itself turns out to matter more than S1-mini's own latency.
+- Cost (measured 2026-09-29, #807): the Fish process goes from ~2.2GB to
+  ~5.7GB of host RAM while parked (+3.4GB) and back to ~2.3GB after
+  unparking; VRAM drops to ~0.4GB above idle. Each move takes ~1s. The first
+  reply after unparking takes ~9s while CUDA graphs re-record; later ones are
+  normal. `tools/fish_speech_native_server.py` makes the parked copies numpy
+  buffers (torch's own CPU allocator on Windows never gives large freed
+  blocks back, which used to leave ~1.6GB behind per park) and drops the
+  ~0.9GB of KV caches instead of parking them.
+- Wired into the automatic gaming switch: `synthesizeReply` in
+  `node-bot/server.js` calls `swapFishDevice("cpu")` while a watched game
+  runs and `"cuda"` once it closes.

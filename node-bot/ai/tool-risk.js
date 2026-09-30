@@ -36,18 +36,28 @@ function maxTier(a, b) {
 // deep_thinking__set only touch Mana's own reply state, and
 // coding__propose_edit only writes a .diff under Mana's own data dir -- the
 // user applies it themselves (#276), so asking first would only lose the
-// diff path from the reply.
+// diff path from the reply. reminder__* (#905) only keep Mana's own list of
+// reminders the user asked for.
 const BUILTIN_TIERS = {
   read_file: "read",
   session_search__query: "read",
   skill__view: "read",
   snapshot__list: "read",
   vision__look: "read",
+  vision__camera: "read", // #912: behind its own off-by-default toggle in the launcher
   expression__set: "read",
   session_goal__finish: "read",
   deep_thinking__set: "read",
+  // #923: only Mana's own speech word list, and only words from my own
+  // message (ai/speech-tool-source.js) -- my asking is the approval.
+  speech__add_word: "read",
+  speech__remove_word: "read",
+  speech__list_words: "read",
   browser_automation__snapshot: "read",
   coding__propose_edit: "read",
+  reminder__set: "read",
+  reminder__list: "read",
+  reminder__cancel: "read",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",

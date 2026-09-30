@@ -103,6 +103,14 @@ public class VoiceDebugLogTests
     }
 
     [Fact]
+    public void Entry_ShowsWhatWhisperHeardBeforeAMishearingFix()
+    {
+        var entry = new VoiceSegmentLogEntry { Awake = true, Whisper = "ok", Transcript = "watch Gigi Murin", Heard = "watch GG Moon" };
+
+        Assert.EndsWith(" transcript=\"watch Gigi Murin\" heard=\"watch GG Moon\"", entry.ToString());
+    }
+
+    [Fact]
     public void Entry_WithoutTurnDetectionFields_IsUnchanged()
     {
         var line = new VoiceSegmentLogEntry { Whisper = "empty" }.ToString();

@@ -13,6 +13,7 @@ const {
   shouldUseRemoteAi,
 } = require("./ai/local-ai");
 const { createModelSettingsStore } = require("./model-settings-store");
+const { assertLocalUrl, isLocalOnly } = require("./local-only");
 
 // "Use Remote AI" provider presets for Settings' brain-provider dropdown --
 // each is an OpenAI-compatible endpoint (Mana's runOpenAIReply in
@@ -497,6 +498,11 @@ function createModelManagement(options = {}) {
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         throw new Error(`baseUrl must be http:// or https://: ${partial.baseUrl}`);
       }
+    }
+    // #670: no cloud "brain" while local-only mode is on.
+    if (isLocalOnly()) {
+      const next = { ...modelSettingsStore.getBrainSettings(), ...partial };
+      if (next.type === "openai_compatible") assertLocalUrl(next.baseUrl, "remote AI at");
     }
     modelSettingsStore.setBrainSettings(partial);
     return getModelStatus();

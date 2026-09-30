@@ -7,9 +7,9 @@ namespace Mana.NativeLauncher;
 // #576: kept as its own small file rather than folded into #565's
 // ManaSettingsStore (not merged at the time this was written) -- avoids
 // a cross-PR dependency, and theme choice is conceptually unrelated to
-// that file's backend-connection settings anyway. Read once at startup
-// (Program.cs, before any Form exists) -- there is no live-switching
-// mechanism, so nothing else ever needs to read this after that.
+// that file's backend-connection settings anyway. Read at startup
+// (Program.cs, before any Form exists); Settings > Theme saves it and
+// applies it live (#688).
 internal sealed class ManaThemeSettings
 {
     private static readonly string FilePath = Path.Combine(

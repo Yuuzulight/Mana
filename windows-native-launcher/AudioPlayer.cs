@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace Mana.NativeLauncher;
 
@@ -67,6 +68,33 @@ internal sealed class AudioPlayer : IDisposable
     private WasapiOut? output;
     private WaveFileReader? reader;
     private MemoryStream? stream;
+    private VolumeSampleProvider? gain;
+    private float volume = 1f;
+
+    // #665: 0..1, kept across clips -- VoiceLoop ducks her while it decides
+    // whether talking over her is a real interruption. Applied to her own
+    // samples: WasapiOut.Volume is the device's master volume (every app).
+    public float Volume
+    {
+        get
+        {
+            lock (syncRoot)
+            {
+                return volume;
+            }
+        }
+        set
+        {
+            lock (syncRoot)
+            {
+                volume = Math.Clamp(value, 0f, 1f);
+                if (gain is not null)
+                {
+                    gain.Volume = volume;
+                }
+            }
+        }
+    }
 
     public void Play(byte[] wavBytes)
     {
@@ -76,13 +104,14 @@ internal sealed class AudioPlayer : IDisposable
         {
             stream = new MemoryStream(wavBytes);
             reader = new WaveFileReader(stream);
-            IWaveProvider playbackSource = reader;
+            ISampleProvider samples = reader.ToSampleProvider();
             if (onSamplesPlayed is not null)
             {
-                playbackSource = new TappingSampleProvider(reader.ToSampleProvider(), onSamplesPlayed).ToWaveProvider();
+                samples = new TappingSampleProvider(samples, onSamplesPlayed);
             }
+            gain = new VolumeSampleProvider(samples) { Volume = volume };
             var newOutput = new WasapiOut(AudioClientShareMode.Shared, latency: 100);
-            newOutput.Init(playbackSource);
+            newOutput.Init(gain.ToWaveProvider());
 
             var myGeneration = ++generation;
             currentClipCompletedNaturally = false;
