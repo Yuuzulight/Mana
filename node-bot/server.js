@@ -252,6 +252,7 @@ const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
+const { createSelfWork } = require("./self-work");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -2207,6 +2208,12 @@ function registerRoutes(app, upload, deps = {}) {
     }
 
     idleConsolidationFiredForCurrentIdlePeriod = true;
+    // #1007: 20 minutes away is also when Mana may pick up one of her
+    // issues. Not in tests, unless they bring their own runner: the real
+    // one asks gh about the real repo.
+    if (deps.selfWork || (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT)) {
+      selfWork.startIdle().catch(() => {});
+    }
     triggerIdleConsolidation().catch((err) =>
       console.warn(
         "Idle-triggered consolidation failed:",
@@ -2618,6 +2625,33 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/updates/revert", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json(await reverter.revert(req.body?.pr, req.body?.reason));
+  });
+
+  // #1006: Mana works one of my issues in her own worktree and opens a PR.
+  const selfWork =
+    deps.selfWork ||
+    createSelfWork({
+      runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
+      reviewEdit,
+      isGaming: deps.isGaming || gamingWatch.isGaming,
+      // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
+      onEvent: (run, text, notice) => {
+        console.log(`[self-work #${run.issue}] ${text}`);
+        if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
+      },
+    });
+  app.get("/self-work", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(selfWork.status());
+  });
+  app.post("/self-work/start", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    // #1009: "Allow guardrail changes" is only ever this route's, with my admin key.
+    return res.json(await selfWork.start(req.body?.issue, { allowGuardrails: req.body?.allowGuardrails === true }));
+  });
+  app.post("/self-work/stop", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json({ stopped: selfWork.stop() });
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
@@ -4797,6 +4831,8 @@ function registerRoutes(app, upload, deps = {}) {
             // #1010: "let me try your PR" / "back to main" -- a PR number
             // only from my own message.
             ...(userChat ? [createTryPrToolSource({ userMessage: transcript, revert: reverter.revert })] : []),
+            // #1008: "work on #N" -- only a number from my own message.
+            ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
             // #906: my email and calendar, only in my own chat (never a
             // scheduled reply or a Discord/Telegram bridge).
             ...(userChat
