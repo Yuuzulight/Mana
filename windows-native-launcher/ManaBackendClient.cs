@@ -1090,6 +1090,55 @@ internal sealed class ManaBackendClient
             ?? new ManaSpeechVocabulary();
     }
 
+    // #950 (#906): Settings > Calendar & Email, node-bot's /mail-calendar.
+    // Passwords and feed URLs go in and never come back out.
+    public async Task<ManaMailCalendar> GetMailCalendarAsync()
+    {
+        using var response = await http.GetAsync("/mail-calendar");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaMailCalendar>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaMailCalendar();
+    }
+
+    // change: new { kind = "email", host, port, user, password, mailbox },
+    // new { kind = "calendar", url, user, password }, or new { kind, clear =
+    // true }. A null or blank password/url keeps the saved one. A refused
+    // change throws with node-bot's error.
+    public async Task<ManaMailCalendar> UpdateMailCalendarAsync(object change)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(change), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/mail-calendar", content);
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            string? error = null;
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                error = document.RootElement.TryGetProperty("error", out var errorElement) ? errorElement.GetString() : null;
+            }
+            catch (JsonException)
+            {
+            }
+            throw new HttpRequestException(error ?? $"HTTP {(int)response.StatusCode}", null, response.StatusCode);
+        }
+        return JsonSerializer.Deserialize<ManaMailCalendar>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaMailCalendar();
+    }
+
+    // Logs in to the saved "email" or "calendar" account.
+    public async Task<(bool Ok, string? Error)> TestMailCalendarAsync(string kind)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { kind }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/mail-calendar/test", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return (root.TryGetProperty("ok", out var okEl) && okEl.GetBoolean(), root.TryGetProperty("error", out var errorEl) ? errorEl.GetString() : null);
+    }
+
     // #581: touch=false matches the editor's own "opening to browse/edit
     // isn't the same as Mana actually reaching for it" contract
     // (skills-capability.js's own comment) -- without it, opening a skill
@@ -2604,4 +2653,32 @@ internal sealed class ManaSpeechVocabulary
     // "en" or "auto"; EnvLanguage (WHISPER_LANGUAGE) wins when set.
     public string Language { get; init; } = "en";
     public string? EnvLanguage { get; init; }
+}
+
+// #950: GET /mail-calendar. Null when that account isn't set up;
+// Unreadable when its saved settings can't be decrypted on this PC.
+internal sealed class ManaMailCalendar
+{
+    public ManaMailAccount? Email { get; init; }
+    public ManaCalendarAccount? Calendar { get; init; }
+}
+
+internal sealed class ManaMailAccount
+{
+    public string? Host { get; init; }
+    public int Port { get; init; }
+    public string? User { get; init; }
+    public string? Mailbox { get; init; }
+    public bool PasswordSet { get; init; }
+    public bool Unreadable { get; init; }
+}
+
+internal sealed class ManaCalendarAccount
+{
+    public string? Host { get; init; }
+    public string? User { get; init; }
+    // An iCal feed (no username): read-only.
+    public bool ReadOnly { get; init; }
+    public bool PasswordSet { get; init; }
+    public bool Unreadable { get; init; }
 }

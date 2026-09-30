@@ -114,6 +114,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildModelTab());
         tabs.TabPages.Add(BuildMobileDevicesTab());
         tabs.TabPages.Add(BuildAccountsTab());
+        tabs.TabPages.Add(BuildMailCalendarTab());
         tabs.TabPages.Add(BuildMcpServersTab());
         tabs.TabPages.Add(BuildHooksTab());
         foreach (TabPage page in tabs.TabPages)
@@ -146,6 +147,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshLlamaBuildAsync();
         await RefreshMobileDevicesAsync();
         await RefreshAccountsAsync();
+        await RefreshMailCalendarAsync();
         await RefreshMcpServersAsync();
         await RefreshHooksAsync();
     }
@@ -3146,6 +3148,155 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(account.Role);
             accountsList.Items.Add(item);
         }
+    }
+
+    // #950 (#906): the email and calendar accounts Mana reads, through
+    // node-bot's /mail-calendar. I type my own app passwords here; node-bot
+    // saves them DPAPI-encrypted and never sends them back, so a blank
+    // password or calendar address keeps the saved one.
+    // docs/mail_calendar_setup.md has the steps per provider.
+    private readonly TextBox mailHostBox = new() { Width = 260, PlaceholderText = "imap.gmail.com" };
+    private readonly TextBox mailPortBox = new() { Width = 60 };
+    private readonly TextBox mailUserBox = new() { Width = 260 };
+    private readonly TextBox mailPasswordBox = new() { Width = 260, UseSystemPasswordChar = true };
+    private readonly TextBox mailMailboxBox = new() { Width = 260 };
+    private readonly Label mailStatusLabel = new() { AutoSize = true, MaximumSize = new Size(520, 0) };
+    private readonly TextBox calendarUrlBox = new() { Width = 420 };
+    private readonly TextBox calendarUserBox = new() { Width = 260, PlaceholderText = "blank for an iCal feed" };
+    private readonly TextBox calendarPasswordBox = new() { Width = 260, UseSystemPasswordChar = true };
+    private readonly Label calendarStatusLabel = new() { AutoSize = true, MaximumSize = new Size(520, 0) };
+
+    private TabPage BuildMailCalendarTab()
+    {
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
+        layout.Controls.Add(BuildMailCalendarGroup(
+            "Email (IMAP, read-only)",
+            "email",
+            new (string, TextBox)[] { ("Server", mailHostBox), ("Port", mailPortBox), ("Username", mailUserBox), ("App password", mailPasswordBox), ("Mailbox", mailMailboxBox) },
+            mailStatusLabel,
+            () => new { kind = "email", host = mailHostBox.Text.Trim(), port = mailPortBox.Text.Trim(), user = mailUserBox.Text.Trim(), password = mailPasswordBox.Text, mailbox = mailMailboxBox.Text.Trim() }));
+        layout.Controls.Add(BuildMailCalendarGroup(
+            "Calendar (CalDAV, or a Google/Outlook iCal feed)",
+            "calendar",
+            new (string, TextBox)[] { ("Address", calendarUrlBox), ("Username", calendarUserBox), ("App password", calendarPasswordBox) },
+            calendarStatusLabel,
+            () => new { kind = "calendar", url = calendarUrlBox.Text.Trim(), user = calendarUserBox.Text.Trim(), password = calendarPasswordBox.Text }));
+        layout.Controls.Add(new Label
+        {
+            Text = "Mana reads these only when I ask, and adds a calendar event only after I approve it. An iCal feed (Google's secret address, Outlook's published calendar) is read-only: leave its Username blank. Steps per provider: docs/mail_calendar_setup.md.",
+            AutoSize = true,
+            MaximumSize = new Size(520, 0),
+            ForeColor = DarkTheme.Muted,
+            Margin = new Padding(8),
+        });
+        return new TabPage("Calendar & Email") { Controls = { layout } };
+    }
+
+    private GroupBox BuildMailCalendarGroup(string title, string kind, (string Label, TextBox Box)[] rows, Label status, Func<object> change)
+    {
+        var group = NewGroup(title);
+        var table = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = DarkTheme.Background };
+        foreach (var (label, box) in rows)
+        {
+            StyleTextBox(box);
+            box.AccessibleName = label;
+            table.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) });
+            table.Controls.Add(box);
+        }
+        var saveButton = new Button { Text = "Save and test", AutoSize = true };
+        var removeButton = new Button { Text = "Remove", AutoSize = true };
+        DarkTheme.ApplyButton(saveButton);
+        DarkTheme.ApplyButton(removeButton);
+        saveButton.Click += async (_, _) => await SaveMailCalendarAsync(kind, change(), status, test: true);
+        removeButton.Click += async (_, _) => await SaveMailCalendarAsync(kind, new { kind, clear = true }, status, test: false);
+        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(saveButton);
+        buttonRow.Controls.Add(removeButton);
+        status.ForeColor = DarkTheme.Muted;
+        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
+        stack.Controls.Add(table);
+        stack.Controls.Add(buttonRow);
+        stack.Controls.Add(status);
+        group.Controls.Add(stack);
+        return group;
+    }
+
+    private async Task SaveMailCalendarAsync(string kind, object change, Label status, bool test)
+    {
+        try
+        {
+            ShowMailCalendar(await backendClient.UpdateMailCalendarAsync(change));
+            if (!test || IsDisposed)
+            {
+                return;
+            }
+            status.ForeColor = DarkTheme.Muted;
+            status.Text = "Saved. Testing...";
+            var (ok, error) = await backendClient.TestMailCalendarAsync(kind);
+            if (!IsDisposed)
+            {
+                status.ForeColor = ok ? DarkTheme.Green : Color.Firebrick;
+                status.Text = ok ? "Saved and connected." : $"Saved, but the test failed: {error}";
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                status.ForeColor = Color.Firebrick;
+                status.Text = $"Failed: {ex.Message}";
+            }
+        }
+    }
+
+    private async Task RefreshMailCalendarAsync()
+    {
+        try
+        {
+            ShowMailCalendar(await backendClient.GetMailCalendarAsync());
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                mailStatusLabel.Text = calendarStatusLabel.Text = $"Failed to load: {ex.Message}";
+            }
+        }
+    }
+
+    // Fills in what node-bot sends back (never a password or feed address)
+    // and says what's set up.
+    private void ShowMailCalendar(ManaMailCalendar state)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+        const string unreadable = "The saved settings can't be read on this Windows account: enter them again.";
+        var email = state.Email;
+        mailHostBox.Text = email?.Host ?? "";
+        mailPortBox.Text = email is { Port: > 0 } ? email.Port.ToString() : "993";
+        mailUserBox.Text = email?.User ?? "";
+        mailMailboxBox.Text = email?.Mailbox ?? "INBOX";
+        mailPasswordBox.Clear();
+        mailPasswordBox.PlaceholderText = email?.PasswordSet == true ? "saved (blank keeps it)" : "";
+        mailStatusLabel.ForeColor = DarkTheme.Muted;
+        mailStatusLabel.Text = email is null ? "Not set up." : email.Unreadable ? unreadable : $"Set up: {email.User} on {email.Host}.";
+
+        var calendar = state.Calendar;
+        calendarUserBox.Text = calendar?.User ?? "";
+        calendarUrlBox.Clear();
+        calendarUrlBox.PlaceholderText = calendar is { Unreadable: false } ? "saved (blank keeps it)" : "https://...";
+        calendarPasswordBox.Clear();
+        calendarPasswordBox.PlaceholderText = calendar?.PasswordSet == true ? "saved (blank keeps it)" : "";
+        calendarStatusLabel.ForeColor = DarkTheme.Muted;
+        calendarStatusLabel.Text = calendar is null
+            ? "Not set up."
+            : calendar.Unreadable
+                ? unreadable
+                : calendar.ReadOnly
+                    ? $"Set up: iCal feed from {calendar.Host} (read-only)."
+                    : $"Set up: {calendar.User} on {calendar.Host}.";
     }
 
     // #567: registration goes through the approval gate server-side, not
