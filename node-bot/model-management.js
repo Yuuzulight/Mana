@@ -170,6 +170,102 @@ function detectGpuVramUsageMb(spawnSync = defaultSpawnSync) {
   }
 }
 
+// Display adapter device class; each adapter is a numbered subkey.
+const DISPLAY_CLASS_KEY =
+  "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}";
+
+// `reg query <class> /s /v <name>` -> Map(subkey path -> value string).
+function queryDisplayAdapterValue(spawnSync, valueName) {
+  const result = spawnSync("reg", ["query", DISPLAY_CLASS_KEY, "/s", "/v", valueName], {
+    encoding: "utf8",
+    timeout: 5000,
+    windowsHide: true,
+  });
+  const values = new Map();
+  if (result.error || result.status !== 0 || !result.stdout) return values;
+  let key = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith("HKEY_")) {
+      key = line.trim();
+      continue;
+    }
+    const match = line.match(/^\s+(\S+)\s+REG_\w+\s+(.*)$/);
+    if (key && match && match[1] === valueName) values.set(key, match[2].trim());
+  }
+  return values;
+}
+
+function gpuVendor(name) {
+  if (/nvidia/i.test(name)) return "nvidia";
+  if (/\b(amd|radeon)\b/i.test(name)) return "amd";
+  if (/\bintel\b/i.test(name)) return "intel";
+  return "other";
+}
+
+// ponytail: name heuristic -- the registry has no integrated/discrete flag
+// (DXGI does, but that needs native interop). AMD APUs are "... Graphics"
+// ("Radeon(TM) Graphics", "Radeon 780M Graphics"); Intel is integrated
+// unless it's a discrete Arc A/B-series card.
+function isIntegratedGpu(vendor, name) {
+  if (vendor === "amd") return /graphics\s*$/i.test(name);
+  if (vendor === "intel") return !/\barc\b.*\b[ab]\d{3}\b/i.test(name);
+  return false;
+}
+
+// #1056: GPU vendor, name, VRAM and whether CUDA is usable. nvidia-smi
+// first (the only CUDA path Mana has); otherwise the display adapter keys:
+// HardwareInformation.qwMemorySize is the real 64-bit VRAM size (WMI's
+// Win32_VideoController.AdapterRAM caps at 4 GB), and DriverDesc under the
+// same subkey is the adapter name WMI reports, so both come from one place.
+// An integrated GPU's memory is shared system RAM: flagged, not counted as
+// VRAM. Returns null -- never throws -- when nothing is found.
+function detectGpu({ spawnSync = defaultSpawnSync, platform = process.platform } = {}) {
+  try {
+    const smi = spawnSync(
+      "nvidia-smi",
+      ["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
+    );
+    if (!smi.error && smi.status === 0 && smi.stdout) {
+      const line = smi.stdout.trim().split("\n")[0];
+      const comma = line.lastIndexOf(",");
+      const vramMb = parseInt(line.slice(comma + 1), 10);
+      if (comma > 0 && Number.isFinite(vramMb) && vramMb > 0) {
+        return { vendor: "nvidia", name: line.slice(0, comma).trim(), vramMb, cuda: true, sharedMemory: false };
+      }
+    }
+    if (platform !== "win32") return null;
+
+    const names = queryDisplayAdapterValue(spawnSync, "DriverDesc");
+    const sizes = queryDisplayAdapterValue(spawnSync, "HardwareInformation.qwMemorySize");
+    const adapters = [];
+    for (const [key, name] of names) {
+      const vendor = gpuVendor(name);
+      if (vendor === "other") continue; // Basic Display, remote/virtual adapters
+      const sharedMemory = isIntegratedGpu(vendor, name);
+      const raw = sizes.get(key) || ""; // REG_QWORD: "0x3faf00000"
+      const bytes = /^0x[0-9a-f]+$/i.test(raw) ? Number(raw) : 0;
+      const vramMb = !sharedMemory && bytes > 0 ? Math.round(bytes / (1024 * 1024)) : null;
+      adapters.push({ vendor, name, vramMb, cuda: false, sharedMemory });
+    }
+    // Discrete before integrated, then the most VRAM.
+    adapters.sort((a, b) => a.sharedMemory - b.sharedMemory || (b.vramMb || 0) - (a.vramMb || 0));
+    return adapters[0] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// #1076: Fish Speech (S1-mini) is CUDA-only and holds about this much VRAM.
+const FISH_VRAM_MB = 5 * 1024;
+
+// Hardware doesn't change mid-process: detect once, share the answer.
+let cachedGpu;
+function getGpu() {
+  if (cachedGpu === undefined) cachedGpu = detectGpu();
+  return cachedGpu;
+}
+
 function detectSystemMemoryMb(totalmem = os.totalmem) {
   const bytes = totalmem();
   return Number.isFinite(bytes) && bytes > 0
@@ -177,32 +273,44 @@ function detectSystemMemoryMb(totalmem = os.totalmem) {
     : null;
 }
 
+// #1086: VRAM the voice stack holds next to the LLM. TTS by provider (Kokoro
+// and the CLI run on CPU; GPT-SoVITS isn't measured yet); Qwen3-TTS's is
+// docs/qwen3_tts.md's resident figure. Whisper by model size, from
+// whisper.cpp's README memory table.
+const TTS_VRAM_MB = { fish: FISH_VRAM_MB, qwen3tts: 2765 };
+const WHISPER_VRAM_MB = { large: 3990, medium: 2150, small: 852, base: 388, tiny: 273 };
+
+function voiceVramMb({ ttsProvider, whisperModel }) {
+  const name = path.basename(whisperModel || "").toLowerCase();
+  const size = Object.keys(WHISPER_VRAM_MB).find((key) => name.includes(key));
+  return (TTS_VRAM_MB[ttsProvider] || 0) + (size ? WHISPER_VRAM_MB[size] : 0);
+}
+
 // Thresholds are deliberately simple: this is a starting-point suggestion,
-// not a hardware benchmark. "fast" keeps headroom for TTS/whisper alongside
-// the LLM on tighter cards; "quality" assumes enough room to prefer the 8B
-// tier by default.
-function recommendModelProfile({ vramMb, ramMb }) {
+// not a hardware benchmark. #1086: they apply to the VRAM left for the LLM
+// once TTS and Whisper (voiceMb) have theirs -- roughly weights plus a 16k
+// context: ~5GB for the 4B tier, ~8GB for 8B.
+function recommendModelProfile({ vramMb, ramMb, voiceMb = 0 }) {
   if (vramMb != null) {
-    const vramGb = (vramMb / 1024).toFixed(1);
-    if (vramMb < 8192) {
+    const llmMb = vramMb - voiceMb;
+    const detected = voiceMb
+      ? `Detected ~${(vramMb / 1024).toFixed(1)}GB GPU VRAM (via nvidia-smi), ~${(voiceMb / 1024).toFixed(1)}GB of it held by TTS and Whisper, leaving ~${(Math.max(llmMb, 0) / 1024).toFixed(1)}GB for the LLM.`
+      : `Detected ~${(vramMb / 1024).toFixed(1)}GB GPU VRAM (via nvidia-smi) for the LLM.`;
+    if (llmMb < 5120) {
       return {
         profile: "fast",
-        reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). Under 8GB, the fast/1.5B-class profile leaves headroom for TTS and Whisper running alongside the LLM.`,
+        reason: `${detected} Under 5GB, the fast/1.5B-class profile is what fits.`,
       };
     }
-    // nvidia-smi reports usable VRAM, which comes in a bit under a card's
-    // nominal size (driver/OS reservations) -- a real 16GB card often
-    // reports ~16000-16300MB, not >=16384. Cut at 15360 (15GB) so it still
-    // lands in "quality" instead of being silently under-recommended.
-    if (vramMb < 15360) {
+    if (llmMb < 8192) {
       return {
         profile: "default",
-        reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 8-15GB comfortably fits the default 4B-class profile.`,
+        reason: `${detected} 5-8GB comfortably fits the default 4B-class profile.`,
       };
     }
     return {
       profile: "quality",
-      reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 15GB+ comfortably fits the quality 8-14B-class profile.`,
+      reason: `${detected} 8GB+ fits the quality 8-14B-class profile.`,
     };
   }
 
@@ -337,7 +445,11 @@ function createModelManagement(options = {}) {
     if (!cachedRecommendation) {
       const vramMb = detectGpuVramMb(spawnSync);
       const ramMb = detectSystemMemoryMb(totalmem);
-      const { profile, reason } = recommendModelProfile({ vramMb, ramMb });
+      const voiceMb = voiceVramMb({
+        ttsProvider: options.ttsProvider || env.TTS_PROVIDER,
+        whisperModel: options.whisperModel || env.WHISPER_MODEL,
+      });
+      const { profile, reason } = recommendModelProfile({ vramMb, ramMb, voiceMb });
       cachedRecommendation = {
         profile,
         label: LLAMA_MODEL_PROFILES[profile].label,
@@ -598,9 +710,12 @@ function createModelManagement(options = {}) {
 
 module.exports = {
   createModelManagement,
+  detectGpu,
   detectGpuVramMb,
   detectGpuVramUsageMb,
   detectSystemMemoryMb,
   estimateModelFit,
+  FISH_VRAM_MB,
+  getGpu,
   recommendModelProfile,
 };

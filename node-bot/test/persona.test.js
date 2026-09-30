@@ -53,3 +53,12 @@ test("getPersonaOverride returns the raw override text, or null", () => {
   assert.equal(persona.getPersonaOverride("session-y"), "Be extra shy today.");
   persona.clearPersonaOverride("session-y");
 });
+
+// The Oneesan/Imouto naming used to live only in a memory fact, and replies
+// drifted to "Onesan"/"Imoto". It belongs to Mana alone: other characters
+// bring their own persona.
+test("MANA_PERSONA spells Oneesan, Imouto and the Otsumana~ sign-off exactly; Evil Mana's persona doesn't", () => {
+  for (const word of ['"Oneesan"', '"Imouto"', '"Otsumana~"']) assert.ok(persona.MANA_PERSONA.includes(word), word);
+  const evil = require("../characters").createCharacterStore({ filePath: "no-such-characters.json" }).get("evil-mana");
+  assert.doesNotMatch(evil.persona, /Oneesan|Imouto/);
+});

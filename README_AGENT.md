@@ -10,7 +10,7 @@ All paths are relative to the repo root. Never commit `.env` or model files.
 ## 1. Prerequisites
 
 - Windows 11 x64 (the native launcher targets Windows 10 19041+). An NVIDIA GPU is expected (the bundled llama.cpp builds are CUDA).
-- Node.js: CI runs 18.18.0 and 22 (`.github/workflows/fast-node-tests.yml`, `heavy-ci.yml`).
+- Node.js: CI runs 22 (`.github/workflows/fast-node-tests.yml`, `heavy-ci.yml`).
 - .NET 10 SDK, not just the runtime (native launcher).
 - Python 3.10+ for Kokoro and the embedder; Python 3.12 for Fish Speech.
 - Git (Fish Speech lives in the `tools/fish-speech` submodule).
@@ -123,7 +123,7 @@ npm start          # node server.js
 
 ```powershell
 cd node-bot
-npm test                              # node run_tests.js; SKIP_HEAVY_MODEL_TESTS=1 skips heavy tests, as fast CI does
+npm test                              # node run_tests.js, the whole suite as CI runs it; SKIP_HEAVY_MODEL_TESTS=1 runs two quick files
 npm run doctor                        # node doctor.js: setup + hardware checks and model recommendation
 Invoke-RestMethod http://127.0.0.1:5005/health    # with the backend running
 
