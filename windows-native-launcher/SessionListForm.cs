@@ -61,11 +61,12 @@ internal sealed class SessionListForm : Form
     // per control.
     private readonly ToolTip railToolTip = new();
 
-    // Bolds the active session's row in RefreshAsync -- built once and
-    // reused rather than a fresh Font per refresh, which leaked a GDI
-    // handle every time the list reloaded (session switch/rename/delete/
-    // new-chat) with no matching Dispose.
-    private readonly Font activeSessionFont;
+    // The chat list's row fonts (the #652 mockup's 13px title, semibold for
+    // the open chat, and 12px time) -- built once, not per row painted.
+    private readonly Font sessionTitleFont = new("Segoe UI", 9.75f);
+    private readonly Font activeSessionFont = new("Segoe UI Semibold", 9.75f);
+    private readonly Font sessionTimeFont = new("Segoe UI", 9f);
+    private readonly ImageList sessionRowHeight = new();
     private readonly Font messageBoxFont;
     private readonly MessageQueueStrip messageQueue = new();
     private readonly ImageAttachmentStrip attachments = new();
@@ -98,7 +99,6 @@ internal sealed class SessionListForm : Form
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
         chatView = chatLog;
-        activeSessionFont = new Font(list.Font, FontStyle.Bold);
         messageBoxFont = new Font("Segoe UI", 10.5F);
 
         Text = "Mana";
@@ -109,22 +109,24 @@ internal sealed class SessionListForm : Form
 
         newChatButton.Text = "+ New chat";
         newChatButton.Dock = DockStyle.Top;
-        newChatButton.Height = 32;
-        newChatButton.Margin = new Padding(8);
+        newChatButton.Height = 36;
+        newChatButton.TextAlign = ContentAlignment.MiddleLeft; // the #652 mockup's
+        newChatButton.Padding = new Padding(6, 0, 0, 0);
         newChatButton.Click += (_, _) => StartNewChat();
         // #538's own new-chat button is a solid accent CTA, not the
         // muted flat style DarkTheme.ApplyButton gives every other button
         // in this window -- matched here instead of through that shared
-        // helper, which stays as-is for Settings' own buttons.
+        // helper, which stays as-is for Settings' own buttons. The Mana
+        // preset draws it as glass instead.
         newChatButton.FlatStyle = FlatStyle.Flat;
         newChatButton.BackColor = DarkTheme.Accent;
         newChatButton.ForeColor = DarkTheme.OnAccent;
         newChatButton.FlatAppearance.BorderSize = 0;
+        GlassSurface.MakeGlassButton(newChatButton);
 
         searchBox.Dock = DockStyle.Top;
         searchBox.PlaceholderText = "Search chats";
         searchBox.AccessibleName = "Search chats";
-        searchBox.BorderStyle = BorderStyle.FixedSingle;
         searchBox.BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
         searchBox.ForeColor = DarkTheme.Text;
         searchBox.TextChanged += async (_, _) =>
@@ -139,8 +141,17 @@ internal sealed class SessionListForm : Form
         list.FullRowSelect = true;
         list.HideSelection = false;
         list.LabelEdit = true;
-        list.Columns.Add("Name", 170);
-        list.Columns.Add("Updated", 90);
+        // The #652 mockup's rows: title over a relative time, drawn here. One
+        // column as wide as the list (so no sideways scroll bar), the row
+        // height set through the usual image-list trick, the full time as
+        // each row's tooltip.
+        list.Columns.Add("Name", 200);
+        list.OwnerDraw = true;
+        list.DrawItem += OnDrawSessionItem;
+        list.ClientSizeChanged += (_, _) => FitSessionColumn();
+        list.ShowItemToolTips = true;
+        sessionRowHeight.ImageSize = new Size(1, LogicalToDeviceUnits(SessionRowHeight));
+        list.SmallImageList = sessionRowHeight;
         // WinForms convention (select on single click, activate on
         // double) rather than the reference's own single-click-switches
         // -- switching sessions from a stray selection click would be a
@@ -164,6 +175,10 @@ internal sealed class SessionListForm : Form
         contextMenu.Items.Add("Open memory...", null, async (_, _) => await OpenMemoryForSelectedAsync());
         list.ContextMenuStrip = contextMenu;
         DarkTheme.ApplyListView(list);
+        // On the sidebar itself, not a boxed panel (the glass look puts it
+        // straight on the window's glows).
+        list.BackColor = DarkTheme.Background;
+        list.BorderStyle = BorderStyle.None;
 
         // Sidebar avatar card design ported from the app's own reference
         // mock-up (the "Settings floats above the main window" artifact,
@@ -188,7 +203,7 @@ internal sealed class SessionListForm : Form
         // avatarCard here, which isn't declared yet at this point in the
         // constructor. Anchor (Top|Right) below keeps it glued to
         // avatarCard's right edge on every later resize.
-        avatarZoomButton.Location = new Point(240 - 20 - 8, 8);
+        avatarZoomButton.Location = new Point(220 - 20 - 8, 8);
         avatarZoomButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         avatarZoomButton.FlatStyle = FlatStyle.Flat;
         avatarZoomButton.BackColor = DarkTheme.Panel2;
@@ -217,26 +232,30 @@ internal sealed class SessionListForm : Form
             };
         }
 
+        // Name and status centred under her, as in the #652 mockup (15px
+        // semibold name, 12px status after a round status dot).
         avatarNameLabel.Text = "Mana";
         avatarNameLabel.Dock = DockStyle.Top;
-        avatarNameLabel.Height = 18;
+        avatarNameLabel.Height = 24;
+        avatarNameLabel.TextAlign = ContentAlignment.MiddleCenter;
         avatarNameLabel.ForeColor = DarkTheme.Text;
-        avatarNameFont = new Font(avatarStatusLabel.Font.FontFamily, 9.5f, FontStyle.Bold);
+        avatarNameFont = new Font("Segoe UI Semibold", 11.25f);
         avatarNameLabel.Font = avatarNameFont;
 
         avatarStatusLabel.Dock = DockStyle.Top;
-        avatarStatusLabel.Height = 16;
+        avatarStatusLabel.Height = 18;
         avatarStatusLabel.AutoEllipsis = true; // #619: "Hearing: ..." can be long
-        avatarStatusLabel.Padding = new Padding(14, 0, 0, 0); // room for the status dot painted by OnPaintAvatarVisual's sibling below
+        avatarStatusLabel.TextAlign = ContentAlignment.MiddleCenter;
+        avatarStatusLabel.Padding = new Padding(StatusDotSpace, 0, 0, 0); // room for the status dot, see OnPaintAvatarStatusDot
         avatarStatusLabel.ForeColor = DarkTheme.Muted;
-        avatarStatusFont = new Font(avatarStatusLabel.Font.FontFamily, 8.5f);
+        avatarStatusFont = new Font(avatarStatusLabel.Font.FontFamily, 9f);
         avatarStatusLabel.Font = avatarStatusFont;
         avatarStatusLabel.Paint += OnPaintAvatarStatusDot;
 
         // Width matches the sidebar's starting width so avatarZoomButton's
         // right-edge anchor is measured against the width it's placed for
         // (a Panel starts 200 wide, which anchored the button off the card).
-        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 240, Height = 60 + avatarVisual.Height, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
+        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 220, Height = 62 + avatarVisual.Height, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
         avatarCard.Paint += OnPaintAvatarCardBorder;
         // WinForms docks the LAST-added child first (see the main
         // Controls.Add block below), so visual/name/status -- top to
@@ -254,13 +273,21 @@ internal sealed class SessionListForm : Form
         // fire into disposed controls on every future avatar state change.
         avatarOverlay.StateChanged += OnAvatarStateChanged;
 
-        var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Background };
+        // 10px around and between everything, as in the #652 mockup.
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Background, Padding = new Padding(10) };
+        var searchField = GlassSurface.Field(searchBox, new Padding(10, 8, 10, 0));
+        searchField.Dock = DockStyle.Top;
+        searchField.Height = 32;
+        Panel Gap(DockStyle dock) => new() { Dock = dock, Height = 8, BackColor = Color.Transparent };
         // Reverse dock order again (last added docks first): the avatar
         // card (bottom) and new-chat button (top) stake their strips before
         // the list fills what's left.
         sidebar.Controls.Add(list);
-        sidebar.Controls.Add(searchBox);
+        sidebar.Controls.Add(Gap(DockStyle.Top));
+        sidebar.Controls.Add(searchField);
+        sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(newChatButton);
+        sidebar.Controls.Add(Gap(DockStyle.Bottom));
         sidebar.Controls.Add(avatarCard);
 
         // Drag-resizable. MinSize (200) is the floor: below that the
@@ -1083,15 +1110,28 @@ internal sealed class SessionListForm : Form
         return path;
     }
 
+    private const int StatusDotSize = 8;
+    private const int StatusDotSpace = StatusDotSize + 6;
+
+    // Green while she's listening, muted when she isn't; sits just left of
+    // the centred status text (at the left edge once the text fills the line).
     private void OnPaintAvatarStatusDot(object? sender, PaintEventArgs e)
     {
-        var idle = avatarOverlay.CurrentState == AvatarState.Idle;
-        using var dotBrush = new SolidBrush(idle ? Color.FromArgb(0x8f, 0xd1, 0x9e) : DarkTheme.Accent);
-        e.Graphics.FillEllipse(dotBrush, 0, (avatarStatusLabel.Height - 5) / 2, 5, 5);
+        var label = avatarStatusLabel;
+        var textWidth = TextRenderer.MeasureText(e.Graphics, label.Text, label.Font).Width;
+        var textLeft = StatusDotSpace + Math.Max(0, (label.ClientSize.Width - StatusDotSpace - textWidth) / 2);
+        var listening = DarkTheme.IsGlass ? Color.FromArgb(0x3f, 0xb9, 0x6a) : DarkTheme.Green; // the mockup's green; the palette's reads on flat themes
+        using var dotBrush = new SolidBrush(voiceLoop.IsListening ? listening : DarkTheme.Muted);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.FillEllipse(dotBrush, textLeft - StatusDotSpace, (label.Height - StatusDotSize) / 2f, StatusDotSize, StatusDotSize);
     }
 
     private void OnPaintAvatarCardBorder(object? sender, PaintEventArgs e)
     {
+        if (DarkTheme.IsGlass)
+        {
+            return; // the glass card has its own edges
+        }
         var card = (Panel)sender!;
         using var pen = new Pen(DarkTheme.Border);
         e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
@@ -1488,16 +1528,71 @@ internal sealed class SessionListForm : Form
             var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
             {
                 Tag = session.SessionId,
+                ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
             };
-            item.SubItems.Add(SessionListFormatter.FormatUpdatedAt(session.UpdatedAt));
-            if (session.SessionId == activeSessionId)
-            {
-                item.Font = activeSessionFont;
-                item.ForeColor = DarkTheme.Accent;
-            }
+            item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, DateTimeOffset.Now));
             list.Items.Add(item);
         }
         list.EndUpdate();
+        FitSessionColumn();
+    }
+
+    private const int SessionRowHeight = 52; // 8px padding, title, 2px, time, 8px padding, 2px between rows
+
+    private void FitSessionColumn()
+    {
+        if (list.Columns.Count > 0 && list.Columns[0].Width != list.ClientSize.Width)
+        {
+            list.Columns[0].Width = list.ClientSize.Width;
+        }
+    }
+
+    // A chat row: its title over the relative time. The open chat is a
+    // bright glass card with a semibold title in the Mana preset (accent and
+    // semibold in the others); a selected row gets a fainter fill.
+    private void OnDrawSessionItem(object? sender, DrawListViewItemEventArgs e)
+    {
+        var g = e.Graphics;
+        var bounds = e.Bounds with { Width = list.ClientSize.Width };
+        var card = Rectangle.Inflate(bounds, 0, -1);
+        var active = (string?)e.Item.Tag == activeSessionId;
+        if (DarkTheme.IsGlass)
+        {
+            GlassSurface.PaintGlowBehind(g, list, bounds);
+            if (active || e.Item.Selected)
+            {
+                using var fill = new SolidBrush(Color.FromArgb(active ? 179 : 90, 255, 255, 255));
+                g.FillRectangle(fill, card);
+            }
+            if (active)
+            {
+                GlassSurface.PaintGlassEdges(g, card, null);
+            }
+        }
+        else
+        {
+            using var back = new SolidBrush(list.BackColor);
+            g.FillRectangle(back, bounds);
+            if (e.Item.Selected)
+            {
+                using var tint = new SolidBrush(Color.FromArgb(56, DarkTheme.Accent)); // reads on every preset, High contrast too
+                g.FillRectangle(tint, card);
+            }
+        }
+
+        var pad = LogicalToDeviceUnits(10);
+        var titleFont = active ? activeSessionFont : sessionTitleFont;
+        var titleColor = active && !DarkTheme.IsGlass ? DarkTheme.Accent : DarkTheme.Text;
+        var gap = LogicalToDeviceUnits(2);
+        var top = card.Y + (card.Height - titleFont.Height - gap - sessionTimeFont.Height) / 2;
+        const TextFormatFlags flags = TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        TextRenderer.DrawText(g, e.Item.Text, titleFont, new Rectangle(card.X + pad, top, card.Width - pad * 2, titleFont.Height), titleColor, flags);
+        var time = e.Item.SubItems.Count > 1 ? e.Item.SubItems[1].Text : "";
+        TextRenderer.DrawText(g, time, sessionTimeFont, new Rectangle(card.X + pad, top + titleFont.Height + gap, card.Width - pad * 2, sessionTimeFont.Height), DarkTheme.Muted, flags);
+        if (e.Item.Focused && list.Focused && GlassSurface.ShowsFocusCues(list))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -2, -1));
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -1506,7 +1601,10 @@ internal sealed class SessionListForm : Form
         {
             avatarOverlay.StateChanged -= OnAvatarStateChanged;
             avatarOverlay.Mirror = null; // #685: before avatarVisual is disposed
+            sessionTitleFont.Dispose();
             activeSessionFont.Dispose();
+            sessionTimeFont.Dispose();
+            sessionRowHeight.Dispose();
             messageBoxFont.Dispose();
             avatarNameFont.Dispose();
             avatarStatusFont.Dispose();

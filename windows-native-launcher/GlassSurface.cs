@@ -277,7 +277,8 @@ internal static class GlassSurface
                 return;
             }
             var offset = form.PointToClient(list.PointToScreen(Point.Empty));
-            Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: true));
+            // A background-coloured list (the chat list) sits straight on the glows.
+            Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: list.BackColor != DarkTheme.Background));
         }
         EventHandler onChange = (_, _) => Refresh();
         list.BackgroundImageTiled = false;
@@ -338,6 +339,96 @@ internal static class GlassSurface
         g.Transform = saved;
         g.Clip = clip;
     }
+
+    // A glass button in the Mana preset, painted over whatever the theme
+    // drew; other presets keep their own look. Call before any Paint handler
+    // that draws on top (an icon).
+    public static void MakeGlassButton(ButtonBase button)
+    {
+        button.Paint += (_, e) =>
+        {
+            if (DarkTheme.IsGlass)
+            {
+                PaintGlassButton(e.Graphics, button);
+            }
+        };
+    }
+
+    private static void PaintGlassButton(Graphics g, ButtonBase button)
+    {
+        var bounds = button.ClientRectangle;
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            return;
+        }
+        PaintGlowBehind(g, button, bounds);
+        var hot = button.Enabled && bounds.Contains(button.PointToClient(Control.MousePosition));
+        var down = hot && Control.MouseButtons == MouseButtons.Left;
+        using (var fill = new SolidBrush(down ? Color.FromArgb(215, 255, 255, 255) : hot ? GlassHover : Color.FromArgb(133, 255, 255, 255)))
+        {
+            g.FillRectangle(fill, bounds);
+        }
+        PaintGlassEdges(g, bounds, null);
+        if (button.Text.Length > 0)
+        {
+            var left = button.TextAlign is ContentAlignment.MiddleLeft or ContentAlignment.TopLeft or ContentAlignment.BottomLeft;
+            TextRenderer.DrawText(g, button.Text, button.Font, Rectangle.Inflate(bounds, -12, 0), button.Enabled ? DarkTheme.Text : DarkTheme.Muted,
+                TextFormatFlags.VerticalCenter | (left ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter) | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+        if (button.Focused && ShowsFocusCues(button))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(bounds, -3, -3));
+        }
+    }
+
+    // The window's glows behind `control` -- what a see-through control
+    // shows, for one that paints its own background (a ListView row, a
+    // glass button over the theme's own drawing).
+    public static void PaintGlowBehind(Graphics g, Control control, Rectangle bounds)
+    {
+        if (control.FindForm() is { BackgroundImage: { } glow } form)
+        {
+            var offset = form.PointToClient(control.PointToScreen(Point.Empty));
+            g.DrawImage(glow, bounds, bounds with { X = bounds.X + offset.X, Y = bounds.Y + offset.Y }, GraphicsUnit.Pixel);
+        }
+    }
+
+    // A text box inside a padded field: glass edges in the Mana preset, a
+    // plain border elsewhere, filled with the box's own colour so they meet
+    // seamlessly. The caller docks the box.
+    public static Panel Field(TextBox box, Padding padding)
+    {
+        box.BorderStyle = BorderStyle.None;
+        var field = new Panel { BackColor = Color.Transparent, Padding = padding, Cursor = Cursors.IBeam };
+        field.Controls.Add(box);
+        field.MouseDown += (_, _) => box.Focus();
+        field.Paint += (_, e) =>
+        {
+            var bounds = field.ClientRectangle;
+            using var fill = new SolidBrush(box.BackColor);
+            e.Graphics.FillRectangle(fill, bounds);
+            if (DarkTheme.IsGlass)
+            {
+                PaintGlassEdges(e.Graphics, bounds, null);
+                return;
+            }
+            using var border = new Pen(DarkTheme.Border);
+            e.Graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+        };
+        box.BackColorChanged += (_, _) => field.Invalidate();
+        return field;
+    }
+
+    // Keyboard focus rectangles only once the keyboard's been used, like
+    // Windows' own controls (Control.ShowFocusCues is protected).
+    internal static bool ShowsFocusCues(Control control) =>
+        control.IsHandleCreated && ((long)SendMessage(control.Handle, WmQueryUiState, IntPtr.Zero, IntPtr.Zero) & UisfHideFocus) == 0;
+
+    private const int WmQueryUiState = 0x0129;
+    private const long UisfHideFocus = 0x1;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     private static void Swap(Control control, Image? image)
     {
