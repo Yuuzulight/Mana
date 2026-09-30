@@ -1481,7 +1481,34 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(Row(Caption("News topics (comma-separated)"), topics));
         layout.Controls.Add(Row(Caption("Games"), games));
         layout.Controls.Add(Row(save, status));
+        layout.Controls.Add(BuildCheckInsRow());
         return new TabPage("Briefing") { Controls = { layout } };
+    }
+
+    // Part of #700: saved at once like local-only (#670); the backend reads
+    // it when the launcher next starts it.
+    private static FlowLayoutPanel BuildCheckInsRow()
+    {
+        var check = new CheckBox
+        {
+            Text = "Let Mana check in on me (at most once a day) when I've seemed down",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = !ManaSettingsStore.Load().NoCheckIns,
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.NoCheckIns = !check.Checked;
+            latest.Save();
+            status.Text = "Saved -- restart Mana for this to take effect. MANA_CHECK_INS=0 in node-bot/.env keeps them off.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(status);
+        return row;
     }
 
     // #923/#925/#926: node-bot's speech words (whisper listens for them),

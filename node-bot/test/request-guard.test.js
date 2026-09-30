@@ -115,10 +115,13 @@ test("app rejects cross-site and rebinding requests but keeps its own clients wo
   });
   const originalWarn = console.warn;
   console.warn = () => {};
+  const priorToken = process.env.ADMIN_TOKEN;
+  process.env.ADMIN_TOKEN = "guard-test-token";
   try {
     await withServer(app, async (baseUrl) => {
       const port = Number(new URL(baseUrl).port);
-      const json = { "Content-Type": "application/json" };
+      // Mana's own clients send an admin key (default deny, admin-key.js).
+      const json = { "Content-Type": "application/json", "x-admin-token": "guard-test-token" };
       const body = JSON.stringify({ text: "hello" });
 
       // Browser page on another site: blocked before the route runs.
@@ -147,6 +150,14 @@ test("app rejects cross-site and rebinding requests but keeps its own clients wo
       });
       assert.equal(rebound.status, 403);
       assert.match(rebound.body, /Host/);
+      // Any other local program without the key.
+      const keyless = await rawRequest(port, {
+        method: "POST",
+        path: "/reply",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      assert.equal(keyless.status, 401);
       assert.equal(replies, 0);
 
       // Native launcher / Node clients: no Origin.
@@ -189,6 +200,8 @@ test("app rejects cross-site and rebinding requests but keeps its own clients wo
     });
   } finally {
     console.warn = originalWarn;
+    if (priorToken === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = priorToken;
   }
 });
 
@@ -196,7 +209,7 @@ test("WebSocket upgrades from a foreign origin or rebinding host are refused", a
   const server = http.createServer();
   registerVisionCaptureServer(server, {
     bridge: { setSender() {} },
-    requestGuard: createRequestGuard({}),
+    requestGuard: createRequestGuard({ ADMIN_TOKEN: "ws-test-token" }),
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
@@ -216,10 +229,12 @@ test("WebSocket upgrades from a foreign origin or rebinding host are refused", a
   const originalWarn = console.warn;
   console.warn = () => {};
   try {
-    assert.equal(await connect({}), "open");
-    assert.equal(await connect({ origin: "file://" }), "open");
-    assert.equal(await connect({ origin: "http://evil.com" }), 403);
-    assert.equal(await connect({ headers: { Host: "evil.com" } }), 403);
+    const key = { "x-admin-token": "ws-test-token" };
+    assert.equal(await connect({ headers: key }), "open");
+    assert.equal(await connect({ origin: "file://", headers: key }), "open");
+    assert.equal(await connect({}), 401);
+    assert.equal(await connect({ origin: "http://evil.com", headers: key }), 403);
+    assert.equal(await connect({ headers: { ...key, Host: "evil.com" } }), 403);
   } finally {
     console.warn = originalWarn;
   }

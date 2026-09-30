@@ -13,6 +13,7 @@ public class AnnouncementEmotionTests
     [InlineData(null, "handoff", "excited")]
     [InlineData(null, "self-work", "happy")]
     [InlineData(null, "failed", "sad")]
+    [InlineData(null, "check-in", null)] // gentle: her calm voice
     [InlineData(null, "cron", null)] // an unknown kind is neutral
     [InlineData(null, null, null)]
     [InlineData("Sad", "briefing", "sad")] // the payload's own emotion wins

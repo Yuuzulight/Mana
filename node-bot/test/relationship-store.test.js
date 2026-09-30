@@ -155,7 +155,8 @@ test("a new note is a chat line on the reply stream", async () => {
       return { content: "Heh.", toolCalls: [], rounds: 1 };
     },
   });
-  const { withServer } = require("./helpers");
+  const { withServer, useTestAdminToken } = require("./helpers");
+  const fetch = useTestAdminToken();
   await withServer(app, async (baseUrl) => {
     const body = await (
       await fetch(`${baseUrl}/reply/stream`, {

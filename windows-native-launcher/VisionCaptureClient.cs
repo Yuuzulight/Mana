@@ -72,6 +72,7 @@ internal sealed class VisionCaptureClient : IDisposable
             try
             {
                 using var socket = new ClientWebSocket();
+                backendClient.Authorize(socket);
                 await socket.ConnectAsync(socketUri, token);
                 await ReceiveLoopAsync(socket, token);
             }

@@ -46,6 +46,17 @@ jobs:
         shell: pwsh
         run: dotnet build --configuration Release
 
+      # #1151: the process manager tests start real node processes, and a
+      # fresh runner's first node launch is cold (seconds, more with the
+      # suite running in parallel). Pay that here: the binary into the file
+      # cache, then one run.
+      - name: Warm up node
+        shell: pwsh
+        run: |
+          $node = (Get-Command node).Source
+          $null = [System.IO.File]::ReadAllBytes($node)
+          node -e "console.log(process.execPath, process.version)"
+
       # Also builds ManaNativeLauncher.csproj again via the Tests project's
       # own ProjectReference -- kept as a separate step from the build
       # above anyway, so a plain build failure and a test failure show up

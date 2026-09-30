@@ -62,6 +62,11 @@ internal sealed class ManaSettingsStore
     // next start. MANA_LOCAL_ONLY=1 in node-bot/.env turns it on regardless.
     public bool LocalOnly { get; set; }
 
+    // Part of #700: no gentle check-ins from Mana (passed as
+    // MANA_LAUNCHER_CHECK_INS=0). Settings > Briefing; applies on the next
+    // start. MANA_CHECK_INS=0 in node-bot/.env turns them off regardless.
+    public bool NoCheckIns { get; set; }
+
     // #665: what talking over Mana does (BargeInMode: "minWords" -- the
     // default when null -- "always" or "notWhileSpeaking"). Settings >
     // Voice; MANA_BARGE_IN_MODE overrides it.

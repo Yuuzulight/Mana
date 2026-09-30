@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -112,10 +113,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         if (text.Length > 0 || message.Images.Count == 0)
         {
-            message.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(text, false, false, false) }));
+            message.Blocks.AddRange(UserBlocks(text));
         }
         Add(message, forceScroll: true);
     });
+
+    // My message as typed -- except text I shared from My shell (#1121),
+    // which Mana gets framed as outside text: the chat shows it as a
+    // "Shared from terminal" card with the text in a monospace box.
+    internal static IReadOnlyList<MarkdownBlock> UserBlocks(string text)
+    {
+        if (UntrustedText.Unwrap(MyShellPanel.SharedSource, text) is not { } shared)
+        {
+            return [new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(text, false, false, false) })];
+        }
+        return
+        [
+            new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun("Shared from terminal", true, false, false) }),
+            new MarkdownBlock(MarkdownBlockType.CodeBlock, new[] { new MarkdownRun(shared.ReplaceLineEndings("\n"), false, false, true) }),
+        ];
+    }
 
     private const int ThumbnailSide = 160;
 
@@ -178,7 +195,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (!string.IsNullOrWhiteSpace(turn.User))
             {
                 var user = new Message(fromUser: true);
-                user.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] { new MarkdownRun(turn.User, false, false, false) }));
+                user.Blocks.AddRange(UserBlocks(turn.User));
                 messages.Add(user);
             }
             if (!string.IsNullOrWhiteSpace(turn.Assistant))
@@ -486,7 +503,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                     {
                         flat.Append('\n');
                     }
-                    foreach (var piece in BreakToWidth(sourceLines[li].Length == 0 ? " " : sourceLines[li], codeFont, maxWidth - 12))
+                    foreach (var piece in BreakToWidth(sourceLines[li].Length == 0 ? " " : sourceLines[li], s => Measure(s, codeFont), maxWidth - 12))
                     {
                         var w = Measure(piece, codeFont);
                         lines.Add(new Line(y, codeFont.Height + 2, true, new List<Fragment> { new(piece, codeFont, 6, w, true, flat.Length) }));
@@ -618,7 +635,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                     }
                     if (w > width - indent)
                     {
-                        foreach (var piece in BreakToWidth(text, font, width - indent))
+                        foreach (var piece in BreakToWidth(text, s => Measure(s, font), width - indent))
                         {
                             if (x > indent)
                             {
@@ -697,22 +714,29 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         TextRenderer.MeasureText(text, font, new Size(int.MaxValue, int.MaxValue), TextFlags).Width;
 
     // Splits text too long for one line into the longest pieces that fit.
-    private static IEnumerable<string> BreakToWidth(string text, Font font, int maxWidth)
+    // #1147: only between text elements (grapheme clusters), so an emoji ZWJ
+    // sequence, a flag, a surrogate pair or a letter with its combining
+    // accent is never cut in half; one element wider than the line gets a
+    // line to itself.
+    internal static IEnumerable<string> BreakToWidth(string text, Func<string, int> measure, int maxWidth)
     {
-        var start = 0;
-        while (start < text.Length)
+        var starts = StringInfo.ParseCombiningCharacters(text);
+        var first = 0; // index into starts
+        string Piece(int count) =>
+            text[starts[first]..(first + count < starts.Length ? starts[first + count] : text.Length)];
+        while (first < starts.Length)
         {
-            var length = text.Length - start;
-            while (length > 1 && Measure(text.Substring(start, length), font) > maxWidth)
+            var count = starts.Length - first;
+            while (count > 1 && measure(Piece(count)) > maxWidth)
             {
-                length = Math.Max(1, Math.Min(length - 1, length * 3 / 4)); // shrink fast, then grow back below
+                count = Math.Max(1, Math.Min(count - 1, count * 3 / 4)); // shrink fast, then grow back below
             }
-            while (start + length < text.Length && Measure(text.Substring(start, length + 1), font) <= maxWidth)
+            while (first + count < starts.Length && measure(Piece(count + 1)) <= maxWidth)
             {
-                length++;
+                count++;
             }
-            yield return text.Substring(start, length);
-            start += length;
+            yield return Piece(count);
+            first += count;
         }
     }
 

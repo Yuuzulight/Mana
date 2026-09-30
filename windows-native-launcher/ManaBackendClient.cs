@@ -44,6 +44,19 @@ internal sealed class ManaBackendClient
         }
     }
 
+    // Every backend route and WebSocket needs the key now (default deny), so
+    // the tray and vision-capture sockets send the same headers as http.
+    internal IEnumerable<KeyValuePair<string, string>> AuthHeaders() =>
+        http.DefaultRequestHeaders.Select(h => new KeyValuePair<string, string>(h.Key, string.Join(",", h.Value)));
+
+    internal void Authorize(System.Net.WebSockets.ClientWebSocket socket)
+    {
+        foreach (var (name, value) in AuthHeaders())
+        {
+            socket.Options.SetRequestHeader(name, value);
+        }
+    }
+
     // #575: extended with uptime/config/operations -- operations is a
     // free-form dictionary (server.js's perfMetrics.operations: whatever
     // shape each operation last logged, e.g. reply_token_usage's

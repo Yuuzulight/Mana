@@ -1677,13 +1677,21 @@ function createAcpMemoryStore(options = {}) {
   const AFFECT_DECAY_HALF_LIFE_HOURS = 12;
   const AFFECT_NUDGE = 0.2;
 
+  // Part of #700: a turn that leaves positivity at or below this counts as
+  // a low turn; lowTurns is the run of them in a row (an upbeat turn
+  // resets it). One nudge is 0.2, so it takes three negative turns to get
+  // here -- a couple of "ugh, this boss" never do.
+  const AFFECT_LOW = -0.5;
+
   function loadEmotionalState() {
     const parsed = readJsonObject(emotionalStatePath);
     const userAffect = parsed?.userAffect;
+    const lastCheckInAt = typeof parsed?.lastCheckInAt === "string" ? parsed.lastCheckInAt : null;
     if (userAffect && typeof userAffect.positivity === "number" && userAffect.lastUpdatedAt) {
-      return { userAffect };
+      const lowTurns = Number.isInteger(userAffect.lowTurns) ? userAffect.lowTurns : 0;
+      return { userAffect: { ...userAffect, lowTurns }, lastCheckInAt };
     }
-    return { userAffect: { positivity: 0, lastUpdatedAt: null } };
+    return { userAffect: { positivity: 0, lastUpdatedAt: null, lowTurns: 0 }, lastCheckInAt };
   }
 
   function decayedPositivity(userAffect, at) {
@@ -1700,12 +1708,14 @@ function createAcpMemoryStore(options = {}) {
   // corrupt/missing state file just resets to neutral, same as any other
   // JSON file in this store).
   function updateUserAffect(text, at) {
-    const { userAffect } = loadEmotionalState();
+    const { userAffect, lastCheckInAt } = loadEmotionalState();
     const decayed = decayedPositivity(userAffect, at);
     const valence = detectTextValence(text);
     const next = Math.max(-1, Math.min(1, decayed + valence * AFFECT_NUDGE));
+    const lowTurns = next <= AFFECT_LOW ? userAffect.lowTurns + 1 : 0;
     writeJsonObject(emotionalStatePath, {
-      userAffect: { positivity: next, lastUpdatedAt: at },
+      userAffect: { positivity: next, lastUpdatedAt: at, lowTurns },
+      lastCheckInAt,
     });
     return next;
   }
@@ -1716,6 +1726,23 @@ function createAcpMemoryStore(options = {}) {
   function getUserAffect(at) {
     const { userAffect } = loadEmotionalState();
     return decayedPositivity(userAffect, at || now());
+  }
+
+  // Part of #700: what check-ins.js needs -- the run of low turns (0 once
+  // the read has decayed back above AFFECT_LOW, so a low evening doesn't
+  // linger into the next day), when the last turn was, and when Mana last
+  // checked in (recordCheckIn).
+  function getUserAffectState(at) {
+    const { userAffect, lastCheckInAt } = loadEmotionalState();
+    return {
+      lowTurns: decayedPositivity(userAffect, at || now()) <= AFFECT_LOW ? userAffect.lowTurns : 0,
+      lastTurnAt: userAffect.lastUpdatedAt,
+      lastCheckInAt,
+    };
+  }
+
+  function recordCheckIn(at) {
+    writeJsonObject(emotionalStatePath, { ...loadEmotionalState(), lastCheckInAt: at || now() });
   }
 
   function getSession(sessionId) {
@@ -2503,6 +2530,8 @@ function createAcpMemoryStore(options = {}) {
     sessionIdsMatching,
     memoryGraph,
     getUserAffect,
+    getUserAffectState,
+    recordCheckIn,
   };
 }
 

@@ -298,7 +298,7 @@ internal static class MarkdownHtml
 
     private static string Escape(string text) => WebUtility.HtmlEncode(text);
 
-    private static string Css(Color c) => $"#{c.R:x2}{c.G:x2}{c.B:x2}";
+    internal static string Css(Color c) => $"#{c.R:x2}{c.G:x2}{c.B:x2}";
 
     // The chat window's colours and fonts (DarkTheme, so every preset).
     private static string Style() =>

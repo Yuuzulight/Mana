@@ -6,7 +6,10 @@ const test = require("node:test");
 
 const { createApp } = require("../server");
 const { runDoctorChecks, runDoctorChecksAsync } = require("../doctor");
-const { withServer, withRawServer } = require("./helpers");
+const { withServer, withRawServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 
 test("doctor checks return structured pass warn and fail results", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-test-"));

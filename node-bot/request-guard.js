@@ -21,7 +21,12 @@
 // /v1/* and /api/memory* are exempt from the Origin check and allow any CORS
 // origin: every route there demands a valid API key (authMiddleware), which
 // a cross-site page doesn't have, and Obsidian (app://obsidian.md) calls them.
+//
+// On top of this, every route and WebSocket needs an admin key unless
+// admin-key.js lists it as public, so an allowed Origin (a browser
+// extension, say) still gets nothing else without the key.
 const net = require("net");
+const { presentsAdminKey } = require("./admin-key");
 
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const EXTENSION_ORIGIN = /^(chrome|moz)-extension:\/\/[a-z0-9-]+$/;
@@ -107,12 +112,29 @@ function createRequestGuard(env = process.env) {
     callback(null, { origin: isAllowedOrigin(req) || API_KEY_PATHS.test(req.path) });
   }
 
+  // A WebSocket sends the admin key as a header, or -- browser WebSockets
+  // (the Electron renderers) can't set headers -- as ?key=.
+  function upgradeHasKey(req) {
+    if (presentsAdminKey(req, env)) return true;
+    let key = "";
+    try {
+      key = new URL(req.url || "/", "http://localhost").searchParams.get("key") || "";
+    } catch {
+      return false;
+    }
+    return Boolean(key) && presentsAdminKey({ headers: { ...req.headers, "x-admin-token": key }, socket: req.socket }, env);
+  }
+
   // For the ws servers' 'upgrade' handlers: true if the socket was rejected.
   function rejectUpgrade(req, socket) {
     const reason = blockReason(req, { upgrade: true });
-    if (!reason) return false;
-    warnOnce(reason);
-    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    if (reason) {
+      warnOnce(reason);
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      return true;
+    }
+    if (upgradeHasKey(req)) return false;
+    socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     return true;
   }
 

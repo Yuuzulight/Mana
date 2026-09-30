@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electro
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
+const crypto = require('crypto');
 const { isAutoUpdateEnabled, createUpdateManager } = require('./update-manager');
 const { getManaDataRoot, buildDataDirEnv, migrateLegacyData } = require('./data-dir-manager');
 const { resolveAvatarModel } = require('./avatar/resolve-model');
@@ -15,6 +16,11 @@ let updateManager = null;
 let serviceManager = null;
 let logFile = null;
 let isQuitting = false;
+// Every backend route and WebSocket needs an admin key unless node-bot lists
+// it as public (node-bot/admin-key.js). A fresh key each run, handed to the
+// node-bot this app starts as MANA_LAUNCHER_KEY; ADMIN_TOKEN instead when
+// it's set, which also works for a node-bot something else started.
+const BACKEND_KEY = process.env.ADMIN_TOKEN || crypto.randomBytes(32).toString('hex');
 const manaRoot = path.join(__dirname, '..');
 // Snapshot of the latest startup-progress event per service, so the
 // renderer can catch up on anything that happened before its IPC listener
@@ -173,7 +179,7 @@ function spawnBackend() {
       env: Object.assign(
         {},
         process.env,
-        { NODE_ENV: process.env.NODE_ENV || '', MANA_EAGER_LLAMA_SERVER: '1' },
+        { NODE_ENV: process.env.NODE_ENV || '', MANA_EAGER_LLAMA_SERVER: '1', MANA_LAUNCHER_KEY: BACKEND_KEY },
         dataDirEnv,
       ),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -299,7 +305,7 @@ function runGracefulShutdown() {
       // when no secret is configured at all, which is why this never
       // surfaced before).
       const stop = serviceManager
-        ? serviceManager.stopAll(backendProc, { adminSecret: process.env.MANA_ADMIN_SECRET })
+        ? serviceManager.stopAll(backendProc, { adminSecret: process.env.MANA_ADMIN_SECRET || BACKEND_KEY })
         : Promise.resolve();
       let timedOut = false;
       await Promise.race([
@@ -482,6 +488,9 @@ ipcMain.handle('open-external', async (ev, url) => {
 });
 
 ipcMain.handle('get-app-version', async () => app.getVersion());
+ipcMain.on('get-backend-key-sync', (event) => {
+  event.returnValue = BACKEND_KEY;
+});
 
 ipcMain.handle('check-for-updates', async () => {
   if (!updateManager) {

@@ -6,7 +6,10 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { withServer } = require("./helpers");
+const { withServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 const { resetPromptCompositionReport } = require("../prompt-composition-report");
 
 test("a local reply's prompt composition is recorded and surfaced via /prompt-composition/:sessionId", async () => {

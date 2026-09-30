@@ -26,7 +26,10 @@ function parseCaptionMessage(raw) {
 // options.WebSocketImpl: injectable so tests never open a real socket.
 // options.reconnectMs: 0 disables reconnection (used by tests).
 function createCaptionClient(options = {}) {
-  const url = options.url || "ws://127.0.0.1:5005/ws/captions";
+  // Every backend WebSocket needs this run's key (node-bot/admin-key.js), and
+  // a browser WebSocket can't send headers, so it goes in the URL.
+  const key = options.key === undefined ? globalThis.electronAPI?.getBackendKey?.() || "" : options.key;
+  const url = (options.url || "ws://127.0.0.1:5005/ws/captions") + (key ? `?key=${encodeURIComponent(key)}` : "");
   const WebSocketImpl = options.WebSocketImpl || globalThis.WebSocket;
   const onCaption = typeof options.onCaption === "function" ? options.onCaption : () => {};
   const reconnectMs = options.reconnectMs === undefined ? 3000 : options.reconnectMs;

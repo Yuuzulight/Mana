@@ -9,7 +9,10 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { withServer, withRawServer } = require("./helpers");
+const { withServer, withRawServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 const { resetSessionTokenUsage } = require("../session-token-usage");
 
 function fakeOpenAiHandler(reply, usage) {
