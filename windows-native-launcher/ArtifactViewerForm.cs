@@ -6,7 +6,10 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
-using TheArtOfDev.HtmlRenderer.WinForms;
+using Folio;
+using Folio.Skia;
+using Folio.Typography;
+using Folio.WinForms;
 
 namespace Mana.NativeLauncher;
 
@@ -15,8 +18,8 @@ namespace Mana.NativeLauncher;
 // Mermaid content rendered natively (MermaidParser/MermaidLayout/
 // MermaidRenderer, flowcharts only -- sequence diagrams and everything
 // else fall back to raw source text, same as an unrecognized/malformed
-// diagram), simple HTML drawn by HtmlRenderer (#686; pages it can't draw
-// open in the default browser), everything else shown as plain
+// diagram), static HTML drawn by Folio (#937; pages it can't draw open in
+// the default browser), everything else shown as plain
 // monospace text. No markdown rendering for other
 // content: artifact content is source code, which doesn't carry markdown
 // inline formatting to begin with, so plain monospace text is the correct
@@ -27,7 +30,7 @@ namespace Mana.NativeLauncher;
 // of it popping up by itself.
 internal enum ArtifactOpen
 {
-    Default, // HTML: in Mana if HtmlRenderer can draw it, else the browser
+    Default, // HTML: in Mana if Folio can draw it, else the browser
     InMana,
     Browser,
     Source,
@@ -47,10 +50,17 @@ internal sealed class ArtifactViewerForm : Form
     private readonly Button nextButton = new();
     private readonly TextBox textBox = new();
     private readonly Panel diagramPanel = new();
-    // #686: simple HTML, drawn with no network: images only from data:
-    // URIs, no external stylesheets, links go nowhere. Anything needing
-    // scripts or modern layout goes to the browser instead (HtmlArtifact).
-    private readonly HtmlPanel htmlView = new() { Dock = DockStyle.Fill, Visible = false };
+    // #937: static HTML, drawn by Folio with the system's fonts. Folio loads
+    // nothing but data: images and runs no scripts; pages that need more go
+    // to the browser instead (HtmlArtifact.BrowserReasons).
+    private readonly FolioView htmlView = new()
+    {
+        Dock = DockStyle.Fill,
+        Visible = false,
+        Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() } },
+    };
+
+    internal FolioView HtmlView => htmlView; // tests
 
     public ArtifactViewerForm()
     {
@@ -94,16 +104,16 @@ internal sealed class ArtifactViewerForm : Form
         diagramPanel.BackColor = DarkTheme.Background;
         diagramPanel.Paint += OnDiagramPaint;
 
-        htmlView.ImageLoad += (_, e) =>
+        // A clicked web link opens in the default browser; other schemes
+        // (file:, mailto:, protocol handlers) do nothing.
+        htmlView.LinkActivated += (_, e) =>
         {
-            if (!HtmlArtifact.IsDataUri(e.Src))
+            e.Handled = true;
+            if (HtmlArtifact.IsWebLink(e.Uri))
             {
-                e.Handled = true;
-                e.Callback(); // no image
+                Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true })?.Dispose();
             }
         };
-        htmlView.StylesheetLoad += (_, e) => e.SetStyleSheet = "";
-        htmlView.LinkClicked += (_, e) => e.Handled = true;
 
         Controls.Add(htmlView);
         Controls.Add(diagramPanel);
@@ -133,7 +143,7 @@ internal sealed class ArtifactViewerForm : Form
         return how =>
         {
             var html = versioned.Language == "html";
-            if (html && (how == ArtifactOpen.Browser || (how == ArtifactOpen.Default && HtmlArtifact.NeedsBrowser(versioned.Content))))
+            if (html && (how == ArtifactOpen.Browser || (how == ArtifactOpen.Default && HtmlArtifact.BrowserReasons(versioned.Content) is not null)))
             {
                 HtmlArtifact.OpenInBrowser(versioned.Content);
                 return;
@@ -203,16 +213,16 @@ internal sealed class ArtifactViewerForm : Form
             currentMermaidSource = null;
             diagramPanel.Visible = false;
             textBox.Visible = true;
-            textBox.Text = artifact.Content; // HTML's source too, when asked for or HtmlRenderer can't draw it
+            textBox.Text = artifact.Content; // HTML's source too, when asked for or Folio can't draw it
             if (artifact.Language == "html" && !showSource)
             {
-                if (HtmlArtifact.NeedsBrowser(artifact.Content))
+                if (HtmlArtifact.BrowserReasons(artifact.Content) is { } whyBrowser)
                 {
-                    titleLabel.Text += " (needs a browser -- source shown)";
+                    titleLabel.Text += $" (needs a browser: {whyBrowser} -- source shown)";
                 }
                 else
                 {
-                    htmlView.Text = artifact.Content;
+                    htmlView.LoadHtml(artifact.Content);
                     textBox.Visible = false;
                     htmlView.Visible = true;
                 }
@@ -278,18 +288,18 @@ internal sealed class ArtifactViewerForm : Form
     }
 }
 
-// #686 (Q1/Q4): what HtmlRenderer can't draw -- scripts, inline event
-// handlers, canvas, SVG, flex/grid layout -- opens in the default browser,
-// from a temp copy whose CSP stops it making network requests.
+// #686 (Q1/Q4), #937: what Folio can't draw yet -- scripts, event handlers,
+// external resources, canvas, SVG, CSS it doesn't support (Folio's
+// ArtifactClassifier) -- opens in the default browser, from a temp copy
+// whose CSP stops it making network requests.
 internal static class HtmlArtifact
 {
-    private static readonly Regex BrowserOnly = new(
-        @"<script\b|<canvas\b|<svg\b|\son[a-z]+\s*=|display\s*:\s*(inline-)?(flex|grid)\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    // Why the page needs a browser (the classifier's reasons, e.g. "uses
+    // inline SVG"), or null when Folio can draw it.
+    public static string? BrowserReasons(string html) =>
+        ArtifactClassifier.Classify(html) is { Kind: not ArtifactKind.Static } c ? string.Join(", ", c.Reasons) : null;
 
-    public static bool NeedsBrowser(string html) => BrowserOnly.IsMatch(html);
-
-    public static bool IsDataUri(string? src) => src?.TrimStart().StartsWith("data:", StringComparison.OrdinalIgnoreCase) == true;
+    public static bool IsWebLink(Uri uri) => uri.Scheme is "http" or "https";
 
     private const string CspMeta = "<meta http-equiv=\"Content-Security-Policy\" content=\"connect-src 'none'\">";
 
