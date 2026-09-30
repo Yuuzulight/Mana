@@ -111,6 +111,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(voiceTab);
         tabs.TabPages.Add(BuildBriefingTab());
         tabs.TabPages.Add(new TabPage("Desktop") { Controls = { new DesktopFoldersPanel() } }); // #997
+        tabs.TabPages.Add(new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }); // #914
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLogsTab());
         tabs.TabPages.Add(BuildThemeTab());

@@ -280,6 +280,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         Add(message, forceScroll: false);
     });
 
+    // #914: "Noted: ..." -- her relationship note or milestone, its own
+    // finished line with an Undo button (never merged into the reply).
+    public void AppendNoted(string? speaker, string text, Func<Task<string?>> undo) => RunOnUiThread(() =>
+    {
+        var message = new Message(fromUser: false) { Name = speaker, FinalText = text };
+        message.Blocks.AddRange(ChatMarkdownParser.Parse(text));
+        message.Actions.Add(new ChatAction("Undo", false, undo));
+        Add(message, forceScroll: false);
+    });
+
     // Puts buttons under Mana's latest message (replacing any it had, except
     // kept ones like the artifact button, which move after the new ones).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
