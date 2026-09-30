@@ -66,13 +66,14 @@ internal sealed class StreamingReplyPlayer
     // is known from the stream -- decoupled from playback timing (it does
     // NOT wait for that sentence to actually finish being spoken), since a
     // chat log should show text as it arrives, not lag behind audio.
+    // #963: source ("voice" or "typed") goes to /reply/stream as is.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null)
+        string commandText, string? sessionId = null, Action<string>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null)
     {
         var sentences = Channel.CreateUnbounded<(string Text, string? Emotion)>();
         ReplyStreamEvent? finalEvent = null;
 
-        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, onSentence, sentences.Writer, e => finalEvent = e);
+        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, onSentence, sentences.Writer, e => finalEvent = e);
         var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
@@ -124,11 +125,11 @@ internal sealed class StreamingReplyPlayer
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string>? onSentence, ChannelWriter<(string Text, string? Emotion)> writer, Action<ReplyStreamEvent> onFinal)
     {
         try
         {
-            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder))
+            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source))
             {
                 if (evt.Type == "sentence" && !string.IsNullOrWhiteSpace(evt.Text))
                 {

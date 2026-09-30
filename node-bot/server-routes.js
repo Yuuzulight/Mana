@@ -367,6 +367,9 @@ function registerCoreRoutes(app, upload, deps) {
             world,
             screenText,
             game: currentGame(),
+            // #963: only a turn that says it was typed gets the longer
+            // mid-game wiki wait; a spoken or unlabelled one keeps 5 s.
+            typed: req.body?.source === "typed",
           })
         : "";
       const assistantMode = optionalString(
@@ -519,6 +522,9 @@ function registerCoreRoutes(app, upload, deps) {
             world,
             screenText,
             game: currentGame(),
+            // #963: only a turn that says it was typed gets the longer
+            // mid-game wiki wait; a spoken or unlabelled one keeps 5 s.
+            typed: req.body?.source === "typed",
           })
         : "";
       const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);

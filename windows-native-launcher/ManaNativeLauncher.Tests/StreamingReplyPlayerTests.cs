@@ -175,6 +175,37 @@ public class StreamingReplyPlayerTests
         Assert.Contains("\"presetId\":\"preset-1\"", body);
     }
 
+    // #963: the turn's source reaches /reply/stream, so a typed turn gets the
+    // longer mid-game wiki wait; without one nothing is sent.
+    [Theory]
+    [InlineData("typed", "\"source\":\"typed\"")]
+    [InlineData("voice", "\"source\":\"voice\"")]
+    [InlineData(null, null)]
+    public async Task StreamReplyAndPlayAsync_ForwardsTheTurnSource(string? source, string? expected)
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"type\":\"final\",\"reply\":\"ok\",\"changed\":false}\n"),
+            };
+        });
+        var player = new StreamingReplyPlayer(new ManaBackendClient(handler), _ => Task.FromResult(true), _ => { });
+
+        await player.StreamReplyAndPlayAsync("hi", source: source);
+
+        if (expected is null)
+        {
+            Assert.DoesNotContain("source", body!);
+        }
+        else
+        {
+            Assert.Contains(expected, body);
+        }
+    }
+
     // #675: VoiceLoop's deep-thinking toggle reaches /reply/stream through here,
     // as a request field (never by rewriting the user's text): true thinks,
     // false ends Mana's own deep thinking (Q12b), null sends nothing. The
