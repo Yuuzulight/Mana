@@ -1075,6 +1075,50 @@ internal sealed class ManaBackendClient
         return (root.GetProperty("active").GetString() ?? "", characters, groupOn);
     }
 
+    // #914: each character's relationship notes and milestones, for
+    // Settings > Characters.
+    public async Task<IReadOnlyList<ManaCharacterRelationship>> GetRelationshipsAsync()
+    {
+        using var response = await http.GetAsync("/characters/relationships");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        static IReadOnlyList<ManaRelationshipItem> Items(JsonElement character, string name, string kind) =>
+            character.TryGetProperty(name, out var items) && items.ValueKind == JsonValueKind.Array
+                ? items.EnumerateArray().Select(i => new ManaRelationshipItem(
+                    kind,
+                    i.GetProperty("id").GetString() ?? "",
+                    i.GetProperty("text").GetString() ?? "",
+                    i.TryGetProperty("date", out var date) && date.ValueKind == JsonValueKind.String ? date.GetString() : null)).ToList()
+                : [];
+        return document.RootElement.GetProperty("characters").EnumerateArray()
+            .Select(c => new ManaCharacterRelationship(
+                c.GetProperty("id").GetString() ?? "",
+                c.GetProperty("name").GetString() ?? "",
+                Items(c, "notes", "notes"),
+                Items(c, "milestones", "milestones")))
+            .ToList();
+    }
+
+    // #914: edits one note or milestone (kind "notes"/"milestones"); a
+    // milestone's date (YYYY-MM-DD) too.
+    public async Task UpdateRelationshipItemAsync(string characterId, string kind, string itemId, string text, string? date = null)
+    {
+        var payload = date is null ? JsonSerializer.Serialize(new { text }) : JsonSerializer.Serialize(new { text, date });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync(RelationshipItemPath(characterId, kind, itemId), content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task RemoveRelationshipItemAsync(string characterId, string kind, string itemId)
+    {
+        using var response = await http.DeleteAsync(RelationshipItemPath(characterId, kind, itemId));
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static string RelationshipItemPath(string characterId, string kind, string itemId) =>
+        $"/characters/{Uri.EscapeDataString(characterId)}/relationship/{(kind == "milestones" ? "milestones" : "notes")}/{Uri.EscapeDataString(itemId)}";
+
     // #914: group mode on (with the last partner, else the first other
     // character) or off.
     public async Task SetGroupAsync(bool on)
@@ -2273,6 +2317,9 @@ internal sealed class ManaBackendClient
             DeepThinking = root.TryGetProperty("deepThinking", out var deepProp) && deepProp.ValueKind == JsonValueKind.True,
             Character = root.TryGetProperty("character", out var characterProp) && characterProp.ValueKind == JsonValueKind.String ? characterProp.GetString() : null,
             CharacterName = root.TryGetProperty("characterName", out var characterNameProp) && characterNameProp.ValueKind == JsonValueKind.String ? characterNameProp.GetString() : null,
+            Kind = root.TryGetProperty("kind", out var kindProp) && kindProp.ValueKind == JsonValueKind.String ? kindProp.GetString() : null,
+            Id = root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null,
+            Date = root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind == JsonValueKind.String ? dateProp.GetString() : null,
         };
     }
 }
@@ -2585,7 +2632,18 @@ internal sealed class ReplyStreamEvent
     // in group mode a second final follows with her sister's reaction.
     public string? Character { get; init; }
     public string? CharacterName { get; init; }
+    // #914: type "noted" -- a relationship "note" or "milestone" she just
+    // made (Text; a milestone's Date), and its Id for undoing it.
+    public string? Kind { get; init; }
+    public string? Id { get; init; }
+    public string? Date { get; init; }
 }
+
+// #914: GET /characters/relationships -- one character's notes and milestones.
+internal sealed record ManaCharacterRelationship(string Id, string Name, IReadOnlyList<ManaRelationshipItem> Notes, IReadOnlyList<ManaRelationshipItem> Milestones);
+
+// Kind: "notes" or "milestones" (its route); Date only on a milestone.
+internal sealed record ManaRelationshipItem(string Kind, string Id, string Text, string? Date);
 
 // #580: a row from GET /editors/workspace/proposals -- see
 // zed-integration.js's own listProposals.

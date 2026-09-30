@@ -77,12 +77,12 @@ internal sealed class StreamingReplyPlayer
     // sister's reaction; its sentence streams and plays like the rest, and
     // the first final stays the reply reported here.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText, string? sessionId = null, Action<string, string?>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null)
+        string commandText, string? sessionId = null, Action<string, string?>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, Action<ReplyStreamEvent>? onNoted = null)
     {
         var sentences = Channel.CreateUnbounded<(string Text, string? Emotion, string? Character)>();
         ReplyStreamEvent? finalEvent = null;
 
-        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, onSentence, sentences.Writer, e => finalEvent ??= e);
+        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, onSentence, sentences.Writer, e => finalEvent ??= e, onNoted);
         var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
@@ -134,7 +134,7 @@ internal sealed class StreamingReplyPlayer
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string, string?>? onSentence, ChannelWriter<(string Text, string? Emotion, string? Character)> writer, Action<ReplyStreamEvent> onFinal)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string, string?>? onSentence, ChannelWriter<(string Text, string? Emotion, string? Character)> writer, Action<ReplyStreamEvent> onFinal, Action<ReplyStreamEvent>? onNoted)
     {
         try
         {
@@ -152,6 +152,10 @@ internal sealed class StreamingReplyPlayer
                 else if (evt.Type == "tool")
                 {
                     setToolRunning?.Invoke(evt.Phase == "start");
+                }
+                else if (evt.Type == "noted" && !string.IsNullOrWhiteSpace(evt.Text))
+                {
+                    onNoted?.Invoke(evt); // #914: a relationship note or milestone she just made
                 }
             }
         }

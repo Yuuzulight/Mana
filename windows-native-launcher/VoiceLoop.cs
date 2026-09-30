@@ -1845,6 +1845,21 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
+    // #914: a relationship note or milestone she just made is a chat line
+    // with an Undo button (no approval needed, so I see each one).
+    private void ShowNoted(ReplyStreamEvent noted)
+    {
+        var kind = noted.Kind == "milestone" ? "milestones" : "notes";
+        chatLog?.AppendNoted(noted.CharacterName, NotedLine(noted.Kind, noted.Text ?? "", noted.Date), async () =>
+        {
+            await backendClient.RemoveRelationshipItemAsync(noted.Character ?? "mana", kind, noted.Id ?? "");
+            return "Forgotten.";
+        });
+    }
+
+    internal static string NotedLine(string? kind, string text, string? date) =>
+        kind == "milestone" ? $"I'll remember this: \"{text}\"{(date is null ? "" : $" ({date})")}" : $"Noted: \"{text}\"";
+
     private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, string? source)
     {
         string? reply;
@@ -1856,7 +1871,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source, ShowNoted);
             if (stopMana)
             {
                 stopManaThinking = false;
