@@ -528,7 +528,7 @@ function createTtsRuntime(options = {}) {
     return out;
   }
 
-  async function synthesizeWithConfiguredProvider(provider, text) {
+  async function synthesizeWithConfiguredProvider(provider, text, emotion) {
     // Returns { audio: Buffer, timings: [{word,startMs,endMs}] }
     let audio = null;
     if (provider === "fish") {
@@ -575,9 +575,11 @@ function createTtsRuntime(options = {}) {
       const voice = getVoice();
       audio = await postJson(
         `${qwen3TtsUrl}/synthesize`,
+        // #909: the service turns the emotion tag into her speaking rate.
         {
           text,
           language: pickQwen3TtsLanguage(text),
+          ...(emotion ? { emotion } : {}),
           ...(voice ? { ref_audio: voice.refAudio, ref_text: voice.refText } : {}),
         },
         20000,
@@ -596,7 +598,7 @@ function createTtsRuntime(options = {}) {
     return { audio: Buffer.from(audio), timings };
   }
 
-  async function synthesizeReply(text) {
+  async function synthesizeReply(text, emotion) {
     if (!text) {
       throw new Error("No text provided for synthesis");
     }
@@ -679,7 +681,7 @@ function createTtsRuntime(options = {}) {
 
     if (activeProvider === "qwen3tts") {
       try {
-        const res = await synthesizeWithConfiguredProvider("qwen3tts", text);
+        const res = await synthesizeWithConfiguredProvider("qwen3tts", text, emotion);
         return res.audio;
       } catch (error) {
         if (qwen3TtsFallbackProvider === "none") {

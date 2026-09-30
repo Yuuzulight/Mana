@@ -58,6 +58,8 @@ const BUILTIN_TIERS = {
   reminder__set: "read",
   reminder__list: "read",
   reminder__cancel: "read",
+  // #907: no arguments; searches only the topics and games I set in Settings.
+  briefing__now: "read",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",

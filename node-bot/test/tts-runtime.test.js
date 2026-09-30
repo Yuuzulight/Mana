@@ -235,6 +235,10 @@ test("tts runtime posts text plus the detected language to Qwen3-TTS", async () 
   assert.equal(calls[0].url, "http://qwen.local/synthesize");
   assert.deepEqual(calls[0].body, { text: "こんにちは！", language: "japanese" });
   assert.ok(calls[0].timeoutMs > 0);
+
+  // #909: the sentence's emotion tag goes along to style her voice.
+  await runtime.synthesizeReply("Yay!", "excited");
+  assert.deepEqual(calls[1].body, { text: "Yay!", language: "english", emotion: "excited" });
 });
 
 test("postJsonBuffer gives up on a service that never answers once timeoutMs passes", async () => {

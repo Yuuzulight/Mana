@@ -80,6 +80,17 @@ def run():
             os.remove(outside.name)
             os.rmdir(svc.VOICES_DIR)
 
+        # #909: an emotion tag changes the pace (sad slower, excited faster)
+        # and never reaches the model; an unknown one changes nothing.
+        def samples(emotion):
+            res = client.post("/synthesize", json={"text": "Hi", "emotion": emotion})
+            assert res.status_code == 200 and "emotion" not in fake.calls[-1], res.text
+            return len(sf.read(io.BytesIO(res.content))[0])
+
+        assert samples("sad") == round(3600 / 0.93)
+        assert samples("excited") == round(3600 / 1.07)
+        assert samples("sparkly") == samples(None) == 3600
+
     assert client.get("/health").json()["ok"] is True
     # #904: a real call on this process, so the ctypes signatures are
     # checked too (nothing to trim off Windows).
