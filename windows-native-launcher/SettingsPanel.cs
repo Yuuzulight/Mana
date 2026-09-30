@@ -43,7 +43,7 @@ internal sealed class SettingsPanel : UserControl
     // #669: index-aligned with ToolApprovalModes below.
     private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private static readonly string[] ToolApprovalModes = { "smart", "ask", "off" };
-    private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Voice provider" };
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
     private readonly ComboBox themePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
@@ -1879,7 +1879,7 @@ internal sealed class SettingsPanel : UserControl
     {
         var scores = VoiceDebugLog.RecentSpeakerScores(path: logPath);
         return scores.Count == 0
-            ? "No voice match scores yet (speech-debug.log has them once the setting above is on)."
+            ? "No voice match scores yet (speech-debug.log has them when MANA_SPEECH_DEBUG=1 and the setting above is on)."
             : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
     }
 
@@ -1992,7 +1992,7 @@ internal sealed class SettingsPanel : UserControl
         {
             if (!File.Exists(VoiceDebugLog.DefaultPath))
             {
-                status.Text = $"No speech log yet ({VoiceDebugLog.DefaultPath}).";
+                status.Text = $"No speech log yet ({VoiceDebugLog.DefaultPath}). It's off unless MANA_SPEECH_DEBUG=1.";
                 return;
             }
             try

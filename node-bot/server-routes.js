@@ -78,7 +78,36 @@ function registerCoreRoutes(app, upload, deps) {
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
     currentGame = () => null, // #908
+    characters = null, // #914
+    buildGroupReaction = null, // #914
   } = deps;
+
+  // #914 group mode (design on the issue): each of my messages gets at most
+  // two replies. The first is from the character I name, otherwise whoever
+  // didn't speak last; the other may add a short reaction to her sister.
+  // Numbering my messages tells a reaction I've typed again meanwhile.
+  let messageNumber = 0;
+  let lastSpeakerId = null;
+  function pickGroupSpeakers(text) {
+    const partner = characters?.groupPartner?.();
+    if (!partner) return null;
+    const active = characters.active();
+    const named = characters.mentioned(text).filter((c) => c.id === active.id || c.id === partner.id);
+    const first = named.length === 1 ? named[0] : lastSpeakerId === active.id ? partner : active;
+    return { first, second: first.id === active.id ? partner : active };
+  }
+  // Only casual chat gets a reaction -- not task or coding turns, tool
+  // use, or a long first reply. And only after a first reply that streamed
+  // as it ended: one the client must speak afresh from its final event
+  // would otherwise come after her sister's reaction.
+  const GROUP_REACTION_MAX_FIRST_CHARS = 300;
+  const wantsGroupReaction = (replyMeta, usedTools, reply) =>
+    (replyMeta.mode === "casual" || replyMeta.mode === "chat") &&
+    replyMeta.streamedMatchesFinal === true &&
+    !usedTools &&
+    typeof reply === "string" &&
+    reply.trim().length > 0 &&
+    reply.length <= GROUP_REACTION_MAX_FIRST_CHARS;
 
   // Every save path (recordChatTurn here, server.js's reply builder) skips
   // a turn with no sessionId, so say so once instead of letting memory go
@@ -291,6 +320,7 @@ function registerCoreRoutes(app, upload, deps) {
   });
 
   app.post("/reply", async (req, res) => {
+    messageNumber += 1; // #914: a new message ends any pending group reaction
     try {
       // An attached image joins the chat turn (see prepareImageTurn);
       // text becomes optional because the image can carry the question.
@@ -429,6 +459,7 @@ function registerCoreRoutes(app, upload, deps) {
     res.flushHeaders();
 
     const writeEvent = (event) => res.write(JSON.stringify(event) + "\n");
+    const thisMessage = ++messageNumber;
 
     try {
       const image =
@@ -475,11 +506,13 @@ function registerCoreRoutes(app, upload, deps) {
         images.length > 0,
       );
       if (input.reply) {
+        const active = characters?.active?.();
         writeEvent({
           type: "final",
           reply: input.reply,
           ttsConfigured: TTS_PROVIDER !== "none",
           changed: true,
+          ...(active ? { character: active.id, characterName: active.name } : {}),
         });
         return res.end();
       }
@@ -550,18 +583,35 @@ function registerCoreRoutes(app, upload, deps) {
         : { text: input.text, images: [] };
       replyMeta.images = turn.images;
 
-      const reply = await buildAssistantReply(
-        turn.text,
-        screenText,
-        joinPromptParts(marketText, input.userPatch),
-        modelProfile,
-        sessionId,
-        assistantMode,
-        presetId,
-        replyMeta,
-        // #623: emotion is the sentence's face tag, when the model gave one.
-        (sentence, emotion) =>
-          writeEvent({ type: "sentence", text: sentence, ...(emotion ? { emotion } : {}) }),
+      // #914: every sentence/final event says which character is speaking,
+      // so the launcher lip-syncs her avatar, speaks in her voice and labels
+      // the chat. In group mode (not for image turns) she may not be the
+      // active one.
+      const group = images.length ? null : pickGroupSpeakers(input.text);
+      const speaker = group ? group.first : characters?.active?.();
+      const who = speaker ? { character: speaker.id, characterName: speaker.name } : {};
+      const speakAs = (character, fn) => (group ? characters.speakAs(character.id, fn) : fn());
+      let usedTools = false;
+      const onToolCall = replyMeta.onToolCall;
+      replyMeta.onToolCall = (call) => {
+        usedTools = true;
+        onToolCall(call);
+      };
+
+      const reply = await speakAs(speaker, () =>
+        buildAssistantReply(
+          turn.text,
+          screenText,
+          joinPromptParts(marketText, input.userPatch),
+          modelProfile,
+          sessionId,
+          assistantMode,
+          presetId,
+          replyMeta,
+          // #623: emotion is the sentence's face tag, when the model gave one.
+          (sentence, emotion) =>
+            writeEvent({ type: "sentence", text: sentence, ...(emotion ? { emotion } : {}), ...who }),
+        ),
       );
 
       writeEvent({
@@ -573,7 +623,36 @@ function registerCoreRoutes(app, upload, deps) {
         ...(replyMeta.emotion ? { emotion: replyMeta.emotion } : {}),
         // #675 Q12b: Mana's own deep thinking is on (the Think button lights).
         deepThinking: replyMeta.deepThinking === true,
+        ...who,
       });
+
+      // #914: her sister's short reaction, as more events on the same
+      // stream (a sentence and a second final). Skipped once I've typed
+      // again or the client has gone.
+      if (group) {
+        lastSpeakerId = group.first.id;
+        if (
+          typeof buildGroupReaction === "function" &&
+          wantsGroupReaction(replyMeta, usedTools, reply) &&
+          thisMessage === messageNumber &&
+          !res.destroyed
+        ) {
+          const reaction = await speakAs(group.second, () =>
+            buildGroupReaction({ sessionId, userText: input.text, sister: group.first, reply }),
+          ).catch((e) => {
+            console.warn("Group reaction failed:", e?.message || e);
+            return "";
+          });
+          if (reaction && thisMessage === messageNumber) {
+            lastSpeakerId = group.second.id;
+            // Her own turn in the history, with no user line.
+            speakAs(group.second, () => recordChatTurn(sessionId, "", reaction));
+            const theirs = { character: group.second.id, characterName: group.second.name };
+            writeEvent({ type: "sentence", text: reaction, ...theirs });
+            writeEvent({ type: "final", reply: reaction, ttsConfigured: TTS_PROVIDER !== "none", changed: false, ...theirs });
+          }
+        }
+      }
       return res.end();
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -670,7 +749,11 @@ function registerCoreRoutes(app, upload, deps) {
 
       // #909: the sentence's emotion tag (from /reply/stream) styles her voice.
       const emotion = typeof req.body?.emotion === "string" ? req.body.emotion : undefined;
-      const audio = await synthesizeReply(text, { emotion });
+      // #914: a reply event's character speaks in her own voice (group
+      // mode's partner isn't the active one); unknown or none: the active one.
+      const character = typeof req.body?.character === "string" ? req.body.character : null;
+      const synthesize = () => synthesizeReply(text, { emotion });
+      const audio = await (character && characters ? characters.speakAs(character, synthesize) : synthesize());
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (e) {
