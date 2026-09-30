@@ -1,18 +1,20 @@
-name: Fast Node Tests
+name: Node Tests
 
+# The whole node-bot suite on every pull request: the two-file "fast" run
+# let regressions reach main. Tests that need real models or binaries skip
+# themselves when those aren't there. Main pushes run it in heavy-ci.yml.
 on:
   pull_request:
   push:
     branches:
-      - main
       - 'feature/**'
 
 permissions:
   contents: read
 
 jobs:
-  fast-node-tests:
-    name: Fast Node tests (unit + pairing smoke)
+  node-tests:
+    name: Node tests (full suite)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -21,14 +23,12 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '18.18.0'
+          node-version: '22'
 
       - name: Install node-bot deps
         working-directory: ./node-bot
         run: npm ci
 
-      - name: Run fast node tests
-        env:
-          SKIP_HEAVY_MODEL_TESTS: '1'
+      - name: Run node tests
         working-directory: ./node-bot
         run: npm test
