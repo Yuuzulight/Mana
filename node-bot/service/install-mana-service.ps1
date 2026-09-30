@@ -1,8 +1,7 @@
 # Registers node-bot as a genuine Windows service via NSSM, so it starts on
 # boot and restarts on crash instead of only running while windows-launcher
 # happens to be open. See README.md in this folder for the reasoning and
-# the windows-launcher-side Settings > Connection change this requires
-# (must be the LAN IP, not localhost -- see that doc).
+# the ADMIN_TOKEN a launcher needs to use it.
 #
 # Requires: an elevated (Administrator) PowerShell session, and Chocolatey
 # (already present on this machine) to install NSSM itself if it's missing.
@@ -49,10 +48,9 @@ nssm set $ServiceName AppStderr (Join-Path $LogDir "service-stderr.log")
 # (tools/retriever-index.js), so without this, session search and Deep
 # Research would silently lose semantic retrieval under the service.
 #
-# MANA_BIND_HOST=0.0.0.0 (#670): node-bot binds loopback only by default, but
-# windows-launcher reaches this service through the LAN IP (see README.md),
-# so the service keeps listening on every interface as it did before #670.
-# That also exposes it to the rest of your network -- see README.md.
+# MANA_BIND_HOST=127.0.0.1: this PC only, like node-bot's own default
+# (#670). Anything that can reach the backend and has the key can make Mana
+# reply and run tools, so it isn't exposed to the network -- see README.md.
 $whisperBin = Join-Path $RootDir "tools\whisper\Release\whisper-cli.exe"
 $whisperModel = Join-Path $RootDir "tools\whisper\models\ggml-tiny.en.bin"
 nssm set $ServiceName AppEnvironmentExtra `
@@ -64,7 +62,7 @@ nssm set $ServiceName AppEnvironmentExtra `
     "VTUBE_STUDIO_ENABLED=1" `
     "USE_EMBEDDINGS=1" `
     "RETRIEVER_EMBEDDER_URL=http://127.0.0.1:9001" `
-    "MANA_BIND_HOST=0.0.0.0"
+    "MANA_BIND_HOST=127.0.0.1"
 
 Write-Host "Starting service..."
 nssm start $ServiceName
@@ -73,4 +71,4 @@ Write-Host ""
 Write-Host "Done. '$ServiceName' is now running as a Windows service (auto-starts on boot, restarts on crash)."
 Write-Host "Logs: $LogDir\service-stdout.log / service-stderr.log"
 Write-Host ""
-Write-Host "IMPORTANT: in windows-launcher's Settings > Connection, set the backend URL to this machine's LAN IP (e.g. http://192.168.x.x:5005), NOT localhost:5005 -- localhost is treated as loopback and windows-launcher will spawn a second, redundant local copy of node-bot on top of this service otherwise. desktop-client needs no change; it never spawns node-bot itself."
+Write-Host "IMPORTANT: the service listens on this PC only (http://127.0.0.1:5005) and every route needs an admin key. Set ADMIN_TOKEN in node-bot\.env and the same value in the native launcher's Settings > Admin token -- a launcher's own per-run key only works for a node-bot it started itself."

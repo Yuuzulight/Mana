@@ -838,6 +838,19 @@ public class ManaBackendClientTests
         Assert.Equal("topsecret", authHeader!.Parameter);
     }
 
+    // The tray and vision-capture WebSockets need the same key (default deny).
+    [Fact]
+    public void AuthHeaders_AreWhatTheWebSocketsSend()
+    {
+        var client = new ManaBackendClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)), adminToken: "topsecret", launcherKey: "run-key");
+
+        var headers = client.AuthHeaders().ToDictionary(h => h.Key, h => h.Value);
+
+        Assert.Equal("run-key", headers["X-Admin-Token"]);
+        Assert.Equal("Bearer topsecret", headers["Authorization"]);
+        Assert.Empty(new ManaBackendClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))).AuthHeaders());
+    }
+
     [Fact]
     public async Task Constructor_UsesTheGivenBaseUrlInsteadOfTheDefault()
     {

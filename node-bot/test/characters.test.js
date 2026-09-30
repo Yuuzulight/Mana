@@ -19,7 +19,10 @@ const {
 const { createCharactersCapability } = require("../capabilities/characters-capability");
 const { createMoodStore } = require("../mood-store");
 const { createTtsRuntime } = require("../tts-runtime");
-const { withServer } = require("./helpers");
+const { withServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 
 function tempFile(content) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-characters-file-"));

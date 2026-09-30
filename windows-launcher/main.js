@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, Notification, Tray, desktopCapturer, dialog, g
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const crypto = require("crypto");
 const { createBackendConfigStore } = require("./backend-config");
 const { OPEN_CHAT_ACTION_INDEX, isProactiveToast, buildToastOptions } = require("./proactive-notifications");
 const { parseAccessibilityTreeOutput } = require("./accessibility-tree");
@@ -33,15 +34,26 @@ function getIdleReportUrl() {
   return `${getBackendBaseUrl()}/internal/idle-report`;
 }
 
+// Every backend route and WebSocket needs an admin key unless node-bot lists
+// it as public (node-bot/admin-key.js). A fresh key each run, handed to the
+// node-bot this launcher starts as MANA_LAUNCHER_KEY (the native launcher
+// does the same); ADMIN_TOKEN instead when it's set, which also works for a
+// node-bot something else started.
+const BACKEND_KEY = process.env.ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
+const BACKEND_KEY_HEADERS = { "x-admin-token": BACKEND_KEY };
+
 function getTrayWebSocketUrl() {
-  return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/tray`;
+  return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/tray?key=${encodeURIComponent(BACKEND_KEY)}`;
 }
 
 function getVisionCaptureWebSocketUrl() {
-  return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/vision-capture`;
+  return `${getBackendBaseUrl().replace(/^http/, "ws")}/ws/vision-capture?key=${encodeURIComponent(BACKEND_KEY)}`;
 }
 
 ipcMain.handle("get-backend-url", async () => getBackendBaseUrl());
+ipcMain.on("get-backend-key-sync", (event) => {
+  event.returnValue = BACKEND_KEY;
+});
 ipcMain.on("get-backend-url-sync", (event) => {
   event.returnValue = getBackendBaseUrl();
 });
@@ -594,6 +606,7 @@ function startWindowsServices() {
     cwd: path.join(ROOT_DIR, "node-bot"),
     env: {
       ...process.env,
+      MANA_LAUNCHER_KEY: BACKEND_KEY,
       // Quick note: these defaults let the launcher transcribe without a separate setup shell.
       WHISPER_BIN: process.env.WHISPER_BIN || DEFAULT_WHISPER_BIN,
       WHISPER_MODEL: process.env.WHISPER_MODEL || DEFAULT_WHISPER_MODEL,
@@ -1070,7 +1083,7 @@ async function stopBackendAndLocalAi() {
 
   try {
     const adminSecret = process.env.MANA_ADMIN_SECRET || "";
-    const headers = adminSecret ? { Authorization: `Bearer ${adminSecret}` } : undefined;
+    const headers = adminSecret ? { Authorization: `Bearer ${adminSecret}` } : BACKEND_KEY_HEADERS;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
     await fetch(`${getBackendBaseUrl()}/admin/shutdown`, {
@@ -1282,7 +1295,7 @@ app.whenReady().then(() => {
   setInterval(() => {
     fetch(getIdleReportUrl(), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...BACKEND_KEY_HEADERS },
       body: JSON.stringify({ idleSeconds: powerMonitor.getSystemIdleTime() }),
     }).catch(() => {});
   }, IDLE_REPORT_INTERVAL_MS);

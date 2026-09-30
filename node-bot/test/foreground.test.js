@@ -3,7 +3,10 @@ const test = require("node:test");
 
 const { createApp } = require("../server");
 const { getForeground, isAwayFromGame } = require("../foreground");
-const { withServer } = require("./helpers");
+const { withServer, useTestAdminToken } = require("./helpers");
+
+// Every route but a few public ones needs an admin key (admin-key.js).
+const fetch = useTestAdminToken();
 
 const GAMES = ["ffxiv_dx11.exe"];
 

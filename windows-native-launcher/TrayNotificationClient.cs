@@ -19,6 +19,7 @@ internal sealed class TrayNotificationClient : IDisposable
     private const int ReconnectDelayMs = 15000;
 
     private readonly Uri trayWebSocketUri;
+    private readonly ManaBackendClient? backendClient;
     private readonly Action openChat;
     private readonly Action<TrayNotificationPayload>? onDoctor;
     private readonly Action<string>? onSpeak;
@@ -39,8 +40,9 @@ internal sealed class TrayNotificationClient : IDisposable
     // tray), on a thread-pool thread.
     // #1008: onSelfWork gets the starts and ends of Mana's work on her own
     // code, on a thread-pool thread.
-    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null)
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null, ManaBackendClient? backendClient = null)
     {
+        this.backendClient = backendClient;
         this.onSelfWork = onSelfWork;
         this.openChat = openChat;
         this.onDoctor = onDoctor;
@@ -85,6 +87,7 @@ internal sealed class TrayNotificationClient : IDisposable
             try
             {
                 using var socket = new ClientWebSocket();
+                backendClient?.Authorize(socket);
                 await socket.ConnectAsync(trayWebSocketUri, token);
                 await ReceiveLoopAsync(socket, token);
             }

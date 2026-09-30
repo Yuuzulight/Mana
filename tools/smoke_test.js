@@ -2,6 +2,8 @@ const axios = require("axios");
 
 const RETRIEVER_URL = "http://127.0.0.1:9000";
 const NODE_BOT_URL = "http://127.0.0.1:5005";
+// Every backend route but /health needs an admin key: node-bot/.env's ADMIN_TOKEN.
+const ADMIN_HEADERS = process.env.ADMIN_TOKEN ? { "x-admin-token": process.env.ADMIN_TOKEN } : {};
 
 async function runSmokeTest() {
   console.log("🚀 Starting ManaAI System Smoke Test...\n");
@@ -92,7 +94,7 @@ async function runSmokeTest() {
         text: "Hello local assistant, verify memory tracking.",
         sessionId: "smoke-test-session",
       },
-      { timeout: 10000 },
+      { timeout: 10000, headers: ADMIN_HEADERS },
     );
     if (
       res.status === 200 &&
@@ -121,9 +123,11 @@ async function runSmokeTest() {
       "🔄 Test 5/5: Verifying Frontend Debug /debug/intent Endpoint...",
     );
     const sampleInput = "Can you check my git branch structure?";
-    const res = await axios.post(`${NODE_BOT_URL}/debug/intent`, {
-      text: sampleInput,
-    });
+    const res = await axios.post(
+      `${NODE_BOT_URL}/debug/intent`,
+      { text: sampleInput },
+      { headers: ADMIN_HEADERS },
+    );
 
     if (res.status === 200 && res.data && res.data.mode === "coding") {
       console.log(

@@ -259,7 +259,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
                     ReportAvatarModelProblem();
                 }
             }),
-            onSelfWork: payload => RunOnUi(() => ShowSelfWorkNotice(chatLog, payload)));
+            onSelfWork: payload => RunOnUi(() => ShowSelfWorkNotice(chatLog, payload)),
+            backendClient: backendClient);
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));

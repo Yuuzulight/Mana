@@ -647,12 +647,15 @@ async function requestLocalBackendReply({
   modelProfile = "coding",
   backendUrl = DEFAULT_BACKEND_URL,
   fetchImpl = fetch,
+  // /reply needs an admin key like every non-public route (admin-key.js).
+  adminToken = process.env.ADMIN_TOKEN,
 } = {}) {
   const baseUrl = String(backendUrl || DEFAULT_BACKEND_URL).replace(/\/+$/, "");
   const response = await fetchImpl(`${baseUrl}/reply`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...(adminToken ? { "x-admin-token": adminToken } : {}),
     },
     body: JSON.stringify({
       text: String(prompt || ""),
@@ -689,6 +692,7 @@ function createDefaultManaAcpAgent(options = {}) {
         backendUrl: options.backendUrl || options.env?.MANA_BACKEND_URL,
         fetchImpl: options.fetch,
         modelProfile: replyOptions.modelProfile || "coding",
+        adminToken: (options.env || process.env).ADMIN_TOKEN,
       }),
   });
 }
