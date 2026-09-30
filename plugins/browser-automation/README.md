@@ -44,6 +44,14 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Finding an element by description (#1156)
+
+`find { description }` ("the Sign in button", "the search box") looks at the
+whole page (not just the 150 elements a snapshot shows) and returns up to
+five best matches with their refs, ranked by the words of each element's
+name, a whole-phrase match, and the kind of element the description names.
+It only reads, so it never asks.
+
 ## Hover, keys and drag (#1155)
 
 `hover` (menus that open on hover), `press` (Enter, Escape, Tab, arrows,

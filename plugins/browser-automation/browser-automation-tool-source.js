@@ -45,6 +45,9 @@ const TOOL_SCHEMAS = [
   tool("navigate", "Open an http(s) URL in her browser and read the page.", {
     url: { type: "string", description: "The http(s) URL to open." },
   }, ["url"]),
+  tool("find", "Find elements on the page by description (like \"the Sign in button\" or \"the search box\"): the best matches with their refs.", {
+    description: { type: "string", description: "What you're looking for, in a few words." },
+  }, ["description"]),
   tool("snapshot", "Read the current page again: its interactive elements with their refs, and a short text excerpt."),
   tool("click", "Click an element by its ref.", { ref: REF_PARAM }, ["ref"]),
   tool("type", "Replace the text in a field by its ref; submit presses Enter after.", {
@@ -80,7 +83,9 @@ const ACTIONS = TOOL_SCHEMAS.map((t) => t.function.name.slice(BROWSER_TOOL_PREFI
 // frame.
 function describeForModel(result) {
   const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ""];
-  if (result.elements) {
+  if (result.matches) {
+    lines.push(result.matches.length ? `Best matches for "${result.description}":` : `Nothing on the page matches "${result.description}".`, ...result.matches);
+  } else if (result.elements) {
     lines.push("Interactive elements:", ...result.elements);
   } else if (result.added.length || result.removed.length) {
     lines.push("Changed elements (the rest are as in the last snapshot):");
@@ -193,6 +198,7 @@ function createBrowserAutomationToolSource(options = {}) {
       if (ACTS_ON_SITE.has(action)) await requireSitePermission(session);
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
+      else if (action === "find") result = await session.find(args?.description);
       else if (action === "click") result = await session.click(args?.ref);
       else if (action === "type") result = await session.type(args?.ref, args?.text, args?.submit === true);
       else if (action === "select") result = await session.select(args?.ref, args?.value);

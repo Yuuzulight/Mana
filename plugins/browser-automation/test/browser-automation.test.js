@@ -6,6 +6,7 @@ const {
   MAX_ELEMENTS,
   createBrowserSession,
   interactiveElements,
+  findElements,
   extractTextInPage,
   sensitiveInPage,
   refSelector,
@@ -371,4 +372,31 @@ test("#1155: on a password or payment page she can't press keys or drag", async 
   await assert.rejects(() => session.drag("e1", "e2"), /asks for a password/);
   await session.hover("e3");
   assert.deepEqual(actions(page), [["hover", "aria-ref=e3"]]);
+});
+
+test("#1156: findElements ranks by name words, whole phrases and the kind of element", () => {
+  const elements = [
+    'link "Sign in" [ref=e1]',
+    'button "Sign in" [ref=e2]',
+    'link "Sign up for news" [ref=e3]',
+    'searchbox "Search Wikipedia" [ref=e4]',
+    'button "Search" [ref=e5]',
+    'textbox "Email address" [ref=e6]: me@example.com',
+    'combobox "Language" [ref=e7]',
+  ];
+  assert.deepEqual(findElements(elements, "the Sign in button"), ['button "Sign in" [ref=e2]', 'link "Sign in" [ref=e1]', 'link "Sign up for news" [ref=e3]']);
+  assert.deepEqual(findElements(elements, "the search box").slice(0, 1), ['searchbox "Search Wikipedia" [ref=e4]']);
+  assert.deepEqual(findElements(elements, "email field"), ['textbox "Email address" [ref=e6]: me@example.com']);
+  assert.deepEqual(findElements(elements, "dropdown"), ['combobox "Language" [ref=e7]']);
+  assert.deepEqual(findElements(elements, "shopping cart"), []);
+  assert.equal(findElements(Array.from({ length: 20 }, (_, i) => `link "Item ${i}" [ref=e${i}]`), "item").length, 5);
+});
+
+test("#1156: find looks at the whole page, beyond the snapshot's cap", async () => {
+  const aria = Array.from({ length: MAX_ELEMENTS + 10 }, (_, i) => `- link "Page ${i}" [ref=e${i}]`).concat('- button "Checkout" [ref=e999]').join("\n");
+  const page = createFakePage({ aria });
+  const result = await createBrowserSession({ page }).find("the checkout button");
+  assert.deepEqual(result.matches, ['button "Checkout" [ref=e999]']);
+  assert.equal(result.description, "the checkout button");
+  await assert.rejects(() => createBrowserSession({ page }).find("  "), /say what to look for/);
 });
