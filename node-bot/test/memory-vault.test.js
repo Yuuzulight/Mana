@@ -6,7 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createAcpMemoryStore } = require("../acp-memory-store");
-const { createMemoryVault, noteName, keyFromName, parseNote } = require("../memory-vault");
+const { VIEWS_MARKER, createMemoryVault, noteName, keyFromName, parseNote } = require("../memory-vault");
 const { runDoctorChecks } = require("../doctor");
 
 function setup({ approvals } = {}) {
@@ -318,4 +318,120 @@ test("restoring is refused while another live fact holds the key", () => {
   assert.equal(live[0].text, "RTX 5080.");
   assert.ok(t.logs.some((m) => /can't restore "gpu"/.test(m)));
   assert.equal(parseNote(t.read("Facts/Archived/gpu.md")).header.status, "archived");
+});
+
+function viewsVault(t, views) {
+  return createMemoryVault({ store: t.store, vaultDir: t.vaultDir, watch: false, log: () => {}, buildViews: () => views.list });
+}
+
+test("views are written read-only under Views/, regenerated when they change, and never read back", () => {
+  const t = setup();
+  const views = {
+    list: [
+      { rel: "Views/Summary.md", body: "# Mana Memory\n\nSummary one.\n" },
+      { rel: "Views/Mood.md", body: "# Mana's mood\n\nRight now: okay.\n" },
+      { rel: "Views/Entities/tokyo.md", body: "# Tokyo\n" },
+    ],
+  };
+  const vault = viewsVault(t, views);
+  vault.refreshViews();
+  const summary = t.read("Views/Summary.md");
+  assert.ok(summary.startsWith(`${VIEWS_MARKER}\n\n# Mana Memory`));
+  assert.match(VIEWS_MARKER, /edits here are overwritten/);
+  assert.ok(t.read("Views/Entities/tokyo.md").startsWith(VIEWS_MARKER));
+
+  // An edit is overwritten, and never becomes a fact.
+  t.write("Views/Summary.md", `${summary}\nMy own line.\n`);
+  t.write("Views/notes-of-mine.md", "Not Mana's.\n");
+  assert.equal(vault.sync().applied, 0);
+  views.list = [
+    { rel: "Views/Summary.md", body: "# Mana Memory\n\nSummary two.\n" },
+    { rel: "Views/Mood.md", body: "# Mana's mood\n\nRight now: okay.\n" },
+  ];
+  const moodBefore = fs.statSync(t.note("Views/Mood.md")).mtimeMs;
+  vault.refreshViews();
+  assert.doesNotMatch(t.read("Views/Summary.md"), /My own line|Summary one/);
+  assert.match(t.read("Views/Summary.md"), /Summary two/);
+  assert.equal(fs.statSync(t.note("Views/Mood.md")).mtimeMs, moodBefore);
+  // A view Mana no longer has is removed; a file that isn't Mana's is kept.
+  assert.equal(fs.existsSync(t.note("Views/Entities/tokyo.md")), false);
+  assert.equal(t.read("Views/notes-of-mine.md"), "Not Mana's.\n");
+  assert.equal(t.store.listFacts().length, 0);
+});
+
+test("a view path outside Views/ is refused", () => {
+  const t = setup();
+  const vault = viewsVault(t, { list: [{ rel: "Views/../Facts/evil.md", body: "x" }] });
+  vault.refreshViews();
+  assert.equal(fs.existsSync(t.note("Facts/evil.md")), false);
+});
+
+function journalVault(t, { reply = "We talked about the raid and my new GPU.", gaming = false } = {}) {
+  const calls = [];
+  const vault = createMemoryVault({
+    store: t.store,
+    vaultDir: t.vaultDir,
+    watch: false,
+    log: () => {},
+    runModel: async (prompt, maxTokens) => {
+      calls.push({ prompt, maxTokens });
+      return typeof reply === "function" ? reply() : reply;
+    },
+    isGaming: () => gaming,
+  });
+  return { vault, calls };
+}
+
+test("the journal appends a short entry linking the facts it touched", async () => {
+  const t = setup();
+  const transcript = `Let's plan the raid. ${"blah ".repeat(1000)}`;
+  await t.store.appendTurn({ sessionId: "s1", user: transcript, assistant: "Sure!" });
+  t.store.rememberFact({ key: "raid night", text: "Raid night is Friday.", origin: { kind: "user_stated" } });
+  const { vault, calls } = journalVault(t, { reply: `Today was fun. ${"x".repeat(5000)}` });
+
+  assert.equal(await vault.writeJournal(), true);
+  const files = fs.readdirSync(t.note("Journal"));
+  assert.equal(files.length, 1);
+  assert.match(files[0], /^\d{4}-\d{2}-\d{2}\.md$/);
+  const journal = t.read(`Journal/${files[0]}`);
+  assert.match(journal, /^# \d{4}-\d{2}-\d{2}\n\n## \d{2}:\d{2}\n\nToday was fun\./);
+  assert.match(journal, /Facts: \[\[raid night\]\]/);
+  // Short, and never the transcript.
+  assert.ok(journal.length < 1400);
+  assert.doesNotMatch(journal, /blah blah/);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].prompt.length < 4000);
+  assert.match(calls[0].prompt, /Raid night is Friday/);
+
+  // Nothing new since: no model call, no entry.
+  assert.equal(await vault.writeJournal(), false);
+  assert.equal(calls.length, 1);
+});
+
+test("the journal skips while gaming or when no model is loaded", async () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  const gaming = journalVault(t, { gaming: true });
+  assert.equal(await gaming.vault.writeJournal(), false);
+  assert.equal(gaming.calls.length, 0);
+  const unloaded = journalVault(t, { reply: null });
+  assert.equal(await unloaded.vault.writeJournal(), false);
+  assert.equal(fs.existsSync(t.note("Journal")), false);
+});
+
+test("views and the journal never create a missing vault", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-vault-"));
+  const store = createAcpMemoryStore({ dataDir: path.join(root, "memory") });
+  store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  const vault = createMemoryVault({
+    store,
+    vaultDir: path.join(root, "nope"),
+    watch: false,
+    log: () => {},
+    buildViews: () => [{ rel: "Views/Mood.md", body: "okay" }],
+    runModel: async () => "A day.",
+  });
+  vault.refreshViews();
+  assert.equal(await vault.writeJournal(), false);
+  assert.equal(fs.existsSync(path.join(root, "nope")), false);
 });
