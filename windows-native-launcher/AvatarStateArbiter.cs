@@ -15,11 +15,14 @@ internal sealed class AvatarStateArbiter
     private static readonly Dictionary<AvatarState, (int Priority, double MinSeconds)> Table = new()
     {
         [AvatarState.Idle] = (0, 0),
-        [AvatarState.Dreaming] = (1, 2.0),
-        [AvatarState.Done] = (2, DoneSeconds),
-        [AvatarState.Waiting] = (3, 1.5),
-        [AvatarState.Thinking] = (4, 0.8),
-        [AvatarState.Working] = (5, 1.0),
+        // The mic being on is the backdrop: anything else she's doing shows
+        // over it, and turning the mic off drops straight back to Idle.
+        [AvatarState.Listening] = (1, 0),
+        [AvatarState.Dreaming] = (2, 2.0),
+        [AvatarState.Done] = (3, DoneSeconds),
+        [AvatarState.Waiting] = (4, 1.5),
+        [AvatarState.Thinking] = (5, 0.8),
+        [AvatarState.Working] = (6, 1.0),
     };
     private const int SpeechPriority = 10;
 
@@ -36,7 +39,7 @@ internal sealed class AvatarStateArbiter
     // VoiceLoop's talking/mood state (Idle once she stops).
     public void SetSpeech(AvatarState state) => speech = IsSpeech(state) ? state : AvatarState.Idle;
 
-    // Thinking/Working/Waiting/Dreaming on or off (anything else is ignored).
+    // Thinking/Working/Waiting/Dreaming/Listening on or off (anything else is ignored).
     public void Set(AvatarState activity, bool on)
     {
         if (on && Table.ContainsKey(activity) && activity is not (AvatarState.Idle or AvatarState.Done))

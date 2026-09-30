@@ -790,3 +790,29 @@ test("async doctor reports Zed external agent backend health", async () => {
     }
   });
 });
+
+test("Doctor warns when a non-English speech language meets an English-only Whisper model", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-whisper-lang-"));
+  const bin = path.join(tempDir, "whisper-cli.exe");
+  const model = path.join(tempDir, "ggml-tiny.en.bin");
+  fs.writeFileSync(bin, "");
+  fs.writeFileSync(model, "");
+  const whisperCheck = (whisperLanguage) =>
+    runDoctorChecks({
+      env: { WHISPER_BIN: bin, WHISPER_MODEL: model },
+      paths: { dataDir: tempDir },
+      whisperToolsDir: tempDir,
+      whisperLanguage,
+      ports: [],
+      services: [],
+      zedCommandResolver: () => null,
+    }).checks.find((check) => check.id === "whisper-config");
+  try {
+    assert.equal(whisperCheck("en").status, "pass");
+    const auto = whisperCheck("auto");
+    assert.equal(auto.status, "warn");
+    assert.match(auto.message, /ggml-tiny\.en\.bin is English-only/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
