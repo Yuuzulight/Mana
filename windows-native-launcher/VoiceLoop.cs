@@ -381,7 +381,7 @@ internal sealed class VoiceLoop : IDisposable
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
         wakeRearmMs = ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS"));
         speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
-        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"));
+        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"), settings.SpeakerThreshold);
         voiceprint = speakerGateMode == SpeakerGateMode.Off ? null : settings.Voiceprint;
         if (voiceprint is not null)
         {
@@ -1953,11 +1953,11 @@ internal sealed class VoiceLoop : IDisposable
 
         // One face for the whole reply (#623: the reply's own emotion tag
         // when the model gave one; the streaming path above switches per
-        // sentence instead).
+        // sentence instead). #964: the tag also paces her voice (Qwen3-TTS).
         var emotion = streamingReplyPlayer.FinalEmotion;
         var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
 
-        var next = backendClient.SynthesizeAsync(chunks[0]);
+        var next = backendClient.SynthesizeAsync(chunks[0], emotion);
         for (var i = 0; i < chunks.Count; i++)
         {
             byte[] chunkWav;
@@ -1976,7 +1976,7 @@ internal sealed class VoiceLoop : IDisposable
                 ReturnToIdle();
                 return false;
             }
-            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1]) : Task.FromResult(Array.Empty<byte>());
+            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1], emotion) : Task.FromResult(Array.Empty<byte>());
 
             bool completedNaturally;
             var cutOff = false;
@@ -2081,6 +2081,9 @@ internal sealed class VoiceLoop : IDisposable
     // cut off waits for it, then says so instead of the generic failure.
     public Task? BackendRestart { get; set; }
 
+    // #964: said a little slower and lower, like an apology.
+    private const string ReplyFailedEmotion = "sad";
+
     // #905: a line nobody just asked for (a reminder firing), said through
     // the same player as replies, with SayReplyFailedAsync's mode handling.
     // Waits for her to be idle so it never cuts into a turn; gives up
@@ -2134,7 +2137,7 @@ internal sealed class VoiceLoop : IDisposable
         chatLog?.AppendReplySentence(chatText);
         try
         {
-            var wav = await backendClient.SynthesizeAsync(spoken);
+            var wav = await backendClient.SynthesizeAsync(spoken, ReplyFailedEmotion);
             OnTalkingStateChanged(true);
             captions?.ShowSentence(spoken);
             bubbles?.ShowSentence(spoken);

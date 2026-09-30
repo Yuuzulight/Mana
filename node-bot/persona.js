@@ -49,10 +49,11 @@ function getPersonaOverride(sessionId) {
 // personalityTraits is passed in rather than read here, so this module stays
 // what its header claims -- the persona in exactly one place, owning no
 // storage. Called with one argument it behaves exactly as it did before.
-function buildPersonaPrompt(sessionId, personalityTraits) {
+// core (#914): the active character's persona, in place of MANA_PERSONA.
+function buildPersonaPrompt(sessionId, personalityTraits, core = MANA_PERSONA) {
   const override = sessionId ? getPersonaOverride(sessionId) : null;
   const traits = String(personalityTraits || "").trim();
-  return [MANA_PERSONA, traits, override].filter(Boolean).join("\n\n");
+  return [core, traits, override].filter(Boolean).join("\n\n");
 }
 
 module.exports = {
