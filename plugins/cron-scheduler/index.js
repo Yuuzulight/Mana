@@ -11,6 +11,8 @@ const { isPluginEnabled } = require("../../node-bot/capabilities/registry");
 let scheduler = null;
 let heartbeat = null;
 
+const LATE_REMINDER_MS = 5 * 60 * 1000;
+
 function getScheduler(deps = {}) {
   if (!scheduler) {
     scheduler = createCronScheduler({
@@ -47,6 +49,13 @@ function getScheduler(deps = {}) {
         // launcher says it out loud too ("Yuuzu, raid in 10 minutes!").
         if (job.jobType === "reminder") {
           payload.speak = `${reminderName(deps.acpMemoryStore)}${assistantText.replace(/[\s.!?]+$/, "")}!`;
+          // #1024: picks how the launcher says it. Late: it fired well after
+          // its time (the PC was asleep or Mana was off).
+          payload.kind = error
+            ? "failed"
+            : (deps.now || Date.now)() - job.nextRunAt > LATE_REMINDER_MS
+              ? "reminder-late"
+              : "reminder";
           proactive.offer({ reason: "reminder", explicit: true, payload });
         }
         // Issue #423: a scheduled job's result should reach the user even

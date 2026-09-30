@@ -6,6 +6,7 @@ const { cosine } = require("./tools/vector-store");
 const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
 const { redactSensitive } = require("./utils/sensitive-text");
+const { UNTRUSTED_RULE, wrapUntrustedInline } = require("./ai/untrusted-content");
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -233,12 +234,21 @@ function maxMatchedFacts(options) {
 
 // Pinned lines first: they are the same every turn, so the block's start
 // stays stable (#660), and they survive the whole-line char cap first.
+// A fact whose text came from a note in my vault (#935) is framed as outside
+// data (ai/untrusted-content.js): anything that can write the vault folder
+// can write it. Tool-derived facts only reach recall once I confirm them.
+const UNTRUSTED_FACT_SOURCES = { vault_edit: "vault note" };
+
 function factsBlockFor(pinned, matched) {
-  const lines = [...pinned, ...matched].map(
-    (fact) =>
-      `- ${fact.key}: ${fact.text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`,
-  );
-  return lines.length ? `Remembered:\n${lines.join("\n")}` : "";
+  let untrusted = false;
+  const lines = [...pinned, ...matched].map((fact) => {
+    const source = UNTRUSTED_FACT_SOURCES[fact.origin?.kind];
+    untrusted ||= Boolean(source);
+    const text = source ? wrapUntrustedInline(source, fact.text) : fact.text;
+    return `- ${fact.key}: ${text}${fact.status === "pending" ? " (unconfirmed -- check with the user before relying on it)" : ""}`;
+  });
+  if (!lines.length) return "";
+  return `Remembered${untrusted ? ` (${UNTRUSTED_RULE})` : ""}:\n${lines.join("\n")}`;
 }
 
 // Issue #336: the record shape's own version, stamped on every new fact so
@@ -425,14 +435,15 @@ function autoNameFromText(text) {
   return full.length > 60 ? `${full.slice(0, 60)}…` : full;
 }
 
-function summarizeTurn(user, assistant, maxSummaryChars) {
+function summarizeTurn(user, assistant, maxSummaryChars, speaker = "Assistant") {
   const userText = cleanText(user, 500);
   const assistantText = cleanText(assistant, 500);
   if (!userText && !assistantText) {
     return "";
   }
 
-  return `- User: ${userText}${assistantText ? ` Assistant: ${assistantText}` : ""}`;
+  const parts = [userText && `User: ${userText}`, assistantText && `${speaker}: ${assistantText}`];
+  return `- ${parts.filter(Boolean).join(" ")}`;
 }
 
 // Issue #78: lightweight cross-session entity tagging, zero LLM calls --
@@ -1929,6 +1940,10 @@ function createAcpMemoryStore(options = {}) {
       user: cleanText(redactSensitive(input.user), 4000),
       assistant: cleanText(redactSensitive(input.assistant), 4000),
     };
+    // #914: which character said it (group mode, switching), for the
+    // history's labels; turns from before carry none.
+    const speaker = cleanText(input.speaker, 60);
+    if (speaker) turn.speaker = speaker;
     // Optional (issue #153): only the tool-calling reply path ever has
     // these, so most turns simply omit the field rather than storing an
     // empty array on every single turn.
@@ -1997,6 +2012,7 @@ function createAcpMemoryStore(options = {}) {
       turn.user,
       turn.assistant,
       maxSummaryChars,
+      turn.speaker,
     );
     const summary = truncateKeepingRecent(
       [session.summary, summaryLine].filter(Boolean).join("\n"),
@@ -2208,8 +2224,9 @@ function createAcpMemoryStore(options = {}) {
       .slice(-Math.min(5, maxRecentTurns))
       .map((turn) =>
         [
-          `User: ${turn.user}`,
-          turn.assistant ? `Assistant: ${turn.assistant}` : "",
+          // A group-mode reaction has no user line of its own.
+          turn.user ? `User: ${turn.user}` : "",
+          turn.assistant ? `${turn.speaker || "Assistant"}: ${turn.assistant}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
