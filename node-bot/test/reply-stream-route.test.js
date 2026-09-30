@@ -273,3 +273,20 @@ test("POST /reply/stream passes thinkHarder through replyMeta and reports deepTh
   assert.deepEqual(seen, [true, false, undefined, undefined]);
   assert.deepEqual(finals, [false, false, false, true]);
 });
+
+// #911: the launcher marks a spoken turn source "voice", which lets desktop
+// actions run while a game is running.
+test("POST /reply/stream marks a spoken turn in replyMeta.voice", async () => {
+  const seen = [];
+  const app = createApp({
+    buildAssistantReply: async (transcript, screenText, marketText, modelProfile, sessionId, assistantMode, presetId, replyMeta) => {
+      seen.push(replyMeta.voice);
+      return "ok";
+    },
+  });
+  await withServer(app, async (baseUrl) => {
+    await postNdjson(baseUrl, "/reply/stream", { text: "pause the music", source: "voice" });
+    await postNdjson(baseUrl, "/reply/stream", { text: "pause the music" });
+  });
+  assert.deepEqual(seen, [true, false]);
+});

@@ -204,12 +204,15 @@ internal sealed class ManaBackendClient
 
     // #681: answers a /ws/vision-capture request (VisionCaptureClient).
     // node-bot wants exactly one of image ("data:image/jpeg;base64,...")
-    // or error, so only the non-null one is sent.
-    public async Task PostVisionCaptureResultAsync(string requestId, string? image, string? error)
+    // or error, so only the non-null one is sent. #911: a desktop action
+    // answers with a result object instead of an image.
+    public async Task PostVisionCaptureResultAsync(string requestId, string? image, string? error, object? result = null)
     {
         var payload = error is not null
             ? JsonSerializer.Serialize(new { requestId, error })
-            : JsonSerializer.Serialize(new { requestId, image });
+            : result is not null
+                ? JsonSerializer.Serialize(new { requestId, result })
+                : JsonSerializer.Serialize(new { requestId, image });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/vision/capture-result", content);
         response.EnsureSuccessStatusCode();
@@ -233,9 +236,11 @@ internal sealed class ManaBackendClient
         return document.RootElement.GetProperty("reply").GetString() ?? string.Empty;
     }
 
-    public async Task<byte[]> SynthesizeAsync(string text)
+    // #909: emotion is the sentence's tag, which Qwen3-TTS turns into her
+    // speaking rate; null leaves the voice as it is.
+    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null)
     {
-        var payload = JsonSerializer.Serialize(new { text });
+        var payload = JsonSerializer.Serialize(new { text, emotion });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/synthesize", content);
         response.EnsureSuccessStatusCode();
@@ -272,9 +277,15 @@ internal sealed class ManaBackendClient
     // #675: thinkHarder (the main window's deep-thinking toggle): true asks
     // node-bot to think on this turn, false ends Mana's own deep thinking
     // (Q12b), null sends nothing.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null)
+    // #911: voice marks a spoken turn (source "voice"), which may run
+    // desktop actions while a game is running.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, bool voice = false)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
+        if (voice)
+        {
+            fields["source"] = "voice";
+        }
         if (sessionId is not null)
         {
             fields["sessionId"] = sessionId;
