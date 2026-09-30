@@ -4,7 +4,8 @@
 // negative turns to start) counts. While it lasts, her reply prompt gets a
 // "be gentle, don't pry" line (gentleHint). Once the chat has gone quiet
 // she may check in: at most once a day and once per low stretch, through
-// the proactive engine, never while I'm gaming or in quiet time.
+// the proactive engine (a toast she also says), never while I'm gaming or
+// in quiet time.
 // MANA_CHECK_INS=0 in node-bot/.env, or the Settings toggle (passed as
 // MANA_LAUNCHER_CHECK_INS=0), turns the check-in off; the hint stays.
 const LOW_TURNS = 3;
@@ -54,7 +55,16 @@ function createCheckIns({ store, offer, isGaming = () => false, env = process.en
     store.recordCheckIn(new Date(t).toISOString());
     return offer({
       reason: "check-in",
-      payload: { type: "cron", kind: "check-in", title: "Checking in", text: CHECK_IN_TEXT, at: new Date(t).toISOString() },
+      // A toast, and spoken like a reminder: in her voice once she's idle,
+      // calm (the launcher's AnnouncementEmotion "check-in" kind).
+      payload: {
+        type: "cron",
+        kind: "check-in",
+        title: "Checking in",
+        text: CHECK_IN_TEXT,
+        speak: CHECK_IN_TEXT,
+        at: new Date(t).toISOString(),
+      },
     });
   }
 

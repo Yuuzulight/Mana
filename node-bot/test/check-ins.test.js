@@ -97,6 +97,8 @@ test("she checks in once, after the chat has gone quiet, through the proactive e
   assert.equal(offers[0].reason, "check-in");
   assert.ok(!offers[0].urgent, "goes through the daily budget and the gaming hold");
   assert.doesNotMatch(offers[0].payload.text, /why|miss/i, "never asks why or guilt-trips");
+  assert.equal(offers[0].payload.speak, offers[0].payload.text, "a toast she also says");
+  assert.equal(offers[0].payload.kind, "check-in", "the launcher's calm announcement kind");
   setTime(at(22));
   assert.equal(engine.maybeCheckIn(), null, "once a day");
 });
