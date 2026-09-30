@@ -2082,6 +2082,10 @@ internal sealed class VoiceLoop : IDisposable
     // #964: said a little slower and lower, like an apology.
     private const string ReplyFailedEmotion = "sad";
 
+    // Announcements (reminders, the briefing, a character's handoff) carry
+    // no reply tag of their own, so they're said a little brighter.
+    private const string AnnouncementEmotion = "happy";
+
     // #905: a line nobody just asked for (a reminder firing), said through
     // the same player as replies, with SayReplyFailedAsync's mode handling.
     // Waits for her to be idle so it never cuts into a turn; gives up
@@ -2106,7 +2110,7 @@ internal sealed class VoiceLoop : IDisposable
         }
         try
         {
-            var wav = await backendClient.SynthesizeAsync(text);
+            var wav = await backendClient.SynthesizeAsync(text, AnnouncementEmotion);
             OnTalkingStateChanged(true);
             captions?.ShowSentence(text);
             bubbles?.ShowSentence(text);
