@@ -170,6 +170,99 @@ function detectGpuVramUsageMb(spawnSync = defaultSpawnSync) {
   }
 }
 
+// Display adapter device class; each adapter is a numbered subkey.
+const DISPLAY_CLASS_KEY =
+  "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}";
+
+// `reg query <class> /s /v <name>` -> Map(subkey path -> value string).
+function queryDisplayAdapterValue(spawnSync, valueName) {
+  const result = spawnSync("reg", ["query", DISPLAY_CLASS_KEY, "/s", "/v", valueName], {
+    encoding: "utf8",
+    timeout: 5000,
+    windowsHide: true,
+  });
+  const values = new Map();
+  if (result.error || result.status !== 0 || !result.stdout) return values;
+  let key = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith("HKEY_")) {
+      key = line.trim();
+      continue;
+    }
+    const match = line.match(/^\s+(\S+)\s+REG_\w+\s+(.*)$/);
+    if (key && match && match[1] === valueName) values.set(key, match[2].trim());
+  }
+  return values;
+}
+
+function gpuVendor(name) {
+  if (/nvidia/i.test(name)) return "nvidia";
+  if (/\b(amd|radeon)\b/i.test(name)) return "amd";
+  if (/\bintel\b/i.test(name)) return "intel";
+  return "other";
+}
+
+// ponytail: name heuristic -- the registry has no integrated/discrete flag
+// (DXGI does, but that needs native interop). AMD APUs are "... Graphics"
+// ("Radeon(TM) Graphics", "Radeon 780M Graphics"); Intel is integrated
+// unless it's a discrete Arc A/B-series card.
+function isIntegratedGpu(vendor, name) {
+  if (vendor === "amd") return /graphics\s*$/i.test(name);
+  if (vendor === "intel") return !/\barc\b.*\b[ab]\d{3}\b/i.test(name);
+  return false;
+}
+
+// #1056: GPU vendor, name, VRAM and whether CUDA is usable. nvidia-smi
+// first (the only CUDA path Mana has); otherwise the display adapter keys:
+// HardwareInformation.qwMemorySize is the real 64-bit VRAM size (WMI's
+// Win32_VideoController.AdapterRAM caps at 4 GB), and DriverDesc under the
+// same subkey is the adapter name WMI reports, so both come from one place.
+// An integrated GPU's memory is shared system RAM: flagged, not counted as
+// VRAM. Returns null -- never throws -- when nothing is found.
+function detectGpu({ spawnSync = defaultSpawnSync, platform = process.platform } = {}) {
+  try {
+    const smi = spawnSync(
+      "nvidia-smi",
+      ["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+      { encoding: "utf8", timeout: 5000, windowsHide: true },
+    );
+    if (!smi.error && smi.status === 0 && smi.stdout) {
+      const line = smi.stdout.trim().split("\n")[0];
+      const comma = line.lastIndexOf(",");
+      const vramMb = parseInt(line.slice(comma + 1), 10);
+      if (comma > 0 && Number.isFinite(vramMb) && vramMb > 0) {
+        return { vendor: "nvidia", name: line.slice(0, comma).trim(), vramMb, cuda: true, sharedMemory: false };
+      }
+    }
+    if (platform !== "win32") return null;
+
+    const names = queryDisplayAdapterValue(spawnSync, "DriverDesc");
+    const sizes = queryDisplayAdapterValue(spawnSync, "HardwareInformation.qwMemorySize");
+    const adapters = [];
+    for (const [key, name] of names) {
+      const vendor = gpuVendor(name);
+      if (vendor === "other") continue; // Basic Display, remote/virtual adapters
+      const sharedMemory = isIntegratedGpu(vendor, name);
+      const raw = sizes.get(key) || ""; // REG_QWORD: "0x3faf00000"
+      const bytes = /^0x[0-9a-f]+$/i.test(raw) ? Number(raw) : 0;
+      const vramMb = !sharedMemory && bytes > 0 ? Math.round(bytes / (1024 * 1024)) : null;
+      adapters.push({ vendor, name, vramMb, cuda: false, sharedMemory });
+    }
+    // Discrete before integrated, then the most VRAM.
+    adapters.sort((a, b) => a.sharedMemory - b.sharedMemory || (b.vramMb || 0) - (a.vramMb || 0));
+    return adapters[0] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Hardware doesn't change mid-process: detect once, share the answer.
+let cachedGpu;
+function getGpu() {
+  if (cachedGpu === undefined) cachedGpu = detectGpu();
+  return cachedGpu;
+}
+
 function detectSystemMemoryMb(totalmem = os.totalmem) {
   const bytes = totalmem();
   return Number.isFinite(bytes) && bytes > 0
@@ -598,9 +691,11 @@ function createModelManagement(options = {}) {
 
 module.exports = {
   createModelManagement,
+  detectGpu,
   detectGpuVramMb,
   detectGpuVramUsageMb,
   detectSystemMemoryMb,
   estimateModelFit,
+  getGpu,
   recommendModelProfile,
 };
