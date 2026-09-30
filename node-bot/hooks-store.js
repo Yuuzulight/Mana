@@ -17,6 +17,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
+const { terminalFeed } = require("./terminal-feed");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "hooks");
 // #838 decision 6: "finish" runs when Pipeline B's loop sends finish.
@@ -281,7 +282,7 @@ function runPostCommandHook(rule, args, execFileFn, hooks = {}) {
   const resolvedPath = String((args && args.path) || "");
   const cmdArgs = (rule.args || []).map((a) => (a === "{path}" ? resolvedPath : a));
   const options = { timeout: HOOK_COMMAND_TIMEOUT_MS, shell: false, ...(hooks.cwd ? { cwd: hooks.cwd } : {}) };
-  execFileFn(rule.command, cmdArgs, options, (err) => {
+  const child = execFileFn(rule.command, cmdArgs, options, (err) => {
     if (err) {
       console.warn(`hook ${rule.action} "${rule.command}" failed:`, err.message || err);
     }
@@ -296,6 +297,13 @@ function runPostCommandHook(rule, args, execFileFn, hooks = {}) {
       }
     }
   });
+  trackHookCommand(child, rule.command, cmdArgs, options.cwd);
+}
+
+// #1121: shown in the Terminal tool. No Stop reaches a hook command; its
+// own timeout ends it.
+function trackHookCommand(child, command, args, cwd) {
+  terminalFeed.track(child, { source: "hook", command: [command, ...args].join(" "), cwd, stop: null });
 }
 
 // The snapshot id a tool reports in its (JSON) result, if any.
@@ -320,7 +328,8 @@ function runFinishCommand(rule, execFileFn, hooks = {}) {
       shell: false,
       ...(hooks.cwd ? { cwd: hooks.cwd } : {}),
     };
-    execFileFn(rule.command, (rule.args || []).map(String), options, (err, stdout, stderr) => {
+    const args = (rule.args || []).map(String);
+    const child = execFileFn(rule.command, args, options, (err, stdout, stderr) => {
       const output = `${stdout || ""}${stderr || ""}${err && !stdout && !stderr ? err.message || String(err) : ""}`;
       if (hooks.hooksStore) {
         hooks.hooksStore.recordRunOutcome(rule.id, { ok: !err, error: err && (err.message || String(err)) });
@@ -333,6 +342,7 @@ function runFinishCommand(rule, execFileFn, hooks = {}) {
         output: output.slice(-FINISH_HOOK_OUTPUT_CHARS),
       });
     });
+    trackHookCommand(child, rule.command, args, options.cwd);
   });
 }
 

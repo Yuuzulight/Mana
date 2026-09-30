@@ -1,4 +1,5 @@
 const { spawn } = require("node:child_process");
+const { terminalFeed } = require("./terminal-feed");
 
 const DEFAULT_ALLOWED_COMMANDS = [
   "npm test",
@@ -62,6 +63,7 @@ function createAcpTestRunner(options = {}) {
         shell: false,
         windowsHide: true,
       });
+      terminalFeed.track(child, { source: "editor", command: normalized, cwd, stop: null });
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;

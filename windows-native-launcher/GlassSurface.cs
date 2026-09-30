@@ -605,7 +605,7 @@ internal sealed class GlassShimmer : IDisposable
         timer.Dispose();
     }
 
-    private static bool AnimationsEnabled()
+    internal static bool AnimationsEnabled()
     {
         const uint SpiGetClientAreaAnimation = 0x1042;
         var enabled = true;
