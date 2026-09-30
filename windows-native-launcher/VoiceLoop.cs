@@ -1947,11 +1947,11 @@ internal sealed class VoiceLoop : IDisposable
 
         // One face for the whole reply (#623: the reply's own emotion tag
         // when the model gave one; the streaming path above switches per
-        // sentence instead).
+        // sentence instead). #964: the tag also paces her voice (Qwen3-TTS).
         var emotion = streamingReplyPlayer.FinalEmotion;
         var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
 
-        var next = backendClient.SynthesizeAsync(chunks[0]);
+        var next = backendClient.SynthesizeAsync(chunks[0], emotion);
         for (var i = 0; i < chunks.Count; i++)
         {
             byte[] chunkWav;
@@ -1970,7 +1970,7 @@ internal sealed class VoiceLoop : IDisposable
                 ReturnToIdle();
                 return false;
             }
-            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1]) : Task.FromResult(Array.Empty<byte>());
+            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1], emotion) : Task.FromResult(Array.Empty<byte>());
 
             bool completedNaturally;
             var cutOff = false;
@@ -2069,6 +2069,8 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
+    // #964: said a little slower and lower, like an apology.
+    private const string ReplyFailedEmotion = "sad";
 
     // #905: a line nobody just asked for (a reminder firing), said through
     // the same player as replies, with SayReplyFailedAsync's mode handling.
@@ -2123,7 +2125,7 @@ internal sealed class VoiceLoop : IDisposable
         chatLog?.AppendReplySentence(chatText);
         try
         {
-            var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage);
+            var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage, ReplyFailedEmotion);
             OnTalkingStateChanged(true);
             captions?.ShowSentence(ReplyFailedMessage);
             bubbles?.ShowSentence(ReplyFailedMessage);
