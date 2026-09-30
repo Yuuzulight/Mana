@@ -179,7 +179,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, back, snapshot, screenshot };
+  return { navigate, click, type, select, scroll, back, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {

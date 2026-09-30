@@ -38,6 +38,14 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Asking before acting on a new site (#1154)
+
+The first time she clicks, types or selects on a site (host, `www.`
+dropped), I'm asked in Settings > Approvals: Allow once (that one step),
+Allow for session, Always allow, Deny, or Never. Reading, scrolling, going
+back and opening pages never ask. Always and Never are remembered per site
+(`browser-site:<host>`) and listed under "Remembered answers" with Forget.
+
 ## Take over and hand back (#1139)
 
 Chromium can't turn a headless session visible, so **Take over** (the

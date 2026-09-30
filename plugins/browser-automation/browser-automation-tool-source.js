@@ -15,6 +15,21 @@ const BROWSER_TOOL_PREFIX = "browser_automation__";
 // else in this codebase does either (read_file has never needed approval;
 // an MCP server's tools are approved once, at registration, not per call).
 const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
+// #1154: before she clicks, types or selects on a site the first time, I'm
+// asked (allow once / for the session / always / deny / never), per site.
+// Reading, scrolling and going back never ask.
+const SITE_ACTION_TYPE = "browser-site";
+const ACTS_ON_SITE = new Set(["click", "type", "select"]);
+
+// "shop.example.com" from a page URL (www. dropped), or null off the web.
+function siteOf(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.hostname.replace(/^www\./, "") : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 const REF_PARAM = { type: "string", description: "The element's ref from the page snapshot, like e5." };
 function tool(name, description, properties = {}, required = []) {
@@ -94,6 +109,36 @@ function createBrowserAutomationToolSource(options = {}) {
     throw new Error("an approvalGate is required");
   }
   approvalGate.registerExecutor(APPROVAL_ACTION_TYPE, async () => ({ approved: true }));
+  // "Allow once" lets her next action on that site through.
+  const allowedOnce = new Set();
+
+  // One action type per site, so the gate's grants, "never" and its
+  // three-denials stop are all per site.
+  async function requireSitePermission(session) {
+    const site = siteOf(await session.url());
+    if (!site) throw new Error("open a web page first");
+    const actionType = `${SITE_ACTION_TYPE}:${site}`;
+    if (approvalGate.isGranted(actionType) || allowedOnce.delete(site)) return;
+    approvalGate.registerExecutor(actionType, async () => {
+      allowedOnce.add(site);
+      return { approved: true };
+    });
+    const result = await approvalGate.requestApproval(actionType, {
+      summary: `Let Mana click and type on ${site}`,
+      payload: { site },
+    });
+    if (result.status === "approved") {
+      allowedOnce.delete(site);
+      return;
+    }
+    throw new Error(
+      result.status === "pending"
+        ? `clicking or typing on ${site} needs the user's OK first (request ${result.requestId}); tell them, and try again once they allow it. Reading pages there doesn't need it.`
+        : result.never
+          ? `the user said never for clicking or typing on ${site}; don't act there`
+          : `clicking or typing on ${site} isn't allowed: ${result.reason || "denied"}`,
+    );
+  }
 
   function listToolSchemas() {
     return TOOL_SCHEMAS;
@@ -123,15 +168,16 @@ function createBrowserAutomationToolSource(options = {}) {
       throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
     }
 
-    // #1137: her page loads images only while the Browser panel watches.
     if (action === "hand_over") {
       requestHandOver(args?.reason);
       activityLog.recordActivity({ action, args, status: "ok" });
       return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
     }
+    // #1137: her page loads images only while the Browser panel watches.
     const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched });
     let result;
     try {
+      if (ACTS_ON_SITE.has(action)) await requireSitePermission(session);
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
       else if (action === "click") result = await session.click(args?.ref);
@@ -194,6 +240,7 @@ async function buildToolPolicyWithBrowserAutomation(basePolicy, browserToolSourc
 module.exports = {
   BROWSER_TOOL_PREFIX,
   APPROVAL_ACTION_TYPE,
+  SITE_ACTION_TYPE,
   TOOL_SCHEMAS,
   describeForModel,
   isBrowserAutomationToolName,
