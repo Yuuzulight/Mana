@@ -425,7 +425,7 @@ test("addRule requires a command for a rollback-on-failure rule, same as run-com
   );
 });
 
-test("a rollback-on-failure rule restores the file's newest snapshot when its command fails", async () => {
+test("a rollback-on-failure rule restores the snapshot the call reported when its command fails", async () => {
   const hooksStore = createHooksStore({ dataDir: createTempDir() });
   hooksStore.addRule({
     phase: "post",
@@ -438,7 +438,7 @@ test("a rollback-on-failure rule restores the file's newest snapshot when its co
   const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-hooks-rollback-"));
   const filePath = path.join(targetDir, "app.js");
   fs.writeFileSync(filePath, "const x = 2; // broken", "utf8");
-  snapshotStore.recordSnapshot({
+  const snapshot = snapshotStore.recordSnapshot({
     kind: "file",
     key: "app.js",
     scope: targetDir,
@@ -447,7 +447,7 @@ test("a rollback-on-failure rule restores the file's newest snapshot when its co
     source: "agent",
   });
 
-  const policy = basePolicy();
+  const policy = basePolicy(() => JSON.stringify({ ok: true, snapshotId: snapshot.id }));
   const fakeExecFile = (cmd, args, opts, cb) => cb(new Error("lint failed"));
   const wrapped = wrapWithHooks(policy, hooksStore, fakeApprovalGate(), {
     execFile: fakeExecFile,
@@ -460,6 +460,39 @@ test("a rollback-on-failure rule restores the file's newest snapshot when its co
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(fs.readFileSync(filePath, "utf8"), "const x = 1; // working");
+});
+
+test("#838: a rollback-on-failure rule never restores a same-named snapshot the call didn't take", async () => {
+  const hooksStore = createHooksStore({ dataDir: createTempDir() });
+  hooksStore.addRule({ phase: "post", action: "rollback-on-failure", toolName: "file_write", command: "eslint", args: ["{path}"] });
+  const snapshotStore = createSnapshotStore({ dataDir: createTempDir() });
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-hooks-rollback-none-"));
+  const filePath = path.join(targetDir, "app.js");
+  fs.writeFileSync(filePath, "appended today", "utf8");
+  // An older, unrelated snapshot of a file with the same name.
+  snapshotStore.recordSnapshot({ kind: "file", key: "app.js", scope: targetDir, payload: "last week's app.js" });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const wrapped = wrapWithHooks(basePolicy(), hooksStore, fakeApprovalGate(), {
+      execFile: (cmd, args, opts, cb) => cb(new Error("lint failed")),
+      snapshotStore,
+    });
+    await wrapped.executeTool("file_write", { path: filePath });
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(fs.readFileSync(filePath, "utf8"), "appended today");
+});
+
+test("#838: runPostCommandHook runs from hooks.cwd when given", () => {
+  let seen = null;
+  runPostCommandHook({ command: "prettier", args: ["{path}"] }, { path: "src/a.js" }, (cmd, args, opts) => {
+    seen = { args, cwd: opts.cwd };
+  }, { cwd: "C:\\repo" });
+  assert.deepEqual(seen, { args: ["src/a.js"], cwd: "C:\\repo" });
 });
 
 test("a rollback-on-failure rule does not roll back when its command succeeds", async () => {

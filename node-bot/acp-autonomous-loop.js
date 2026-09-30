@@ -7,7 +7,8 @@ const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
 const { previewRestore } = require("./ai/snapshot-tool-source");
-const { createHooksStore, applyInputRules } = require("./hooks-store");
+const { execFile } = require("child_process");
+const { createHooksStore, applyInputRules, runPostCommandHook } = require("./hooks-store");
 const {
   createScratchWorkspaceCopy,
   removeScratchWorkspaceCopy,
@@ -386,6 +387,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   const testRunner = options.testRunner || defaultTestRunner;
   const snapshotStore = options.snapshotStore || defaultSnapshotStore;
   const hooksStore = options.hooksStore || defaultHooksStore;
+  const execFileFn = options.execFile || execFile;
   const makeScratchCopy =
     options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
   const removeScratchCopy =
@@ -708,19 +710,22 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           // an unreadable .bak.<timestamp> copy that nothing ever read back
           // -- this makes the write actually undoable via the shared
           // snapshot store's built-in "file" restorer.
+          // #838: reported on the result, so a rollback-on-failure hook
+          // restores exactly this snapshot.
+          let snapshotId = null;
           try {
             const st = await fs.promises.stat(resolvedPath);
             if (st && st.isFile()) {
               const priorContent = await fs.promises.readFile(resolvedPath, "utf8");
               try {
-                snapshotStore.recordSnapshot({
+                snapshotId = snapshotStore.recordSnapshot({
                   kind: "file",
                   key: path.relative(REPO_ROOT, resolvedPath),
                   scope: REPO_ROOT,
                   payload: priorContent,
                   summary: "file_write overwrite",
                   source: "agent",
-                });
+                })?.id || null;
               } catch (snapshotErr) {
                 console.warn(
                   "file_write snapshot failed:",
@@ -751,6 +756,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
             path: path.relative(REPO_ROOT, resolvedPath),
             action: "overwritten",
             size: finalStat.size,
+            ...(snapshotId ? { snapshotId } : {}),
           });
           console.error(
             `  ✅ file_write overwrite: ${resolvedPath} (${finalStat.size} bytes)`,
@@ -1157,7 +1163,25 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       await archiveOutcome(askId, "approved", gate.approvalMeta, gate.approvalPayload);
     }
 
+    const produced = results.length;
     await runAction(tool, args);
+
+    // #838: post rules, only after a call that actually succeeded -- never
+    // after a denied, rejected or failed one. Fire-and-forget, as in
+    // Pipeline A.
+    const result = results[produced];
+    if (result && result.status === "ok") {
+      for (const rule of hooksStore.matchRules(tool, "post", args)) {
+        if (rule.action === "run-command" || rule.action === "rollback-on-failure") {
+          runPostCommandHook(rule, args, execFileFn, {
+            hooksStore,
+            snapshotStore,
+            snapshotId: result.snapshotId || null,
+            cwd: REPO_ROOT,
+          });
+        }
+      }
+    }
   }
 
   if (finishReason) {

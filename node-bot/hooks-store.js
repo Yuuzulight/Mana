@@ -231,29 +231,14 @@ function createHooksStore(options = {}) {
   return { dataDir, listRules, addRule, removeRule, setRuleEnabled, updateRule, recordRunOutcome, matchRules };
 }
 
-// #426 sub-project 4: best-effort -- finds the newest "file" snapshot whose
-// key matches this write's basename and restores it. Matched by basename
-// rather than the exact key because the different pipelines record keys in
-// different forms (workspace-relative vs repo-relative) and this function
-// only has the raw args.path a hook rule fired with, not which pipeline it
-// came from. Narrow ceiling: a concurrent unrelated write to a same-named
-// file in a different scope, landing between the write and the rollback,
-// could match the wrong snapshot -- acceptable for a best-effort corrective
-// action, since the rollback is itself a normal restoreSnapshot call and so
-// (per the #475 review fix) backs up whatever it overwrites too.
-function rollbackFile(snapshotStore, resolvedPath) {
-  try {
-    const base = path.basename(resolvedPath);
-    const candidate = snapshotStore
-      .listSnapshots("file")
-      .find((s) => path.basename(String(s.key || "")) === base);
-    if (!candidate) return;
-    Promise.resolve(snapshotStore.restoreSnapshot(candidate.id, { confirmStale: true })).catch((e) => {
-      console.warn(`hook rollback for "${resolvedPath}" failed:`, e?.message || e);
-    });
-  } catch (e) {
-    console.warn(`hook rollback for "${resolvedPath}" failed:`, e?.message || e);
-  }
+// #426 sub-project 4, fixed in #838: restores only the snapshot the call
+// itself recorded (hooks.snapshotId). The old newest-snapshot-with-the-same-
+// basename search could restore an unrelated older file whenever the call
+// took no snapshot (an append, a new file, a proposal not yet applied).
+function rollbackSnapshot(snapshotStore, snapshotId, label) {
+  Promise.resolve()
+    .then(() => snapshotStore.restoreSnapshot(snapshotId, { confirmStale: true }))
+    .catch((e) => console.warn(`hook rollback for "${label}" failed:`, e?.message || e));
 }
 
 // Runs a post-hook's command with execFile (shell: false) -- args are
@@ -264,22 +249,37 @@ function rollbackFile(snapshotStore, resolvedPath) {
 // tool call it ran after; a failing hook command is logged and swallowed,
 // same convention as snapshot-store.js/acp-memory-store.js's
 // catch-and-console.warn on best-effort side work. hooks.hooksStore (if
-// given) records the outcome for later visibility; hooks.snapshotStore (if
-// given) is what a "rollback-on-failure" rule restores from on failure.
+// given) records the outcome for later visibility; a "rollback-on-failure"
+// rule restores hooks.snapshotId from hooks.snapshotStore on failure.
+// hooks.cwd: Pipeline B's paths are repo-relative, so it runs from there.
 function runPostCommandHook(rule, args, execFileFn, hooks = {}) {
   const resolvedPath = String((args && args.path) || "");
   const cmdArgs = (rule.args || []).map((a) => (a === "{path}" ? resolvedPath : a));
-  execFileFn(rule.command, cmdArgs, { timeout: HOOK_COMMAND_TIMEOUT_MS, shell: false }, (err) => {
+  const options = { timeout: HOOK_COMMAND_TIMEOUT_MS, shell: false, ...(hooks.cwd ? { cwd: hooks.cwd } : {}) };
+  execFileFn(rule.command, cmdArgs, options, (err) => {
     if (err) {
       console.warn(`hook ${rule.action} "${rule.command}" failed:`, err.message || err);
     }
     if (hooks.hooksStore) {
       hooks.hooksStore.recordRunOutcome(rule.id, { ok: !err, error: err && (err.message || String(err)) });
     }
-    if (err && rule.action === "rollback-on-failure" && hooks.snapshotStore && resolvedPath) {
-      rollbackFile(hooks.snapshotStore, resolvedPath);
+    if (err && rule.action === "rollback-on-failure") {
+      if (hooks.snapshotStore && hooks.snapshotId) {
+        rollbackSnapshot(hooks.snapshotStore, hooks.snapshotId, resolvedPath);
+      } else {
+        console.warn(`hook rollback for "${resolvedPath}": the call took no snapshot, nothing to roll back`);
+      }
     }
   });
+}
+
+// The snapshot id a tool reports in its (JSON) result, if any.
+function snapshotIdOf(result) {
+  try {
+    return JSON.parse(result)?.snapshotId || null;
+  } catch {
+    return null;
+  }
 }
 
 // Wraps any {tools, isKnownTool, executeTool}-shaped tool policy so every
@@ -340,7 +340,7 @@ function wrapWithHooks(policy, hooksStore, approvalGate, options = {}) {
       const postRules = hooksStore.matchRules(name, "post", args);
       for (const rule of postRules) {
         if (rule.action === "run-command" || rule.action === "rollback-on-failure") {
-          runPostCommandHook(rule, args, execFileFn, { hooksStore, snapshotStore });
+          runPostCommandHook(rule, args, execFileFn, { hooksStore, snapshotStore, snapshotId: snapshotIdOf(result) });
         }
       }
 
