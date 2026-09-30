@@ -25,6 +25,9 @@ internal enum AvatarState
     Waiting,
     Done,
     Dreaming,
+    // The mic is on (waiting for her name, or awake after it): a patient,
+    // looping listening pose over her idle.
+    Listening,
 }
 
 // #479 sub-project 4: renders a real, parameter-driven Cubism model when
@@ -73,6 +76,7 @@ internal sealed class AvatarOverlayForm : Form
     private double doneStartedAt = double.NegativeInfinity;
     private double attentiveStartedAt = double.NegativeInfinity; // Q34: when she was last clicked
     private float sleepiness;
+    private float listening; // eased 0..1 blend of the Listening pose
     // Q6: the "^^" closed-eye smile -- until when, and how far in (eased).
     private double closedSmileUntil = double.NegativeInfinity;
     private float closedSmile;
@@ -166,7 +170,11 @@ internal sealed class AvatarOverlayForm : Form
         Size = Frame(settings.OverlayFraming, settings.OverlayScale);
 
         SetState(AvatarState.Idle);
-        stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
+        stateTimer.Tick += (_, _) =>
+        {
+            arbiter.Set(AvatarState.Listening, IsListening?.Invoke() == true);
+            ShowResolvedState(reapply: false);
+        };
         stateTimer.Start();
         // #899: a spot saved before framing existed was for the 1x full-body
         // window; move it once to where that window's bottom centre stood,
@@ -590,6 +598,17 @@ internal sealed class AvatarOverlayForm : Form
         {
             SetLifeParameter(model, "ParamAngleY", model.GetParameterCurrentValue("ParamAngleY") + AvatarGaze.NodOffset(nowSeconds - doneStartedAt));
         }
+        // Listening: a soft head tilt, a slow small nod and gently smiling
+        // eyes, eased in and out over ~0.6s so it never snaps.
+        listening += ((shown == AvatarState.Listening ? 1f : 0f) - listening) * Math.Min(1f, dtMs / 600f);
+        if (listening > 0.001f)
+        {
+            var (pitch, roll, eyeSmile) = AvatarGaze.ListeningPose(nowSeconds);
+            SetLifeParameter(model, "ParamAngleY", model.GetParameterCurrentValue("ParamAngleY") + (listening * pitch));
+            SetLifeParameter(model, "ParamAngleZ", model.GetParameterCurrentValue("ParamAngleZ") + (listening * roll));
+            SetLifeParameter(model, "ParamEyeLSmile", model.GetParameterCurrentValue("ParamEyeLSmile") + (listening * eyeSmile));
+            SetLifeParameter(model, "ParamEyeRSmile", model.GetParameterCurrentValue("ParamEyeRSmile") + (listening * eyeSmile));
+        }
         if (gaze.GazeActive)
         {
             SetLifeParameter(model, "ParamAngleX", model.GetParameterCurrentValue("ParamAngleX") + gaze.HeadAngleX);
@@ -747,6 +766,11 @@ internal sealed class AvatarOverlayForm : Form
         }
         ShowResolvedState(reapply: true);
     }
+
+    // Whether the mic is on (VoiceLoop.IsListening), polled by stateTimer so
+    // every way of turning it on or off (tray, hotkey, chat window, voice
+    // enrolment's pause) shows without each one telling the avatar.
+    public Func<bool>? IsListening { get; set; }
 
     // #661: Thinking/Working/Waiting/Dreaming on or off. Callable from any
     // thread, like SetState.
