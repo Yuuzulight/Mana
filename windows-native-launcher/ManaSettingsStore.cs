@@ -100,17 +100,26 @@ internal sealed class ManaSettingsStore
     public int? AvatarTop { get; set; }
 
     // #689: Settings > Hotkeys -- action key (HotkeyBindings.Actions) to a
-    // combination like "Ctrl+Alt+W", "" = off; a missing key uses the default.
+    // combination like "Ctrl+Alt+Shift+W", "" = off; a missing key uses the default.
     public Dictionary<string, string>? Hotkeys { get; set; }
 
     // #701: Mana's spoken sentences as bubbles beside the avatar while the
     // chat window isn't in view (tray menu); off by default.
     public bool ChatBubbles { get; set; }
 
+    // The caption bar under the avatar (tray menu), independent of the
+    // bubbles. Null = saved before this toggle, when bubbles on meant no
+    // captions (#701), so CaptionsShown keeps that until it's changed.
+    public bool? Captions { get; set; }
+    public bool CaptionsShown() => Captions ?? !ChatBubbles;
+
     // #684: Electron's "minimized Mana" -- the avatar steps aside while the
     // chat window is open and comes back when it's closed or minimized.
     // Off keeps her always showing. Tray menu.
     public bool AvatarHidesWithChat { get; set; } = true;
+
+    // The tray's Show avatar: off keeps the overlay hidden.
+    public bool ShowAvatar { get; set; } = true;
 
     // #574/#688: gaming-mode detection (tray menu and Settings >
     // Performance); off ignores the backend's watched-game scan.

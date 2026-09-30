@@ -1,7 +1,7 @@
 // Cached "is a watched game running?" for the request path (#754/#760).
-// getGamingStatus() in server.js runs a blocking tasklist, too slow to call
-// on every turn, so server.js polls check() in the background instead and
-// reads isGaming(). onGameStart fires once per game session, on the poll
+// A blocking tasklist is too slow to run on every turn, so server.js polls
+// check() in the background instead and reads isGaming() (getGamingStatus()
+// too). onGameStart fires once per game session, on the poll
 // that first sees it; onGameEnd (#889) on the poll that first sees it gone.
 // #908: check may return the matched process name, which game() reports.
 

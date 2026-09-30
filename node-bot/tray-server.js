@@ -20,6 +20,10 @@ function registerTrayServer(httpServer, options = {}) {
       trayClients.add(socket);
       socket.on('close', () => trayClients.delete(socket));
       socket.on('error', () => trayClients.delete(socket));
+      // Issue #914: state a newly connected client needs now, not at the
+      // next change (the active character, so it loads her model).
+      const greeting = options.greeting?.();
+      if (greeting) socket.send(JSON.stringify(greeting));
     } catch (e) {}
   });
   httpServer.on('upgrade', (req, socket, head) => {

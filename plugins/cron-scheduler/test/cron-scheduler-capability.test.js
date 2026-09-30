@@ -177,12 +177,30 @@ test("#905 a reminder is a Reminder toast and a spoken line through the proactiv
     await scheduler.runDueJobs();
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(
-      trayEvents.map((e) => [e.type, e.title, e.text, e.speak]),
-      [["cron", "Reminder", "raid in 10 minutes.", "Yuuzu, raid in 10 minutes!"]],
+      trayEvents.map((e) => [e.type, e.title, e.text, e.speak, e.kind]),
+      [["cron", "Reminder", "raid in 10 minutes.", "Yuuzu, raid in 10 minutes!", "reminder"]],
     );
     assert.deepEqual(scheduler.listJobs(), []);
   } finally {
     proactive.watchGaming(() => false);
+  }
+});
+
+test("#1024 a reminder that fires well after its time is marked late", async () => {
+  cronPlugin._resetForTests();
+  const proactive = require("../../../node-bot/proactive");
+  const realOffer = proactive.offer;
+  const offered = [];
+  proactive.offer = (candidate) => (offered.push(candidate), "held");
+  try {
+    let now = 1000;
+    const scheduler = cronPlugin._getSchedulerForTests({ dataDir: createTempDir(), now: () => now });
+    scheduler.addJob({ name: "stretch.", jobType: "reminder", schedule: { type: "once", at: 1500 } });
+    now = 1500 + 6 * 60 * 1000;
+    await scheduler.runDueJobs();
+    assert.deepEqual(offered.map((c) => c.payload.kind), ["reminder-late"]);
+  } finally {
+    proactive.offer = realOffer;
   }
 });
 

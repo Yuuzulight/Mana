@@ -88,7 +88,7 @@ E4B on real image-description tasks before this became the default; see
 
 ## Launcher hotkey
 
-With the launcher running, press **Ctrl+Alt+M** anywhere — including inside a
+With the launcher running, press **Ctrl+Alt+Shift+M** (**Ctrl+Alt+M** in the Electron launcher) anywhere — including inside a
 game — and Mana captures the primary display, looks at it with the vision
 model, replies in the launcher, and speaks the answer through TTS.
 
