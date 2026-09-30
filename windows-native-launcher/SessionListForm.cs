@@ -22,7 +22,7 @@ namespace Mana.NativeLauncher;
 // stateful AllowExit escape hatch to work around -- see DarkTheme.ApplyForm).
 // The Mana preset's glass title strip (SessionListForm.Caption.cs) keeps the
 // native frame and hands all of that back to Windows. Of #538's rail
-// (Browser/Terminal/Artifacts/Tasks) Artifacts (the artifact viewer) and
+// (Browser/Terminal/Artifacts/Tasks) Artifacts (#1120's panel) and
 // Tasks (#1016's self-work window) exist in this app; the others are left
 // off until they're built.
 //
@@ -86,8 +86,10 @@ internal sealed partial class SessionListForm : Form
     // which the ReplyEnded handler below picks up.
     private string? activeSessionId;
 
-    // The rail's Artifacts icon; ManaApplicationContext owns the viewer.
-    public Action? ShowArtifacts { get; set; }
+    // #1120: every artifact so far (ManaApplicationContext owns it), for the
+    // rail's Artifacts panel, made when it first opens.
+    private readonly ArtifactViewerForm artifacts;
+    private ArtifactsPanel? artifactsPanel;
 
     // Under the search box: why the list couldn't load / a chat couldn't be
     // renamed or deleted (with Retry), or "No chats match" for a search.
@@ -97,9 +99,10 @@ internal sealed partial class SessionListForm : Form
     private string? listError;
     private Func<Task>? listRetry;
 
-    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatView chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog)
+    public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatView chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog, ArtifactViewerForm artifacts)
     {
         this.backendClient = backendClient;
+        this.artifacts = artifacts;
         this.voiceLoop = voiceLoop;
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
@@ -330,19 +333,20 @@ internal sealed partial class SessionListForm : Form
 
         // #538's rail: Artifacts then Tasks on top, Settings docked at the
         // bottom. (#538's Browser and Terminal icons stay off until those
-        // tools exist.) Docked last-added-first, so Tasks goes in before
-        // Artifacts.
+        // tools exist.)
         var railSettingsButton = MakeRailButton("settings", "Settings");
         railSettingsButton.Dock = DockStyle.Bottom;
         railSettingsButton.Click += (_, _) => OpenSettings();
         toolRail.Controls.Add(railSettingsButton);
+        // #1120: the Artifacts panel. A new artifact in the chat selects
+        // itself there when it's open, else puts a dot on the icon.
+        RegisterRailTool("artifacts", "artifacts", "Artifacts", () => artifactsPanel = new ArtifactsPanel(artifacts, () => voiceLoop.CurrentSessionId));
+        artifacts.Added += OnArtifactAdded;
         // The same window as the tray's "What I'm working on" (#1016).
         var railTasksButton = MakeRailButton("tasks", "What I'm working on");
         railTasksButton.Click += (_, _) => new SelfWorkForm(backendClient).Show();
         toolRail.Controls.Add(railTasksButton);
-        var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
-        railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
-        toolRail.Controls.Add(railArtifactsButton);
+        railTasksButton.BringToFront(); // below Artifacts
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
@@ -898,7 +902,7 @@ internal sealed partial class SessionListForm : Form
     // tool panel. Returns the icon, e.g. to dock it at the bottom.
     internal Button RegisterRailTool(string id, string icon, string label, Func<Control> createContent)
     {
-        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id));
+        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id), () => toolPanel.IsHighlighted(id));
         toolRail.Controls.Add(button);
         button.BringToFront(); // docked last-added-first, so this keeps registration order
         toolPanel.Add(id, label, button, createContent);
@@ -916,7 +920,7 @@ internal sealed partial class SessionListForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null)
+    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null, Func<bool>? highlighted = null)
     {
         var button = new Button
         {
@@ -941,6 +945,12 @@ internal sealed partial class SessionListForm : Form
                 e.Graphics.FillRectangle(lit, button.ClientRectangle);
             }
             DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : button.ForeColor, icon);
+            if (highlighted?.Invoke() == true)
+            {
+                // #1120: something new inside -- an accent dot at the icon's top right.
+                using var dot = new SolidBrush(DarkTheme.Accent);
+                e.Graphics.FillEllipse(dot, (button.Width / 2f) + 6, (button.Height / 2f) - 11, 7, 7);
+            }
         };
         railToolTip.SetToolTip(button, tooltip);
         button.AccessibleName = tooltip;
@@ -1686,10 +1696,23 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
+    private void OnArtifactAdded(ArtifactEntry entry)
+    {
+        if (toolPanel.IsOpen("artifacts") && artifactsPanel is not null)
+        {
+            artifactsPanel.Select(entry);
+        }
+        else
+        {
+            toolPanel.Highlight("artifacts");
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            artifacts.Added -= OnArtifactAdded; // the viewer outlives this form
             avatarOverlay.StateChanged -= OnAvatarStateChanged;
             avatarOverlay.Mirror = null; // #685: before avatarVisual is disposed
             sessionTitleFont.Dispose();

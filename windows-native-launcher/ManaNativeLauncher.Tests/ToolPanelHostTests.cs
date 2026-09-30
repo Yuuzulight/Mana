@@ -135,6 +135,23 @@ public class ToolPanelHostTests : IDisposable
     }
 
     [Fact]
+    public void Highlight_LastsUntilTheToolOpens()
+    {
+        RunSta(() =>
+        {
+            using var toolTip = new ToolTip();
+            using var host = new ToolPanelHost(toolTip, settings);
+            host.Add("a", "Alpha", new Button(), () => new Label());
+            host.Highlight("a");
+            Assert.True(host.IsHighlighted("a"));
+            host.Open("a");
+            Assert.False(host.IsHighlighted("a"));
+            host.Highlight("a"); // already in view
+            Assert.False(host.IsHighlighted("a"));
+        });
+    }
+
+    [Fact]
     public void PanelButtons_HaveScreenReaderNames()
     {
         RunSta(() =>
@@ -173,7 +190,7 @@ public class ToolPanelHostTests : IDisposable
         throw new InvalidOperationException($"No matching {typeof(T).Name}.");
     }
 
-    private static void RunSta(Action body)
+    internal static void RunSta(Action body)
     {
         Exception? error = null;
         var thread = new Thread(() =>
