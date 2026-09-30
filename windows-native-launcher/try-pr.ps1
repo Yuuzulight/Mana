@@ -6,12 +6,19 @@
 # runs. Also the tray's "Try a PR..." and "Back to main". Log: bin\try-pr.log.
 # A PR branched before this script existed doesn't have it, so it keeps a
 # copy in bin\ (ignored by git) for Back to main to run from.
+# #1011: -Previous rolls back to the build #995 kept (<live>.previous): the
+# live checkout goes to that build's commit and the build is staged again,
+# so the swap and its self-check apply. -Without <sha> refuses when that
+# build already has the commit (the merge being reverted).
 #
 #   powershell -File windows-native-launcher\try-pr.ps1 -Pr 1020
 #   powershell -File windows-native-launcher\try-pr.ps1 -Main
+#   powershell -File windows-native-launcher\try-pr.ps1 -Previous [-Without <sha>]
 param(
     [int]$Pr,
     [switch]$Main,
+    [switch]$Previous,
+    [string]$Without,
     # The running launcher's folder, passed on to update-mana.ps1.
     [string]$LiveDir
 )
@@ -32,7 +39,7 @@ function Invoke-Git {
 }
 
 try {
-    if (-not $Main -and $Pr -le 0) { throw 'Give -Pr <number> or -Main.' }
+    if (-not $Main -and -not $Previous -and $Pr -le 0) { throw 'Give -Pr <number>, -Main or -Previous.' }
     # My own edits in the live checkout are never moved or lost.
     if (Invoke-Git status --porcelain --untracked-files=no) { throw "$root has changes to tracked files; not switching." }
 
@@ -42,10 +49,32 @@ try {
         Invoke-Git checkout main
         Remove-Item $marker -ErrorAction SilentlyContinue
         "Back on main."
+    } elseif ($Previous) {
+        if (-not $LiveDir) {
+            $running = Get-Process ManaNativeLauncher -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $running) { throw 'Mana is not running; there is no running build to roll back.' }
+            $LiveDir = Split-Path $running.Path
+            $update += @('-LiveDir', $LiveDir)
+        }
+        $previousDir = "$LiveDir.previous"
+        $commit = Get-Content (Join-Path $previousDir 'build-commit') -ErrorAction SilentlyContinue
+        if (-not $commit) { throw 'There is no previous build to roll back to.' }
+        if ($Without) {
+            git -C $root merge-base --is-ancestor $Without $commit
+            if ($LASTEXITCODE -eq 0) { throw "The previous build ($commit) already has $Without in it, so rolling back won't help." }
+        }
+        Invoke-Git checkout --detach $commit
+        $staging = "$LiveDir.staging"
+        if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
+        Copy-Item $previousDir $staging -Recurse
+        Set-Content (Join-Path $staging 'update-ready') ''
+        Set-Content $marker 'the previous build'
+        $update += '-NoPull'
+        "Rolling back to the previous build ($commit)."
     } else {
         Invoke-Git fetch origin "pull/$Pr/head"
         Invoke-Git checkout --detach FETCH_HEAD
-        Set-Content $marker $Pr
+        Set-Content $marker "PR #$Pr"
         $update += '-NoPull'
         "Trying PR #$Pr at $(Invoke-Git rev-parse --short HEAD)."
     }

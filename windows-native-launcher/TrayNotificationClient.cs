@@ -21,7 +21,7 @@ internal sealed class TrayNotificationClient : IDisposable
     private readonly Uri trayWebSocketUri;
     private readonly Action openChat;
     private readonly Action<TrayNotificationPayload>? onDoctor;
-    private readonly Action<string>? onSpeak;
+    private readonly Action<TrayNotificationPayload>? onSpeak;
     private readonly Action<TrayNotificationPayload>? onCharacter;
     private readonly Action<TrayNotificationPayload>? onSelfWork;
     private readonly bool proactiveToasts;
@@ -33,14 +33,14 @@ internal sealed class TrayNotificationClient : IDisposable
     // hardcoded local address.
     // #689: onDoctor gets Doctor's warn/fail transitions (on a thread-pool
     // thread) -- Electron's tray tooltip + balloon, not a proactive toast.
-    // #905: onSpeak gets a payload's spoken line (a reminder), on a
+    // #905: onSpeak gets a payload with a spoken line (a reminder), on a
     // thread-pool thread, whether or not proactive toasts are on.
     // #914: onCharacter gets each switch of character (from chat or the
     // tray), and each change of group mode's partner ("group"), on a
     // thread-pool thread.
     // #1008: onSelfWork gets the starts and ends of Mana's work on her own
     // code, on a thread-pool thread.
-    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<string>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null)
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<TrayNotificationPayload>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null)
     {
         this.onSelfWork = onSelfWork;
         this.openChat = openChat;
@@ -148,7 +148,7 @@ internal sealed class TrayNotificationClient : IDisposable
         }
         if (!string.IsNullOrWhiteSpace(payload?.Speak))
         {
-            onSpeak?.Invoke(payload.Speak);
+            onSpeak?.Invoke(payload);
         }
         if (!proactiveToasts || payload is null || !ProactiveToastFilter.IsProactiveToast(payload.Type))
         {

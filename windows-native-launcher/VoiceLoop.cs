@@ -2090,8 +2090,9 @@ internal sealed class VoiceLoop : IDisposable
     // #905: a line nobody just asked for (a reminder firing), said through
     // the same player as replies, with SayReplyFailedAsync's mode handling.
     // Waits for her to be idle so it never cuts into a turn; gives up
-    // (the toast still showed) if she's busy for a whole minute.
-    public async Task<bool> SpeakAnnouncementAsync(string text)
+    // (the toast still showed) if she's busy for a whole minute. #1024:
+    // emotion (AnnouncementEmotion.For) paces it on Qwen3-TTS.
+    public async Task<bool> SpeakAnnouncementAsync(string text, string? emotion)
     {
         for (var tries = 0; ; tries++)
         {
@@ -2111,7 +2112,7 @@ internal sealed class VoiceLoop : IDisposable
         }
         try
         {
-            var wav = await backendClient.SynthesizeAsync(text);
+            var wav = await backendClient.SynthesizeAsync(text, emotion);
             OnTalkingStateChanged(true);
             captions?.ShowSentence(text);
             bubbles?.ShowSentence(text);

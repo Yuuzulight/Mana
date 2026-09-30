@@ -217,7 +217,7 @@ function createBriefing({ filePath, listFacts, listJobs, searchWeb, runLocalRepl
       offer({
         reason: "briefing",
         ttlMs: 12 * 60 * 60 * 1000,
-        payload: { type: "cron", title: "Your day", text, speak: text, at: new Date(t).toISOString() },
+        payload: { type: "cron", kind: "briefing", title: "Your day", text, speak: text, at: new Date(t).toISOString() },
       });
     })()
       .catch((e) => console.warn("briefing failed:", e.message))
