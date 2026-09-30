@@ -24,8 +24,9 @@ over inherited ones -- or set before running):
   request on or off (default: on for the CPU build, off for the CUDA build)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
-- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",
-  see docs/fish_speech_tts.md for the recommended S1-mini checkpoint)
+- TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish" on a CUDA GPU
+  with room for it, "kokoro" otherwise -- see resolveTtsProvider in
+  tts-runtime.js and docs/fish_speech_tts.md for the S1-mini checkpoint)
 - TTS_BIN : full path to your TTS executable
 - TTS_MODEL : model path or model id for your TTS executable
 - TTS_ARGS_JSON : optional JSON array of CLI args with placeholders like {text}, {output}, {model}, {voice}, {speaker}
@@ -195,7 +196,7 @@ const { plainTextSecretKeys } = require("./load-env");
 	const contextPushPlugin = require("../plugins/context-push");
 	const screenSensingPlugin = require("../plugins/screen-sensing");
 const { PluginStore, pluginStore } = require("./plugin-store");
-const { createTtsRuntime } = require("./tts-runtime");
+const { createTtsRuntime, resolveTtsProvider } = require("./tts-runtime");
 const { createKokoroRuntime } = require("./kokoro-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
 const { createSnapshotStore } = require("./snapshot-store");
@@ -211,7 +212,9 @@ const {
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const {
   characterFilePath,
+  DEFAULT_ID: DEFAULT_CHARACTER_ID,
   createCharacterStore,
+  defaultPromptOf,
   perCharacter,
   personaOf,
 } = require("./characters");
@@ -225,6 +228,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
+const { untrustedSources } = require("./ai/untrusted-content");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
 const { createMemoryVault } = require("./memory-vault");
 const {
@@ -297,6 +301,7 @@ const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtim
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
+const { crisisInstruction, withCrisisInstruction } = require("./utils/crisis-check");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -361,6 +366,19 @@ function createApp(deps = {}) {
   // fact recall falling back past its budget. Never waits.
   app.use(["/transcribe", "/transcribe-only", "/transcribe-partial", "/reply"], (req, res, next) => {
     if (req.method === "POST") warmMemoryModels();
+    next();
+  });
+  // Voice uploads are recordings of me: each one, and whatever ffmpeg and
+  // whisper wrote next to it, is deleted once its request is over --
+  // success, error or a dropped connection alike (multer's own routes and
+  // mobile-routes.js's share this tmp dir). A dropped request's handler may
+  // still be running, so that case is swept once more a bit later.
+  app.use((req, res, next) => {
+    res.once("close", () => {
+      if (!req.file) return;
+      deleteUploadFiles(req.file.path);
+      if (!res.writableFinished) setTimeout(() => deleteUploadFiles(req.file.path), 2 * 60 * 1000).unref();
+    });
     next();
   });
   	const upload = multer({ dest: path.join(__dirname, "tmp") });
@@ -460,12 +478,15 @@ const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 // conversation, cutting code off mid-example. Casual/everyday replies stay
 // at LLAMA_MAX_TOKENS; only coding/developer mode gets the bigger budget.
 const LLAMA_MAX_TOKENS_CODING = Number(process.env.LLAMA_MAX_TOKENS_CODING || 768);
+// #914: a group-mode reaction is about 60 tokens.
+const GROUP_REACTION_MAX_TOKENS = 60;
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
   process.env.VTUBE_STUDIO_REACTIONS_JSON || "{}";
-const TTS_PROVIDER =
-  process.env.TTS_PROVIDER || (TTS_BIN ? "cli" : "fish");
+// #1076: decided once here; ttsRuntime and /health (which the native
+// launcher follows) both use this value.
+const TTS_PROVIDER = resolveTtsProvider(process.env);
 const DEFAULT_GAMING_PROCESS_NAMES = [
   "ffxiv_dx11.exe",
   "ffxiv.exe",
@@ -519,8 +540,13 @@ function logPerf(label, startedAt) {
 
 configureFfxivMarketTools({ nowMs, logPerf });
 
+// #914: a call without its own system prompt speaks as the active
+// character (characterStore is created below, before any call).
+const activeDefaultPrompt = () => defaultPromptOf(characterStore.active());
+
 const localLlamaRuntime = createLocalLlamaRuntime({
   env: process.env,
+  systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
   nowMs,
   logPerf,
@@ -534,6 +560,7 @@ const modelSettingsStore = createModelSettingsStore({});
 
 const llamaServerRuntime = createLlamaServerRuntime({
   env: process.env,
+  systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
   nowMs,
   logPerf,
@@ -571,8 +598,13 @@ const gamingWatch = createGamingWatch({
     retrieverService.stop();
     // #872/#889: drops the vision mmproj, and swaps to MANA_GAMING_LLAMA_MODEL when it's set.
     llamaServerRuntime.setGaming(true);
+    // #914: group mode pauses; after this poll has recorded the game.
+    queueMicrotask(() => characterStore.gameChanged());
   },
-  onGameEnd: () => llamaServerRuntime.setGaming(false),
+  onGameEnd: () => {
+    llamaServerRuntime.setGaming(false);
+    queueMicrotask(() => characterStore.gameChanged());
+  },
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   gamingWatch.poll();
@@ -700,21 +732,36 @@ const pronunciationLexiconStore = createPronunciationLexiconStore({});
 // the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
 const kokoroRuntime = createKokoroRuntime({ env: process.env });
 
-// Issue #914: the active character (Mana by default). Created before
-// ttsRuntime, which speaks in her voice; the launcher hears of each switch
-// on /ws/tray so it can load her Live2D model.
+// Issue #914: the active character (Mana by default, remembered across
+// restarts; in memory under tests). Created before ttsRuntime, which speaks
+// in her voice; the launcher hears of each switch on /ws/tray, and of the
+// current one when it connects, so it can load her Live2D model.
+const characterEvent = (character) => ({
+  type: "character",
+  id: character.id,
+  title: character.name,
+  model: character.live2dModel,
+});
 const characterStore = createCharacterStore({
-  onSwitch: (character) =>
+  activeFilePath:
+    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : path.join(__dirname, "data", "active-character.json"),
+  onSwitch: (character) => notifyTray(characterEvent(character)),
+  // Group mode: the launcher shows (or hides, id null) the partner's avatar.
+  isGaming: () => gamingWatch.isGaming(),
+  onGroupChange: (partner) =>
     notifyTray({
-      type: "character",
-      id: character.id,
-      title: character.name,
-      model: character.live2dModel,
+      type: "group",
+      id: partner?.id ?? null,
+      title: partner?.name ?? null,
+      model: partner?.live2dModel ?? null,
     }),
 });
 
 const ttsRuntime = createTtsRuntime({
   env: process.env,
+  ttsProvider: TTS_PROVIDER,
   getVoice: () => characterStore.active().voice,
   baseDir: __dirname,
   nowMs,
@@ -837,6 +884,12 @@ const speechVocabulary = createSpeechVocabulary({
   filePath: path.join(acpMemoryStore.dataDir, "speech.json"),
 });
 
+// #914: proactive toasts name the character saying them when she isn't Mana.
+require("./proactive").watchSpeaker(() => {
+  const character = characterStore.active();
+  return character.id === DEFAULT_CHARACTER_ID ? null : character.name;
+});
+
 // #986: held proactive remarks (data/proactive-held.json) survive a restart.
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
   require("./proactive").persistTo(path.join(acpMemoryStore.dataDir, "proactive-held.json"));
@@ -895,7 +948,7 @@ function whisperThreads() {
 const whisperServer = createWhisperServer({
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
-  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
+  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() }),
   threads: whisperThreads,
   language: whisperLanguage,
   beamSize: WHISPER_BEAM_SIZE,
@@ -1973,27 +2026,6 @@ function parseTasklistCsvLine(line) {
   return values;
 }
 
-function getRunningProcessNames() {
-  if (process.platform !== "win32") {
-    return [];
-  }
-
-  const result = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
-    encoding: "utf8",
-    maxBuffer: 5 * 1024 * 1024,
-    windowsHide: true,
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || "tasklist failed");
-  }
-
-  return parseTasklistNames(result.stdout);
-}
-
 function parseTasklistNames(stdout) {
   return (stdout || "")
     .split(/\r?\n/)
@@ -2002,17 +2034,14 @@ function parseTasklistNames(stdout) {
     .map((name) => name.toLowerCase());
 }
 
+// The gaming watch's cached answer (polled every 30 s with a non-blocking
+// tasklist), never a fresh tasklist: this runs on every spoken reply and
+// every launcher status poll, and a spawnSync here stalled the event loop.
 function getGamingStatus() {
-  // Quick rundown: if one watched game process is running, Mana uses the lighter idle loop.
-  const runningProcesses = getRunningProcessNames();
-  const watchedNames = new Set(GAMING_PROCESS_NAMES);
-  const matchedProcesses = [
-    ...new Set(runningProcesses.filter((name) => watchedNames.has(name))),
-  ];
-
+  const game = gamingWatch.game();
   return {
-    gamingAppRunning: matchedProcesses.length > 0,
-    matchedProcesses,
+    gamingAppRunning: gamingWatch.isGaming(),
+    matchedProcesses: game ? [game] : [],
     watchedProcesses: GAMING_PROCESS_NAMES,
   };
 }
@@ -2077,6 +2106,46 @@ function ensureDirectory(dirPath) {
 }
 
 ensureDirectory(path.join(__dirname, "tmp"));
+
+// An upload's temp files are its multer name (32 random hex, no extension)
+// plus whatever ffmpeg/whisper appended: .wav, .out.json, .partial-out.json.
+// Both multer instances (here and mobile-routes.js) write to node-bot/tmp.
+function deleteUploadFiles(uploadPath) {
+  const dir = path.join(__dirname, "tmp");
+  const name = path.basename(uploadPath);
+  if (!/^[0-9a-f]{32}$/.test(name)) return;
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(name)) fs.rmSync(path.join(dir, entry), { force: true });
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't delete voice upload ${name}: ${e.message}`);
+  }
+}
+
+// On start: anything left in tmp/ from before (a crash, or builds that
+// kept every voice upload) that's over an hour old. Files only -- tmp/
+// also holds the OCR model cache in tmp/tesseract.
+function sweepStaleTmpFiles(dir = path.join(__dirname, "tmp"), maxAgeMs = 60 * 60 * 1000, now = Date.now()) {
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = path.join(dir, entry.name);
+      try {
+        if (now - fs.statSync(file).mtimeMs > maxAgeMs) {
+          fs.rmSync(file, { force: true });
+          removed += 1;
+        }
+      } catch (e) {
+        console.warn(`[Mana] Couldn't delete old temp file ${entry.name}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't clean ${dir}: ${e.message}`);
+  }
+  return removed;
+}
 
 function registerRoutes(app, upload, deps = {}) {
   // Fires the same compaction/review pass the hourly timer runs, but on the
@@ -2243,6 +2312,9 @@ function registerRoutes(app, upload, deps = {}) {
     createModelManagement({
       env: deps.env || process.env,
       modelSettingsStore,
+      // #1086: the recommendation subtracts what these hold in VRAM.
+      ttsProvider: TTS_PROVIDER,
+      whisperModel: whisperDiscovery.findWhisperModel({ env: deps.env || process.env }),
     });
 
   // llama-server normally starts lazily on the first chat reply. Desktop
@@ -2548,6 +2620,7 @@ function registerRoutes(app, upload, deps = {}) {
         console.warn("Memory graph size check failed:", e?.message || e);
       }
       const result = await doctor({
+        modelManagement, // #1086: same recommendation as /models/status
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
         promptComposition: getMostRecentComposition(),
@@ -2557,6 +2630,7 @@ function registerRoutes(app, upload, deps = {}) {
         memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+        whisperLanguage: whisperLanguage(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2574,10 +2648,12 @@ function registerRoutes(app, upload, deps = {}) {
     doctor: deps.doctor || runDoctorChecksAsync,
     notifyTray: deps.notifyTray || notifyTray,
     doctorOptions: () => ({
+      modelManagement,
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
       memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+      whisperLanguage: whisperLanguage(),
     }),
   });
   if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {
@@ -2806,7 +2882,7 @@ function registerRoutes(app, upload, deps = {}) {
       ttsBin: TTS_BIN,
       ttsProvider: TTS_PROVIDER,
       whisperBin: whisperDiscovery.findWhisperBin({ env }),
-      whisperModel: whisperDiscovery.findWhisperModel({ env }),
+      whisperModel: whisperDiscovery.findWhisperModel({ env, language: whisperLanguage() }),
     });
     Object.assign(
       components,
@@ -3442,7 +3518,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   function runWhisperCli(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
@@ -3555,7 +3631,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   async function runWhisperCliPartial(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
@@ -3875,7 +3951,7 @@ function registerRoutes(app, upload, deps = {}) {
       }
     }
 
-    const systemPrompt = systemPromptOverride || persona.DEFAULT_SYSTEM_PROMPT;
+    const systemPrompt = systemPromptOverride || activeDefaultPrompt();
 
     const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
     const url = new URL(baseUrl + "/v1/chat/completions");
@@ -4030,6 +4106,8 @@ function registerRoutes(app, upload, deps = {}) {
       mode === "coding" || mode === "developer"
         ? LLAMA_MAX_TOKENS_CODING
         : LLAMA_MAX_TOKENS;
+    // #914: group mode adds a second reply only to casual turns.
+    if (replyMeta) replyMeta.mode = mode;
 
     // Optional lightweight intent telemetry (enable with MANA_INTENT_TELEMETRY=1)
     try {
@@ -4187,6 +4265,11 @@ function registerRoutes(app, upload, deps = {}) {
     if (replyMeta && replyMeta.systemPatch) {
       selectedSystemPrompt = `${selectedSystemPrompt}\n\n${replyMeta.systemPatch}`;
     }
+    // A message about suicide or self-harm gets a care-and-hotlines note for
+    // this turn -- per turn, so last, like the mode text. Every chat path
+    // (typed, voice, stream, mobile) builds its prompt here.
+    const crisisNote = crisisInstruction(transcript, deps.env || process.env);
+    if (crisisNote) selectedSystemPrompt = `${selectedSystemPrompt}\n\n${crisisNote}`;
 
     // Issue #282: memory (session summary/recent-turns, cross-session
     // facts) becomes its own positionable system-role messages -- "early"
@@ -4625,6 +4708,8 @@ function registerRoutes(app, upload, deps = {}) {
                     typeof cleanLlamaOutput === "function"
                       ? cleanLlamaOutput(openAiReply)
                       : openAiReply,
+                  // #914: history lines are labelled with who said them.
+                  speaker: characterStore.active().name,
                 })
                 .catch((memErr) =>
                   console.warn(
@@ -4908,6 +4993,9 @@ function registerRoutes(app, upload, deps = {}) {
                     activeApprovalGate.getToolApprovalMode(),
                     (deps.env || process.env).MANA_TOOL_APPROVAL,
                   ),
+                  // A web page, search/wiki results or the browser tab
+                  // (framed by ai/untrusted-content.js) came in with the turn.
+                  untrustedSources: untrustedSources(promptText),
                 });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
@@ -5324,6 +5412,7 @@ function registerRoutes(app, upload, deps = {}) {
                 ? cleanLlamaOutput(reply)
                 : reply,
             toolCalls: lastToolCalls,
+            speaker: characterStore.active().name,
           })
           .catch((memErr) =>
             console.warn(
@@ -5382,6 +5471,8 @@ function registerRoutes(app, upload, deps = {}) {
     currentGame: deps.currentGame || currentGame,
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
+    characters: characterStore,
+    buildGroupReaction: deps.buildGroupReaction || buildGroupReaction,
     capabilities,
     pluginSettingsStore: activePluginSettingsStore,
     contributePluginPromptContext:
@@ -5411,6 +5502,7 @@ function registerRoutes(app, upload, deps = {}) {
                 sessionId,
                 user: userText,
                 assistant: assistantText,
+                speaker: characterStore.active().name,
               })
               .catch((memErr) =>
                 console.warn(
@@ -5448,6 +5540,25 @@ function registerRoutes(app, upload, deps = {}) {
       deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
+
+  // #914 group mode: the partner's short reaction to her sister's reply,
+  // run inside speakAs(partner) so the persona, personality and mood are
+  // hers. Same chat model, one short call; no tools and no emotion tags.
+  // The route saves it (only if it's still wanted).
+  async function buildGroupReaction({ sessionId, userText, sister, reply }) {
+    const me = characterStore.active();
+    const system = [
+      persona.buildPersonaPrompt(sessionId, personalityStore.get().traits, personaOf(me)),
+      moodPromptBlock(activeMoodStore.get(), "casual"),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const prompt = `I said: "${userText}"\n\nYour sister ${sister.name} answered: "${reply}"\n\nAdd one short reaction to her, one or two short sentences, as yourself. Don't repeat what she said.`;
+    const raw = shouldUseRemoteAi()
+      ? await runOpenAIReply(prompt, GROUP_REACTION_MAX_TOKENS, system, sessionId)
+      : await runLocalAssistantReply(prompt, GROUP_REACTION_MAX_TOKENS, "default", system);
+    return cleanLlamaOutput(stripEmotionTags(String(raw || "")).text).trim();
+  }
 
   // Test-only hook (same pattern as app.locals.broadcastTrayNotification
   // below): exposes the real buildAssistantReply closure -- with its
@@ -5574,9 +5685,10 @@ function registerRoutes(app, upload, deps = {}) {
   // instead of only talking to Mana's own bespoke routes. Proxies straight
   // through to the persistent llama-server's own OpenAI endpoint; unlike
   // runLocalAssistantReply this does not inject Mana's persona system
-  // prompt, since external clients bring their own messages.
+  // prompt, since external clients bring their own messages -- apart from
+  // the crisis note (utils/crisis-check.js) when the last user message needs it.
   app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
-    if (!llamaServerRuntime.isEnabled()) {
+    if (!activeLlamaServerRuntime.isEnabled()) {
       return res.status(503).json({
         error: {
           message:
@@ -5585,7 +5697,7 @@ function registerRoutes(app, upload, deps = {}) {
       });
     }
     try {
-      const upstream = await llamaServerRuntime.proxyChatCompletion(req.body);
+      const upstream = await activeLlamaServerRuntime.proxyChatCompletion(withCrisisInstruction(req.body, deps.env || process.env));
       res.status(upstream.status);
       const contentType = upstream.headers.get("content-type");
       if (contentType) res.type(contentType);
@@ -5599,7 +5711,7 @@ function registerRoutes(app, upload, deps = {}) {
       // killing the persistent llama-server process out from under the
       // client. Reschedule once the response is actually done so the idle
       // window is measured from real completion, not dispatch time.
-      res.on("close", () => llamaServerRuntime.scheduleIdleShutdown());
+      res.on("close", () => activeLlamaServerRuntime.scheduleIdleShutdown());
       Readable.fromWeb(upstream.body).pipe(res);
     } catch (e) {
       res.status(502).json({ error: { message: e?.message || String(e) } });
@@ -6008,6 +6120,8 @@ async function waitForPythonService(
 
 async function startServer() {
   const port = process.env.PORT || 5005;
+  const sweptTmpFiles = sweepStaleTmpFiles();
+  if (sweptTmpFiles) console.log(`[Mana Boot] Deleted ${sweptTmpFiles} old voice upload/temp file(s) from tmp/.`);
 
   // The retriever only enriches replies (retrieval context, token counts) and
   // every caller has a heuristic fallback, so the backend starts without it;
@@ -6047,7 +6161,11 @@ async function startServer() {
   // attach tray websocket server for live tray notifications
   try {
     const trayServer = require("./tray-server");
-    trayServer.registerTrayServer(server, { path: "/ws/tray", requestGuard });
+    trayServer.registerTrayServer(server, {
+      path: "/ws/tray",
+      requestGuard,
+      greeting: () => characterEvent(characterStore.active()),
+    });
     // make broadcast available via app locals for other modules
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
@@ -6137,4 +6255,5 @@ module.exports = {
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
+  sweepStaleTmpFiles,
 };

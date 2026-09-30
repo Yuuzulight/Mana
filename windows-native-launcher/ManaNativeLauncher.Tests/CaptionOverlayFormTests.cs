@@ -108,4 +108,33 @@ public class CaptionTimingTests
         Assert.True(steps[1].Ms > steps[0].Ms && steps[0].Ms > steps[2].Ms);
         Assert.InRange(steps.Sum(s => s.Ms), 5290, 5300);
     }
+
+    // The Mana preset: white glass, navy text.
+    private static readonly Color White = Color.White;
+    private static readonly Color Navy = ColorTranslator.FromHtml("#1b1e3f");
+
+    [Fact]
+    public void WithContrastFloor_LeavesAFaintWashWhereTheTextAlreadyReads() =>
+        Assert.Equal(26, CaptionOverlayForm.WithContrastFloor(26, 240, White, Navy));
+
+    // Navy on a dark, calm scene: the wash strengthens until it reads.
+    [Theory]
+    [InlineData(10)]
+    [InlineData(60)]
+    public void WithContrastFloor_RaisesTheWashOverADarkBackdrop(double luma)
+    {
+        var alpha = CaptionOverlayForm.WithContrastFloor(26, luma, White, Navy);
+
+        Assert.InRange(alpha, 27, 254);
+        Assert.True(Contrast(alpha, luma) >= 4.5);
+        Assert.True(Contrast(alpha - 1, luma) < 4.5); // no stronger than needed
+    }
+
+    private static double Contrast(int alpha, double luma)
+    {
+        var a = alpha / 255.0;
+        var glass = DarkTheme.Luminance(Color.FromArgb(
+            (int)Math.Round(a * 255 + (1 - a) * luma), (int)Math.Round(a * 255 + (1 - a) * luma), (int)Math.Round(a * 255 + (1 - a) * luma)));
+        return (glass + 0.05) / (DarkTheme.Luminance(Navy) + 0.05);
+    }
 }

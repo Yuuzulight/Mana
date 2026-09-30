@@ -6,7 +6,7 @@ using System.Windows.Forms;
 namespace Mana.NativeLauncher;
 
 // #680 part 1: select text in any app, press the text-action hotkey
-// (Ctrl+Alt+T), pick an action from this small menu at the cursor; the
+// (Ctrl+Alt+Shift+T), pick an action from this small menu at the cursor; the
 // result shows here with Copy and Replace. It never takes focus, so the
 // app keeps its selection and Replace pastes straight back into it. The
 // selection is read via UI Automation first, else a Ctrl+C with the

@@ -120,6 +120,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #684: see ManaSettingsStore.AvatarHidesWithChat. servicesStarted: the
     // avatar first appears once startup is done, so nothing shows her earlier.
     private bool avatarHidesWithChat = ManaSettingsStore.Load().AvatarHidesWithChat;
+    private bool showAvatar = ManaSettingsStore.Load().ShowAvatar;
     private bool servicesStarted;
 
     public ManaApplicationContext(Rectangle? restoreChat = null)
@@ -169,7 +170,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #899: above her visible top, not the top of her (framed, bigger) window.
         captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null);
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
-        captionOverlay.Suppressed = chatBubbles.BubblesOn; // #701: bubbles replace the caption bar
+        captionOverlay.Suppressed = !settings.CaptionsShown();
         chatBubbles.BubbleClicked += text =>
         {
             ShowSessionList();
@@ -187,6 +188,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 partnerOverlay.Visible = avatarOverlay.Visible;
             }
         };
+        avatarOverlay.IsListening = () => voiceLoop.IsListening;
         // windows-launcher only runs its own clip-buffer capture timer
         // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
         // -- same gate here, so this launcher doesn't start silently
@@ -216,7 +218,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
             glanceTimer.Start();
         }
-        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog);
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog) { ShowArtifacts = ShowArtifactViewer };
         // Creating the first form installed WinForms' context on this (UI)
         // thread; RunOnUi posts to it.
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
@@ -242,6 +244,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 quickEntry.OpenWith($"About \"{System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ")}\": ")),
             // #910: a normal typed turn; its wording routes the screen read through JapaneseOcr.
             ["translate"] = () => _ = voiceLoop.SubmitTypedCommandAsync("Translate my screen"),
+            // Same as the tray's Start/Stop listening. (Hold-to-talk would
+            // need key-up, which RegisterHotKey doesn't report.)
+            ["listening"] = voiceLoop.ToggleListening,
         };
         globalHotkeys = new GlobalHotkeyListener(HotkeyBindings.Actions
             .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
@@ -313,7 +318,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.BalloonTipClicked += (_, _) => balloonClicked?.Invoke();
         sessionListForm.VisibleChanged += (_, _) => SyncAvatarWithChat();
         sessionListForm.Resize += (_, _) => SyncAvatarWithChat(); // minimized or restored
-        avatarOverlay.Clicked += voiceLoop.Wake; // #662
+        // #662: a click wakes her -- but never turns listening back on after
+        // I switched it off (the chat window's mic button still does).
+        avatarOverlay.Clicked += () =>
+        {
+            if (voiceLoop.IsListening)
+            {
+                voiceLoop.Wake();
+            }
+        };
         trayNotifications.Start();
         visionCaptureClient.Start();
         // #991: node-bot's own /restart.
@@ -375,12 +388,17 @@ internal sealed class ManaApplicationContext : ApplicationContext
         var menu = new ContextMenuStrip();
         // #689: Electron's tray entries, plus its two quick buttons.
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
+        menu.Items.Add("Settings…", null, (_, _) =>
+        {
+            ShowSessionList(); // Settings floats over the chat window
+            sessionListForm.OpenSettings();
+        });
         menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
         menu.Items.Add("Look at my screen now", null, (_, _) => _ = voiceLoop.SubmitVisionHotkeyAsync());
         menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Show status", null, (_, _) => ShowStatus());
-        menu.Items.Add("Artifact Viewer", null, (_, _) => { artifactViewer.Show(); artifactViewer.Activate(); });
+        menu.Items.Add("Artifact Viewer", null, (_, _) => ShowArtifactViewer());
         menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
         menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
         menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
@@ -390,8 +408,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
-        menu.Items.Add("Set avatar idle", null, (_, _) => avatarOverlay.SetState(AvatarState.Idle));
-        menu.Items.Add("Set avatar talking", null, (_, _) => avatarOverlay.SetState(AvatarState.Talking));
         menu.Items.Add(new ToolStripSeparator());
         var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
         menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
@@ -424,6 +440,16 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
         };
         menu.Items.Add(clickThroughItem);
+        var showAvatarItem = new ToolStripMenuItem("Show avatar") { CheckOnClick = true, Checked = showAvatar };
+        showAvatarItem.Click += (_, _) =>
+        {
+            showAvatar = showAvatarItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.ShowAvatar = showAvatar;
+            latest.Save();
+            SyncAvatarWithChat();
+        };
+        menu.Items.Add(showAvatarItem);
         var hidesWithChatItem = new ToolStripMenuItem("Hide avatar while chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
         hidesWithChatItem.Click += (_, _) =>
         {
@@ -431,14 +457,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             var latest = ManaSettingsStore.Load();
             latest.AvatarHidesWithChat = avatarHidesWithChat;
             latest.Save();
-            if (avatarHidesWithChat)
-            {
-                SyncAvatarWithChat();
-            }
-            else if (servicesStarted)
-            {
-                avatarOverlay.Show();
-            }
+            SyncAvatarWithChat();
         };
         menu.Items.Add(hidesWithChatItem);
         // #899: the overlay's framing and size, applied live.
@@ -477,12 +496,21 @@ internal sealed class ManaApplicationContext : ApplicationContext
         bubblesItem.Click += (_, _) =>
         {
             chatBubbles.BubblesOn = bubblesItem.Checked;
-            captionOverlay.Suppressed = bubblesItem.Checked; // #701
             var latest = ManaSettingsStore.Load();
             latest.ChatBubbles = bubblesItem.Checked;
+            latest.Captions ??= !captionOverlay.Suppressed; // pin what's showing now
             latest.Save();
         };
         menu.Items.Add(bubblesItem);
+        var captionsItem = new ToolStripMenuItem("Captions under Mana") { CheckOnClick = true, Checked = !captionOverlay.Suppressed };
+        captionsItem.Click += (_, _) =>
+        {
+            captionOverlay.Suppressed = !captionsItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.Captions = captionsItem.Checked;
+            latest.Save();
+        };
+        menu.Items.Add(captionsItem);
         // #681: Stop listening turns the mic off and puts Mana back to
         // sleep; Start listening needs the wake word again.
         var listeningItem = new ToolStripMenuItem();
@@ -497,8 +525,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
             // A remote backend's Fish Speech isn't this launcher's to restart,
-            // and another selected TTS provider means Fish isn't in use.
-            menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+            // and another selected TTS provider means Fish isn't in use --
+            // #1076: which, with TTS_PROVIDER unset, is only known once the
+            // backend has picked.
+            var restartFishItem = new ToolStripMenuItem("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
+            menu.Opening += (_, _) => restartFishItem.Visible = processManager.UsesFishSpeech;
+            menu.Items.Add(restartFishItem);
         }
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
@@ -525,6 +557,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             await processManager.StartAsync((key, available) =>
                 overlay.SetRowStatus(key, available ? "Ready" : "Unavailable", available ? RowState.Ready : RowState.Warn));
+            if (!processManager.UsesFishSpeech)
+            {
+                // #1076: the backend picked another voice (Kokoro without a
+                // CUDA GPU with room for Fish); a no-op without the row.
+                overlay.SetRowStatus("fish-speech", "Not needed", RowState.Ready);
+            }
             // Launched isn't ready: Fish Speech can compile for minutes. Hold
             // the screen (and listening) until her voice actually answers,
             // so the avatar never appears before she can talk.
@@ -562,7 +600,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             // The avatar appears only once the startup screen is done, so
             // she never pops up over it half-started.
             servicesStarted = true;
-            avatarOverlay.Show();
             SyncAvatarWithChat();
             ReportAvatarModelProblem();
             ReportUpdateRolledBack();
@@ -651,6 +688,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             {
                 partnerOverlay.GameRunning = gamingModeActive; // #914: her sister too
             }
+            chatBubbles.GameRunning = gamingModeActive;
         }
         catch
         {
@@ -913,19 +951,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // alive/reused (QuickEntryForm's own pattern), and this isn't opened
     // often enough for that cost to matter.
     // #684: with AvatarHidesWithChat on, she shows exactly while the chat
-    // window is closed or minimized.
+    // window is closed or minimized; the tray's Show avatar off hides her.
     private void SyncAvatarWithChat()
     {
-        if (!servicesStarted || !avatarHidesWithChat || avatarOverlay.IsDisposed)
+        if (!servicesStarted || avatarOverlay.IsDisposed)
         {
             return;
         }
-        var show = AvatarShowsBesideChat(sessionListForm.Visible, sessionListForm.WindowState);
+        var show = AvatarVisible(showAvatar, avatarHidesWithChat, sessionListForm.Visible, sessionListForm.WindowState);
         if (avatarOverlay.Visible != show)
         {
             avatarOverlay.Visible = show;
         }
     }
+
+    internal static bool AvatarVisible(bool showAvatar, bool hidesWithChat, bool chatVisible, FormWindowState chatState) =>
+        showAvatar && (!hidesWithChat || AvatarShowsBesideChat(chatVisible, chatState));
 
     internal static bool AvatarShowsBesideChat(bool chatVisible, FormWindowState chatState) =>
         !chatVisible || chatState == FormWindowState.Minimized;
@@ -1001,6 +1042,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 action();
             }
         }, null);
+    }
+
+    private void ShowArtifactViewer()
+    {
+        artifactViewer.Show();
+        artifactViewer.Activate();
     }
 
     // #520: reused (Hide, not Close), so Load's own one-time-only refresh
