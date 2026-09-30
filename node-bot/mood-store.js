@@ -251,4 +251,4 @@ function createMoodStore(options = {}) {
   return { get, record, recordTurn, reset, setFrozen };
 }
 
-module.exports = { DEFAULTS, EVENTS, createMoodStore, moodPromptBlock };
+module.exports = { DEFAULTS, EVENTS, createMoodStore, levelWord, moodPromptBlock };

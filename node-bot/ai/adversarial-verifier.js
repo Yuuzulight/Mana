@@ -27,9 +27,14 @@ const LOGIC_EXTENSIONS = new Set([
 // which never triggers a model load/swap for this.
 // Returns {verdict: "refuted"|"holds"|"unclear"|"error", failingCase, reason},
 // or null when it didn't run (off, not a source file, no model loaded).
+// Source files only: docs, config and data edits aren't reviewed.
+function isReviewableFile(relativePath) {
+  return LOGIC_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase());
+}
+
 async function refuteEdit({ relativePath, diff, summary, runLocalReply, env = process.env }) {
   if (env.MANA_ADVERSARIAL_VERIFY === "0" || typeof runLocalReply !== "function") return null;
-  if (!LOGIC_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase())) return null;
+  if (!isReviewableFile(relativePath)) return null;
   try {
     // The diff is agent-authored content under review, not instructions --
     // same framing guardian-precheck.js uses.
@@ -61,4 +66,4 @@ function formatReviewHeader(review) {
   return `# Adversarial review (#622): ${review.verdict.toUpperCase()}${detail ? ` -- ${detail}` : ""}\n`;
 }
 
-module.exports = { refuteEdit, formatReviewHeader };
+module.exports = { refuteEdit, formatReviewHeader, isReviewableFile };

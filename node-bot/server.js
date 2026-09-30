@@ -203,7 +203,7 @@ const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
 const { createPersonalityStore } = require("./personality-store");
-const { createMoodStore, moodPromptBlock } = require("./mood-store");
+const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -214,6 +214,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 const { buildToolPolicy } = require("./ai/tool-source");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
+const { createMemoryVault } = require("./memory-vault");
 const {
   loadSessionSummaries,
   runCompactorStage,
@@ -1160,6 +1161,44 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   return notes;
 }
 
+function currentMemoryNotes() {
+  const entityIndexPath = path.join(acpMemoryStore.dataDir, "entity-index.json");
+  let entityIndex = {};
+  if (fs.existsSync(entityIndexPath)) {
+    entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
+  }
+  const facts = BACKGROUND_MEMORY_META.important_facts || [];
+  const connections = BACKGROUND_MEMORY_META.connections || [];
+  return buildMemoryNotes(entityIndex, facts, connections);
+}
+
+// #935: the vault's read-only Views/ -- the MEMORY.md summary, Mana's mood
+// (level words only, so it changes when her mood does, not every minute)
+// and the per-entity notes /api/memory/notes serves.
+function buildVaultViews(mood) {
+  let summary = "_(no summary yet)_\n";
+  try {
+    summary = fs.readFileSync(MEMORY_MD_PATH, "utf8");
+  } catch (e) {
+    // Not written yet.
+  }
+  const moodBody = [
+    "# Mana's mood",
+    "",
+    `Right now: ${mood.summary}.`,
+    "",
+    `- Energy: ${levelWord(mood.energy)}`,
+    `- Sociability: ${levelWord(mood.sociability)}`,
+    `- Stress: ${levelWord(mood.stress)}`,
+    "",
+  ].join("\n");
+  return [
+    { rel: "Views/Summary.md", body: summary },
+    { rel: "Views/Mood.md", body: moodBody },
+    ...currentMemoryNotes().map((note) => ({ rel: `Views/Entities/${note.slug}.md`, body: note.body })),
+  ];
+}
+
 async function writeMemoryMarkdown() {
   try {
     const compacted =
@@ -2012,6 +2051,10 @@ function registerRoutes(app, upload, deps = {}) {
           ),
         );
       }
+      // #935: the vault journal's entry for this session, written after
+      // the compactor above (idle is the session's end). It never loads a
+      // model and skips while gaming.
+      if (memoryVault) await memoryVault.writeJournal();
       // Issue #663: unconfirmed facts age into archived. No model call.
       try {
         (deps.acpMemoryStore || acpMemoryStore).archiveExpiredPendingFacts({
@@ -2223,6 +2266,27 @@ function registerRoutes(app, upload, deps = {}) {
     "memory-write",
     createMemoryWriteExecutor({ acpMemoryStore, approvalGate: activeApprovalGate }),
   );
+  // #935: two-way sync with the Obsidian vault (MANA_VAULT_DIR). A new
+  // note asks for the user's OK under its own action type, so denying one
+  // never counts against (or grants) Mana's own memory writes.
+  activeApprovalGate.registerExecutor("memory-vault-note", (payload) => acpMemoryStore.rememberFact(payload));
+  let memoryVault = null;
+  if (process.env.MANA_VAULT_DIR && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+    try {
+      memoryVault = createMemoryVault({
+        store: acpMemoryStore,
+        vaultDir: process.env.MANA_VAULT_DIR,
+        approvalGate: activeApprovalGate,
+        buildViews: () => buildVaultViews(activeMoodStore.get()),
+        runModel: (prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens),
+        isGaming: () => gamingWatch.isGaming(),
+      });
+      memoryVault.start();
+    } catch (e) {
+      console.warn("Memory vault sync failed to start:", e?.message || e);
+    }
+  }
+  const memoryVaultStatus = () => (memoryVault ? memoryVault.getStatus() : { vaultDir: null });
 
   // Lets acpMemoryStore's summarizeFn (built at module load time, long
   // before registerRoutes ever runs) reach the real runOpenAIReply --
@@ -2397,6 +2461,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
       });
@@ -2418,6 +2483,7 @@ function registerRoutes(app, upload, deps = {}) {
     doctorOptions: () => ({
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
+      memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
     }),
   });
@@ -5287,17 +5353,7 @@ function registerRoutes(app, upload, deps = {}) {
   // plugin) instead of one flat markdown blob.
   app.get("/api/memory/notes", authMiddleware, async (req, res) => {
     try {
-      const entityIndexPath = path.join(
-        acpMemoryStore.dataDir,
-        "entity-index.json",
-      );
-      let entityIndex = {};
-      if (fs.existsSync(entityIndexPath)) {
-        entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
-      }
-      const facts = BACKGROUND_MEMORY_META.important_facts || [];
-      const connections = BACKGROUND_MEMORY_META.connections || [];
-      res.json(buildMemoryNotes(entityIndex, facts, connections));
+      res.json(currentMemoryNotes());
     } catch (e) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -5859,6 +5915,7 @@ if (require.main === module) {
 module.exports = {
   createApp,
   buildMemoryNotes,
+  buildVaultViews,
   buildSkillsIndexBlock,
   checkEmotionalReflexes,
   DEEP_RESEARCH_SUBTASK_PROFILE,
