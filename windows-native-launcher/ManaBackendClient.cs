@@ -204,12 +204,15 @@ internal sealed class ManaBackendClient
 
     // #681: answers a /ws/vision-capture request (VisionCaptureClient).
     // node-bot wants exactly one of image ("data:image/jpeg;base64,...")
-    // or error, so only the non-null one is sent.
-    public async Task PostVisionCaptureResultAsync(string requestId, string? image, string? error)
+    // or error, so only the non-null one is sent. #911: a desktop action
+    // answers with a result object instead of an image.
+    public async Task PostVisionCaptureResultAsync(string requestId, string? image, string? error, object? result = null)
     {
         var payload = error is not null
             ? JsonSerializer.Serialize(new { requestId, error })
-            : JsonSerializer.Serialize(new { requestId, image });
+            : result is not null
+                ? JsonSerializer.Serialize(new { requestId, result })
+                : JsonSerializer.Serialize(new { requestId, image });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/vision/capture-result", content);
         response.EnsureSuccessStatusCode();
@@ -274,9 +277,15 @@ internal sealed class ManaBackendClient
     // #675: thinkHarder (the main window's deep-thinking toggle): true asks
     // node-bot to think on this turn, false ends Mana's own deep thinking
     // (Q12b), null sends nothing.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null)
+    // #911: voice marks a spoken turn (source "voice"), which may run
+    // desktop actions while a game is running.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, bool voice = false)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
+        if (voice)
+        {
+            fields["source"] = "voice";
+        }
         if (sessionId is not null)
         {
             fields["sessionId"] = sessionId;
@@ -1047,6 +1056,34 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("override", out var overrideEl) ? overrideEl.GetString() : null;
     }
 
+    // #914: node-bot's characters (id, name) and the active one's id.
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters)> GetCharactersAsync()
+    {
+        using var response = await http.GetAsync("/characters");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        var characters = root.GetProperty("characters").EnumerateArray()
+            .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
+            .ToList();
+        return (root.GetProperty("active").GetString() ?? "", characters);
+    }
+
+    // #914: switches character; her handoff line, or null if she already was.
+    public async Task<string?> SetCharacterAsync(string id)
+    {
+        var payload = JsonSerializer.Serialize(new { id });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/characters/active", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("handoff", out var handoff) && handoff.ValueKind == JsonValueKind.String
+            ? handoff.GetString()
+            : null;
+    }
+
     public async Task SetTtsOverrideAsync(string? provider)
     {
         var payload = JsonSerializer.Serialize(new { provider });
@@ -1090,6 +1127,55 @@ internal sealed class ManaBackendClient
         }
         return JsonSerializer.Deserialize<ManaSpeechVocabulary>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
             ?? new ManaSpeechVocabulary();
+    }
+
+    // #950 (#906): Settings > Calendar & Email, node-bot's /mail-calendar.
+    // Passwords and feed URLs go in and never come back out.
+    public async Task<ManaMailCalendar> GetMailCalendarAsync()
+    {
+        using var response = await http.GetAsync("/mail-calendar");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaMailCalendar>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaMailCalendar();
+    }
+
+    // change: new { kind = "email", host, port, user, password, mailbox },
+    // new { kind = "calendar", url, user, password }, or new { kind, clear =
+    // true }. A null or blank password/url keeps the saved one. A refused
+    // change throws with node-bot's error.
+    public async Task<ManaMailCalendar> UpdateMailCalendarAsync(object change)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(change), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/mail-calendar", content);
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            string? error = null;
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                error = document.RootElement.TryGetProperty("error", out var errorElement) ? errorElement.GetString() : null;
+            }
+            catch (JsonException)
+            {
+            }
+            throw new HttpRequestException(error ?? $"HTTP {(int)response.StatusCode}", null, response.StatusCode);
+        }
+        return JsonSerializer.Deserialize<ManaMailCalendar>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaMailCalendar();
+    }
+
+    // Logs in to the saved "email" or "calendar" account.
+    public async Task<(bool Ok, string? Error)> TestMailCalendarAsync(string kind)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { kind }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/mail-calendar/test", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return (root.TryGetProperty("ok", out var okEl) && okEl.GetBoolean(), root.TryGetProperty("error", out var errorEl) ? errorEl.GetString() : null);
     }
 
     // #907: the daily briefing's settings (node-bot's GET/POST /briefing).
@@ -2642,4 +2728,32 @@ internal sealed class ManaSpeechVocabulary
     // "en" or "auto"; EnvLanguage (WHISPER_LANGUAGE) wins when set.
     public string Language { get; init; } = "en";
     public string? EnvLanguage { get; init; }
+}
+
+// #950: GET /mail-calendar. Null when that account isn't set up;
+// Unreadable when its saved settings can't be decrypted on this PC.
+internal sealed class ManaMailCalendar
+{
+    public ManaMailAccount? Email { get; init; }
+    public ManaCalendarAccount? Calendar { get; init; }
+}
+
+internal sealed class ManaMailAccount
+{
+    public string? Host { get; init; }
+    public int Port { get; init; }
+    public string? User { get; init; }
+    public string? Mailbox { get; init; }
+    public bool PasswordSet { get; init; }
+    public bool Unreadable { get; init; }
+}
+
+internal sealed class ManaCalendarAccount
+{
+    public string? Host { get; init; }
+    public string? User { get; init; }
+    // An iCal feed (no username): read-only.
+    public bool ReadOnly { get; init; }
+    public bool PasswordSet { get; init; }
+    public bool Unreadable { get; init; }
 }

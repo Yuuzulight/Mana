@@ -173,6 +173,32 @@ public class VoiceDebugLogTests
         }
     }
 
+    // #965: the Settings slider shows the last speaker= scores, oldest first.
+    [Fact]
+    public void RecentSpeakerScores_ReadsTheLastFew()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mana-voice-log-" + Guid.NewGuid());
+        var path = Path.Combine(dir, "speech-debug.log");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllLines(path, new[]
+            {
+                "2026-09-29T14:03:12.345 len=1000ms whisper=ok speaker=0.812/31ms wake=yes",
+                "2026-09-29T14:03:13.000 speaker: gate=wakeWord enrolled=yes model=loaded threshold=0.45",
+                "2026-09-29T14:03:14.345 len=900ms whisper=skipped speaker=-0.050/28ms",
+                "2026-09-29T14:03:15.345 len=900ms whisper=ok speaker=0.401/30ms transcript=\"hi\"",
+            });
+
+            Assert.Equal(new[] { -0.05f, 0.401f }, VoiceDebugLog.RecentSpeakerScores(2, path));
+            Assert.Empty(VoiceDebugLog.RecentSpeakerScores(path: Path.Combine(dir, "missing.log")));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     private static short[] Filled(int length, short value)
     {
         var samples = new short[length];
