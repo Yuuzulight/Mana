@@ -81,6 +81,10 @@ internal sealed class ManaSettingsStore
 
     public string? VoiceprintProtected { get; set; }
 
+    // #965: Settings > Voice; null = SpeakerGate.DefaultThreshold.
+    // MANA_SPEAKER_THRESHOLD overrides it. Read each time listening starts.
+    public float? SpeakerThreshold { get; set; }
+
     private static readonly byte[] VoiceprintEntropy = Encoding.UTF8.GetBytes("Mana.NativeLauncher.Voiceprint");
 
     // #681: the prompt preset sent as presetId with every reply; null =
@@ -114,6 +118,11 @@ internal sealed class ManaSettingsStore
 
     // #912: Settings > Voice's camera toggle; off by default.
     public bool CameraSnapshots { get; set; }
+
+    // #911: the folders Mana may move and rename files in (full paths);
+    // null = Desktop, Downloads, Pictures and Documents, empty = none.
+    // Settings > Desktop (#997) edits it; read again on every move.
+    public List<string>? DesktopActionFolders { get; set; }
 
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.

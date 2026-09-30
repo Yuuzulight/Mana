@@ -162,4 +162,4 @@ function plainTextSecretKeys(filePath = path.join(__dirname, ".env")) {
     .map(([key]) => key);
 }
 
-module.exports = { loadEnvFile, plainTextSecretKeys, readKeyringSecrets };
+module.exports = { loadEnvFile, plainTextSecretKeys, readKeyringSecrets, readOnePasswordSecret };
