@@ -121,6 +121,13 @@ internal sealed class BrowserAutomationPanel : Form
 
     private async Task PollAsync()
     {
+        // The docked tool polls for itself; two pollers would double the
+        // requests against the backend's app-wide rate limit.
+        if (!keepOpen && dockedToolShowing())
+        {
+            Visible = false;
+            return;
+        }
         ManaBrowserAutomationActivity activity;
         try
         {
