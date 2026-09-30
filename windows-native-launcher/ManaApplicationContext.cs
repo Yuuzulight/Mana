@@ -171,6 +171,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles);
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
+        avatarOverlay.IsListening = () => voiceLoop.IsListening;
         // windows-launcher only runs its own clip-buffer capture timer
         // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
         // -- same gate here, so this launcher doesn't start silently
