@@ -76,6 +76,7 @@ function fakeExec(ghCalls, { labels = [], prs = [], issues = [], author = "Yuuzu
 function scriptedLoop(calls, answer, seen = []) {
   return async (prompt, policy, opts) => {
     seen.push({ prompt, opts });
+    opts.onRound?.(1, opts.maxRounds);
     for (const call of calls) {
       if (typeof call === "function") {
         call();
@@ -148,6 +149,9 @@ test("an issue goes from worktree to a pushed branch and a PR, never main", asyn
   assert.ok(!ghCalls.some((a) => a.includes("merge")), "she never merges");
   // Goal mode, capped at 20 rounds; tests ran in the worktree, without the backend's keys.
   assert.equal(seen[0].opts.maxRounds, 20);
+  // #1124: the round she's on, for the Background tasks panel.
+  assert.equal(status.round, 1);
+  assert.equal(status.maxRounds, 20);
   assert.match(seen[0].opts.goal, /^Implement issue #7/);
   assert.equal(testRuns[0].command, "node --test test/util.test.js");
   assert.equal(testRuns[0].cwd, path.join(worktree, "node-bot"));

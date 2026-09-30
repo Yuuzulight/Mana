@@ -72,7 +72,11 @@ test("#907 runs once a day at or after its time, through the proactive engine", 
   briefing.update({ topics: "GPUs" });
   assert.equal(briefing.maybeRun(), null); // before 08:00
   state.clock = at(30, 9, 0);
-  await briefing.maybeRun();
+  const run = briefing.maybeRun();
+  // #1124: what the Background tasks panel reads.
+  assert.deepEqual(briefing.status(), { enabled: true, time: "08:00", lastDay: new Date(at(30, 9, 0)).toDateString(), running: true });
+  await run;
+  assert.equal(briefing.status().running, false);
   assert.equal(briefing.maybeRun(), null); // once a day
   assert.deepEqual(searches, [
     ["GPUs news", "day"],

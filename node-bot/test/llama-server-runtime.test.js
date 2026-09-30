@@ -1442,15 +1442,25 @@ test("runToolAwareReply hits the round cap and forces a tools-disabled final ans
     fs: makeFakeFs(),
     fetch: fakeFetch,
     spawn: () => {
+      loadingSeen = runtime.getStatus().loading;
       serverUp = true;
       return makeFakeChild();
     },
     sleep: async () => {},
     registerExitHandlers: false,
   });
+  let loadingSeen = null;
 
   const policy = makeFakePolicy({ executeTool: () => "ok" });
-  const result = await runtime.runToolAwareReply("loop forever", policy, { maxRounds: 2 });
+  const rounds = [];
+  const result = await runtime.runToolAwareReply("loop forever", policy, {
+    maxRounds: 2,
+    onRound: (round, limit) => rounds.push([round, limit]),
+  });
+  // #1124: each round is reported, and the model load was visible while it ran.
+  assert.deepEqual(rounds, [[1, 2], [2, 2]]);
+  assert.ok(loadingSeen?.model, "loading is set while the server starts");
+  assert.equal(runtime.getStatus().loading, null);
 
   // 2 rounds (both requesting tools) + 1 forced tools-disabled final call.
   assert.equal(bodies.length, 3);
