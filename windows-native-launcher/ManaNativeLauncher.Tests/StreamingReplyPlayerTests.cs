@@ -31,7 +31,8 @@ public class StreamingReplyPlayerTests
             {
                 var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 using var document = JsonDocument.Parse(body);
-                synthLog.Add($"synth:{document.RootElement.GetProperty("text").GetString()}");
+                var emotion = document.RootElement.TryGetProperty("emotion", out var e) && e.ValueKind == JsonValueKind.String ? $"|{e.GetString()}" : "";
+                synthLog.Add($"synth:{document.RootElement.GetProperty("text").GetString()}{emotion}");
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new ByteArrayContent(new byte[] { 1, 2, 3 }),
@@ -429,7 +430,8 @@ public class StreamingReplyPlayerTests
     }
 
     // #623: each sentence's emotion tag reaches onSentencePlaying with its
-    // text, and the final event's is kept for a one-clip replay.
+    // text, and the final event's is kept for a one-clip replay. #909: and
+    // /synthesize, so it styles her voice too.
     [Fact]
     public async Task StreamReplyAndPlayAsync_PassesEachSentencesEmotionAndKeepsTheFinalOne()
     {
@@ -438,13 +440,15 @@ public class StreamingReplyPlayerTests
             "{\"type\":\"sentence\",\"text\":\"You're back!\",\"emotion\":\"happy\"}\n" +
             "{\"type\":\"final\",\"reply\":\"Hi. You're back!\",\"changed\":false,\"emotion\":\"happy\"}\n";
         var playing = new List<string>();
+        var synthLog = new List<string>();
         var player = new StreamingReplyPlayer(
-            BuildFakeClient(ndjson, []), _ => Task.FromResult(true), _ => { }, null,
+            BuildFakeClient(ndjson, synthLog), _ => Task.FromResult(true), _ => { }, null,
             (text, emotion, _) => playing.Add($"{text}|{emotion}"));
 
         await player.StreamReplyAndPlayAsync("hi");
 
         Assert.Equal(new[] { "Hi.|", "You're back!|happy" }, playing);
+        Assert.Equal(new[] { "synth:Hi.", "synth:You're back!|happy" }, synthLog);
         Assert.Equal("happy", player.FinalEmotion);
     }
 
