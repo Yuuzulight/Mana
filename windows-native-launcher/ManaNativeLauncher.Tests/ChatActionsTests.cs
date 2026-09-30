@@ -110,7 +110,13 @@ public class ChatActionsTests
     [InlineData("<img src=\"https://example.com/a.png\">", true)] // Folio loads nothing from the network
     public void HtmlArtifact_NeedsBrowser(string html, bool expected)
     {
-        Assert.Equal(expected, HtmlArtifact.NeedsBrowser(html));
+        Assert.Equal(expected, HtmlArtifact.BrowserReasons(html) is not null);
+    }
+
+    [Fact]
+    public void HtmlArtifact_SaysWhyAPageNeedsABrowser()
+    {
+        Assert.Equal("uses inline SVG", HtmlArtifact.BrowserReasons("<svg></svg>"));
     }
 
     [Theory]

@@ -52,7 +52,7 @@ internal sealed class ArtifactViewerForm : Form
     private readonly Panel diagramPanel = new();
     // #937: static HTML, drawn by Folio with the system's fonts. Folio loads
     // nothing but data: images and runs no scripts; pages that need more go
-    // to the browser instead (HtmlArtifact.NeedsBrowser).
+    // to the browser instead (HtmlArtifact.BrowserReasons).
     private readonly FolioView htmlView = new()
     {
         Dock = DockStyle.Fill,
@@ -143,7 +143,7 @@ internal sealed class ArtifactViewerForm : Form
         return how =>
         {
             var html = versioned.Language == "html";
-            if (html && (how == ArtifactOpen.Browser || (how == ArtifactOpen.Default && HtmlArtifact.NeedsBrowser(versioned.Content))))
+            if (html && (how == ArtifactOpen.Browser || (how == ArtifactOpen.Default && HtmlArtifact.BrowserReasons(versioned.Content) is not null)))
             {
                 HtmlArtifact.OpenInBrowser(versioned.Content);
                 return;
@@ -216,9 +216,9 @@ internal sealed class ArtifactViewerForm : Form
             textBox.Text = artifact.Content; // HTML's source too, when asked for or Folio can't draw it
             if (artifact.Language == "html" && !showSource)
             {
-                if (HtmlArtifact.NeedsBrowser(artifact.Content))
+                if (HtmlArtifact.BrowserReasons(artifact.Content) is { } whyBrowser)
                 {
-                    titleLabel.Text += " (needs a browser -- source shown)";
+                    titleLabel.Text += $" (needs a browser: {whyBrowser} -- source shown)";
                 }
                 else
                 {
@@ -294,7 +294,10 @@ internal sealed class ArtifactViewerForm : Form
 // whose CSP stops it making network requests.
 internal static class HtmlArtifact
 {
-    public static bool NeedsBrowser(string html) => ArtifactClassifier.Classify(html) != ArtifactKind.Static;
+    // Why the page needs a browser (the classifier's reasons, e.g. "uses
+    // inline SVG"), or null when Folio can draw it.
+    public static string? BrowserReasons(string html) =>
+        ArtifactClassifier.Classify(html) is { Kind: not ArtifactKind.Static } c ? string.Join(", ", c.Reasons) : null;
 
     public static bool IsWebLink(Uri uri) => uri.Scheme is "http" or "https";
 

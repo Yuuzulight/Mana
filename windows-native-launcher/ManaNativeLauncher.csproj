@@ -91,8 +91,8 @@
        0.1.0-m1.N, where N is the number of commits in that commit's
        history, then run pack-folio.ps1 (README, Quick Start). -->
   <PropertyGroup>
-    <FolioCommit>541a7f28cf0b8ed95c2fed86884a0c93a9cb28db</FolioCommit>
-    <FolioVersion>0.1.0-m1.127</FolioVersion>
+    <FolioCommit>ee4a2d38db2b8c267b47515e1222c105565cc7be</FolioCommit>
+    <FolioVersion>0.1.0-m1.190</FolioVersion>
   </PropertyGroup>
 
   <ItemGroup>

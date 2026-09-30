@@ -240,10 +240,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         {
             return new ChatAction($"Open {artifact.Language} content in new window", false, Run(ArtifactOpen.Default), Keep: true);
         }
-        var inMana = !HtmlArtifact.NeedsBrowser(artifact.Content);
+        var whyBrowser = HtmlArtifact.BrowserReasons(artifact.Content);
         return new ChatAction("Open", false, Run(ArtifactOpen.Default), Keep: true, Menu: new[]
         {
-            new ChatMenuItem(inMana ? "Open in Mana" : "Open in Mana (this page needs a browser)", inMana, Run(ArtifactOpen.InMana)),
+            new ChatMenuItem(whyBrowser is null ? "Open in Mana" : $"Open in Mana (needs a browser: {whyBrowser})", whyBrowser is null, Run(ArtifactOpen.InMana)),
             new ChatMenuItem("Open in browser", true, Run(ArtifactOpen.Browser)),
             new ChatMenuItem("View source", true, Run(ArtifactOpen.Source)),
             new ChatMenuItem("Save as...", true, Run(ArtifactOpen.SaveAs)),
