@@ -14,7 +14,7 @@ windows-launcher/dist/
 
 # Ignore virtualenvs and node modules
 **/venv/
-**/node_modules/
+**/node_modules
 win-bot/venv/
 
 # Ignore temp and logs

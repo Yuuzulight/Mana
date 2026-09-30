@@ -30,7 +30,8 @@ namespace Mana.NativeLauncher;
 // Kept out of the way:
 // - click-through: clicks land on whatever is underneath;
 // - the wash adapts to what's behind the bar (stronger over a busy game,
-//   nearly clear over a calm desktop), sampled from a ring just outside it;
+//   nearly clear over a calm desktop, and never below 4.5:1 text contrast
+//   for the backdrop's brightness), sampled from a ring just outside it;
 // - it almost disappears while the mouse is over it;
 // - the bar fades in and rises 4px over 150ms as it appears.
 internal sealed class CaptionOverlayForm : Form
@@ -165,9 +166,10 @@ internal sealed class CaptionOverlayForm : Form
         }
     }
 
-    // #701: while chat bubbles are on they carry her words, so the bar stays
-    // hidden; turning bubbles off brings it back from the next sentence.
-    // UI thread only (the tray toggle).
+    // The tray's Captions toggle (independent of chat bubbles since the UI
+    // review; #701 used to hide the bar whenever bubbles were on): while
+    // off the bar stays hidden; on again brings it back from the next
+    // sentence. UI thread only.
     private bool suppressed;
     public bool Suppressed
     {
@@ -281,6 +283,26 @@ internal sealed class CaptionOverlayForm : Form
     {
         var busy = Math.Clamp(luminanceStdDev / 70.0, 0, 1);
         return (byte)Math.Round(26 + busy * 114);
+    }
+
+    // The wash raised until the text reads at 4.5:1 (WCAG AA) on the glass
+    // over this backdrop, whose mean luma (0-255) is taken as a grey --
+    // e.g. the Mana preset's navy text over a dark, calm scene gets a
+    // stronger white wash rather than navy on near-black.
+    internal static byte WithContrastFloor(byte alpha, double backdropLuma, Color panel, Color text)
+    {
+        var textLuminance = DarkTheme.Luminance(text);
+        for (; alpha < 255; alpha++)
+        {
+            var a = alpha / 255.0;
+            int Mix(int channel) => (int)Math.Round(a * channel + (1 - a) * backdropLuma);
+            var glass = DarkTheme.Luminance(Color.FromArgb(Mix(panel.R), Mix(panel.G), Mix(panel.B)));
+            if ((Math.Max(glass, textLuminance) + 0.05) / (Math.Min(glass, textLuminance) + 0.05) >= 4.5)
+            {
+                break;
+            }
+        }
+        return alpha;
     }
 
     private void OnTimer()
@@ -414,7 +436,7 @@ internal sealed class CaptionOverlayForm : Form
                     return null;
                 }
                 var mean = sum / n;
-                return WashAlphaFor(Math.Sqrt(Math.Max(0, sumSq / n - mean * mean)));
+                return WithContrastFloor(WashAlphaFor(Math.Sqrt(Math.Max(0, sumSq / n - mean * mean))), mean, DarkTheme.Panel, DarkTheme.Text);
             }
             finally
             {

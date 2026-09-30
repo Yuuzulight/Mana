@@ -225,6 +225,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
+const { untrustedSources } = require("./ai/untrusted-content");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
 const { createMemoryVault } = require("./memory-vault");
 const {
@@ -251,6 +252,7 @@ const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
+const { createReverter } = require("./revert-pr");
 const { createSelfWork } = require("./self-work");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
@@ -296,6 +298,7 @@ const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtim
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
+const { crisisInstruction, withCrisisInstruction } = require("./utils/crisis-check");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -360,6 +363,19 @@ function createApp(deps = {}) {
   // fact recall falling back past its budget. Never waits.
   app.use(["/transcribe", "/transcribe-only", "/transcribe-partial", "/reply"], (req, res, next) => {
     if (req.method === "POST") warmMemoryModels();
+    next();
+  });
+  // Voice uploads are recordings of me: each one, and whatever ffmpeg and
+  // whisper wrote next to it, is deleted once its request is over --
+  // success, error or a dropped connection alike (multer's own routes and
+  // mobile-routes.js's share this tmp dir). A dropped request's handler may
+  // still be running, so that case is swept once more a bit later.
+  app.use((req, res, next) => {
+    res.once("close", () => {
+      if (!req.file) return;
+      deleteUploadFiles(req.file.path);
+      if (!res.writableFinished) setTimeout(() => deleteUploadFiles(req.file.path), 2 * 60 * 1000).unref();
+    });
     next();
   });
   	const upload = multer({ dest: path.join(__dirname, "tmp") });
@@ -894,7 +910,7 @@ function whisperThreads() {
 const whisperServer = createWhisperServer({
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
-  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env }),
+  findModel: () => whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() }),
   threads: whisperThreads,
   language: whisperLanguage,
   beamSize: WHISPER_BEAM_SIZE,
@@ -1972,27 +1988,6 @@ function parseTasklistCsvLine(line) {
   return values;
 }
 
-function getRunningProcessNames() {
-  if (process.platform !== "win32") {
-    return [];
-  }
-
-  const result = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
-    encoding: "utf8",
-    maxBuffer: 5 * 1024 * 1024,
-    windowsHide: true,
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || "tasklist failed");
-  }
-
-  return parseTasklistNames(result.stdout);
-}
-
 function parseTasklistNames(stdout) {
   return (stdout || "")
     .split(/\r?\n/)
@@ -2001,17 +1996,14 @@ function parseTasklistNames(stdout) {
     .map((name) => name.toLowerCase());
 }
 
+// The gaming watch's cached answer (polled every 30 s with a non-blocking
+// tasklist), never a fresh tasklist: this runs on every spoken reply and
+// every launcher status poll, and a spawnSync here stalled the event loop.
 function getGamingStatus() {
-  // Quick rundown: if one watched game process is running, Mana uses the lighter idle loop.
-  const runningProcesses = getRunningProcessNames();
-  const watchedNames = new Set(GAMING_PROCESS_NAMES);
-  const matchedProcesses = [
-    ...new Set(runningProcesses.filter((name) => watchedNames.has(name))),
-  ];
-
+  const game = gamingWatch.game();
   return {
-    gamingAppRunning: matchedProcesses.length > 0,
-    matchedProcesses,
+    gamingAppRunning: gamingWatch.isGaming(),
+    matchedProcesses: game ? [game] : [],
     watchedProcesses: GAMING_PROCESS_NAMES,
   };
 }
@@ -2076,6 +2068,46 @@ function ensureDirectory(dirPath) {
 }
 
 ensureDirectory(path.join(__dirname, "tmp"));
+
+// An upload's temp files are its multer name (32 random hex, no extension)
+// plus whatever ffmpeg/whisper appended: .wav, .out.json, .partial-out.json.
+// Both multer instances (here and mobile-routes.js) write to node-bot/tmp.
+function deleteUploadFiles(uploadPath) {
+  const dir = path.join(__dirname, "tmp");
+  const name = path.basename(uploadPath);
+  if (!/^[0-9a-f]{32}$/.test(name)) return;
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(name)) fs.rmSync(path.join(dir, entry), { force: true });
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't delete voice upload ${name}: ${e.message}`);
+  }
+}
+
+// On start: anything left in tmp/ from before (a crash, or builds that
+// kept every voice upload) that's over an hour old. Files only -- tmp/
+// also holds the OCR model cache in tmp/tesseract.
+function sweepStaleTmpFiles(dir = path.join(__dirname, "tmp"), maxAgeMs = 60 * 60 * 1000, now = Date.now()) {
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = path.join(dir, entry.name);
+      try {
+        if (now - fs.statSync(file).mtimeMs > maxAgeMs) {
+          fs.rmSync(file, { force: true });
+          removed += 1;
+        }
+      } catch (e) {
+        console.warn(`[Mana] Couldn't delete old temp file ${entry.name}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[Mana] Couldn't clean ${dir}: ${e.message}`);
+  }
+  return removed;
+}
 
 function registerRoutes(app, upload, deps = {}) {
   // Fires the same compaction/review pass the hourly timer runs, but on the
@@ -2556,6 +2588,7 @@ function registerRoutes(app, upload, deps = {}) {
         memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+        whisperLanguage: whisperLanguage(),
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2577,6 +2610,7 @@ function registerRoutes(app, upload, deps = {}) {
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
       memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
+      whisperLanguage: whisperLanguage(),
     }),
   });
   if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {
@@ -2616,6 +2650,14 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/agent/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ stopped: agentActivity.stop(String(req.body?.id ?? "")) });
+  });
+
+  // #1011: an issue and a revert PR for a merged PR that broke something;
+  // the launcher then rolls its build back (try-pr.ps1 -Previous).
+  const reverter = deps.reverter || createReverter();
+  app.post("/updates/revert", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(await reverter.revert(req.body?.pr, req.body?.reason));
   });
 
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
@@ -2797,7 +2839,7 @@ function registerRoutes(app, upload, deps = {}) {
       ttsBin: TTS_BIN,
       ttsProvider: TTS_PROVIDER,
       whisperBin: whisperDiscovery.findWhisperBin({ env }),
-      whisperModel: whisperDiscovery.findWhisperModel({ env }),
+      whisperModel: whisperDiscovery.findWhisperModel({ env, language: whisperLanguage() }),
     });
     Object.assign(
       components,
@@ -3433,7 +3475,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   function runWhisperCli(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
@@ -3546,7 +3588,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   async function runWhisperCliPartial(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env });
+    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
         "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
@@ -4178,6 +4220,11 @@ function registerRoutes(app, upload, deps = {}) {
     if (replyMeta && replyMeta.systemPatch) {
       selectedSystemPrompt = `${selectedSystemPrompt}\n\n${replyMeta.systemPatch}`;
     }
+    // A message about suicide or self-harm gets a care-and-hotlines note for
+    // this turn -- per turn, so last, like the mode text. Every chat path
+    // (typed, voice, stream, mobile) builds its prompt here.
+    const crisisNote = crisisInstruction(transcript, deps.env || process.env);
+    if (crisisNote) selectedSystemPrompt = `${selectedSystemPrompt}\n\n${crisisNote}`;
 
     // Issue #282: memory (session summary/recent-turns, cross-session
     // facts) becomes its own positionable system-role messages -- "early"
@@ -4821,7 +4868,7 @@ function registerRoutes(app, upload, deps = {}) {
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
             // #1010: "let me try your PR" / "back to main" -- a PR number
             // only from my own message.
-            ...(userChat ? [createTryPrToolSource({ userMessage: transcript })] : []),
+            ...(userChat ? [createTryPrToolSource({ userMessage: transcript, revert: reverter.revert })] : []),
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
             // #906: my email and calendar, only in my own chat (never a
@@ -4899,6 +4946,9 @@ function registerRoutes(app, upload, deps = {}) {
                     activeApprovalGate.getToolApprovalMode(),
                     (deps.env || process.env).MANA_TOOL_APPROVAL,
                   ),
+                  // A web page, search/wiki results or the browser tab
+                  // (framed by ai/untrusted-content.js) came in with the turn.
+                  untrustedSources: untrustedSources(promptText),
                 });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
@@ -5565,9 +5615,10 @@ function registerRoutes(app, upload, deps = {}) {
   // instead of only talking to Mana's own bespoke routes. Proxies straight
   // through to the persistent llama-server's own OpenAI endpoint; unlike
   // runLocalAssistantReply this does not inject Mana's persona system
-  // prompt, since external clients bring their own messages.
+  // prompt, since external clients bring their own messages -- apart from
+  // the crisis note (utils/crisis-check.js) when the last user message needs it.
   app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
-    if (!llamaServerRuntime.isEnabled()) {
+    if (!activeLlamaServerRuntime.isEnabled()) {
       return res.status(503).json({
         error: {
           message:
@@ -5576,7 +5627,7 @@ function registerRoutes(app, upload, deps = {}) {
       });
     }
     try {
-      const upstream = await llamaServerRuntime.proxyChatCompletion(req.body);
+      const upstream = await activeLlamaServerRuntime.proxyChatCompletion(withCrisisInstruction(req.body, deps.env || process.env));
       res.status(upstream.status);
       const contentType = upstream.headers.get("content-type");
       if (contentType) res.type(contentType);
@@ -5590,7 +5641,7 @@ function registerRoutes(app, upload, deps = {}) {
       // killing the persistent llama-server process out from under the
       // client. Reschedule once the response is actually done so the idle
       // window is measured from real completion, not dispatch time.
-      res.on("close", () => llamaServerRuntime.scheduleIdleShutdown());
+      res.on("close", () => activeLlamaServerRuntime.scheduleIdleShutdown());
       Readable.fromWeb(upstream.body).pipe(res);
     } catch (e) {
       res.status(502).json({ error: { message: e?.message || String(e) } });
@@ -5999,6 +6050,8 @@ async function waitForPythonService(
 
 async function startServer() {
   const port = process.env.PORT || 5005;
+  const sweptTmpFiles = sweepStaleTmpFiles();
+  if (sweptTmpFiles) console.log(`[Mana Boot] Deleted ${sweptTmpFiles} old voice upload/temp file(s) from tmp/.`);
 
   // The retriever only enriches replies (retrieval context, token counts) and
   // every caller has a heuristic fallback, so the backend starts without it;
@@ -6128,4 +6181,5 @@ module.exports = {
   selectLlamaModelProfileForPrompt,
   shouldUseRemoteAi,
   startServer,
+  sweepStaleTmpFiles,
 };

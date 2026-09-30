@@ -3,17 +3,18 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createTryPrToolSource, TRY_PR_TOOL, BACK_TO_MAIN_TOOL } = require("../ai/try-pr-tool-source");
+const { createTryPrToolSource, TRY_PR_TOOL, BACK_TO_MAIN_TOOL, REVERT_TOOL } = require("../ai/try-pr-tool-source");
 
 const root = path.resolve("mana-checkout");
 
-function source(userMessage, prs = []) {
+function source(userMessage, prs = [], revert = async () => ({ ok: false, error: "no" })) {
   const runs = [];
   const tools = createTryPrToolSource({
     userMessage,
     repoRoot: root,
     gh: async () => prs,
     run: (script, args) => runs.push({ script, args }),
+    revert,
   });
   const call = (name, args) => tools.executeTool(name, args).then(JSON.parse);
   return { call, runs };
@@ -48,4 +49,21 @@ test("back to main", async () => {
   const { call, runs } = source("ok, back to main");
   assert.equal((await call(BACK_TO_MAIN_TOOL, {})).status, "ok");
   assert.deepEqual(runs, [{ script, args: ["-Main"] }]);
+});
+
+// #1011
+test("revert: a merged PR from my message gets a revert PR, then the build rolls back", async () => {
+  const reverts = [];
+  const revert = async (pr, reason) => (reverts.push([pr, reason]), { ok: true, issueUrl: "i", prUrl: "p", mergeCommit: "abc123" });
+  const { call, runs } = source("#1018 broke the chat, revert it", [], revert);
+  assert.match((await call(REVERT_TOOL, { pr: 1019 })).error, /#1019 isn't in Yuuzulight's message/);
+  assert.equal(reverts.length, 0);
+  const done = await call(REVERT_TOOL, { pr: 1018, reason: "the chat broke" });
+  assert.equal(done.revertPr, "p");
+  assert.deepEqual(reverts, [[1018, "the chat broke"]]);
+  assert.deepEqual(runs, [{ script, args: ["-Previous", "-Without", "abc123"] }]);
+
+  const failed = source("revert #1018");
+  assert.equal((await failed.call(REVERT_TOOL, { pr: 1018 })).error, "no");
+  assert.equal(failed.runs.length, 0, "no rollback without a revert PR");
 });
