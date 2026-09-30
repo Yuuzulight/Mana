@@ -61,6 +61,7 @@ internal static class GlassSurface
         var attachment = new Attachment(new GlassShimmer(form));
         Attached.Add(form, attachment);
         var undo = attachment.Undo;
+        RegisterShimmer(form, attachment.Shimmer);
 
         EnableDoubleBuffering(form);
         var layout = form.BackgroundImageLayout;
@@ -181,6 +182,10 @@ internal static class GlassSurface
     // records nothing.
     internal static void Style(Control control, GlassShimmer? shimmer, Dictionary<Control, List<Action>>? undo = null)
     {
+        if (shimmer is not null)
+        {
+            RegisterShimmer(control, shimmer);
+        }
         var isPanelColour = control.BackColor == DarkTheme.Panel || control.BackColor == DarkTheme.Panel2;
         var backColor = control.BackColor;
         switch (control)
@@ -254,7 +259,6 @@ internal static class GlassSurface
         EnableDoubleBuffering(panel);
         PaintEventHandler onPaint = (_, e) => PaintGlassEdges(e.Graphics, panel.ClientRectangle, shimmer?.ProgressFor(panel));
         panel.Paint += onPaint;
-        shimmer?.Register(panel);
         Record(undo, panel, () =>
         {
             panel.Paint -= onPaint;
@@ -281,6 +285,7 @@ internal static class GlassSurface
             Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: list.BackColor != DarkTheme.Background));
         }
         EventHandler onChange = (_, _) => Refresh();
+        EnableDoubleBuffering(list); // the shimmer repaints the open chat's row every frame
         list.BackgroundImageTiled = false;
         list.SizeChanged += onChange;
         list.LocationChanged += onChange;
@@ -296,6 +301,33 @@ internal static class GlassSurface
             list.BackgroundImageTiled = tiled;
         });
     }
+
+    // The #652 mockup's shimmer, only where it puts it: each surface gets a
+    // delay (its --d) and, if only part of it shines (the open chat's card,
+    // the title strip), that part. Kept per control, so a live theme switch
+    // back to Mana picks it up again when it restyles the window.
+    private static readonly ConditionalWeakTable<Control, Tuple<int, Func<Rectangle>?>> ShimmerSpecs = new();
+
+    public static void Shimmer(Control control, int delayMs, Func<Rectangle>? area = null)
+    {
+        ShimmerSpecs.AddOrUpdate(control, Tuple.Create(delayMs, area));
+        if (control.FindForm() is { } form && Attached.TryGetValue(form, out var attachment))
+        {
+            RegisterShimmer(control, attachment.Shimmer);
+        }
+    }
+
+    private static void RegisterShimmer(Control control, GlassShimmer shimmer)
+    {
+        if (ShimmerSpecs.TryGetValue(control, out var spec))
+        {
+            shimmer.Register(control, spec.Item1, spec.Item2);
+        }
+    }
+
+    // How far the sheen is across `control` right now, or null when it isn't shining.
+    public static float? SheenProgress(Control control) =>
+        control.FindForm() is { } form && Attached.TryGetValue(form, out var attachment) ? attachment.Shimmer.ProgressFor(control) : null;
 
     internal static void PaintGlassEdges(Graphics g, Rectangle bounds, float? sheenProgress)
     {
@@ -313,31 +345,28 @@ internal static class GlassSurface
         g.DrawLine(top, bounds.X + 1, bounds.Y + 1, bounds.Right - 2, bounds.Y + 1);
     }
 
-    // A slanted band of light that sweeps left to right as progress goes 0 -> 1.
-    private static void PaintSheen(Graphics g, Rectangle bounds, float progress)
+    // The mockup's .shimmer::after: a 115deg band (clear, white .6, sky .5,
+    // clear at 38/48/52/62%) on an image 260% as wide as the surface, slid
+    // from background-position 130% to -130% as progress goes 0 -> 1.
+    internal static void PaintSheen(Graphics g, Rectangle bounds, float progress)
     {
-        const float slant = 0.45f;
-        var bandWidth = Math.Max(60f, bounds.Width * 0.35f);
-        var travel = bounds.Width + bandWidth * 2 + bounds.Height * slant;
-        var x = bounds.X - bandWidth - bounds.Height * slant + progress * travel;
-        var band = new RectangleF(x, bounds.Y, bandWidth, bounds.Height);
-        using var brush = new LinearGradientBrush(band, Color.Transparent, Color.Transparent, LinearGradientMode.Horizontal)
+        var imageWidth = bounds.Width * 2.6f;
+        var position = 1.3f - 2.6f * progress;
+        var image = new RectangleF(bounds.X - 1.6f * bounds.Width * position, bounds.Y, imageWidth, bounds.Height);
+        var visible = RectangleF.Intersect(image, bounds);
+        if (visible.Width <= 0 || visible.Height <= 0)
+        {
+            return;
+        }
+        using var brush = new LinearGradientBrush(image, Color.Transparent, Color.Transparent, 25f, false) // CSS 115deg
         {
             InterpolationColors = new ColorBlend
             {
-                Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(120, 255, 255, 255), Color.FromArgb(90, 227, 241, 253), Color.FromArgb(0, 227, 241, 253) },
-                Positions = new[] { 0f, 0.45f, 0.55f, 1f },
+                Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), Color.FromArgb(153, 255, 255, 255), Color.FromArgb(128, 227, 241, 253), Color.FromArgb(0, 227, 241, 253), Color.FromArgb(0, 227, 241, 253) },
+                Positions = new[] { 0f, 0.38f, 0.48f, 0.52f, 0.62f, 1f },
             },
         };
-        var saved = g.Transform;
-        var clip = g.Clip;
-        g.SetClip(bounds, CombineMode.Intersect);
-        // Shear about the rect's top edge so the band stays inside it.
-        using var shear = new Matrix(1, 0, slant, 1, -slant * bounds.Y, 0);
-        g.MultiplyTransform(shear);
-        g.FillRectangle(brush, band);
-        g.Transform = saved;
-        g.Clip = clip;
+        g.FillRectangle(brush, visible);
     }
 
     // A glass button in the Mana preset (gloss: the mockup's glossy accent
@@ -476,67 +505,98 @@ internal static class GlassSurface
     private static void EnableDoubleBuffering(Control control) => DoubleBufferedProperty.SetValue(control, true);
 }
 
-// Sweeps a sheen across one glass panel at a time: 1.4s per sweep, 9s
-// apart, only while its window is the active one, and never when Windows'
-// "Animation effects" setting is off.
+// Runs the mockup's shimmer: every registered surface shines once per 9s
+// cycle, its own delay apart, the band crossing in the cycle's last 30%
+// (2.7s, eased). Only while its window is the active one, and never when
+// Windows' "Animation effects" setting is off (the reduced-motion setting).
 internal sealed class GlassShimmer : IDisposable
 {
     private const int FrameMs = 33;
-    private const int SweepMs = 1400;
-    private const int GapMs = 9000;
+    internal const int PeriodMs = 9000;
+    internal const int SweepMs = 2700;
 
     private readonly Form form;
-    private readonly List<Control> panels = new();
+    private readonly Dictionary<Control, (int DelayMs, Func<Rectangle>? Area)> surfaces = new();
+    private readonly HashSet<Control> shining = new();
     private readonly System.Windows.Forms.Timer timer = new();
     private readonly Stopwatch clock = Stopwatch.StartNew();
-    private Control? active;
-    private int nextIndex;
-    private long sweepStartMs;
-    private long nextSweepMs = 2500;
+    private readonly bool enabled = AnimationsEnabled();
 
     public GlassShimmer(Form form)
     {
         this.form = form;
         timer.Tick += OnTick;
-        if (AnimationsEnabled())
+        if (enabled)
         {
             timer.Interval = FrameMs;
             timer.Start();
         }
     }
 
-    public void Register(Control panel)
+    public void Register(Control control, int delayMs, Func<Rectangle>? area)
     {
-        panels.Add(panel);
-        panel.Disposed += (_, _) => panels.Remove(panel);
+        if (!surfaces.ContainsKey(control))
+        {
+            control.Disposed += (_, _) =>
+            {
+                surfaces.Remove(control);
+                shining.Remove(control);
+            };
+        }
+        surfaces[control] = (delayMs, area);
     }
 
-    public float? ProgressFor(Control panel) =>
-        panel == active ? Math.Clamp((clock.ElapsedMilliseconds - sweepStartMs) / (float)SweepMs, 0f, 1f) : null;
+    public float? ProgressFor(Control control) =>
+        enabled && Form.ActiveForm == form && surfaces.TryGetValue(control, out var surface) ? SheenAt(clock.ElapsedMilliseconds, surface.DelayMs) : null;
+
+    // The eased sweep progress `elapsedMs` into the animation, or null
+    // outside the sweep (CSS ease-in-out, approximated by smoothstep).
+    internal static float? SheenAt(long elapsedMs, int delayMs)
+    {
+        var t = elapsedMs - delayMs;
+        var into = t % PeriodMs - (PeriodMs - SweepMs);
+        if (t < 0 || into < 0)
+        {
+            return null;
+        }
+        var x = into / (float)SweepMs;
+        return x * x * (3 - 2 * x);
+    }
 
     private void OnTick(object? sender, EventArgs e)
     {
+        var active = Form.ActiveForm == form && form.Visible;
         var now = clock.ElapsedMilliseconds;
-        if (active is null)
+        var untilNext = (long)PeriodMs;
+        foreach (var (control, surface) in surfaces)
         {
-            if (now < nextSweepMs || panels.Count == 0 || Form.ActiveForm != form || !form.Visible)
+            var on = active && SheenAt(now, surface.DelayMs) is not null;
+            if (on || shining.Contains(control))
             {
-                timer.Interval = (int)Math.Clamp(nextSweepMs - now, FrameMs, GapMs);
-                return;
+                // The frame after a sweep clears the band.
+                if (surface.Area is { } area)
+                {
+                    control.Invalidate(area(), false);
+                }
+                else
+                {
+                    control.Invalidate(true);
+                }
             }
-            nextIndex %= panels.Count;
-            active = panels[nextIndex++];
-            sweepStartMs = now;
-            timer.Interval = FrameMs;
+            if (on)
+            {
+                shining.Add(control);
+            }
+            else
+            {
+                shining.Remove(control);
+                var t = now - surface.DelayMs;
+                var wait = t < 0 ? -t + PeriodMs - SweepMs : (PeriodMs - SweepMs - t % PeriodMs + PeriodMs) % PeriodMs;
+                untilNext = Math.Min(untilNext, wait);
+            }
         }
-
-        var sweeping = active;
-        if (now - sweepStartMs >= SweepMs || Form.ActiveForm != form)
-        {
-            active = null;
-            nextSweepMs = now + GapMs;
-        }
-        sweeping.Invalidate(true);
+        // Inactive, it checks back twice a second to pick up when it's activated again.
+        timer.Interval = shining.Count > 0 ? FrameMs : active ? (int)Math.Clamp(untilNext, FrameMs, PeriodMs) : 500;
     }
 
     public void Dispose()
