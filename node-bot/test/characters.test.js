@@ -13,11 +13,13 @@ process.env.MANA_ACP_MEMORY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mana-ch
 const {
   characterFilePath,
   createCharacterStore,
+  defaultPromptOf,
   handoffLine,
   perCharacter,
   personaOf,
 } = require("../characters");
 const { createCharactersCapability } = require("../capabilities/characters-capability");
+const { DEFAULT_SYSTEM_PROMPT } = require("../persona");
 const { createMoodStore } = require("../mood-store");
 const { createTtsRuntime } = require("../tts-runtime");
 const { withServer } = require("./helpers");
@@ -39,6 +41,8 @@ test("Mana is the default; Evil Mana is built in and uses Mana's voice and model
   assert.match(personaOf(evil), /^You are Evil Mana/);
   assert.match(personaOf(evil), /may call you Mana; they mean you, Evil Mana/);
   assert.equal(personaOf(store.get("mana")), store.get("mana").persona);
+  assert.equal(defaultPromptOf(store.get("mana")), DEFAULT_SYSTEM_PROMPT, "Mana's is unchanged");
+  assert.match(defaultPromptOf(evil), /^You are Evil Mana[\s\S]*Speak naturally for spoken conversation/);
 });
 
 test("characters.json adds characters and overrides only the fields it sets", () => {

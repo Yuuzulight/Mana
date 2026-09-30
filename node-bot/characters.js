@@ -22,7 +22,7 @@
 // layer are her own (perCharacter below, wired in server.js).
 const fs = require("node:fs");
 const path = require("node:path");
-const { MANA_PERSONA } = require("./persona");
+const { MANA_PERSONA, SPOKEN_STYLE } = require("./persona");
 
 const DEFAULT_ID = "mana";
 const DEFAULT_FILE_PATH = path.join(__dirname, "data", "characters.json");
@@ -184,6 +184,11 @@ function personaOf(character) {
   return `${character.persona}\n\nOther instructions here may call you Mana; they mean you, ${character.name}.`;
 }
 
+// persona.js's DEFAULT_SYSTEM_PROMPT for a character: the prompt of every
+// model call that doesn't build its own (proactive lines like the daily
+// briefing and screen remarks, fallbacks), so those speak as her too.
+const defaultPromptOf = (character) => `${personaOf(character)} ${SPOKEN_STYLE}`;
+
 // A store with the same methods whose calls go to the active character's
 // own instance, made by create(id) on first use -- so every existing caller
 // of the mood/personality store gets the active character's without change.
@@ -209,6 +214,7 @@ module.exports = {
   DEFAULT_FILE_PATH,
   characterFilePath,
   createCharacterStore,
+  defaultPromptOf,
   handoffLine,
   perCharacter,
   personaOf,
