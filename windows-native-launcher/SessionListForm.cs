@@ -21,11 +21,9 @@ namespace Mana.NativeLauncher;
 // drag/resize/snap and keyboard/screen-reader behavior, and then needed a
 // stateful AllowExit escape hatch to work around -- see DarkTheme.ApplyForm).
 // The Mana preset's glass title strip (SessionListForm.Caption.cs) keeps the
-// native frame and hands all of that back to Windows. The rail's
-// Browser/Terminal/Artifacts/Tasks icons are kept as #538 had them --
-// none of those tools exist in this app yet, so each opens the same
-// slide-out panel saying so directly, rather than pretending to be a
-// finished feature or being silently dead.
+// native frame and hands all of that back to Windows. Of #538's rail
+// (Browser/Terminal/Artifacts/Tasks) only Artifacts exists in this app
+// (the artifact viewer); the others are left off until they're built.
 //
 // A standalone window for now (windows-launcher's own version lives
 // inside its main app window) -- created once and reused (Hide, not
@@ -56,7 +54,6 @@ internal sealed partial class SessionListForm : Form
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
-    private readonly Font toolPanelTitleFont;
 
     // One shared ToolTip serving every rail button -- SetToolTip(control,
     // caption) is the normal WinForms pattern for exactly this (a per-
@@ -86,15 +83,16 @@ internal sealed partial class SessionListForm : Form
     // which the ReplyEnded handler below picks up.
     private string? activeSessionId;
 
-    // Which rail placeholder (if any) the slide-out tool panel is
-    // currently showing -- null means the panel is closed. See
-    // ToggleToolPlaceholder.
-    private string? openTool;
+    // The rail's Artifacts icon; ManaApplicationContext owns the viewer.
+    public Action? ShowArtifacts { get; set; }
 
-    // When pinned, re-clicking the rail icon that's already open no
-    // longer closes the panel -- only the panel's own × does. See
-    // SetToolPanelPinned/CloseToolPanel.
-    private bool toolPanelPinned;
+    // Under the search box: why the list couldn't load / a chat couldn't be
+    // renamed or deleted (with Retry), or "No chats match" for a search.
+    private readonly Panel listStatus = new() { Dock = DockStyle.Top, Height = 26, Visible = false, BackColor = Color.Transparent };
+    private readonly Label listStatusLabel = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = DarkTheme.Muted, AutoEllipsis = true };
+    private readonly Button listRetryButton = new() { Text = "Retry", Dock = DockStyle.Right, Width = 56 };
+    private string? listError;
+    private Func<Task>? listRetry;
 
     public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatView chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog)
     {
@@ -161,7 +159,7 @@ internal sealed partial class SessionListForm : Form
         // -- switching sessions from a stray selection click would be a
         // worse native experience than the sidebar's always-visible list
         // made single-click safe for.
-        list.MouseDoubleClick += OnListDoubleClick;
+        list.ItemActivate += (_, _) => SwitchToSelected(); // double-click or Enter
         list.AfterLabelEdit += OnAfterLabelEdit;
 
         var contextMenu = new ContextMenuStrip();
@@ -200,6 +198,7 @@ internal sealed partial class SessionListForm : Form
         avatarVisual.Paint += OnPaintAvatarVisual;
 
         avatarZoomButton.Text = "⤢";
+        avatarZoomButton.AccessibleName = "Avatar framing"; // the tooltip says which
         avatarZoomButton.Size = new Size(20, 20);
         // Sidebar starts at 240px (see sidebar's own Width below) and is
         // now user-resizable via sidebarSplitter -- this is only the
@@ -229,6 +228,7 @@ internal sealed partial class SessionListForm : Form
         else
         {
             railToolTip.SetToolTip(avatarZoomButton, "Bring the avatar overlay to the front");
+            avatarZoomButton.AccessibleName = "Bring the avatar overlay to the front";
             avatarZoomButton.Click += (_, _) =>
             {
                 avatarOverlay.Show();
@@ -286,7 +286,19 @@ internal sealed partial class SessionListForm : Form
         // Reverse dock order again (last added docks first): the avatar
         // card (bottom) and new-chat button (top) stake their strips before
         // the list fills what's left.
+        DarkTheme.ApplyButton(listRetryButton);
+        listRetryButton.Click += async (_, _) =>
+        {
+            if (listRetry is { } retry)
+            {
+                SetListError(null);
+                await retry();
+            }
+        };
+        listStatus.Controls.Add(listStatusLabel);
+        listStatus.Controls.Add(listRetryButton);
         sidebar.Controls.Add(list);
+        sidebar.Controls.Add(listStatus);
         sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(searchField);
         sidebar.Controls.Add(Gap(DockStyle.Top));
@@ -310,80 +322,16 @@ internal sealed partial class SessionListForm : Form
             }
         };
 
-        var toolPanelLabel = new Label
-        {
-            Dock = DockStyle.Fill,
-            ForeColor = DarkTheme.Muted,
-            Padding = new Padding(12),
-            TextAlign = ContentAlignment.TopLeft,
-        };
-        toolPanelTitleFont = new Font(toolPanelLabel.Font, FontStyle.Bold);
-        var toolPanelTitleLabel = new Label
-        {
-            Dock = DockStyle.Fill,
-            ForeColor = DarkTheme.Text,
-            Font = toolPanelTitleFont,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Padding = new Padding(10, 0, 0, 0),
-        };
-        var toolCloseButton = new Button { Text = "×", Dock = DockStyle.Right, Width = 26, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Muted };
-        toolCloseButton.FlatAppearance.BorderSize = 0;
-        var toolPinButton = new Button { Text = "Pin", Dock = DockStyle.Right, Width = 40, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Muted };
-        toolPinButton.FlatAppearance.BorderSize = 0;
-        railToolTip.SetToolTip(toolPinButton, "Pin panel open");
-        railToolTip.SetToolTip(toolCloseButton, "Close");
-        var toolPanelHeader = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = DarkTheme.Panel };
-        // Last added docks first: close claims the outermost-right strip,
-        // pin sits just inside it, and the title label fills what's left.
-        toolPanelHeader.Controls.Add(toolPanelTitleLabel);
-        toolPanelHeader.Controls.Add(toolPinButton);
-        toolPanelHeader.Controls.Add(toolCloseButton);
-
-        var toolPanel = new Panel
-        {
-            Dock = DockStyle.Right,
-            Width = 220,
-            Visible = false,
-            BackColor = DarkTheme.Panel2,
-        };
-        // Header (Top) docks before the label (Fill), so it's added last.
-        toolPanel.Controls.Add(toolPanelLabel);
-        toolPanel.Controls.Add(toolPanelHeader);
-
-        // Drag-resizable the same way as sidebarSplitter above (min 160,
-        // max 420 clamped on SplitterMoved), and kept in step with
-        // toolPanel's own Visible -- otherwise closing the panel would
-        // leave this 4px bar stranded between the rail and the chat log.
-        var toolPanelSplitter = new Splitter { Dock = DockStyle.Right, Width = 4, BackColor = DarkTheme.Border, MinSize = 160, MinExtra = 240, Visible = false };
-        toolPanelSplitter.SplitterMoved += (_, _) =>
-        {
-            if (toolPanel.Width > 420)
-            {
-                toolPanel.Width = 420;
-            }
-        };
-
-        // #538's own rail order (top to bottom): Browser, Terminal,
-        // Artifacts, Tasks, then Settings. None of the first four exist
-        // in this app yet -- kept as honest placeholders (clicking one
-        // opens the same slide-out panel #538's own ToggleTool did,
-        // saying so directly) rather than silently dead buttons.
-        var railSettingsButton = MakeRailButton("settings", "Settings"); // the rail's one real, wired icon
+        // #538's rail: Artifacts on top, Settings docked at the bottom.
+        // (#538's Browser, Terminal and Tasks icons stay off until those
+        // tools exist.)
+        var railSettingsButton = MakeRailButton("settings", "Settings");
         railSettingsButton.Dock = DockStyle.Bottom;
         railSettingsButton.Click += (_, _) => OpenSettings();
         toolRail.Controls.Add(railSettingsButton);
-        // Reversed so Browser (docked last-added-first) ends up on top.
-        foreach (var (icon, label) in new[] { ("tasks", "Background tasks"), ("artifacts", "Artifacts"), ("terminal", "Terminal"), ("browser", "Browser") })
-        {
-            var button = MakeRailButton(icon, label);
-            button.Click += (_, _) => ToggleToolPlaceholder(label, toolPanel, toolPanelSplitter, toolPanelTitleLabel, toolPanelLabel);
-            toolRail.Controls.Add(button);
-        }
-
-        toolCloseButton.Click += (_, _) => CloseToolPanel(toolPanel, toolPanelSplitter, toolPinButton);
-        toolPinButton.Click += (_, _) => SetToolPanelPinned(toolPinButton, !toolPanelPinned);
-        // Rail order matches #538's: Browser/Terminal/Artifacts/Tasks top
-        // to bottom, Settings docked at the bottom.
+        var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
+        railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
+        toolRail.Controls.Add(railArtifactsButton);
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // Last added docks first: the message box claims the bottom strip,
@@ -478,15 +426,13 @@ internal sealed partial class SessionListForm : Form
         // Dock order matters, and WinForms docks in REVERSE of the Controls
         // collection: the last control added claims its edge first. So the
         // intended docking sequence -- sidebar, its splitter, toolRail
-        // (outermost right), toolPanel, its splitter, then chatArea filling
-        // what's left -- is added back to front.
+        // (outermost right), then chatArea filling what's left -- is added
+        // back to front.
         // (Adding them front to back docked chatArea first: it took the
         // whole window and the rest were laid over it, hiding the first
         // lines of chat and clipping both sides.) Each Splitter still sits
         // next to the control it resizes.
         Controls.Add(chatArea);
-        Controls.Add(toolPanelSplitter);
-        Controls.Add(toolPanel);
         Controls.Add(toolRail);
         Controls.Add(sidebarSplitter);
         Controls.Add(sidebar);
@@ -778,7 +724,21 @@ internal sealed partial class SessionListForm : Form
         Panel Gap() => new() { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
         var field = GlassSurface.Field(box, new Padding(12, 11, 12, 4));
         field.Dock = DockStyle.Fill;
-        var panel = new Panel { Dock = DockStyle.Bottom, Height = 74, Padding = new Padding(32, 12, 32, 18), BackColor = DarkTheme.Background };
+        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(32, 12, 32, 18), BackColor = DarkTheme.Background };
+        // Grows with what's typed up to MaxComposerLines, then scrolls.
+        // (Changing ScrollBars recreates the box's handle, so only on a change.)
+        void FitComposer()
+        {
+            var lines = box.GetLineFromCharIndex(box.TextLength) + 1;
+            panel.Height = ComposerHeight(lines, box.Font.Height);
+            var bars = lines > MaxComposerLines ? ScrollBars.Vertical : ScrollBars.None;
+            if (box.ScrollBars != bars)
+            {
+                box.ScrollBars = bars;
+            }
+        }
+        box.TextChanged += (_, _) => FitComposer();
+        box.SizeChanged += (_, _) => FitComposer(); // wrapping follows the width
         // Docked last-added first: Send at the far right, then Think, the mic, then the box.
         panel.Controls.Add(field);
         panel.Controls.Add(Gap());
@@ -789,6 +749,13 @@ internal sealed partial class SessionListForm : Form
         panel.Controls.Add(send);
         return panel;
     }
+
+    private const int MaxComposerLines = 8;
+
+    // The #652 mockup's 74px composer for one line, a line taller per
+    // wrapped or typed line up to MaxComposerLines.
+    internal static int ComposerHeight(int lines, int lineHeight) =>
+        74 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
     private const string DeepThinkingOnTooltip = "Deep thinking: on -- slower, more careful replies. Click to turn off.";
     private const string DeepThinkingOffTooltip = "Deep thinking: off -- click for slower, more careful replies";
@@ -922,18 +889,10 @@ internal sealed partial class SessionListForm : Form
         button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
         // No Text -- these are line-icon glyphs drawn in the #652 mockup's
         // rail style rather than approximated with Unicode symbol
-        // characters. The open tool's icon is lit like the mockup's active one.
-        button.Paint += (_, e) =>
-        {
-            var open = openTool == tooltip;
-            if (open)
-            {
-                using var lit = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(217, 238, 231, 248) : DarkTheme.Panel2);
-                e.Graphics.FillRectangle(lit, button.ClientRectangle);
-            }
-            DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : button.ForeColor, icon);
-        };
+        // characters -- so the tooltip is also the screen reader's name.
+        button.Paint += (_, e) => DrawRailIcon(e.Graphics, button.ClientRectangle, button.ForeColor, icon);
         railToolTip.SetToolTip(button, tooltip);
+        button.AccessibleName = tooltip;
         return button;
     }
 
@@ -961,7 +920,7 @@ internal sealed partial class SessionListForm : Form
                 g.DrawLine(pen, x + 9.5f, y + 11.5f, x + 13, y + 11.5f);
                 break;
 
-            case "artifacts": // a panel on the right, like the tool panel it opens
+            case "artifacts": // a panel on the right
                 Frame();
                 g.DrawLine(pen, x + 11.5f, y + 2.5f, x + 11.5f, y + 15.5f);
                 break;
@@ -997,49 +956,6 @@ internal sealed partial class SessionListForm : Form
                 g.DrawEllipse(pen, cx - 2.5f, cy - 2.5f, 5, 5);
                 break;
         }
-    }
-
-    // #538's own ToggleTool: click the open tool's own icon again to
-    // close the panel; click a different one to swap its content instead
-    // of stacking a second panel. Pinning (toolPanelPinned) overrides the
-    // first part -- see the early return below.
-    private void ToggleToolPlaceholder(string tool, Panel toolPanel, Splitter toolPanelSplitter, Label toolPanelTitleLabel, Label toolPanelBodyLabel)
-    {
-        if (openTool == tool)
-        {
-            if (toolPanelPinned)
-            {
-                return; // pinned -- only the panel's own × (CloseToolPanel) closes it now
-            }
-            toolPanel.Visible = false;
-            toolPanelSplitter.Visible = false;
-            openTool = null;
-            toolRail.Invalidate(true);
-            return;
-        }
-        openTool = tool;
-        toolRail.Invalidate(true);
-        toolPanelTitleLabel.Text = tool;
-        toolPanelBodyLabel.Text = "Not built yet.";
-        toolPanel.Visible = true;
-        toolPanelSplitter.Visible = true;
-    }
-
-    private void CloseToolPanel(Panel toolPanel, Splitter toolPanelSplitter, Button toolPinButton)
-    {
-        toolPanel.Visible = false;
-        toolPanelSplitter.Visible = false;
-        openTool = null;
-        toolRail.Invalidate(true);
-        SetToolPanelPinned(toolPinButton, false);
-    }
-
-    private void SetToolPanelPinned(Button toolPinButton, bool pinned)
-    {
-        toolPanelPinned = pinned;
-        toolPinButton.BackColor = pinned ? DarkTheme.Accent : DarkTheme.Panel2;
-        toolPinButton.ForeColor = pinned ? DarkTheme.OnAccent : DarkTheme.Muted;
-        railToolTip.SetToolTip(toolPinButton, pinned ? "Unpin panel" : "Pin panel open");
     }
 
     private void OnAvatarStateChanged(AvatarState state)
@@ -1221,15 +1137,6 @@ internal sealed partial class SessionListForm : Form
         base.OnFormClosing(e);
     }
 
-    private void OnListDoubleClick(object? sender, MouseEventArgs e)
-    {
-        var item = list.GetItemAt(e.X, e.Y);
-        if (item is not null)
-        {
-            SwitchTo((string)item.Tag!);
-        }
-    }
-
     private void SwitchToSelected()
     {
         if (list.SelectedItems.Count > 0)
@@ -1355,14 +1262,20 @@ internal sealed partial class SessionListForm : Form
             return;
         }
 
-        var sessionId = (string)list.Items[e.Item].Tag!;
+        await RenameAsync((string)list.Items[e.Item].Tag!, e.Label.Trim());
+    }
+
+    private async Task RenameAsync(string sessionId, string name)
+    {
+        var failed = false;
         try
         {
-            await backendClient.RenameSessionAsync(sessionId, e.Label.Trim());
+            await backendClient.RenameSessionAsync(sessionId, name);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"SessionListForm: rename failed. {ex.Message}");
+            failed = true;
         }
 
         if (IsDisposed)
@@ -1370,6 +1283,10 @@ internal sealed partial class SessionListForm : Form
             return;
         }
         await RefreshAsync();
+        if (failed && !IsDisposed)
+        {
+            SetListError("Couldn't rename the chat.", () => RenameAsync(sessionId, name));
+        }
     }
 
     private async Task DeleteSelectedAsync()
@@ -1390,7 +1307,11 @@ internal sealed partial class SessionListForm : Form
         {
             return;
         }
+        await DeleteAsync(sessionId);
+    }
 
+    private async Task DeleteAsync(string sessionId)
+    {
         try
         {
             await backendClient.DeleteSessionAsync(sessionId);
@@ -1398,6 +1319,11 @@ internal sealed partial class SessionListForm : Form
         catch (Exception ex)
         {
             Console.WriteLine($"SessionListForm: delete failed. {ex.Message}");
+            if (!IsDisposed)
+            {
+                SetListError("Couldn't delete the chat.", () => DeleteAsync(sessionId));
+            }
+            return;
         }
 
         if (IsDisposed)
@@ -1532,6 +1458,10 @@ internal sealed partial class SessionListForm : Form
         catch (Exception ex)
         {
             Console.WriteLine($"SessionListForm: failed to load sessions. {ex.Message}");
+            if (!IsDisposed)
+            {
+                SetListError("Couldn't load chats.", RefreshAsync);
+            }
             return;
         }
 
@@ -1539,8 +1469,28 @@ internal sealed partial class SessionListForm : Form
         {
             return;
         }
+        listError = null; // loaded, so an earlier load error is stale
         ShowSessions();
     }
+
+    private void SetListError(string? error, Func<Task>? retry = null)
+    {
+        listError = error;
+        listRetry = retry;
+        UpdateListStatus();
+    }
+
+    private void UpdateListStatus()
+    {
+        var text = ListStatus(listError, list.Items.Count, searchBox.Text);
+        listStatusLabel.Text = text ?? "";
+        listRetryButton.Visible = listError is not null;
+        listStatus.Visible = text is not null;
+    }
+
+    // An error wins; otherwise "No chats match" for a search with no rows.
+    internal static string? ListStatus(string? error, int rows, string search) =>
+        error ?? (rows == 0 && search.Trim().Length > 0 ? "No chats match" : null);
 
     // #687 part 3: content matches for 3+ characters. Debounced, and a reply
     // for an older query is dropped. On failure the list stays title-only.
@@ -1570,6 +1520,10 @@ internal sealed partial class SessionListForm : Form
         catch (Exception ex)
         {
             Console.WriteLine($"SessionListForm: content search failed. {ex.Message}");
+            if (!IsDisposed && version == searchVersion)
+            {
+                SetListError("Couldn't search what was said in chats.", SearchContentAsync);
+            }
             return;
         }
         if (IsDisposed || version != searchVersion)
@@ -1596,6 +1550,7 @@ internal sealed partial class SessionListForm : Form
         }
         list.EndUpdate();
         FitSessionColumn();
+        UpdateListStatus();
         ShowChatTitle();
     }
 
@@ -1677,7 +1632,6 @@ internal sealed partial class SessionListForm : Form
             chatTitleFont.Dispose();
             avatarNameFont.Dispose();
             avatarStatusFont.Dispose();
-            toolPanelTitleFont.Dispose();
             railToolTip.Dispose();
             messageQueueTimer.Dispose();
             sendButtonTimer.Dispose();
