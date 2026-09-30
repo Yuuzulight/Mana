@@ -1054,6 +1054,38 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task MailCalendar_SavesReadsBackWithoutSecretsAndSurfacesErrors()
+    {
+        var requests = new List<(string Path, string? Body)>();
+        var status = HttpStatusCode.OK;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            requests.Add((path, request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()));
+            var json = path == "/mail-calendar/test"
+                ? "{\"ok\":false,\"error\":\"email login failed\"}"
+                : status == HttpStatusCode.OK
+                    ? "{\"ok\":true,\"email\":{\"host\":\"imap.gmail.com\",\"port\":993,\"user\":\"me@gmail.com\",\"mailbox\":\"INBOX\",\"passwordSet\":true},\"calendar\":{\"host\":\"calendar.google.com\",\"user\":\"\",\"readOnly\":true,\"passwordSet\":false}}"
+                    : "{\"ok\":false,\"error\":\"port must be a number like 993\"}";
+            return new HttpResponseMessage(path == "/mail-calendar/test" ? HttpStatusCode.OK : status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var state = await client.UpdateMailCalendarAsync(new { kind = "email", host = "imap.gmail.com", user = "me@gmail.com", password = "app pass" });
+        Assert.Equal(("/mail-calendar", "{\"kind\":\"email\",\"host\":\"imap.gmail.com\",\"user\":\"me@gmail.com\",\"password\":\"app pass\"}"), requests[0]);
+        Assert.Equal(993, state.Email!.Port);
+        Assert.True(state.Email.PasswordSet);
+        Assert.True(state.Calendar!.ReadOnly);
+
+        Assert.Equal((false, "email login failed"), await client.TestMailCalendarAsync("email"));
+        Assert.Equal(("/mail-calendar/test", "{\"kind\":\"email\"}"), requests[1]);
+
+        status = HttpStatusCode.BadRequest;
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.UpdateMailCalendarAsync(new { kind = "email", port = "abc" }));
+        Assert.Equal("port must be a number like 993", ex.Message);
+    }
+
+    [Fact]
     public async Task UpdateSpeechAsync_PostsTheChangeAndSurfacesTheConfirmConflict()
     {
         string? body = null;
