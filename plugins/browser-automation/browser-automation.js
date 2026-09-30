@@ -146,17 +146,19 @@ function createBrowserSession(options = {}) {
     throw new Error("a page-like object ({goto, ariaSnapshot, locator, evaluate, title, url, screenshot}) is required");
   }
   const maxTextChars = Math.max(200, Number(options.maxTextChars) || MAX_PAGE_TEXT_CHARS);
-  // #1168: { blockedAds, pageErrors } for the current page (index.js).
-  const pageHealth = options.pageHealth || (() => ({ blockedAds: 0, pageErrors: 0 }));
+  // #1168: { blockedAds } for the current page (index.js).
+  const pageHealth = options.pageHealth || (() => ({ blockedAds: 0 }));
   let last = null;
 
-  // Ads or trackers were blocked and the page looks broken (script errors,
-  // or next to nothing to read or use): the count, else 0. She doesn't
-  // retry without blocking; I can open it in my own browser.
+  // Ads or trackers were blocked and the page looks broken (next to
+  // nothing to read or use): the count, else 0. #1179: script errors alone
+  // don't count -- ad-heavy pages throw them once their ads are gone and
+  // still work. A timeout counts too (acting, below). She doesn't retry
+  // without blocking; I can open it in my own browser.
   function blockedMayBreak(elements, text) {
-    const { blockedAds, pageErrors } = pageHealth();
-    const empty = elements.length < 3 && String(text || "").length < 200;
-    return blockedAds > 0 && (pageErrors > 0 || empty) ? blockedAds : 0;
+    const { blockedAds } = pageHealth();
+    const thin = elements.length < 3 && String(text || "").length < 200;
+    return blockedAds > 0 && thin ? blockedAds : 0;
   }
 
   // An action that timed out on a page with blocked ads says so too.
