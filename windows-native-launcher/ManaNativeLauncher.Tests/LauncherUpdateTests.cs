@@ -19,8 +19,9 @@ public class LauncherUpdateTests : IDisposable
         {
             Directory.Delete(dir, recursive: true);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // The rolled-back build it restarted may still be exiting.
         }
     }
 
