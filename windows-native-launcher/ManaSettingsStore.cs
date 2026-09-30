@@ -81,6 +81,10 @@ internal sealed class ManaSettingsStore
 
     public string? VoiceprintProtected { get; set; }
 
+    // #965: Settings > Voice; null = SpeakerGate.DefaultThreshold.
+    // MANA_SPEAKER_THRESHOLD overrides it. Read each time listening starts.
+    public float? SpeakerThreshold { get; set; }
+
     private static readonly byte[] VoiceprintEntropy = Encoding.UTF8.GetBytes("Mana.NativeLauncher.Voiceprint");
 
     // #681: the prompt preset sent as presetId with every reply; null =

@@ -34,8 +34,19 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
     private readonly SessionListForm sessionListForm;
+    private readonly ChatView chatLog;
     private readonly SynchronizationContext uiContext;
+    // #991: the backend restart in progress, if any; a second request joins it.
+    private Task? backendRestart;
     private readonly IDisposable showRequests;
+    // #995: update-mana.ps1's signals, a launcher build waiting for a quiet
+    // moment, the chat window to reopen where it was after an update, and
+    // whether the tray's Update now is already running.
+    private readonly IDisposable updateRequests;
+    private readonly IDisposable updateNowRequests;
+    private bool swapPending;
+    private readonly Rectangle? restoreChat;
+    private bool updateRunning;
     // #689: Doctor's latest warn/fail ("label: message"), kept in the tray
     // tooltip until the Doctor panel is opened.
     private string? doctorAlert;
@@ -106,8 +117,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private bool avatarHidesWithChat = ManaSettingsStore.Load().AvatarHidesWithChat;
     private bool servicesStarted;
 
-    public ManaApplicationContext()
+    public ManaApplicationContext(Rectangle? restoreChat = null)
     {
+        this.restoreChat = restoreChat;
         var rootDir = FindRootDirectory();
         var settings = ManaSettingsStore.Load();
         processManager = new ManaProcessManager(rootDir, backendBaseUrl: settings.BackendBaseUrl, localOnly: settings.LocalOnly);
@@ -135,7 +147,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // itself (to embed it), not the other way around.
         // #686: also VoiceLoop's artifact sink, so it can re-render Mana's
         // bubble from the final reply text and give an artifact its button.
-        var chatLog = new ChatView { Artifacts = artifactViewer.Add };
+        chatLog = new ChatView { Artifacts = artifactViewer.Add };
         // #522: ScreenContextReader owns its own min-interval/keyword-gate
         // caching internally, so this is just held and passed straight
         // through to VoiceLoop, same as the other optional collaborators
@@ -249,6 +261,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }));
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
+        updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));
+        updateNowRequests = SingleInstance.ListenForUpdate(true, () => RunOnUi(() => ApplyUpdate(now: true)));
         // #681: answers the model's mid-reply screenshot requests, and
         // #911's desktop actions (media keys, volume, apps, audio output, file moves).
         visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, saveCameraSnapshot: SaveCameraSnapshotAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, ManaSettingsStore.Load().DesktopActionFolders));
@@ -280,6 +294,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         avatarOverlay.Clicked += voiceLoop.Wake; // #662
         trayNotifications.Start();
         visionCaptureClient.Start();
+        // #991: node-bot's own /restart.
+        processManager.BackendRestartRequested += () => RunOnUi(() => _ = RestartBackendAsync());
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -292,6 +308,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             await RefreshTrayStatusAsync();
             await RefreshWaitingAsync();
+            if (swapPending && IsQuietMoment(voiceLoop.IsIdle, gamingModeActive, SystemIdle.GetIdleSeconds()))
+            {
+                SwapLauncher();
+            }
             if (dreaming && SystemIdle.GetIdleSeconds() < 5)
             {
                 // #661: the user's back -- she wakes up.
@@ -443,6 +463,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
         menu.Items.Add(listeningItem);
         menu.Items.Add(new ToolStripSeparator());
+        if (processManager.IsBackendLocal)
+        {
+            menu.Items.Add("Restart backend", null, (_, _) => _ = RestartBackendAsync()); // #991
+        }
         if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
             // A remote backend's Fish Speech isn't this launcher's to restart,
@@ -450,6 +474,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             menu.Items.Add("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
         }
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
         menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
         return menu;
     }
@@ -502,6 +527,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
             avatarOverlay.Show();
             SyncAvatarWithChat();
             ReportAvatarModelProblem();
+            ReportUpdateRolledBack();
+            if (restoreChat is { } bounds)
+            {
+                sessionListForm.StartPosition = FormStartPosition.Manual;
+                sessionListForm.Bounds = bounds;
+                ShowSessionList();
+            }
         }
     }
 
@@ -932,6 +964,161 @@ internal sealed class ManaApplicationContext : ApplicationContext
             processManager.IsFishSpeechAvailable ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
+    // #991: node-bot restarts under a running launcher -- windows, avatar,
+    // voice loop, session and LauncherKey all stay. If the new one doesn't
+    // come up it says so once and keeps trying every 30 s until it does (or
+    // Mana exits); rolling the code back would mean git surgery on the live
+    // checkout, so it doesn't. UI thread only.
+    private Task RestartBackendAsync() =>
+        backendRestart is { IsCompleted: false } ? backendRestart : backendRestart = RunBackendRestartAsync();
+
+    private async Task RunBackendRestartAsync()
+    {
+        if (!processManager.CanRestartBackend)
+        {
+            ShowBalloon("Mana's backend wasn't restarted", "It was already running when Mana started, so it isn't mine to restart.", ToolTipIcon.Warning);
+            return;
+        }
+        var done = new TaskCompletionSource();
+        voiceLoop.BackendRestart = done.Task;
+        var reported = false;
+        try
+        {
+            while (!isShuttingDown)
+            {
+                SetTrayStatus("Mana - restarting backend");
+                bool healthy;
+                try
+                {
+                    healthy = await processManager.RestartBackendAsync(TimeSpan.FromSeconds(90));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"ManaApplicationContext: backend restart failed. {ex.Message}");
+                    healthy = false;
+                }
+                if (healthy)
+                {
+                    if (reported)
+                    {
+                        chatLog.AppendManaMessage("My backend is back.");
+                    }
+                    await RefreshTrayStatusAsync();
+                    return;
+                }
+                if (!reported)
+                {
+                    reported = true;
+                    ShowBalloon("Mana's backend didn't come back", "I'll keep trying every 30 seconds. The backend log has the details.", ToolTipIcon.Error);
+                    chatLog.AppendManaMessage("My backend didn't come back after that restart. I'll keep trying every 30 seconds; the backend log has the details.");
+                }
+                await Task.Delay(TimeSpan.FromSeconds(30));
+            }
+        }
+        finally
+        {
+            voiceLoop.BackendRestart = null;
+            done.SetResult();
+        }
+    }
+
+    private void ShowBalloon(string title, string text, ToolTipIcon icon)
+    {
+        balloonClicked = null;
+        trayIcon.ShowBalloonTip(8000, title, text, icon);
+    }
+
+    // #995: after a pull, a staged launcher build is swapped in (which
+    // restarts the backend with it); with none, only the backend restarts.
+    private void ApplyUpdate(bool now)
+    {
+        if (!LauncherUpdate.IsStaged(LauncherUpdate.LiveDir))
+        {
+            _ = RestartBackendAsync();
+            return;
+        }
+        swapPending = true;
+        if (now)
+        {
+            SwapLauncher();
+        }
+    }
+
+    // Not while she's talking or thinking, not in a watched game, and only
+    // once the keyboard and mouse have been left alone for 2 minutes.
+    internal static bool IsQuietMoment(bool voiceIdle, bool gaming, int userIdleSeconds) =>
+        voiceIdle && !gaming && userIdleSeconds >= 120;
+
+    // The staged build installs itself once this launcher has exited, and
+    // reopens the chat window where it was.
+    private void SwapLauncher()
+    {
+        if (isShuttingDown)
+        {
+            return;
+        }
+        swapPending = false;
+        var chat = sessionListForm.Visible && sessionListForm.WindowState != FormWindowState.Minimized
+            ? LauncherUpdate.ChatBoundsArgs(sessionListForm.WindowState == FormWindowState.Normal ? sessionListForm.Bounds : sessionListForm.RestoreBounds)
+            : [];
+        try
+        {
+            LauncherUpdate.StartInstaller(LauncherUpdate.LiveDir, chat);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            ShowBalloon("Mana couldn't update", ex.Message, ToolTipIcon.Warning);
+            return;
+        }
+        _ = ShutdownAsync();
+    }
+
+    private void ReportUpdateRolledBack()
+    {
+        var note = Path.Combine(LauncherUpdate.LiveDir, LauncherUpdate.RolledBackNote);
+        if (!File.Exists(note))
+        {
+            return;
+        }
+        File.Delete(note);
+        ShowBalloon("Mana's update was rolled back", "The new launcher build didn't start, so I'm back on the previous one.", ToolTipIcon.Warning);
+    }
+
+    // #995: the tray's Update now -- pull, build, then apply straight away
+    // (update-mana.ps1 -Now). Mana keeps running while it builds.
+    private async Task RunUpdateScriptAsync()
+    {
+        if (updateRunning)
+        {
+            return;
+        }
+        updateRunning = true;
+        var launcherDir = Path.Combine(processManager.RootDirectory, "windows-native-launcher");
+        try
+        {
+            var startInfo = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true };
+            foreach (var arg in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(launcherDir, "update-mana.ps1"), "-Now", "-LiveDir", LauncherUpdate.LiveDir })
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+            ShowBalloon("Updating Mana", "Pulling and building. I'll keep running meanwhile.", ToolTipIcon.Info);
+            using var script = Process.Start(startInfo) ?? throw new InvalidOperationException("powershell didn't start");
+            await script.WaitForExitAsync();
+            if (script.ExitCode != 0)
+            {
+                ShowBalloon("Mana's update failed", $"See {Path.Combine(launcherDir, "bin", "update.log")}.", ToolTipIcon.Error);
+            }
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            ShowBalloon("Mana's update failed", ex.Message, ToolTipIcon.Error);
+        }
+        finally
+        {
+            updateRunning = false;
+        }
+    }
+
     private void OpenProjectFolder()
     {
         Process.Start(new ProcessStartInfo
@@ -951,6 +1138,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
         globalHotkeys.Dispose();
         trayNotifications.Dispose();
         showRequests.Dispose();
+        updateRequests.Dispose();
+        updateNowRequests.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
         chatBubbles.Close();

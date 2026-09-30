@@ -262,4 +262,41 @@ function createMailCalendarToolSource({ store, approvalGate, imap = imapClient, 
   return { listToolSchemas, executeTool, isKnownToolName };
 }
 
-module.exports = { createMailCalendarToolSource, resolveDay };
+// #961: the daily briefing's "Calendar and mail" lines (briefing.js):
+// today's events on one line, and how many unread emails came in over the
+// last day. Only a count, not subjects or senders, because the briefing
+// isn't framed as email the way email__* results are. [] when neither
+// account is set up; if one fails, the other still shows.
+const BRIEFING_MAIL_LIMIT = 30;
+async function briefingLines({ store, imap = imapClient, calendar = calendarClient, now = Date.now }) {
+  const t = now();
+  const lines = [];
+  if (store.isConfigured("calendar")) {
+    try {
+      const events = await calendar.listEvents(store.get("calendar"), resolveDay("today", t), resolveDay("tomorrow", t));
+      const when = (e) => (e.allDay ? `${e.title} (all day)` : `${formatTime(e.startMs).slice(-5)} ${e.title}`);
+      // A repeat the client can't unroll comes back on its first date, maybe not today.
+      const today = events.filter((e) => !e.repeatNote);
+      if (today.length) lines.push(`Today: ${today.map(when).join("; ")}`);
+    } catch (e) {
+      console.warn("briefing: calendar failed:", e.message);
+    }
+  }
+  if (store.isConfigured("email")) {
+    try {
+      const unread = await imap.recentMail(store.get("email"), {
+        sinceMs: t - 24 * 3600000,
+        limit: BRIEFING_MAIL_LIMIT,
+        unreadOnly: true,
+        snippetChars: 0,
+      });
+      const count = unread.length >= BRIEFING_MAIL_LIMIT ? `${BRIEFING_MAIL_LIMIT}+` : unread.length;
+      if (unread.length) lines.push(`${count} unread email${unread.length === 1 ? "" : "s"} in the last day`);
+    } catch (e) {
+      console.warn("briefing: mail failed:", e.message);
+    }
+  }
+  return lines;
+}
+
+module.exports = { briefingLines, createMailCalendarToolSource, resolveDay };
