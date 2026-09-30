@@ -102,7 +102,8 @@ internal sealed class ChatBubbleStack
 //
 // A per-pixel-alpha layered window like the avatar overlay: the empty space
 // around the bubbles is fully transparent, so clicks pass straight through
-// it; the bubbles themselves take clicks without taking focus.
+// it; the bubbles themselves take clicks without taking focus, except while
+// a game runs, when the whole window is click-through.
 internal sealed class ChatBubblesForm : Form
 {
     private const int MaxTextWidth = 260;
@@ -144,19 +145,46 @@ internal sealed class ChatBubblesForm : Form
     // A bubble was clicked; its sentence, to find in the chat window.
     public event Action<string>? BubbleClicked;
 
+    // From the tray's 5s status poll, like the avatar's (Q3). UI thread only.
+    private bool gameRunning;
+    public bool GameRunning
+    {
+        set
+        {
+            if (gameRunning == value)
+            {
+                return;
+            }
+            gameRunning = value;
+            if (IsHandleCreated)
+            {
+                SetWindowLong(Handle, GwlExStyle, ExStyle(GetWindowLong(Handle, GwlExStyle), value));
+            }
+        }
+    }
+
     protected override bool ShowWithoutActivation => true;
 
     protected override CreateParams CreateParams
     {
         get
         {
-            const int wsExToolWindow = 0x80;
-            const int wsExLayered = 0x80000;
-            const int wsExNoActivate = 0x08000000;
             var cp = base.CreateParams;
-            cp.ExStyle |= wsExToolWindow | wsExLayered | wsExNoActivate;
+            cp.ExStyle = ExStyle(cp.ExStyle, gameRunning);
             return cp;
         }
+    }
+
+    private const int GwlExStyle = -20;
+    internal const int WsExTransparent = 0x20;
+
+    internal static int ExStyle(int style, bool gameRunning)
+    {
+        const int wsExToolWindow = 0x80;
+        const int wsExLayered = 0x80000;
+        const int wsExNoActivate = 0x08000000;
+        style |= wsExToolWindow | wsExLayered | wsExNoActivate;
+        return gameRunning ? style | WsExTransparent : style & ~WsExTransparent;
     }
 
     // Same calls as CaptionOverlayForm's, from the same places in VoiceLoop.
@@ -262,7 +290,7 @@ internal sealed class ChatBubblesForm : Form
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Left && layout.FirstOrDefault(item => item.Bounds.Contains(e.Location)).Bubble is { } bubble)
+        if (e.Button == MouseButtons.Left && !gameRunning && layout.FirstOrDefault(item => item.Bounds.Contains(e.Location)).Bubble is { } bubble)
         {
             BubbleClicked?.Invoke(bubble.Text);
         }
@@ -415,6 +443,12 @@ internal sealed class ChatBubblesForm : Form
 
     [DllImport("user32.dll")]
     private static extern nint WindowFromPoint(Point point);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowLong(nint hwnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowLong(nint hwnd, int index, int value);
 
     [DllImport("user32.dll")]
     private static extern nint GetAncestor(nint hwnd, uint flags);

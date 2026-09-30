@@ -12,6 +12,10 @@ internal interface IChatLog
     void AppendUserMessage(string text, IReadOnlyList<string> images) => AppendUserMessage(text);
     void AppendReplySentence(string text);
 
+    // #914: speaker is the character saying it (group mode has two), or
+    // null for the current reply's.
+    void AppendReplySentence(string text, string? speaker) => AppendReplySentence(text);
+
     // #652 part 6: Mana's reply is complete (not interrupted, not failed) --
     // the chat checks then whether the turn left any edits for approval.
     void ReplyFinished() { }
