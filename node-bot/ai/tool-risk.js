@@ -71,6 +71,8 @@ const BUILTIN_TIERS = {
   desktop__media: "low",
   desktop__set_volume: "low",
   desktop__open_app: "low",
+  // #907: no arguments; searches only the topics and games I set in Settings.
+  briefing__now: "read",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",

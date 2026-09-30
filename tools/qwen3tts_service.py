@@ -3,7 +3,7 @@
 Qwen3-TTS-12Hz-0.6B-Base through faster-qwen3-tts (CUDA graphs), cloning
 Mana's voice in ICL mode from a reference clip plus its transcript (the same
 ones Fish uses unless QWEN3_TTS_REF_* say otherwise). node-bot posts
-{"text", "language"} to /synthesize and gets a WAV back. Run it with
+{"text", "language", "emotion"} to /synthesize and gets a WAV back. Run it with
 tools/qwen3-tts/.venv's python; the native launcher does that for you.
 """
 
@@ -35,6 +35,21 @@ PORT = urlsplit(os.environ.get("QWEN3_TTS_URL") or "http://127.0.0.1:5012").port
 # +2.7 GB (the default 2048 roughly doubles the cache) and still fits a long
 # sentence plus the ~9 s reference prompt; generation just stops at the cap.
 MAX_SEQ_LEN = 1024
+# #909: the reply's emotion tag sets her speaking rate. The 0.6B Base model
+# ignores `instruct` on a cloned voice (a probe measured no change in pace or
+# pitch), so the clip is resampled instead: faster is also a little higher,
+# slower a little lower, as people sound when excited or sad: at most 7% and
+# ~1.3 semitones either way. QWEN3_TTS_EMOTION=off keeps one voice for every
+# tag.
+EMOTION_RATES = {} if os.environ.get("QWEN3_TTS_EMOTION") == "off" else {
+    "excited": 1.07,
+    "surprised": 1.05,
+    "happy": 1.04,
+    "angry": 1.03,
+    "thinking": 0.97,
+    "disappointed": 0.95,
+    "sad": 0.93,
+}
 
 app = FastAPI(title="Mana Qwen3-TTS")
 model = None
@@ -46,6 +61,8 @@ class SynthesizeBody(BaseModel):
     text: str
     # A detectTtsLanguage() name ("english", "japanese", ...) or "auto".
     language: str | None = None
+    # An emotion tag from utils/emotion-tags.js ("happy", "sad", ...).
+    emotion: str | None = None
 
 
 def patch_rope_theta():
@@ -69,7 +86,16 @@ def patch_rope_theta():
         ROPE_INIT_FUNCTIONS["default"] = default_rope_parameters
 
 
-def synthesize_wav(tts, text, language):
+def change_rate(audio, rate):
+    """Plays `audio` `rate` times as fast (pitch moves with it): an FFT
+    resample to len/rate samples, kept at the same sample rate."""
+    if rate == 1.0 or len(audio) == 0:
+        return audio
+    n = max(1, round(len(audio) / rate))
+    return (np.fft.irfft(np.fft.rfft(audio), n) * (n / len(audio))).astype(np.float32)
+
+
+def synthesize_wav(tts, text, language, emotion=None):
     """One clone generation -> WAV bytes. faster-qwen3-tts caches the encoded
     reference per (ref_audio, ref_text), so only the first call pays for it."""
     import torch
@@ -86,6 +112,7 @@ def synthesize_wav(tts, text, language):
             # resident) instead of letting torch's caching allocator keep it.
             torch.cuda.empty_cache()
     audio = np.concatenate([np.asarray(w, dtype=np.float32).reshape(-1) for w in wavs])
+    audio = change_rate(audio, EMOTION_RATES.get(emotion, 1.0))
     buffer = io.BytesIO()
     sf.write(buffer, audio, sample_rate, format="WAV")
     return buffer.getvalue()
@@ -135,7 +162,7 @@ def health():
 @app.post("/synthesize")
 def synthesize(body: SynthesizeBody):
     try:
-        wav = synthesize_wav(model, body.text, body.language)
+        wav = synthesize_wav(model, body.text, body.language, body.emotion)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:

@@ -176,6 +176,19 @@ internal sealed class VoiceLoop : IDisposable
     private const long SlowPartialMs = 2500;
     private static readonly TimeSpan PartialTimeout = TimeSpan.FromSeconds(5);
 
+    // #909: Smart Turn scores each pause once it reaches SmartTurnPauseMs of
+    // silence (off the capture thread); like a partial, the score only counts
+    // while no speech has arrived since (smartTurnSpeechMs == segmentSpeechMs).
+    // smartTurnThreshold null = MANA_SMART_TURN=off; smartTurn null = off or
+    // no model. Guarded by stateLock, except the runner's own Run.
+    private SmartTurnRunner? smartTurn;
+    private float? smartTurnThreshold;
+    private bool smartTurnInFlight;
+    private long smartTurnRequestedAtSpeechMs;
+    private float? smartTurnP;
+    private long smartTurnSpeechMs;
+    private long smartTurnMs;
+
     // #619 addendum: the ~1s after a turn closes, when resumed speech is
     // merged into it instead of becoming a second turn -- see TurnMergeWindow.
     private readonly TurnMergeWindow mergeWindow = new();
@@ -384,8 +397,14 @@ internal sealed class VoiceLoop : IDisposable
         {
             vad.Threshold = SileroVadRunner.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_VAD_THRESHOLD"), voiceSettings.VadThreshold);
         }
+        smartTurnThreshold = SmartTurnRunner.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SMART_TURN"));
+        if (smartTurnThreshold is not null)
+        {
+            smartTurn ??= SmartTurnRunner.TryLoad(ManaApplicationContext.FindRootDirectory());
+        }
         VoiceDebugLog.AppendNote(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"vad: {VadInUse}{(vad is not null && !vadFailed ? $" threshold={vad.Threshold:F2}/exit={vad.ExitThreshold:F2}" : $" minRms={SpeechFilters.MinSpeechRms:F3}")} silence={baseSilenceBufferMs}ms"));
+            $"vad: {VadInUse}{(vad is not null && !vadFailed ? $" threshold={vad.Threshold:F2}/exit={vad.ExitThreshold:F2}" : $" minRms={SpeechFilters.MinSpeechRms:F3}")} silence={baseSilenceBufferMs}ms"
+            + $" turn={(smartTurnThreshold is not { } turnThreshold ? "off" : smartTurn is null ? "missing" : $"{turnThreshold:F2}")}"));
 
         // #619: echo-cancelled capture first (EchoCancellation), falling back
         // to the plain capture this always used if Windows doesn't apply an
@@ -662,6 +681,7 @@ internal sealed class VoiceLoop : IDisposable
         disposed = true;
         Stop();
         speakerEmbedder?.Dispose();
+        smartTurn?.Dispose();
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
@@ -898,6 +918,8 @@ internal sealed class VoiceLoop : IDisposable
         partialsOffThisSegment = false;
         partialCount = 0;
         lastPartialMs = null;
+        smartTurnRequestedAtSpeechMs = 0;
+        smartTurnP = null;
     }
 
     // Caller must already hold stateLock.
@@ -1021,9 +1043,16 @@ internal sealed class VoiceLoop : IDisposable
 
         // #619: a fresh partial picks the end-of-turn silence (shorter when
         // it sounds complete, longer when it trails off); none, or a stale
-        // one, keeps the old fixed 2.2s.
+        // one, keeps the old fixed 2.2s. #909: a fresh Smart Turn score then
+        // refines that (RecordingSegmenter.WithSmartTurn).
         var partialFresh = lastPartial is not null && lastPartialSpeechMs == segmentSpeechMs;
-        var silenceBufferMs = partialFresh ? partialSilenceBufferMs : baseSilenceBufferMs;
+        var smartTurnFresh = smartTurnP is not null && smartTurnSpeechMs == segmentSpeechMs;
+        var (silenceBufferMs, eotReason) = RecordingSegmenter.WithSmartTurn(
+            partialFresh ? (partialSilenceBufferMs, partialEotReason)
+                : (baseSilenceBufferMs, !PartialsActive ? "off" : lastPartial is null ? "nopartial" : "stale"),
+            smartTurnFresh ? smartTurnP : null,
+            smartTurnThreshold ?? SmartTurnRunner.DefaultThreshold,
+            baseSilenceBufferMs);
 
         var stopReason = RecordingSegmenter.ShouldStopRecording(
             hasHeardSpeechInSegment,
@@ -1039,15 +1068,12 @@ internal sealed class VoiceLoop : IDisposable
         if (stopReason == RecordingStopReason.SilenceAfterSpeech
             || (stopReason == RecordingStopReason.MaxDuration && hasHeardSpeechInSegment))
         {
-            var eotReason = partialFresh ? partialEotReason
-                : !PartialsActive ? "off"
-                : lastPartial is null ? "nopartial"
-                : "stale";
             mode = ListenMode.Processing;
             _ = HandleSegmentClosedAsync(
                 wasCapturingInterruption,
                 stopReason == RecordingStopReason.MaxDuration ? "max" : "silence",
-                $"{silenceBufferMs}ms/{eotReason}");
+                $"{silenceBufferMs}ms/{eotReason}"
+                    + (smartTurnFresh ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $" turn={smartTurnP:F2}/{smartTurnMs}ms") : ""));
             return true;
         }
 
@@ -1063,7 +1089,49 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         MaybeRequestPartial();
+        MaybeScoreTurn();
         return false;
+    }
+
+    // Caller must already hold stateLock. #909: one Smart Turn run per pause,
+    // never overlapping (across segments too, like partials).
+    private void MaybeScoreTurn()
+    {
+        if (smartTurn is not { } runner || smartTurnThreshold is null || smartTurnInFlight
+            || !hasHeardSpeechInSegment || msSinceLastSpeech < RecordingSegmenter.SmartTurnPauseMs
+            || smartTurnRequestedAtSpeechMs == segmentSpeechMs)
+        {
+            return;
+        }
+        smartTurnInFlight = true;
+        smartTurnRequestedAtSpeechMs = segmentSpeechMs;
+        var take = Math.Min(segmentSamples.Count, SmartTurnRunner.MaxSamples);
+        var snapshot = segmentSamples.GetRange(segmentSamples.Count - take, take).ToArray();
+        var id = segmentId;
+        var speechMs = segmentSpeechMs;
+        _ = Task.Run(() =>
+        {
+            var stopwatch = Stopwatch.StartNew();
+            float? p = null;
+            try
+            {
+                p = runner.PredictComplete(snapshot);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"VoiceLoop: Smart Turn failed. {ex.Message}");
+            }
+            lock (stateLock)
+            {
+                smartTurnInFlight = false;
+                if (id == segmentId && p is not null)
+                {
+                    smartTurnP = p;
+                    smartTurnSpeechMs = speechMs;
+                    smartTurnMs = stopwatch.ElapsedMilliseconds;
+                }
+            }
+        });
     }
 
     private async Task HandleSegmentClosedAsync(bool wasInterruption, string closeReason, string eot)
