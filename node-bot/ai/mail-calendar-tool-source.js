@@ -6,12 +6,14 @@
 //
 // Email and calendar invites are written by other people, so both are
 // outside content, like a web page: results are framed as data, not
-// instructions, and memory-tool-source.js already treats any turn that ran
+// instructions (ai/untrusted-content.js, which also makes the rest of the
+// turn's acting tools ask first), and memory-tool-source.js already treats any turn that ran
 // these tools as tool_derived (#673). Adding an event always goes to me
 // (forceReview): no grant, always-allow or Guardian verdict skips it, so a
 // "put this in her calendar" hidden in an email can't act on its own.
 const imapClient = require("../imap-client");
 const calendarClient = require("../calendar-client");
+const { wrapUntrusted } = require("./untrusted-content");
 
 const EMAIL_PREFIX = "email__";
 const CALENDAR_PREFIX = "calendar__";
@@ -215,16 +217,16 @@ function createMailCalendarToolSource({ store, approvalGate, imap = imapClient, 
         limit: clamp(args.limit, 15, 30),
         unreadOnly: Boolean(args.unread_only),
       });
-      return JSON.stringify({ note: EMAIL_NOTE, hours, messages: messages.map((m) => describeMessage(m, "snippet")) });
+      return wrapUntrusted("email", JSON.stringify({ note: EMAIL_NOTE, hours, messages: messages.map((m) => describeMessage(m, "snippet")) }));
     }
     if (name === "email__search") {
       const messages = await imap.searchMail(store.get("email"), { query: args.query, limit: clamp(args.limit, 10, 25) });
-      return JSON.stringify({ note: EMAIL_NOTE, messages: messages.map((m) => describeMessage(m, "snippet")) });
+      return wrapUntrusted("email", JSON.stringify({ note: EMAIL_NOTE, messages: messages.map((m) => describeMessage(m, "snippet")) }));
     }
     if (name === "email__read") {
       const message = await imap.readMail(store.get("email"), { id: args.id });
       if (!message) throw new Error(`no email with id ${args.id}`);
-      return JSON.stringify({ note: EMAIL_NOTE, message: { ...describeMessage(message, "text"), to: message.to } });
+      return wrapUntrusted("email", JSON.stringify({ note: EMAIL_NOTE, message: { ...describeMessage(message, "text"), to: message.to } }));
     }
     if (name === "calendar__events") {
       const fromMs = resolveDay(args.date, now());
@@ -232,7 +234,7 @@ function createMailCalendarToolSource({ store, approvalGate, imap = imapClient, 
       const end = new Date(fromMs);
       end.setDate(end.getDate() + days);
       const events = await calendar.listEvents(store.get("calendar"), fromMs, end.getTime());
-      return JSON.stringify({
+      return wrapUntrusted("calendar", JSON.stringify({
         note: CALENDAR_NOTE,
         now: formatTime(now()),
         from: formatDay(fromMs),
@@ -244,7 +246,7 @@ function createMailCalendarToolSource({ store, approvalGate, imap = imapClient, 
           ...(e.free ? { showsAs: "free" } : {}),
           ...(e.repeatNote ? { note: e.repeatNote } : {}),
         })),
-      });
+      }));
     }
     if (name === "calendar__add_event") {
       const event = eventFromArgs(args, now());

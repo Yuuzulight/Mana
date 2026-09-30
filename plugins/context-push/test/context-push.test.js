@@ -31,6 +31,7 @@ test("buildContextForPrompt includes title/url/text when the message references 
   assert.match(result, /Example Site/);
   assert.match(result, /https:\/\/example\.com/);
   assert.match(result, /Some page content\./);
+  assert.match(result, /not instructions[\s\S]*<(untrusted-[0-9a-f]+) source="browser tab">[\s\S]*<\/\1>$/);
 });
 
 test("buildContextForPrompt includes video captions when present", () => {

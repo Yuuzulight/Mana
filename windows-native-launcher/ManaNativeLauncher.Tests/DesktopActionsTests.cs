@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Mana.NativeLauncher;
 using Xunit;
 
@@ -20,7 +21,7 @@ public class DesktopActionsTests
     }
 
     [Fact]
-    public void FindShortcut_PrefersAnExactNameAndNeverAnUninstaller()
+    public void FindApp_PrefersAnExactNameAndNeverAnUninstaller()
     {
         var shortcuts = new[]
         {
@@ -29,11 +30,32 @@ public class DesktopActionsTests
             @"C:\Start\Discord PTB.lnk",
             @"C:\Start\Spotify.lnk",
         };
-        Assert.Equal(shortcuts[0], DesktopActions.FindShortcut(shortcuts, "discord"));
-        Assert.Equal(shortcuts[3], DesktopActions.FindShortcut(shortcuts, "spot"));
-        Assert.Contains("Discord PTB", Assert.Throws<InvalidOperationException>(() => DesktopActions.FindShortcut(shortcuts, "disc")).Message);
-        Assert.Throws<InvalidOperationException>(() => DesktopActions.FindShortcut(shortcuts, "uninstall discord"));
-        Assert.Throws<InvalidOperationException>(() => DesktopActions.FindShortcut(shortcuts, "notepad"));
+        Assert.Equal(("Discord", shortcuts[0]), DesktopActions.FindApp(shortcuts, NoStoreApps, "discord"));
+        Assert.Equal(("Spotify", shortcuts[3]), DesktopActions.FindApp(shortcuts, NoStoreApps, "spot"));
+        Assert.Contains("Discord PTB", Assert.Throws<InvalidOperationException>(() => DesktopActions.FindApp(shortcuts, NoStoreApps, "disc")).Message);
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.FindApp(shortcuts, NoStoreApps, "uninstall discord"));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.FindApp(shortcuts, NoStoreApps, "notepad"));
+    }
+
+    private static IEnumerable<(string, string)> NoStoreApps() => [];
+
+    // Store apps have no .lnk: they start through shell:AppsFolder, and are
+    // only looked up when no shortcut matches.
+    [Fact]
+    public void FindApp_FallsBackToStoreApps()
+    {
+        var shortcuts = new[] { @"C:\Start\Spotify.lnk" };
+        var looked = 0;
+        IEnumerable<(string, string)> Store()
+        {
+            looked++;
+            return [("Calculator", "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"), ("Spotify", "SpotifyAB.Spotify_zpdnekdrzrea0!Spotify")];
+        }
+
+        Assert.Equal(("Spotify", shortcuts[0]), DesktopActions.FindApp(shortcuts, Store, "spotify"));
+        Assert.Equal(0, looked);
+        Assert.Equal(("Calculator", @"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"), DesktopActions.FindApp(shortcuts, Store, "calculator"));
+        Assert.Equal(1, looked);
     }
 
     [Fact]
