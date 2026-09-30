@@ -221,6 +221,7 @@ const {
   personaOf,
 } = require("./characters");
 const { createCharactersCapability } = require("./capabilities/characters-capability");
+const { createRelationshipCapability } = require("./capabilities/relationship-capability");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -972,15 +973,21 @@ const moodStore = perCharacter(
   ["get", "record", "recordTurn", "reset", "setFrozen"],
 );
 // #914: each character's own notes on her relationship with me, beside
-// the mood (in memory under tests).
-const relationshipStore = perCharacter(
-  characterStore,
-  (id) =>
-    createRelationshipStore({
-      filePath: characterFilePath(moodFilePath && path.join(acpMemoryStore.dataDir, "relationship.json"), id),
-    }),
-  ["list", "add"],
-);
+// the mood (in memory under tests). relationshipFor(id) is any character's
+// (Settings lists them all); relationshipStore is the active one's.
+const relationshipStores = new Map();
+function relationshipFor(id) {
+  if (!relationshipStores.has(id)) {
+    relationshipStores.set(
+      id,
+      createRelationshipStore({
+        filePath: characterFilePath(moodFilePath && path.join(acpMemoryStore.dataDir, "relationship.json"), id),
+      }),
+    );
+  }
+  return relationshipStores.get(id);
+}
+const relationshipStore = perCharacter(characterStore, relationshipFor, ["list", "add"]);
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -2337,6 +2344,7 @@ function registerRoutes(app, upload, deps = {}) {
     personalityCapability,
     moodCapability,
     createCharactersCapability(characterStore),
+    createRelationshipCapability(characterStore, relationshipFor),
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -4874,7 +4882,18 @@ function registerRoutes(app, upload, deps = {}) {
             // #907: "brief me".
             ...(userChat ? [briefing.toolSource] : []),
             // #914: her own notes on our relationship.
-            ...(userChat ? [createRelationshipToolSource({ store: relationshipStore })] : []),
+            // Each new note is a chat line (replyMeta.onNoted), so I see it.
+            ...(userChat
+              ? [
+                  createRelationshipToolSource({
+                    store: relationshipStore,
+                    onNoted: (note) => {
+                      const character = characterStore.active();
+                      replyMeta.onNoted?.({ kind: "note", id: note.id, text: note.text, character: character.id, characterName: character.name });
+                    },
+                  }),
+                ]
+              : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({
