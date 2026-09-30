@@ -44,6 +44,13 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Batches (#1160)
+
+`batch { steps }` runs up to five steps (any action but `hand_over`, each
+with its own arguments) in one call. Each step goes through the same site
+check and activity feed as when called alone. The first step that fails
+or needs my OK ends the batch, and she gets a fresh look at the page.
+
 ## Finding an element by description (#1156)
 
 `find { description }` ("the Sign in button", "the search box") looks at the

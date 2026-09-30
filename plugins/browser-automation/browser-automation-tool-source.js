@@ -79,6 +79,25 @@ const TOOL_SCHEMAS = [
 ];
 const ACTIONS = TOOL_SCHEMAS.map((t) => t.function.name.slice(BROWSER_TOOL_PREFIX.length));
 
+// #1160: up to five steps in one call. A step is any action but hand_over
+// (she says that herself) with that action's own arguments.
+const MAX_BATCH_STEPS = 5;
+const BATCH_ACTIONS = ACTIONS.filter((a) => a !== "hand_over");
+const stepArgs = Object.assign({}, ...TOOL_SCHEMAS.map((t) => t.function.parameters.properties));
+TOOL_SCHEMAS.push(
+  tool("batch", `Run up to ${MAX_BATCH_STEPS} browser steps in one go. It stops at the first step that fails or needs the user's OK, and then shows the page as it is.`, {
+    steps: {
+      type: "array",
+      maxItems: MAX_BATCH_STEPS,
+      items: {
+        type: "object",
+        properties: { action: { type: "string", enum: BATCH_ACTIONS }, ...stepArgs },
+        required: ["action"],
+      },
+    },
+  }, ["steps"]),
+);
+
 // What the model reads: everything from the page sits inside one untrusted
 // frame.
 function describeForModel(result) {
@@ -182,7 +201,7 @@ function createBrowserAutomationToolSource(options = {}) {
     }
 
     const action = qualifiedName.slice(BROWSER_TOOL_PREFIX.length);
-    if (!ACTIONS.includes(action)) {
+    if (action !== "batch" && !ACTIONS.includes(action)) {
       throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
     }
 
@@ -193,6 +212,38 @@ function createBrowserAutomationToolSource(options = {}) {
     }
     // #1137: her page loads images only while the Browser panel watches.
     const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched });
+    if (action === "batch") return runBatch(session, args?.steps);
+    const result = await act(session, action, args);
+    await recordScreenshot(session);
+    return describeForModel(result);
+  }
+
+  // #1160: each step as if called alone (site permission, activity feed);
+  // the first failure or needed approval ends the batch with a fresh look
+  // at the page so she can recover.
+  async function runBatch(session, steps) {
+    if (!Array.isArray(steps) || steps.length < 1 || steps.length > MAX_BATCH_STEPS) {
+      throw new Error(`a batch has 1 to ${MAX_BATCH_STEPS} steps`);
+    }
+    let result;
+    for (const [i, step] of steps.entries()) {
+      const stepAction = step?.action;
+      try {
+        if (!BATCH_ACTIONS.includes(stepAction)) throw new Error(`"${stepAction}" isn't a step a batch can take`);
+        result = await act(session, stepAction, step);
+      } catch (e) {
+        const now = await session.snapshot().catch(() => null);
+        await recordScreenshot(session);
+        const head = `Step ${i + 1} of ${steps.length} (${stepAction}) didn't go through: ${e.message}\nThe batch stopped there${i ? ` after ${i} step${i === 1 ? "" : "s"}` : ""}.`;
+        return now ? `${head}\n${describeForModel(now)}` : head;
+      }
+    }
+    await recordScreenshot(session);
+    return `All ${steps.length} steps went through.\n${describeForModel(result)}`;
+  }
+
+  // One action: the site check, the step itself and the activity feed.
+  async function act(session, action, args) {
     let result;
     try {
       if (ACTS_ON_SITE.has(action)) await requireSitePermission(session);
@@ -221,6 +272,10 @@ function createBrowserAutomationToolSource(options = {}) {
     activityLog.recordPage(result);
     activityLog.recordBlocked(result.url, result.blockedMayBreak || 0);
     if (result.sensitive) requestHandOver(`This page asks for ${result.sensitive}.`, sessionDeps);
+    return result;
+  }
+
+  async function recordScreenshot(session) {
     // Screenshots are for the Browser panel only, taken while it's on
     // screen. Best-effort: a capture failure (page mid-navigation, tab
     // closed) must never break the real tool call it happened alongside.
@@ -235,8 +290,6 @@ function createBrowserAutomationToolSource(options = {}) {
       screenshotBase64 = null;
     }
     activityLog.recordScreenshot(screenshotBase64);
-
-    return describeForModel(result);
   }
 
   return {

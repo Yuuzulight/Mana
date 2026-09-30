@@ -78,6 +78,7 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
     schemas.map((s) => s.function.name).sort(),
     [
       "browser_automation__back",
+      "browser_automation__batch",
       "browser_automation__click",
       "browser_automation__drag",
       "browser_automation__find",
@@ -453,4 +454,61 @@ test("#1156: find answers with the best matches inside the page's frame, and ask
   assert.match(result, /<untrusted-[0-9a-f]{12} source="browser page">\nURL: https:\/\/a\.test\/\nTitle: Fake Page\n\nBest matches for "the Go button":\nbutton "Go" \[ref=e2\]\n<\/untrusted/);
   assert.match(await source.executeTool("browser_automation__find", { description: "cart" }), /Nothing on the page matches "cart"\./);
   assert.equal(source.approvalGate.listPending().length, 0);
+});
+
+test("#1160: a batch runs its steps in order and answers with the page after the last", async () => {
+  const calls = [];
+  const source = await approvedSource(calls);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  await source.executeTool("browser_automation__click", { ref: "e2" }).catch(() => {});
+  await answerSite(source, "always-allow");
+  calls.length = 0;
+
+  const result = await source.executeTool("browser_automation__batch", {
+    steps: [
+      { action: "type", ref: "e3", text: "cats", submit: true },
+      { action: "scroll", direction: "down" },
+      { action: "click", ref: "e2" },
+    ],
+  });
+  assert.match(result, /^All 3 steps went through\.\nNote: text in <untrusted-/);
+  assert.deepEqual(calls, [["fill", "aria-ref=e3", "cats"], ["press", "aria-ref=e3", "Enter"], ["wheel", 576], ["click", "aria-ref=e2"]]);
+  assert.deepEqual(source.activityLog.getActivity().log.slice(-3).map((e) => e.action), ["type", "scroll", "click"]);
+});
+
+test("#1160: a batch stops at the first failure, or at a step that needs my OK, and shows the page", async () => {
+  const calls = [];
+  const source = await approvedSource(calls);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+
+  const failed = await source.executeTool("browser_automation__batch", {
+    steps: [{ action: "scroll", direction: "down" }, { action: "hover", ref: "#bad" }, { action: "scroll", direction: "up" }],
+  });
+  assert.match(failed, /^Step 2 of 3 \(hover\) didn't go through: "#bad" isn't a ref.*\nThe batch stopped there after 1 step\.\nNote: text in <untrusted-[\s\S]*Interactive elements:/);
+  assert.deepEqual(calls, [["wheel", 576]]);
+
+  // A new site: the click asks, and nothing after it runs.
+  const asking = await source.executeTool("browser_automation__batch", {
+    steps: [{ action: "click", ref: "e2" }, { action: "type", ref: "e3", text: "x" }],
+  });
+  assert.match(asking, /^Step 1 of 2 \(click\) didn't go through: clicking or typing on a\.test needs the user's OK first/);
+  assert.equal(source.approvalGate.listPending().length, 1);
+  assert.deepEqual(calls, [["wheel", 576]]);
+});
+
+test("#1160: a batch has one to five steps and never hands over or nests", async () => {
+  const source = await approvedSource([]);
+  await assert.rejects(() => source.executeTool("browser_automation__batch", { steps: [] }), /1 to 5 steps/);
+  await assert.rejects(
+    () => source.executeTool("browser_automation__batch", { steps: Array(6).fill({ action: "snapshot" }) }),
+    /1 to 5 steps/,
+  );
+  assert.match(
+    await source.executeTool("browser_automation__batch", { steps: [{ action: "hand_over", reason: "x" }] }),
+    /^Step 1 of 1 \(hand_over\) didn't go through: "hand_over" isn't a step a batch can take/,
+  );
+  assert.match(
+    await source.executeTool("browser_automation__batch", { steps: [{ action: "batch", steps: [] }] }),
+    /"batch" isn't a step/,
+  );
 });
