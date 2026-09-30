@@ -57,9 +57,15 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private bool dragSelecting;
     private Bitmap? glow;
     private (Size Size, Point Offset, Size Window, int Theme) glowKey;
+    // The UI thread, captured at construction: the view has no handle until
+    // the chat window is first shown, and appends made before then (the
+    // reopened session's history at launch, voice turns) must still land.
+    private readonly int uiThreadId = Environment.CurrentManagedThreadId;
+    private readonly System.Threading.SynchronizationContext? uiContext;
 
     public ChatView()
     {
+        uiContext = System.Threading.SynchronizationContext.Current; // installed by Control's constructor
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         Dock = DockStyle.Fill;
@@ -306,18 +312,24 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     private void RunOnUiThread(Action action)
     {
-        if (IsDisposed || !IsHandleCreated)
+        if (IsDisposed)
         {
             return;
         }
-        if (InvokeRequired)
+        if (Environment.CurrentManagedThreadId == uiThreadId)
         {
-            // Fire-and-forget, same as ChatLogPanel: an append racing the
-            // window closing is fine to drop.
-            BeginInvoke(action);
+            action();
             return;
         }
-        action();
+        // Fire-and-forget, same as ChatLogPanel: an append racing the
+        // window closing is fine to drop.
+        uiContext?.Post(_ =>
+        {
+            if (!IsDisposed)
+            {
+                action();
+            }
+        }, null);
     }
 
     private void Add(Message message, bool forceScroll)
@@ -689,10 +701,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        if (IsHandleCreated)
-        {
-            Relayout(forceScroll: false); // bubble widths and the scroll range both follow the size
-        }
+        Relayout(forceScroll: false); // bubble widths and the scroll range both follow the size
     }
 
     // ---- Painting -------------------------------------------------------
