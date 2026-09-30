@@ -8,17 +8,19 @@ namespace ManaNativeLauncher.Tests;
 public class TryPrTests
 {
     [Fact]
-    public void TryingPr_ReadsTheMarkerTryPrLeaves()
+    public void RunningOffMain_ReadsTheMarkerTryPrLeaves()
     {
         var launcherDir = Directory.CreateTempSubdirectory("mana-try-pr-").FullName;
         try
         {
-            Assert.Null(ManaApplicationContext.TryingPr(launcherDir));
+            Assert.Null(ManaApplicationContext.RunningOffMain(launcherDir));
             Directory.CreateDirectory(Path.Combine(launcherDir, "bin"));
-            File.WriteAllText(Path.Combine(launcherDir, "bin", "trying-pr"), "1020\r\n");
-            Assert.Equal(1020, ManaApplicationContext.TryingPr(launcherDir));
-            File.WriteAllText(Path.Combine(launcherDir, "bin", "trying-pr"), "not a number");
-            Assert.Null(ManaApplicationContext.TryingPr(launcherDir));
+            File.WriteAllText(Path.Combine(launcherDir, "bin", "trying-pr"), "PR #1020\r\n");
+            Assert.Equal("PR #1020", ManaApplicationContext.RunningOffMain(launcherDir));
+            File.WriteAllText(Path.Combine(launcherDir, "bin", "trying-pr"), "the previous build\r\n");
+            Assert.Equal("the previous build", ManaApplicationContext.RunningOffMain(launcherDir));
+            File.WriteAllText(Path.Combine(launcherDir, "bin", "trying-pr"), " ");
+            Assert.Null(ManaApplicationContext.RunningOffMain(launcherDir));
         }
         finally
         {

@@ -251,6 +251,7 @@ const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
+const { createReverter } = require("./revert-pr");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -2611,6 +2612,14 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json({ stopped: agentActivity.stop(String(req.body?.id ?? "")) });
   });
 
+  // #1011: an issue and a revert PR for a merged PR that broke something;
+  // the launcher then rolls its build back (try-pr.ps1 -Previous).
+  const reverter = deps.reverter || createReverter();
+  app.post("/updates/revert", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(await reverter.revert(req.body?.pr, req.body?.reason));
+  });
+
   // A one-off, session-scoped mode switch layered on top of Mana's base
   // persona (persona.js) -- doesn't touch the persona file itself, and
   // clears on request or when the process restarts.
@@ -4787,7 +4796,7 @@ function registerRoutes(app, upload, deps = {}) {
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
             // #1010: "let me try your PR" / "back to main" -- a PR number
             // only from my own message.
-            ...(userChat ? [createTryPrToolSource({ userMessage: transcript })] : []),
+            ...(userChat ? [createTryPrToolSource({ userMessage: transcript, revert: reverter.revert })] : []),
             // #906: my email and calendar, only in my own chat (never a
             // scheduled reply or a Discord/Telegram bridge).
             ...(userChat

@@ -2052,6 +2052,19 @@ internal sealed class ManaBackendClient
     }
 
     // #646: admin-gated (checkAdminAuth) like the proposal approve route.
+    // #1011: node-bot opens an issue and a revert PR for a merged PR
+    // (admin-gated). MergeCommit is what the rollback checks against.
+    public async Task<ManaRevertResult> RevertPrAsync(int pr)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { pr }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/updates/revert", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        string? Text(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        return new ManaRevertResult { PrUrl = Text("prUrl"), MergeCommit = Text("mergeCommit"), Error = Text("error") };
+    }
+
     public async Task StopAgentRunAsync(string id)
     {
         var payload = JsonSerializer.Serialize(new { id });
@@ -2591,6 +2604,14 @@ internal sealed class ManaBrowserAutomationLogEntry
     public string Status { get; init; } = "";
     public string Summary { get; init; } = "";
     public string At { get; init; } = "";
+}
+
+// #1011: POST /updates/revert's answer.
+internal sealed class ManaRevertResult
+{
+    public string? PrUrl { get; init; }
+    public string? MergeCommit { get; init; }
+    public string? Error { get; init; }
 }
 
 // #646: one entry from GET /agent/activity (node-bot/agent-activity.js).
