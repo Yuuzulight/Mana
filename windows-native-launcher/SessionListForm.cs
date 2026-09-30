@@ -62,6 +62,8 @@ internal sealed partial class SessionListForm : Form
     // per control.
     private readonly ToolTip railToolTip = new();
     private readonly Panel toolRail = new() { Dock = DockStyle.Right, Width = 44, BackColor = DarkTheme.Panel };
+    // #1118: where rail tools open; see RegisterRailTool.
+    private readonly ToolPanelHost toolPanel;
 
     // The chat list's row fonts (the #652 mockup's 13px title, semibold for
     // the open chat, and 12px time) -- built once, not per row painted.
@@ -323,6 +325,9 @@ internal sealed partial class SessionListForm : Form
             }
         };
 
+        // Before any RegisterRailTool.
+        toolPanel = new ToolPanelHost(railToolTip);
+
         // #538's rail: Artifacts then Tasks on top, Settings docked at the
         // bottom. (#538's Browser and Terminal icons stay off until those
         // tools exist.) Docked last-added-first, so Tasks goes in before
@@ -340,6 +345,11 @@ internal sealed partial class SessionListForm : Form
         toolRail.Controls.Add(railArtifactsButton);
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        // #1118: clicking back into the chat closes an unpinned tool panel.
+        // (The chat takes focus on a click; MouseDown covers a click while
+        // it already has it.)
+        chatArea.Enter += (_, _) => toolPanel.CloseUnlessPinned();
+        chatLog.MouseDown += (_, _) => toolPanel.CloseUnlessPinned();
         // Last added docks first: the message box claims the bottom strip,
         // its queue (#668) sits just above it, then the chat fills the rest.
         chatArea.Controls.Add(chatLog);
@@ -432,13 +442,15 @@ internal sealed partial class SessionListForm : Form
         // Dock order matters, and WinForms docks in REVERSE of the Controls
         // collection: the last control added claims its edge first. So the
         // intended docking sequence -- sidebar, its splitter, toolRail
-        // (outermost right), then chatArea filling what's left -- is added
-        // back to front.
+        // (outermost right), toolPanel, its splitter, then chatArea filling
+        // what's left -- is added back to front.
         // (Adding them front to back docked chatArea first: it took the
         // whole window and the rest were laid over it, hiding the first
         // lines of chat and clipping both sides.) Each Splitter still sits
         // next to the control it resizes.
         Controls.Add(chatArea);
+        Controls.Add(toolPanel.Splitter);
+        Controls.Add(toolPanel);
         Controls.Add(toolRail);
         Controls.Add(sidebarSplitter);
         Controls.Add(sidebar);
@@ -881,7 +893,30 @@ internal sealed partial class SessionListForm : Form
         g.DrawLine(pen, x + 9, y + 14, x + 9, y + 16.5f);
     }
 
-    private Button MakeRailButton(string icon, string tooltip)
+    // #1118: the host API every rail tool uses (see ToolPanelHost): adds its
+    // icon below the ones before it and opens createContent's control in the
+    // tool panel. Returns the icon, e.g. to dock it at the bottom.
+    internal Button RegisterRailTool(string id, string icon, string label, Func<Control> createContent)
+    {
+        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id));
+        toolRail.Controls.Add(button);
+        button.BringToFront(); // docked last-added-first, so this keeps registration order
+        toolPanel.Add(id, label, button, createContent);
+        return button;
+    }
+
+    // Ctrl+1...Ctrl+5 open the rail tools; Esc in the panel or rail closes it unless pinned.
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (toolPanel.HandleShortcut(keyData)
+            || (keyData == Keys.Escape && (toolPanel.ContainsFocus || toolRail.ContainsFocus) && toolPanel.CloseUnlessPinned()))
+        {
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null)
     {
         var button = new Button
         {
@@ -895,8 +930,18 @@ internal sealed partial class SessionListForm : Form
         button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
         // No Text -- these are line-icon glyphs drawn in the #652 mockup's
         // rail style rather than approximated with Unicode symbol
-        // characters -- so the tooltip is also the screen reader's name.
-        button.Paint += (_, e) => DrawRailIcon(e.Graphics, button.ClientRectangle, button.ForeColor, icon);
+        // characters -- so the tooltip is also the screen reader's name. The
+        // open tool's icon gets the mockup's lavender "active" fill (#988).
+        button.Paint += (_, e) =>
+        {
+            var open = active?.Invoke() == true;
+            if (open)
+            {
+                using var lit = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(217, 238, 231, 248) : DarkTheme.Panel2);
+                e.Graphics.FillRectangle(lit, button.ClientRectangle);
+            }
+            DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : button.ForeColor, icon);
+        };
         railToolTip.SetToolTip(button, tooltip);
         button.AccessibleName = tooltip;
         return button;
@@ -1182,6 +1227,7 @@ internal sealed partial class SessionListForm : Form
             return;
         }
         activeSessionId = sessionId;
+        toolPanel.CloseUnlessPinned();
         voiceLoop.SetSessionId(sessionId);
         ShowChatTitle();
         _ = RefreshAsync();
