@@ -499,8 +499,8 @@ public class ManaProcessManagerTests
         Assert.False(manager.IsFishSpeechAvailable);
     }
 
-    // #991: a fake node-bot (a real node process) that logs its pid, so the
-    // test can see the old one stopped and a new one started in its place.
+    // #991: a fake node-bot (a real node process), so the test can see the
+    // old one stopped and a new one started in its place.
     private static string FakeNodeBot(string script)
     {
         var root = Path.Combine(Path.GetTempPath(), "mana-restart-" + Guid.NewGuid().ToString("N"));
@@ -512,7 +512,10 @@ public class ManaProcessManagerTests
     [Fact]
     public async Task RestartBackendAsync_ReplacesTheNodeBotItStartedAndWaitsForItsHealth()
     {
-        var root = FakeNodeBot("require('fs').appendFileSync('pids.txt', process.pid + require('os').EOL); setInterval(() => {}, 1000);");
+        // Each one creates its own <pid>.pid file: with one shared pids.txt,
+        // the new node's append hit EBUSY whenever the test was reading the
+        // file (File.ReadAllLines shares read only) and it died unseen.
+        var root = FakeNodeBot("require('fs').writeFileSync(process.pid + '.pid', ''); setInterval(() => {}, 1000);");
         var backendUp = false;
         var handler = new FakeHttpMessageHandler(request =>
             new HttpResponseMessage(request.RequestUri!.Port == 5005 && backendUp ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable));
@@ -524,25 +527,31 @@ public class ManaProcessManagerTests
             using var manager = new ManaProcessManager(root, handler);
             await manager.StartAsync();
             Assert.True(manager.CanRestartBackend);
-            var pidsFile = Path.Combine(root, "node-bot", "pids.txt");
             async Task<int[]> Pids(int count)
             {
                 var deadline = DateTime.UtcNow.AddSeconds(20);
-                while ((!File.Exists(pidsFile) || File.ReadAllLines(pidsFile).Length < count) && DateTime.UtcNow < deadline)
+                while (true)
                 {
+                    var pids = Directory.GetFiles(Path.Combine(root, "node-bot"), "*.pid")
+                        .Select(file => int.Parse(Path.GetFileNameWithoutExtension(file)))
+                        .ToArray();
+                    if (pids.Length >= count)
+                    {
+                        return pids;
+                    }
+                    Assert.True(DateTime.UtcNow < deadline,
+                        $"Only {pids.Length} of {count} fake node-bots started within 20 s. Their output: [{string.Join(" | ", manager.BackendLog.Snapshot())}]");
                     await Task.Delay(50);
                 }
-                return File.ReadAllLines(pidsFile).Select(int.Parse).ToArray();
             }
-            await Pids(1);
+            var first = Assert.Single(await Pids(1));
             backendUp = true;
 
             Assert.True(await manager.RestartBackendAsync(TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(50)));
 
-            var pids = await Pids(2);
-            Assert.Equal(2, pids.Length);
-            Assert.False(IsRunning(pids[0]));
-            Assert.True(IsRunning(pids[1]));
+            var second = Assert.Single(await Pids(2), pid => pid != first);
+            Assert.False(IsRunning(first));
+            Assert.True(IsRunning(second));
         }
         finally
         {
