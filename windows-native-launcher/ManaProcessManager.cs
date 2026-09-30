@@ -626,6 +626,12 @@ internal sealed class ManaProcessManager : IDisposable
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
 
+        // The same lines as Settings > Logs, also on disk; the last run's as
+        // backend.prev.log. Under node-bot\data (never the launcher's own
+        // folder, which an update renames). Once node has started, so a
+        // failed start never creates folders; before reading its output.
+        BackendLog.StartFile(Path.Combine(nodeBotDir, "data", "logs", "backend.log"));
+
         void OnLine(object? sender, DataReceivedEventArgs e)
         {
             if (e.Data is not null)
@@ -744,6 +750,7 @@ internal sealed class ManaProcessManager : IDisposable
     {
         try
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
             if (File.Exists(logPath))
             {
                 File.Move(logPath, Path.ChangeExtension(logPath, ".prev.log"), overwrite: true);
