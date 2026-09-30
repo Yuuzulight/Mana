@@ -2086,9 +2086,12 @@ internal sealed class ManaBackendClient
     }
 
     // Null when she started, else why not (a PR limit, a game, RAM...).
-    public async Task<string?> StartSelfWorkAsync(int issue)
+    // #1009: allowGuardrails flags the run: she may change her guardrails,
+    // and the PR opens as a labelled draft.
+    public async Task<string?> StartSelfWorkAsync(int issue, bool allowGuardrails = false)
     {
-        using var content = new StringContent(JsonSerializer.Serialize(new { issue }), Encoding.UTF8, "application/json");
+        var payload = allowGuardrails ? JsonSerializer.Serialize(new { issue, allowGuardrails }) : JsonSerializer.Serialize(new { issue });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/self-work/start", content);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());

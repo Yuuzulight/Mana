@@ -240,17 +240,23 @@ test("the routes need my admin key and reach the runner", async () => {
   const { withServer, useTestAdminToken } = require("./helpers");
   const fetchAsAdmin = useTestAdminToken();
   const started = [];
-  const fake = { start: async (n) => (started.push(n), { ok: true }), stop: () => true, status: () => ({ state: "idle" }) };
+  const fake = { start: async (n, opts) => (started.push([n, opts]), { ok: true }), stop: () => true, status: () => ({ state: "idle" }) };
   await withServer(createApp({ selfWork: fake }), async (baseUrl) => {
     assert.equal((await fetch(`${baseUrl}/self-work`)).status, 401);
     const post = (route, body) =>
       fetchAsAdmin(`${baseUrl}${route}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     assert.equal((await fetch(`${baseUrl}/self-work/start`, { method: "POST" })).status, 401);
     assert.deepEqual(await (await post("/self-work/start", { issue: 7 })).json(), { ok: true });
+    await post("/self-work/start", { issue: 8, allowGuardrails: true });
+    await post("/self-work/start", { issue: 9, allowGuardrails: "yes" });
     assert.deepEqual(await (await post("/self-work/stop", {})).json(), { stopped: true });
     assert.deepEqual(await (await fetchAsAdmin(`${baseUrl}/self-work`)).json(), { state: "idle" });
   });
-  assert.deepEqual(started, [7]);
+  assert.deepEqual(started, [
+    [7, { allowGuardrails: false }],
+    [8, { allowGuardrails: true }],
+    [9, { allowGuardrails: false }],
+  ]);
 });
 
 // #1007: budget and gating.
@@ -395,4 +401,68 @@ test("starts and ends are notices; the steps between aren't", async () => {
   assert.match(notices[0], /^I'm starting on #7: Fix the add helper/);
   assert.match(notices[1], /^My PR for #7 is ready: https:\/\/github.com\/x\/y\/pull\/8/);
   assert.ok(events.some((e) => !e.notice && /Changed node-bot\/util\.js/.test(e.text)));
+});
+
+// #1009: guardrail changes only through a run I flag, as a labelled draft.
+const loosenGuard = ["coding__propose_edit", { path: "node-bot/approval-gate.js", old_text: "// guard", new_text: "// guard, reworded" }];
+
+test("a normal run is refused a guardrail write, carries on, and says how to allow it", async () => {
+  const repos = makeRepos();
+  const events = [];
+  const { sw, ghCalls } = selfWork(repos, {
+    calls: [loosenGuard, fix, runTests, finish],
+    onEvent: (run, text, notice) => notice && events.push(text),
+  });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(sw.status().state, "pr-open");
+  const create = ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
+  assert.ok(!create.includes("--draft"));
+  assert.ok(!ghCalls.some((a) => a.includes("mana-guardrail")));
+  assert.match(events.at(-1), /needed to change my guardrails \(node-bot\/approval-gate\.js\).*Allow guardrail changes/);
+  assert.equal(git(path.join(repos.worktrees, "mana-7"), "show", "HEAD:node-bot/approval-gate.js"), "// guard");
+});
+
+test("a run I flag may change a guardrail; its PR is a labelled draft that lists it", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const { sw, ghCalls } = selfWork(repos, { calls: [loosenGuard, runTests, finish], seen });
+  await sw.start(7, { allowGuardrails: true });
+  await sw._current().done;
+  assert.equal(sw.status().state, "pr-open");
+  assert.match(seen[0].prompt, /flagged this run to allow changes to your guardrails/);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/approval-gate.js"), /reworded/);
+  const create = ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
+  assert.equal(create[create.indexOf("--title") + 1], "[Guardrail] Fix the add helper");
+  assert.ok(create.includes("--draft"));
+  assert.match(create[create.indexOf("--body") + 1], /## Guardrail changes[\s\S]*- `node-bot\/approval-gate\.js`/);
+  assert.ok(ghCalls.some((a) => a.join(" ") === "pr edit mana/7-fix-the-add-helper --add-label mana-guardrail"));
+});
+
+test("only I can flag a run: the chat and idle starts can't", async () => {
+  const repos = makeRepos();
+  const { sw } = selfWork(repos, { calls: [loosenGuard], labels: [{ name: "mana-task" }] });
+  await sw.start(7, { by: "chat", allowGuardrails: true });
+  assert.equal(sw.status().flagged, false);
+  await sw._current().done;
+  assert.equal(sw.status().state, "no-change");
+});
+
+test("not even a flagged run writes or pushes CI files", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const { sw, ghCalls } = selfWork(repos, {
+    calls: [["coding__propose_edit", { path: ".github/workflows/ci.yml", new_text: "on: push\n" }], fix, runTests, finish],
+    onTest: (cwd) => {
+      fs.mkdirSync(path.join(cwd, "..", ".github"), { recursive: true });
+      fs.writeFileSync(path.join(cwd, "..", ".github", "x.yml"), "on: push\n");
+    },
+    seen,
+  });
+  await sw.start(7, { allowGuardrails: true });
+  await sw._current().done;
+  assert.match(seen.find((s) => s.name === "coding__propose_edit").error, /\.github\/workflows\/ci\.yml isn't mine to write/);
+  assert.equal(sw.status().state, "needs-you");
+  assert.match(sw.status().step, /\.github\/x\.yml, which I never push/);
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });

@@ -58,6 +58,10 @@ public class SelfWorkFormTests
         Assert.Null(await started.StartSelfWorkAsync(12));
         Assert.Equal("""{"issue":12}""", body);
 
+        // #1009: a flagged run says so; an ordinary one doesn't send the field at all.
+        Assert.Null(await started.StartSelfWorkAsync(12, allowGuardrails: true));
+        Assert.Equal("""{"issue":12,"allowGuardrails":true}""", body);
+
         var refused = ClientReturning("""{"ok":false,"error":"2 of my PRs are waiting for your review"}""");
         Assert.Equal("2 of my PRs are waiting for your review", await refused.StartSelfWorkAsync(12));
     }

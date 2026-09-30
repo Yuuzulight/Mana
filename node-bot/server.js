@@ -2636,7 +2636,8 @@ function registerRoutes(app, upload, deps = {}) {
   });
   app.post("/self-work/start", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
-    return res.json(await selfWork.start(req.body?.issue));
+    // #1009: "Allow guardrail changes" is only ever this route's, with my admin key.
+    return res.json(await selfWork.start(req.body?.issue, { allowGuardrails: req.body?.allowGuardrails === true }));
   });
   app.post("/self-work/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
