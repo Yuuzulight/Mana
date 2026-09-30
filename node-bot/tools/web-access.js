@@ -8,7 +8,7 @@ const net = require("node:net");
 const { URL } = require("node:url");
 const { ValidationError } = require("../request-validation");
 const { isLocalOnly, refuseIfLocalOnly } = require("../local-only");
-const { wrapUntrusted } = require("../ai/untrusted-content");
+const { GAME_WIKI_SOURCE, wrapUntrusted } = require("../ai/untrusted-content");
 
 const DEFAULT_SEARXNG_URL = "http://127.0.0.1:8890";
 const FETCH_TIMEOUT_MS = 15000;
@@ -337,7 +337,7 @@ async function buildGameWikiContext(text, game, env, typed) {
     `I'm playing ${game.name} and asking${typed ? "" : " by voice"}: answer in one or two short sentences from the wiki results below, and say so if they don't cover it. If the answer depends on what's on my screen and you have vision__look, look first.`,
     "",
     wrapUntrusted(
-      `${game.name} wiki`,
+      GAME_WIKI_SOURCE,
       [
         ...hits.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`),
         page ? `\nTop result page text:\n${page.text}` : null,

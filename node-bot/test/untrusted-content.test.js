@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { containsUntrusted, wrapUntrusted, wrapUntrustedInline } = require("../ai/untrusted-content");
+const { GAME_WIKI_SOURCE, untrustedSources, wrapUntrusted, wrapUntrustedInline } = require("../ai/untrusted-content");
 const { wrapWithRiskGate } = require("../ai/tool-risk");
 const { createApprovalGate } = require("../approval-gate");
 
@@ -21,9 +21,9 @@ test("outside text is framed with a rule and tags the text can't close early", (
   assert.equal(rest.slice(0, -1).join("\n"), injected);
 
   assert.match(wrapUntrustedInline("vault note", "call me Yuu"), /^<(untrusted-[0-9a-f]{12}) source="vault note">call me Yuu<\/\1>$/);
-  assert.ok(containsUntrusted(framed));
-  assert.ok(!containsUntrusted("plain chat"));
-  assert.ok(!containsUntrusted(undefined));
+  assert.deepEqual(untrustedSources(`${framed}\n${wrapUntrusted("email", "hi")}`), ["web page", "email"]);
+  assert.deepEqual(untrustedSources("plain chat"), []);
+  assert.deepEqual(untrustedSources(undefined), []);
 });
 
 function setup(options = {}, alwaysAllow = []) {
@@ -50,7 +50,7 @@ test("after outside content, tools that act or read private things ask for the r
   assert.equal(await clean.wrapped.executeTool("reminder__set", { text: "x" }), "ran reminder__set");
 
   // The prompt came with a web page: they ask, and no grant or Guardian skips it.
-  const fromPrompt = setup({ untrustedInput: true }, ["tool-read", "tool-low", "tool-write"]);
+  const fromPrompt = setup({ untrustedSources: ["web page"] }, ["tool-read", "tool-low", "tool-write"]);
   for (const name of ["vision__look", "reminder__set", "email__read", "desktop__focus_app", "read_file"]) {
     assert.equal(JSON.parse(await fromPrompt.wrapped.executeTool(name, {})).status, "pending", name);
   }
@@ -64,6 +64,25 @@ test("after outside content, tools that act or read private things ask for the r
   assert.match(await fromTool.wrapped.executeTool("email__read", { id: 1 }), /<untrusted-/);
   assert.equal(JSON.parse(await fromTool.wrapped.executeTool("reminder__set", { text: "send files" })).status, "pending");
   assert.deepEqual(fromTool.ran, ["email__read"]);
+});
+
+test("game wiki results alone still let vision__look run; anything else outside keeps it asking", async () => {
+  // Mid-game question: the wiki prompt says to look at my screen, and a
+  // screenshot stays on this PC. Acting and network tools still ask.
+  const wikiOnly = setup({ untrustedSources: [GAME_WIKI_SOURCE] });
+  assert.equal(await wikiOnly.wrapped.executeTool("vision__look", {}), "ran vision__look");
+  assert.equal(JSON.parse(await wikiOnly.wrapped.executeTool("reminder__set", { text: "x" })).status, "pending");
+  assert.equal(JSON.parse(await wikiOnly.wrapped.executeTool("vision__camera", {})).status, "pending");
+
+  // Game wiki plus a web page in the prompt: vision__look asks.
+  const wikiAndPage = setup({ untrustedSources: [GAME_WIKI_SOURCE, "web page"] });
+  assert.equal(JSON.parse(await wikiAndPage.wrapped.executeTool("vision__look", {})).status, "pending");
+
+  // Game wiki, then a browser page read mid-turn: from then on it asks too.
+  const wikiThenPage = setup({ untrustedSources: [GAME_WIKI_SOURCE] });
+  assert.equal(await wikiThenPage.wrapped.executeTool("vision__look", {}), "ran vision__look");
+  assert.equal(await wikiThenPage.wrapped.executeTool("browser_automation__snapshot", {}), "ran browser_automation__snapshot");
+  assert.equal(JSON.parse(await wikiThenPage.wrapped.executeTool("vision__look", {})).status, "pending");
 });
 
 test("a remembered fact whose text came from my vault is framed; my own facts aren't", () => {

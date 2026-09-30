@@ -24,7 +24,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { isCredentialPath } = require("./tool-policy");
-const { containsUntrusted } = require("./untrusted-content");
+const { GAME_WIKI_SOURCE, untrustedSources } = require("./untrusted-content");
 
 const TIERS = ["read", "low", "write", "network", "install", "destructive"];
 const MODES = ["off", "ask", "smart"];
@@ -136,7 +136,11 @@ const ASK_AFTER_UNTRUSTED = new Set([
   "speech__remove_word",
 ]);
 
-function asksAfterUntrusted(name, risk) {
+// sources: where the turn's outside content came from. Game wiki results
+// alone (mid-game "where do I unlock X", whose prompt says to look at my
+// screen) don't make vision__look ask: a screenshot stays on this PC.
+function asksAfterUntrusted(name, risk, sources) {
+  if (name === "vision__look" && [...sources].every((s) => s === GAME_WIKI_SOURCE)) return false;
   return ASK_AFTER_UNTRUSTED.has(name) || String(name).startsWith("desktop__") || risk.tier === "network";
 }
 
@@ -144,8 +148,9 @@ function asksAfterUntrusted(name, risk) {
 // calendar) or the browser automation's pages.
 // ponytail: an MCP server's results don't count (a shell `dir` isn't
 // outside content); frame them too if a web-fetching MCP server gets used.
-function bringsUntrusted(name, result) {
-  return containsUntrusted(result) || String(name).startsWith("browser_automation__");
+function untrustedSourcesFrom(name, result) {
+  const sources = untrustedSources(result);
+  return String(name).startsWith("browser_automation__") ? [...sources, "browser automation"] : sources;
 }
 
 // Where shell-running MCP tools put their command line and folder.
@@ -532,14 +537,15 @@ function resolveToolApprovalMode(...candidates) {
 // options.alwaysReview: further tiers that, like destructive, always go to a
 // human and are never granted (#699: a heartbeat check's install calls).
 //
-// options.untrustedInput: the turn's prompt already holds outside content
-// (see ASK_AFTER_UNTRUSTED below); a tool result can bring some in later.
+// options.untrustedSources: the sources of the outside content the turn's
+// prompt already holds (see ASK_AFTER_UNTRUSTED above); a tool result can
+// bring more in later.
 function wrapWithRiskGate(policy, approvalGate, options = {}) {
   const mode = resolveToolApprovalMode(options.mode);
   const alwaysReview = options.alwaysReview || [];
   const bindingDeps = options.bindingDeps || {};
   // One wrap per reply, so this is "for the rest of this turn".
-  let tookInUntrusted = Boolean(options.untrustedInput);
+  const tookInUntrusted = new Set(options.untrustedSources || []);
 
   async function ask(name, args, risk, afterUntrusted = false) {
     const binding = risk.command ? bindCall(name, args, bindingDeps) : null;
@@ -576,14 +582,14 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
     isKnownTool: policy.isKnownTool,
     executeTool: async (name, args) => {
       const risk = classifyToolCall(name, args);
-      if (tookInUntrusted && asksAfterUntrusted(name, risk)) {
+      if (tookInUntrusted.size && asksAfterUntrusted(name, risk, tookInUntrusted)) {
         return ask(name, args, risk, true);
       }
       const gated =
         risk.tier === "destructive" ||
         (mode !== "off" && !SELF_GATED.has(name) && !(mode === "smart" && ["read", "low"].includes(risk.tier)));
       const result = await (gated ? ask(name, args, risk) : policy.executeTool(name, args));
-      if (bringsUntrusted(name, result)) tookInUntrusted = true;
+      for (const source of untrustedSourcesFrom(name, result)) tookInUntrusted.add(source);
       return result;
     },
   };
