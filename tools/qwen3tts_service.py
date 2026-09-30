@@ -28,6 +28,9 @@ MODEL_DIR = os.environ.get("QWEN3_TTS_MODEL_DIR") or os.path.join(
 )
 REF_AUDIO = os.environ.get("QWEN3_TTS_REF_AUDIO") or os.environ.get("FISH_TTS_REF_AUDIO", "")
 REF_TEXT = os.environ.get("QWEN3_TTS_REF_TEXT") or os.environ.get("FISH_TTS_REF_TEXT", "")
+# #914: other characters' clips live under node-bot/data (beside
+# characters.json), so a request can't point the service at any other file.
+VOICES_DIR = os.path.realpath(os.path.join(HERE, "..", "node-bot", "data"))
 # The same setting node-bot calls; only its port is used here, the bind is
 # always loopback.
 PORT = urlsplit(os.environ.get("QWEN3_TTS_URL") or "http://127.0.0.1:5012").port or 5012
@@ -63,6 +66,11 @@ class SynthesizeBody(BaseModel):
     language: str | None = None
     # An emotion tag from utils/emotion-tags.js ("happy", "sad", ...).
     emotion: str | None = None
+    # #914: another character's voice -- a reference clip and its exact
+    # transcript, both or neither. The same model clones it; only the first
+    # sentence in a new voice pays to encode the clip.
+    ref_audio: str | None = None
+    ref_text: str | None = None
 
 
 def patch_rope_theta():
@@ -95,17 +103,26 @@ def change_rate(audio, rate):
     return (np.fft.irfft(np.fft.rfft(audio), n) * (n / len(audio))).astype(np.float32)
 
 
-def synthesize_wav(tts, text, language, emotion=None):
+def synthesize_wav(tts, text, language, emotion=None, ref_audio=None, ref_text=None):
     """One clone generation -> WAV bytes. faster-qwen3-tts caches the encoded
     reference per (ref_audio, ref_text), so only the first call pays for it."""
     import torch
 
     if not text.strip():
         raise ValueError("No text provided")
+    if bool(ref_audio) != bool(ref_text):
+        raise ValueError("ref_audio and ref_text go together")
+    if ref_audio:
+        ref_audio = os.path.realpath(ref_audio)
+        if not ref_audio.startswith(VOICES_DIR + os.sep) or not os.path.isfile(ref_audio):
+            raise ValueError(f"Reference clip must be a file under {VOICES_DIR}")
     with lock:
         try:
             wavs, sample_rate = tts.generate_voice_clone(
-                text=text, language=language or "auto", ref_audio=REF_AUDIO, ref_text=REF_TEXT
+                text=text,
+                language=language or "auto",
+                ref_audio=ref_audio or REF_AUDIO,
+                ref_text=ref_text or REF_TEXT,
             )
         finally:
             # Hand the generation's scratch VRAM back (peaks ~1 GB above
@@ -162,7 +179,7 @@ def health():
 @app.post("/synthesize")
 def synthesize(body: SynthesizeBody):
     try:
-        wav = synthesize_wav(model, body.text, body.language, body.emotion)
+        wav = synthesize_wav(model, body.text, body.language, body.emotion, body.ref_audio, body.ref_text)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:

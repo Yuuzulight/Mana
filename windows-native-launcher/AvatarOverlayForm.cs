@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -42,6 +43,7 @@ internal enum AvatarState
 // magenta fringe wherever an edge was half-transparent.)
 internal sealed class AvatarOverlayForm : Form
 {
+    private readonly string rootDirectory;
     private readonly string idlePath;
     private readonly string talkingPath;
 
@@ -76,9 +78,11 @@ internal sealed class AvatarOverlayForm : Form
     private float closedSmile;
     private readonly Random smileRandom = new();
 
-    private readonly CubismModel? cubismModel;
-    private readonly CubismRenderer? cubismRenderer;
-    private readonly System.Windows.Forms.Timer? renderTimer;
+    // #914: this and every other field ApplyModel sets change when LoadModel
+    // swaps in another character's model.
+    private CubismModel? cubismModel;
+    private CubismRenderer? cubismRenderer;
+    private System.Windows.Forms.Timer? renderTimer;
     private readonly Stopwatch renderClock = Stopwatch.StartNew();
     private long lastRenderTickMs;
     private float smoothedMouthOpen;
@@ -92,7 +96,7 @@ internal sealed class AvatarOverlayForm : Form
     // only ever touched on the UI thread (SetState already marshals
     // there before writing; RenderFrame runs on the WinForms Timer's own
     // UI-thread tick), so no lock is needed for either.
-    private readonly IReadOnlyDictionary<string, CubismExpressionFile> expressions;
+    private IReadOnlyDictionary<string, CubismExpressionFile> expressions;
     private CubismExpressionFile? activeExpression;
 
     // #515/#683: plays the model's own motion groups as the base animation
@@ -101,22 +105,22 @@ internal sealed class AvatarOverlayForm : Form
     // AvatarMotionPlayer). Null without a Live2D model. Only touched on the
     // UI thread (SetState marshals there first; RenderFrame is a UI-thread
     // timer tick).
-    private readonly AvatarMotionPlayer? motionPlayer;
+    private AvatarMotionPlayer? motionPlayer;
 
     // #342 follow-up: base layer underneath motionPlayer when the model has
     // no Idle group (none declared, all failed to load, or no stateMotions
     // idle mapping) -- without this, the avatar previously had zero idle
     // movement in that case. Mood clips, when the model has any, still
     // play (and crossfade) over it.
-    private readonly ProceduralIdleMotion? proceduralIdleMotion;
+    private ProceduralIdleMotion? proceduralIdleMotion;
 
     // #683: mana-avatar.json / MANA_LIVE2D_* tuning (AvatarConfig).
-    private readonly string mouthParam = "ParamMouthOpenY";
-    private readonly IReadOnlyDictionary<string, IReadOnlyList<string>> expressionOverrides = new Dictionary<string, IReadOnlyList<string>>();
+    private string mouthParam = "ParamMouthOpenY";
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> expressionOverrides = new Dictionary<string, IReadOnlyList<string>>();
 
     // The model's .physics3.json simulation (hair/skirt sway), or null if it
     // ships none or it failed to load. Stateful, stepped once per frame.
-    private readonly CubismPhysics? physics;
+    private CubismPhysics? physics;
 
     // #683: auto-blink and gaze/idle head tilt, layered on top of the idle
     // motion and expression every frame (see RenderFrame). lifeParameters
@@ -127,8 +131,8 @@ internal sealed class AvatarOverlayForm : Form
     private static readonly string[] GazeIds = ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY",
         "ParamBodyAngleX", "ParamBodyAngleZ", "ParamEyeLSmile", "ParamEyeRSmile"];
     private readonly EyeBlink eyeBlink = new();
-    private readonly AvatarGaze gaze;
-    private readonly string[] eyeBlinkIds = [];
+    private AvatarGaze gaze;
+    private string[] eyeBlinkIds = [];
     private readonly Dictionary<string, (float Default, float Min, float Max)> lifeParameters = [];
 
     private static string AvatarPngPath(string rootDirectory, string fileName) =>
@@ -151,7 +155,45 @@ internal sealed class AvatarOverlayForm : Form
         baseSize = new Size(ReadIntEnv("MANA_AVATAR_WIDTH", 234), ReadIntEnv("MANA_AVATAR_HEIGHT", 288));
         StartPosition = FormStartPosition.Manual;
 
-        var loaded = TryLoadCubismModel(rootDirectory);
+        this.rootDirectory = rootDirectory;
+        ApplyModel(TryLoadCubismModel(rootDirectory, Environment.GetEnvironmentVariable(CubismModelLocator.EnvVar)));
+        // Only animate while she's actually on screen (here or, #685, in
+        // the chat window) -- the launcher shows the overlay after the
+        // startup screen closes, so there's no rendering in the
+        // background during startup (or while hidden).
+        VisibleChanged += (_, _) => UpdateRenderTimer();
+        Size = Frame(settings.OverlayFraming, settings.OverlayScale);
+
+        SetState(AvatarState.Idle);
+        stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
+        stateTimer.Start();
+        // #899: a spot saved before framing existed was for the 1x full-body
+        // window; move it once to where that window's bottom centre stood,
+        // so she stays flush on the bottom edge if she was.
+        if (settings.OverlayFraming is null && settings.AvatarLeft is int oldLeft && settings.AvatarTop is int oldTop)
+        {
+            var moved = Resized(new Rectangle(oldLeft, oldTop, baseSize.Width, baseSize.Height), Size);
+            settings.AvatarLeft = moved.Left;
+            settings.AvatarTop = moved.Top;
+            settings.OverlayFraming = OverlayFraming;
+            settings.OverlayScale = OverlayScale;
+            try
+            {
+                settings.Save();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"AvatarOverlayForm: couldn't save the moved overlay position. {ex.Message}");
+            }
+        }
+        PositionOverlay(settings);
+    }
+
+    // #914: everything that comes from the model, at start-up and again when
+    // LoadModel swaps in another character's.
+    [MemberNotNull(nameof(expressions), nameof(gaze), nameof(ModelLoadWarnings))]
+    private void ApplyModel(CubismLoadResult loaded)
+    {
         cubismModel = loaded.Model;
         cubismRenderer = loaded.Renderer;
         expressions = loaded.Expressions;
@@ -160,6 +202,12 @@ internal sealed class AvatarOverlayForm : Form
         ModelLoadProblem = loaded.Problem;
         ModelLoadWarnings = loaded.Warnings ?? Array.Empty<string>();
         var config = loaded.Config ?? AvatarConfig.Parse(null, _ => null);
+        motionPlayer = null;
+        proceduralIdleMotion = null;
+        activeExpression = null;
+        eyeBlinkIds = [];
+        lifeParameters.Clear();
+        renderTimer = null;
         gaze = new AvatarGaze(config.IdleGazeDeg, config.IdleGazePeriodMs, config.IdleTiltDeg, config.IdleMaxPitchDeg, config.AnimatedTiltDeg);
         if (cubismModel is not null)
         {
@@ -190,13 +238,9 @@ internal sealed class AvatarOverlayForm : Form
             // lands on every tick (16 would round up to every other one).
             // MANA_AVATAR_FPS (#683, Electron's knob) can lower that.
             var fps = ReadIntEnv("MANA_AVATAR_FPS", 0);
+            var (model, renderer) = (cubismModel, cubismRenderer);
             renderTimer = new System.Windows.Forms.Timer { Interval = fps > 0 ? Math.Max(15, 1000 / fps) : 15 };
-            renderTimer.Tick += (_, _) => RenderFrame(cubismModel, cubismRenderer);
-            // Only animate while she's actually on screen (here or, #685, in
-            // the chat window) -- the launcher shows the overlay after the
-            // startup screen closes, so there's no rendering in the
-            // background during startup (or while hidden).
-            VisibleChanged += (_, _) => UpdateRenderTimer();
+            renderTimer.Tick += (_, _) => RenderFrame(model, renderer);
         }
 
         // #899: the framed window is sized from the model's canvas; the
@@ -207,31 +251,29 @@ internal sealed class AvatarOverlayForm : Form
             cubismModel.ReadCanvasInfo(out var canvas, out _, out _);
             canvasSize = new SizeF(canvas.X, canvas.Y);
         }
-        Size = Frame(settings.OverlayFraming, settings.OverlayScale);
+    }
 
-        SetState(AvatarState.Idle);
-        stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
-        stateTimer.Start();
-        // #899: a spot saved before framing existed was for the 1x full-body
-        // window; move it once to where that window's bottom centre stood,
-        // so she stays flush on the bottom edge if she was.
-        if (settings.OverlayFraming is null && settings.AvatarLeft is int oldLeft && settings.AvatarTop is int oldTop)
+    // #914: the active character's model (null or empty: the default one),
+    // swapped in place. A path that doesn't load leaves the static avatar,
+    // like a failed start-up load. UI thread only.
+    public void LoadModel(string? model3JsonPath)
+    {
+        var explicitPath = string.IsNullOrWhiteSpace(model3JsonPath)
+            ? Environment.GetEnvironmentVariable(CubismModelLocator.EnvVar)
+            : model3JsonPath;
+        if (CubismModelLocator.Find(rootDirectory, explicitPath) == ModelPath)
         {
-            var moved = Resized(new Rectangle(oldLeft, oldTop, baseSize.Width, baseSize.Height), Size);
-            settings.AvatarLeft = moved.Left;
-            settings.AvatarTop = moved.Top;
-            settings.OverlayFraming = OverlayFraming;
-            settings.OverlayScale = OverlayScale;
-            try
-            {
-                settings.Save();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Console.WriteLine($"AvatarOverlayForm: couldn't save the moved overlay position. {ex.Message}");
-            }
+            return; // e.g. Evil Mana still wearing Mana's model
         }
-        PositionOverlay(settings);
+        var loaded = TryLoadCubismModel(rootDirectory, explicitPath);
+        renderTimer?.Dispose();
+        cubismRenderer?.Dispose();
+        cubismModel?.Dispose();
+        mirror?.ClearFrame();
+        ApplyModel(loaded);
+        UpdateRenderTimer();
+        SetFraming(OverlayFraming, OverlayScale); // her canvas may differ
+        ShowResolvedState(reapply: true); // the new model's expression and motion
     }
 
     // #684: back on screen when a monitor is unplugged or its resolution or
@@ -343,9 +385,9 @@ internal sealed class AvatarOverlayForm : Form
     // explanation for the user -- see CubismModelDiagnostics), and for parts
     // of a loaded model that were skipped. Both null/empty on success or when
     // there's simply no model installed (the static avatar is the default).
-    public string? ModelLoadProblem { get; }
-    public IReadOnlyList<string> ModelLoadWarnings { get; }
-    public string? ModelPath { get; }
+    public string? ModelLoadProblem { get; private set; }
+    public IReadOnlyList<string> ModelLoadWarnings { get; private set; }
+    public string? ModelPath { get; private set; }
 
     // Never throws: no SDK, no model, or a model that fails to parse all
     // mean "fall back to the PNG swap", not "crash the launcher" -- but
@@ -353,9 +395,8 @@ internal sealed class AvatarOverlayForm : Form
     // Console line. Expression files (#514) and the Idle motion (#515) are
     // loaded best-effort -- one malformed accessory file is skipped (and
     // reported as a warning), not fatal to the model load it belongs to.
-    private static CubismLoadResult TryLoadCubismModel(string rootDirectory)
+    private static CubismLoadResult TryLoadCubismModel(string rootDirectory, string? explicitPath)
     {
-        var explicitPath = Environment.GetEnvironmentVariable(CubismModelLocator.EnvVar);
         var model3JsonPath = CubismModelLocator.Find(rootDirectory, explicitPath);
         if (model3JsonPath is null)
         {
@@ -1107,7 +1148,7 @@ internal sealed class AvatarOverlayForm : Form
     public string OverlayFraming { get; private set; } = "upperHalf";
     public float OverlayScale { get; private set; } = 1.5f;
     private readonly Size baseSize; // the full-body window at 1x
-    private readonly SizeF canvasSize;
+    private SizeF canvasSize;
 
     // The window size for a framing and scale (and remembers both).
     private Size Frame(string? framing, float? scale)

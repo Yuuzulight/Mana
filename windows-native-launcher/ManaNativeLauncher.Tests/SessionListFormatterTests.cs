@@ -76,4 +76,25 @@ public class SessionListFormatterTests
             SessionListFormatter.ParseTurnTime("2026-09-29T12:00:00+08:00"));
         Assert.Equal(System.DateTime.MinValue, SessionListFormatter.ParseTurnTime(null));
     }
+
+    // Wednesday 30 Sep 2026, 15:00 local.
+    private static readonly System.DateTimeOffset Now = new(new System.DateTime(2026, 9, 30, 15, 0, 0, System.DateTimeKind.Local));
+
+    [Theory]
+    [InlineData(-20, "just now")]
+    [InlineData(120, "just now")] // a clock a little ahead
+    [InlineData(-5 * 60, "5 min ago")]
+    [InlineData(-2 * 3600, "2 h ago")]
+    [InlineData(-16 * 3600, "yesterday")] // 23:00 the day before, not "16 h ago"
+    [InlineData(-3 * 86400, "Sun")]
+    [InlineData(-8 * 86400, "Sep 22")]
+    public void FormatRelative_ReadsLikeTheMockup(int secondsFromNow, string expected) =>
+        Assert.Equal(expected, SessionListFormatter.FormatRelative(Now.AddSeconds(secondsFromNow).ToString("o"), Now));
+
+    [Fact]
+    public void FormatRelative_AddsTheYearOnlyWhenItDiffers()
+    {
+        Assert.Equal("Dec 1, 2025", SessionListFormatter.FormatRelative(new System.DateTimeOffset(new System.DateTime(2025, 12, 1, 9, 0, 0, System.DateTimeKind.Local)).ToString("o"), Now));
+        Assert.Equal("", SessionListFormatter.FormatRelative("not a date", Now));
+    }
 }

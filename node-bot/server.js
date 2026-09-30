@@ -202,8 +202,18 @@ const { createMemoryGraph } = require("./memory-graph");
 const { createSkillProposalRunner } = require("./skill-proposal");
 const persona = require("./persona");
 const { createPresetsStore } = require("./presets-store");
-const { createPersonalityStore } = require("./personality-store");
+const {
+  createPersonalityStore,
+  DEFAULT_FILE_PATH: DEFAULT_PERSONALITY_FILE,
+} = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
+const {
+  characterFilePath,
+  createCharacterStore,
+  perCharacter,
+  personaOf,
+} = require("./characters");
+const { createCharactersCapability } = require("./capabilities/characters-capability");
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
@@ -234,6 +244,7 @@ const { briefingLines: mailCalendarBriefingLines, createMailCalendarToolSource }
 const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
 const { checkMail } = require("./imap-client");
 const { checkCalendar } = require("./calendar-client");
+const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desktop-tool-source");
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
@@ -684,8 +695,22 @@ const pronunciationLexiconStore = createPronunciationLexiconStore({});
 // the gaming override below, and stopped after MANA_KOKORO_IDLE_MS idle.
 const kokoroRuntime = createKokoroRuntime({ env: process.env });
 
+// Issue #914: the active character (Mana by default). Created before
+// ttsRuntime, which speaks in her voice; the launcher hears of each switch
+// on /ws/tray so it can load her Live2D model.
+const characterStore = createCharacterStore({
+  onSwitch: (character) =>
+    notifyTray({
+      type: "character",
+      id: character.id,
+      title: character.name,
+      model: character.live2dModel,
+    }),
+});
+
 const ttsRuntime = createTtsRuntime({
   env: process.env,
+  getVoice: () => characterStore.active().voice,
   baseDir: __dirname,
   nowMs,
   logPerf,
@@ -712,6 +737,8 @@ const memoryGraph = createMemoryGraph();
 // getEditorIntegrations) -- one store means one place to eventually list
 // "everything that's undoable right now", not three disconnected pools.
 const snapshotStore = createSnapshotStore({});
+// #911: undoing a desktop__move_files moves the files back.
+registerFileMoveRestorer(snapshotStore, visionCaptureBridge);
 
 // ACP memory store (conversation/session memory)
 const acpMemoryStore = createAcpMemoryStore({
@@ -807,7 +834,6 @@ const speechVocabulary = createSpeechVocabulary({
 
 // #906: the email/calendar accounts from Settings > Calendar & email.
 const mailCalendarSettings = createMailCalendarSettingsStore();
-
 // #907: the daily briefing (data/briefing.json, Settings > Briefing),
 // through the proactive engine. The chat model writes it only when it's
 // already loaded. #961: calendar and mail come from #906's accounts; the
@@ -912,15 +938,24 @@ async function checkEmotionalReflexes(store = acpMemoryStore) {
 const presetsStore = createPresetsStore({});
 // Issue #357: the editable personality layer, persisted so an adjustment
 // survives a restart. persona.js owns the immutable core and no storage.
-const personalityStore = createPersonalityStore({});
+// #914: each character has her own (and her own mood below); both delegate
+// to the active character's store.
+const personalityStore = perCharacter(
+  characterStore,
+  (id) => createPersonalityStore({ filePath: characterFilePath(DEFAULT_PERSONALITY_FILE, id) }),
+  ["get", "set", "revert", "clear"],
+);
 // Issue #700: Mana's mood, persisted beside emotional-state.json (in memory
 // under tests, so they never touch the real data dir).
-const moodStore = createMoodStore({
-  filePath:
-    process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
-      ? null
-      : path.join(acpMemoryStore.dataDir, "mood-state.json"),
-});
+const moodFilePath =
+  process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+    ? null
+    : path.join(acpMemoryStore.dataDir, "mood-state.json");
+const moodStore = perCharacter(
+  characterStore,
+  (id) => createMoodStore({ filePath: characterFilePath(moodFilePath, id) }),
+  ["get", "record", "recordTurn", "reset", "setFrozen"],
+);
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
 const skillsStore = createSkillsStore({ snapshotStore });
@@ -2270,6 +2305,7 @@ function registerRoutes(app, upload, deps = {}) {
     presetsCapability,
     personalityCapability,
     moodCapability,
+    createCharactersCapability(characterStore),
     backgroundMemoryCapability,
     memoryFactsCapability,
     retrieverAdminCapability,
@@ -2985,17 +3021,6 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(speechState());
   });
 
-  // #907: Settings > Briefing. POST takes any of { enabled, time, sections,
-  // topics, games }.
-  app.get("/briefing", (req, res) => res.json({ ok: true, ...briefing.settings() }));
-  app.post("/briefing", (req, res) => {
-    try {
-      return res.json({ ok: true, ...briefing.update(req.body || {}) });
-    } catch (e) {
-      return res.status(400).json({ ok: false, error: e.message });
-    }
-  });
-
   // #906: Settings > Calendar & email. Credentials go in and never come
   // back out (describe() shows hosts and usernames only). This PC with the
   // admin key only: the body carries an app password, and Test logs in to
@@ -3021,6 +3046,17 @@ function registerRoutes(app, upload, deps = {}) {
     try {
       const state = clear === true ? mailCalendarSettings.clear(kind) : mailCalendarSettings.set(kind, fields);
       return res.json({ ok: true, ...state });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // #907: Settings > Briefing. POST takes any of { enabled, time, sections,
+  // topics, games }.
+  app.get("/briefing", (req, res) => res.json({ ok: true, ...briefing.settings() }));
+  app.post("/briefing", (req, res) => {
+    try {
+      return res.json({ ok: true, ...briefing.update(req.body || {}) });
     } catch (e) {
       return res.status(400).json({ ok: false, error: e.message });
     }
@@ -3965,6 +4001,7 @@ function registerRoutes(app, upload, deps = {}) {
     let selectedSystemPrompt = persona.buildPersonaPrompt(
       sessionId,
       personalityStore.get().traits,
+      personaOf(characterStore.active()),
     );
     // Issue #623: per-sentence emotion tags for the avatar. Static text, so
     // it sits in the cached prefix; every reply path below strips the tags.
@@ -4740,13 +4777,25 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
-            // #907: "brief me".
-            ...(userChat ? [briefing.toolSource] : []),
             // #906: my email and calendar, only in my own chat (never a
             // scheduled reply or a Discord/Telegram bridge).
             ...(userChat
               ? [createMailCalendarToolSource({ store: mailCalendarSettings, approvalGate: activeApprovalGate })]
               : []),
+            // #911: media keys, volume, apps, audio output, file moves --
+            // only when I'm asking.
+            ...(userChat
+              ? [
+                  createDesktopToolSource({
+                    bridge: visionCaptureBridge,
+                    isGaming: deps.isGaming || gamingWatch.isGaming,
+                    voice: replyMeta.voice === true,
+                    snapshotStore,
+                  }),
+                ]
+              : []),
+            // #907: "brief me".
+            ...(userChat ? [briefing.toolSource] : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({
