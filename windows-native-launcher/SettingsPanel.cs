@@ -106,6 +106,8 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildApprovalsTab());
         var voiceTab = BuildVoiceTab();
         tabs.TabPages.Add(voiceTab);
+        tabs.TabPages.Add(BuildBriefingTab());
+        tabs.TabPages.Add(new TabPage("Desktop") { Controls = { new DesktopFoldersPanel() } }); // #997
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLogsTab());
         tabs.TabPages.Add(BuildThemeTab());
@@ -140,6 +142,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshToolApprovalModeAsync();
         await RefreshVoiceTabAsync();
         await (refreshSpeechWords?.Invoke() ?? Task.CompletedTask);
+        await (refreshBriefing?.Invoke() ?? Task.CompletedTask);
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
@@ -995,7 +998,7 @@ internal sealed class SettingsPanel : UserControl
 
         toolApprovalModeCombo.Items.AddRange(new object[]
         {
-            "Smart -- ask for anything that isn't read-only",
+            "Smart -- ask unless it's read-only or a small change like the volume",
             "Ask for every tool call",
             "Only destructive commands",
         });
@@ -1251,6 +1254,98 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildCameraRow());
         layout.Controls.Add(BuildSpeechWordsSection());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #907: node-bot's daily briefing (GET/POST /briefing). "Brief me" in
+    // chat gives it on demand whatever's set here.
+    private static readonly (string Key, string Label)[] BriefingSections =
+    {
+        ("reminders", "Today's reminders"),
+        ("memory", "What's coming up (memory)"),
+        ("news", "News on my topics"),
+        ("games", "Game patch and maintenance news"),
+        ("calendar", "Calendar and mail (once connected)"),
+    };
+    private Func<Task>? refreshBriefing;
+
+    private TabPage BuildBriefingTab()
+    {
+        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        TextBox Box(string name, int width) => new() { Width = width, AccessibleName = name, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        FlowLayoutPanel Row(params Control[] controls)
+        {
+            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+            row.Controls.AddRange(controls);
+            return row;
+        }
+
+        var enabled = new CheckBox { Text = "Give me a daily briefing, the first time I'm at the PC after", AutoSize = true, ForeColor = DarkTheme.Text };
+        var time = Box("Briefing time", 60);
+        var sections = BriefingSections.Select(s => new CheckBox { Text = s.Label, Tag = s.Key, AutoSize = true, ForeColor = DarkTheme.Text }).ToArray();
+        var topics = Box("News topics", 300);
+        var games = Box("Games", 300);
+        var save = new Button { Text = "Save", AutoSize = true };
+        DarkTheme.ApplyButton(save);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+
+        void Render(ManaBriefingSettings settings)
+        {
+            if (enabled.IsDisposed)
+            {
+                return;
+            }
+            enabled.Checked = settings.Enabled;
+            time.Text = settings.Time;
+            foreach (var check in sections)
+            {
+                check.Checked = settings.Sections.Contains((string)check.Tag!);
+            }
+            topics.Text = settings.Topics;
+            games.Text = settings.Games;
+        }
+
+        save.Click += async (_, _) =>
+        {
+            try
+            {
+                Render(await backendClient.UpdateBriefingAsync(new ManaBriefingSettings
+                {
+                    Enabled = enabled.Checked,
+                    Time = time.Text,
+                    Sections = sections.Where(c => c.Checked).Select(c => (string)c.Tag!).ToList(),
+                    Topics = topics.Text,
+                    Games = games.Text,
+                }));
+                status.Text = "Saved.";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                if (!status.IsDisposed)
+                {
+                    status.Text = $"Couldn't save: {ex.Message}";
+                }
+            }
+        };
+        refreshBriefing = async () =>
+        {
+            try
+            {
+                Render(await backendClient.GetBriefingAsync());
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"SettingsPanel: failed to load the briefing settings. {ex.Message}");
+            }
+        };
+
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
+        layout.Controls.Add(Row(enabled, time, Caption("(HH:MM)")));
+        layout.Controls.Add(Caption("It's a toast and Mana says it; while I'm playing it waits for a break. Say \"brief me\" any time for it on demand."));
+        layout.Controls.AddRange(sections);
+        layout.Controls.Add(Row(Caption("News topics (comma-separated)"), topics));
+        layout.Controls.Add(Row(Caption("Games"), games));
+        layout.Controls.Add(Row(save, status));
+        return new TabPage("Briefing") { Controls = { layout } };
     }
 
     // #923/#925/#926: node-bot's speech words (whisper listens for them),

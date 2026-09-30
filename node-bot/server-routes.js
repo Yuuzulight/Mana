@@ -77,6 +77,7 @@ function registerCoreRoutes(app, upload, deps) {
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
+    currentGame = () => null, // #908
   } = deps;
 
   // Every save path (recordChatTurn here, server.js's reply builder) skips
@@ -263,19 +264,22 @@ function registerCoreRoutes(app, upload, deps) {
       // validated explicitly rather than just making both fields optional,
       // so a malformed body gets a clean 400 instead of silently resolving
       // the pending requestCapture() promise with an empty image.
+      // #911: a desktop action's answer is a result object instead.
       const error = optionalString(req.body?.error, "error", "");
       const image = optionalString(req.body?.image, "image", "");
-      if (error && image) {
-        throw new ValidationError("provide either image or error, not both");
+      const result = req.body?.result;
+      const isResult = Boolean(result) && typeof result === "object" && !Array.isArray(result);
+      if ([error, image, isResult].filter(Boolean).length > 1) {
+        throw new ValidationError("provide only one of image, result or error");
       }
       if (error) {
         const rejected = rejectVisionCapture(requestId, error);
         return res.json({ ok: rejected });
       }
-      if (!image) {
+      if (!image && !isResult) {
         throw new ValidationError("image is required");
       }
-      const resolved = resolveVisionCapture(requestId, image);
+      const resolved = resolveVisionCapture(requestId, isResult ? result : image);
       return res.json({ ok: resolved });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -365,6 +369,7 @@ function registerCoreRoutes(app, upload, deps) {
             pluginSettingsStore,
             world,
             screenText,
+            game: currentGame(),
           })
         : "";
       const assistantMode = optionalString(
@@ -378,6 +383,8 @@ function registerCoreRoutes(app, upload, deps) {
       const replyMeta = {
         systemPatch: input.systemPatch,
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
+        // #911: a spoken turn may run desktop actions mid-game.
+        voice: req.body?.source === "voice",
       };
       const turn = image
         ? await prepareImageTurn(input.text, [image], modelProfile)
@@ -516,6 +523,7 @@ function registerCoreRoutes(app, upload, deps) {
             pluginSettingsStore,
             world,
             screenText,
+            game: currentGame(),
           })
         : "";
       const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);
@@ -528,6 +536,8 @@ function registerCoreRoutes(app, upload, deps) {
         // #675: the client's "think harder" (deep-thinking toggle): true
         // thinks this turn, false ends Mana's own deep thinking (Q12b).
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
+        // #911: a spoken turn may run desktop actions mid-game.
+        voice: req.body?.source === "voice",
       };
       const turn = images.length
         ? await prepareImageTurn(input.text, images, modelProfile)
@@ -609,6 +619,7 @@ function registerCoreRoutes(app, upload, deps) {
           pluginSettingsStore,
           world: UNIVERSALIS_DEFAULT_WORLD,
           screenText: "",
+          game: currentGame(),
         },
       );
       const assistantMode = optionalString(
@@ -617,7 +628,7 @@ function registerCoreRoutes(app, upload, deps) {
         null,
       );
       const presetId = optionalString(req.body?.presetId, "presetId", null);
-      const replyMeta = { systemPatch: input.systemPatch };
+      const replyMeta = { systemPatch: input.systemPatch, voice: true };
       const reply = await buildAssistantReply(
         input.text,
         "",
@@ -651,7 +662,9 @@ function registerCoreRoutes(app, upload, deps) {
         return res.status(400).json({ error: "TTS not configured" });
       }
 
-      const audio = await synthesizeReply(text);
+      // #909: the sentence's emotion tag (from /reply/stream) styles her voice.
+      const emotion = typeof req.body?.emotion === "string" ? req.body.emotion : undefined;
+      const audio = await synthesizeReply(text, { emotion });
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (e) {
