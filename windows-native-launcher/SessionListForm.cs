@@ -331,7 +331,7 @@ internal sealed partial class SessionListForm : Form
         // Before any RegisterRailTool.
         toolPanel = new ToolPanelHost(railToolTip);
 
-        // #538's rail: Artifacts, Background tasks and Terminal on top,
+        // #538's rail: Artifacts, Background tasks, Terminal and Browser on top,
         // Settings docked at the bottom.
         // #1119: Settings opens in the tool panel.
         RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
@@ -346,6 +346,8 @@ internal sealed partial class SessionListForm : Form
         // #1121: the commands Mana runs, and my own shells in the repo folder.
         RegisterRailTool("terminal", "terminal", "Terminal",
             () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
+        // #1122: her browser automation, docked.
+        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient));
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
@@ -906,6 +908,9 @@ internal sealed partial class SessionListForm : Form
             messageQueueTimer.Start();
         }
     }
+
+    // #1122: the floating browser window stays away while this is on screen.
+    internal bool BrowserToolShowing => Visible && WindowState != FormWindowState.Minimized && toolPanel.IsOpen("browser");
 
     // #1118: the host API every rail tool uses (see ToolPanelHost): adds its
     // icon below the ones before it and opens createContent's control in the
