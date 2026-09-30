@@ -29,7 +29,15 @@ public class BrowserToolTests
          "takeOver":{{takeOver}}}
         """;
 
-    private static ManaBackendClient Backend(List<string> requests, Func<string> activity) =>
+    // #1140: /web/read's reader answer: Markdown, a fetched image as data:,
+    // and one that isn't data: (never handed to Folio).
+    private const string ReaderPage = """
+        {"url":"https://a.test/x","title":"Chocobo racing","text":"# Chocobo racing\n\nBack at the [Gold Saucer](/saucer).\n\n| Track | Length |\n| --- | --- |\n| Sagolii | 3 min |\n\n![Start line](/start.png) ![Tracker](https://t.test/p.png)",
+         "truncated":true,"needsBrowser":null,
+         "images":{"/start.png":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","https://t.test/p.png":"https://t.test/p.png"}}
+        """;
+
+    private static ManaBackendClient Backend(List<string> requests, Func<string> activity, string? readerPage = ReaderPage) =>
         new(new FakeHttpMessageHandler(request =>
         {
             var path = request.RequestUri!.AbsolutePath;
@@ -40,6 +48,7 @@ public class BrowserToolTests
                 "/browser-automation/activity" => activity(),
                 "/browser/close" => """{"ok":true}""",
                 "/browser/take-over" or "/browser/hand-back" => NotTakenOver,
+                "/web/read" => readerPage,
                 _ => null,
             };
             return json is null
@@ -102,8 +111,13 @@ public class BrowserToolTests
                 Invoke(pages, "OnItemActivate");
                 item.Selected = false;
             }
-            // The javascript: link from outside content never opens.
-            Assert.Equal(["https://a.test/x"], opened);
+            // #1140: a page opens in the reader, not the browser; the
+            // javascript: link from outside content is never read or opened.
+            // (#1139: Take over no longer opens my browser either.)
+            Pump(() => tool.Reader.Note.Length > 0);
+            Assert.Empty(opened);
+            Assert.Single(requests, r => r.StartsWith("POST /web/read"));
+            Assert.Contains(requests, r => r == """POST /web/read {"url":"https://a.test/x","reader":true}""");
 
             var stop = tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Stop");
             Click(stop);
@@ -129,7 +143,7 @@ public class BrowserToolTests
             var opened = new List<string>();
             tool.OpenUrl = opened.Add;
             Label Title() => tool.Controls.OfType<Label>().Last(); // added last: the title
-            Button TakeOverButton() => tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Dock == DockStyle.Left);
+            Button TakeOverButton() => tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text is "Take over" or "Done");
 
             Pump(tool.RefreshAsync());
             Assert.Equal("She needs you: Log in to the shop", Title().Text);
@@ -154,6 +168,59 @@ public class BrowserToolTests
             Assert.Equal("Take over", button.Text);
             Assert.Equal("Cart", Title().Text);
             Assert.Empty(opened);
+        });
+    }
+
+    [Fact]
+    public void Reader_DrawsTheCleanPage_WithOnlyDataImages_AndOpensTheRealOne()
+    {
+        var page = new ManaReaderPage
+        {
+            Text = "![Start line](/start.png) ![Tracker](https://t.test/p.png) <script>alert(1)</script>",
+            Images = new Dictionary<string, string> { ["/start.png"] = "data:image/png;base64,AQID", ["https://t.test/p.png"] = "https://t.test/p.png" },
+        };
+        var html = ReaderView.Html(page);
+        Assert.Contains("<img src=\"data:image/png;base64,AQID\" alt=\"Start line\">", html);
+        Assert.Contains("<em>Tracker</em>", html); // never a web src Folio could fetch
+        Assert.DoesNotContain("<script>", html);
+        // The extractor escapes \ and | in table cells; the cells show them as written.
+        var table = ReaderView.Html(new ManaReaderPage { Text = "| Path | Pipe |\n| --- | --- |\n" + @"| C:\\dir | a\|b |" });
+        Assert.Contains(@"<td>C:\dir</td><td>a|b</td>", table);
+
+        RunSta(() =>
+        {
+            var requests = new List<string>();
+            using var reader = new ReaderView(Backend(requests, () => "{}"), () => { }) { Size = new System.Drawing.Size(320, 240) };
+            var opened = new List<string>();
+            reader.OpenUrl = opened.Add;
+            Pump(reader.ShowAsync("https://a.test/x"));
+
+            Assert.Contains(reader.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Label>()), l => l.Text == "Chocobo racing");
+            Assert.Equal("A long page: this is the first part of it.", reader.Note);
+            Assert.Contains(reader.Controls.OfType<LinkLabel>(), l => l.Text == "https://a.test/x");
+
+            // Folio draws it off-screen.
+            using var bitmap = new System.Drawing.Bitmap(300, 200);
+            reader.View.Size = new System.Drawing.Size(300, 200);
+            reader.View.DrawToBitmap(bitmap, new System.Drawing.Rectangle(0, 0, 300, 200));
+            var background = bitmap.GetPixel(299, 199);
+            Assert.Contains(Enumerable.Range(0, 300 * 200), i => bitmap.GetPixel(i % 300, i / 300) != background);
+
+            Click(reader.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Open in my browser"));
+            Assert.Equal(["https://a.test/x"], opened);
+        });
+    }
+
+    [Theory]
+    [InlineData("""{"url":"https://app.test/","title":"Dashboard","text":"","truncated":false,"needsBrowser":"its content is built by scripts","images":{}}""", "This page needs a browser (its content is built by scripts): open it in your browser to see all of it.")]
+    [InlineData(null, "HTTP 404")]
+    public void Reader_SaysWhenAPageNeedsTheBrowserOrCantBeRead(string? readerPage, string note)
+    {
+        RunSta(() =>
+        {
+            using var reader = new ReaderView(Backend([], () => "{}", readerPage), () => { });
+            Pump(reader.ShowAsync("https://app.test/"));
+            Assert.Equal(note, reader.Note);
         });
     }
 
