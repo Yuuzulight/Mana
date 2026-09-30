@@ -80,6 +80,7 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
       "browser_automation__back",
       "browser_automation__click",
       "browser_automation__drag",
+      "browser_automation__find",
       "browser_automation__hand_over",
       "browser_automation__hover",
       "browser_automation__navigate",
@@ -443,4 +444,13 @@ test("#1155: press and drag ask for the site like a click; hover doesn't", async
   await answerSite(source, "allow-once");
   await source.executeTool("browser_automation__press", { key: "Enter" });
   await assert.rejects(() => source.executeTool("browser_automation__drag", { from: "e1", to: "e2" }), /needs the user's OK first/);
+});
+
+test("#1156: find answers with the best matches inside the page's frame, and asks nothing", async () => {
+  const source = await approvedSource([]);
+  await source.executeTool("browser_automation__navigate", { url: "https://a.test/" });
+  const result = await source.executeTool("browser_automation__find", { description: "the Go button" });
+  assert.match(result, /<untrusted-[0-9a-f]{12} source="browser page">\nURL: https:\/\/a\.test\/\nTitle: Fake Page\n\nBest matches for "the Go button":\nbutton "Go" \[ref=e2\]\n<\/untrusted/);
+  assert.match(await source.executeTool("browser_automation__find", { description: "cart" }), /Nothing on the page matches "cart"\./);
+  assert.equal(source.approvalGate.listPending().length, 0);
 });

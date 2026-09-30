@@ -62,6 +62,45 @@ function interactiveElements(ariaSnapshot) {
   return lines;
 }
 
+// #1156: the words in a description that name a kind of element, and the
+// snapshot roles they mean.
+const ROLE_WORDS = new Map([
+  ["button", ["button"]], ["link", ["link"]], ["tab", ["tab"]], ["checkbox", ["checkbox"]],
+  ["radio", ["radio"]], ["switch", ["switch", "checkbox"]], ["toggle", ["switch", "checkbox", "button"]],
+  ["slider", ["slider"]], ["option", ["option"]], ["menu", ["menuitem", "combobox", "button"]],
+  ["box", ["textbox", "searchbox", "combobox"]], ["field", ["textbox", "searchbox", "combobox"]],
+  ["input", ["textbox", "searchbox", "combobox"]], ["search", ["searchbox", "textbox"]],
+  ["dropdown", ["combobox", "listbox"]], ["select", ["combobox", "listbox"]],
+]);
+const STOP_WORDS = new Set(["the", "a", "an", "to", "of", "on", "in", "for", "that", "with", "and", "or", "my", "this", "it", "at"]);
+const MAX_MATCHES = 5;
+
+const words = (text) => String(text || "").toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+
+// The snapshot lines that best fit what she describes ("the Sign in
+// button", "the search box"), best first: words of the element's name
+// count most, a whole-phrase match more, a matching kind of element a bit.
+// ponytail: plain word overlap, no stemming or synonyms beyond ROLE_WORDS.
+function findElements(elements, description) {
+  const wanted = words(description).filter((w) => !STOP_WORDS.has(w));
+  const roles = new Set(wanted.flatMap((w) => ROLE_WORDS.get(w) || []));
+  const nameWords = wanted.filter((w) => !ROLE_WORDS.has(w) || !roles.size);
+  const phrase = nameWords.join(" ");
+  const scored = elements.map((line) => {
+    const [, role = "", name = ""] = /^(\w+)(?: "((?:[^"\\]|\\.)*)")?/.exec(line) || [];
+    const have = new Set(words(`${name} ${line.split("]: ")[1] || ""}`));
+    let score = nameWords.filter((w) => have.has(w)).length * 2;
+    if (phrase && name.toLowerCase().includes(phrase)) score += 2;
+    if (roles.has(role)) score += score > 0 || !nameWords.length ? 1 : 0;
+    return { line, score };
+  });
+  return scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_MATCHES)
+    .map((s) => s.line);
+}
+
 // A plain, token-efficient text extraction -- not a screenshot or raw
 // HTML dump.
 function extractTextInPage(maxChars) {
@@ -148,6 +187,14 @@ function createBrowserSession(options = {}) {
     const blocked = blockedMayBreak(all, text);
     last = { url, title, elements, text, ...(sensitive ? { sensitive } : {}), ...(blocked ? { blockedMayBreak: blocked } : {}) };
     return last;
+  }
+
+  // #1156: the best-fitting elements for a description, from a fresh look
+  // at the whole page (not just the 150 a snapshot shows).
+  async function find(description) {
+    if (!String(description || "").trim()) throw new Error("say what to look for, like \"the Sign in button\"");
+    const [aria, title, url] = await Promise.all([page.ariaSnapshot({ mode: "ai", depth: SNAPSHOT_DEPTH }), page.title(), page.url()]);
+    return { url, title, description: String(description), matches: findElements(interactiveElements(aria), description) };
   }
 
   // After an action: on the same page, only what changed; on a new page
@@ -264,7 +311,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, hover, press, drag, back, snapshot, screenshot, url: () => page.url() };
+  return { navigate, click, type, select, scroll, hover, press, drag, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {
@@ -272,6 +319,7 @@ module.exports = {
   MAX_ELEMENTS,
   createBrowserSession,
   interactiveElements,
+  findElements,
   extractTextInPage,
   sensitiveInPage,
   refSelector,
