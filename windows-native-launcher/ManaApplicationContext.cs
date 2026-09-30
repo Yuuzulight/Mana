@@ -369,7 +369,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
         menu.Items.Add("Settings…", null, (_, _) =>
         {
-            ShowSessionList(); // Settings floats over the chat window
+            ShowSessionList(); // #1119: Settings opens in its tool panel
             sessionListForm.OpenSettings();
         });
         menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
