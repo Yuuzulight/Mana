@@ -6,6 +6,7 @@ const {
   createTtsRuntime,
   detectTtsLanguage,
   postJsonBuffer,
+  resolveTtsProvider,
 } = require("../tts-runtime");
 
 test("tts runtime builds CLI args from configured placeholders", () => {
@@ -628,4 +629,20 @@ test("a failed Kokoro start fails that synthesis without calling the service, an
   const before = events.length;
   await assert.rejects(runtime.synthesizeReply("hello"), /fish unavailable/);
   assert.deepEqual(events.slice(before), ["fish"]);
+});
+
+test("resolveTtsProvider: Fish on CUDA with room for it, Kokoro otherwise; explicit settings win (#1076)", () => {
+  const cuda = () => ({ vendor: "nvidia", cuda: true });
+  const free = (freeMb) => () => ({ usedMb: 0, freeMb });
+  const noDetection = () => assert.fail("explicit settings skip detection");
+
+  assert.equal(resolveTtsProvider({}, { gpu: cuda, vramUsage: free(12000) }), "fish");
+  assert.equal(resolveTtsProvider({}, { gpu: cuda, vramUsage: free(3000) }), "kokoro");
+  // Free VRAM unreadable: trust the CUDA GPU.
+  assert.equal(resolveTtsProvider({}, { gpu: cuda, vramUsage: () => null }), "fish");
+  assert.equal(resolveTtsProvider({}, { gpu: () => null, vramUsage: noDetection }), "kokoro");
+  assert.equal(resolveTtsProvider({}, { gpu: () => ({ vendor: "amd", cuda: false }), vramUsage: noDetection }), "kokoro");
+
+  assert.equal(resolveTtsProvider({ TTS_PROVIDER: "fish" }, { gpu: noDetection, vramUsage: noDetection }), "fish");
+  assert.equal(resolveTtsProvider({ TTS_BIN: "C:\tts.exe" }, { gpu: noDetection, vramUsage: noDetection }), "cli");
 });

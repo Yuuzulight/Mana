@@ -178,6 +178,19 @@ internal sealed class AvatarGaze
     public static float NodOffset(double sinceSeconds) =>
         sinceSeconds is >= 0 and < NodSeconds ? -6f * MathF.Sin(MathF.PI * (float)(sinceSeconds / NodSeconds)) : 0f;
 
+    // While she's listening: (pitch, roll, eye smile) to add at this time --
+    // a steady ~4 degree tilt that sways a degree either way over 8s, a
+    // small 2 degree nod every 4s, and softly smiling eyes. Loops forever;
+    // the caller eases it in and out.
+    public const float ListeningNodSeconds = 4f;
+    public static (float Pitch, float Roll, float EyeSmile) ListeningPose(double seconds)
+    {
+        var t = (float)seconds;
+        var pitch = -2f * (0.5f - (0.5f * MathF.Cos(2f * MathF.PI * t / ListeningNodSeconds)));
+        var roll = 4f + MathF.Sin(2f * MathF.PI * t / (2f * ListeningNodSeconds));
+        return (pitch, roll, 0.25f);
+    }
+
     // Q34: clicking her -- a quick attentive look: (pitch, roll) degrees to
     // add, a small lift and a head tilt toward you that ease in and back
     // out, sinceSeconds after the click; (0, 0) outside it. The eyes come to

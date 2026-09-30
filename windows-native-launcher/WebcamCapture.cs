@@ -17,6 +17,10 @@ namespace Mana.NativeLauncher;
 // I ask to keep it (#962, SaveSnapshot).
 internal static class WebcamCapture
 {
+    // One snapshot: the scaled copy the vision model gets, and the camera's
+    // full-resolution JPEG, which is what "save that" keeps.
+    internal sealed record Snapshot(string VisionDataUrl, byte[] Jpeg);
+
     public const string OffMessage = "The camera is off. Turn it on in Settings > Voice.";
     public const string NoCameraMessage = "No camera found.";
     public const string InUseMessage = "The camera is in use by another app.";
@@ -28,7 +32,7 @@ internal static class WebcamCapture
     private static int WarmupMs =>
         int.TryParse(Environment.GetEnvironmentVariable("MANA_CAMERA_WARMUP_MS"), out var ms) && ms >= 0 ? ms : 700;
 
-    public static async Task<string> CaptureAsJpegDataUrlAsync()
+    public static async Task<Snapshot> CaptureAsync()
     {
         try
         {
@@ -60,7 +64,7 @@ internal static class WebcamCapture
                 using (frame)
                 {
                     var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap ?? throw new InvalidOperationException("The camera sent no picture.");
-                    return await ToVisionDataUrlAsync(bitmap);
+                    return await EncodeAsync(bitmap);
                 }
             }
             finally
@@ -74,25 +78,29 @@ internal static class WebcamCapture
         }
     }
 
-    private static async Task<string> ToVisionDataUrlAsync(SoftwareBitmap frame)
+    internal static async Task<Snapshot> EncodeAsync(SoftwareBitmap frame)
     {
         using var opaque = SoftwareBitmap.Convert(frame, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore);
         using var stream = new InMemoryRandomAccessStream();
         var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream);
         encoder.SetSoftwareBitmap(opaque);
         await encoder.FlushAsync();
+        var jpeg = new byte[stream.Size];
         stream.Seek(0);
-        using var image = Image.FromStream(stream.AsStream());
-        return ScreenCapture.ToVisionDataUrl(image);
+        using (var read = stream.AsStream())
+        {
+            read.ReadExactly(jpeg);
+        }
+        using var image = Image.FromStream(new MemoryStream(jpeg));
+        return new Snapshot(ScreenCapture.ToVisionDataUrl(image), jpeg);
     }
 
-    // #962: writes a snapshot (CaptureAsJpegDataUrlAsync's data URL) into
-    // folder, or Pictures\Mana when that's blank, as "Mana <time>.jpg", and
-    // returns the file's path. Never overwrites an earlier one.
-    internal static string SaveSnapshot(string? dataUrl, string? folder, DateTime now)
+    // #962: writes a snapshot's full-resolution JPEG into folder, or
+    // Pictures\Mana when that's blank, as "Mana <time>.jpg", and returns the
+    // file's path. Never overwrites an earlier one.
+    internal static string SaveSnapshot(byte[]? jpeg, string? folder, DateTime now)
     {
-        const string prefix = "data:image/jpeg;base64,";
-        if (dataUrl is null || !dataUrl.StartsWith(prefix, StringComparison.Ordinal))
+        if (jpeg is null)
         {
             throw new InvalidOperationException(NothingToSaveMessage);
         }
@@ -110,7 +118,7 @@ internal static class WebcamCapture
         {
             path = Path.Combine(dir, $"{name} ({i}).jpg");
         }
-        File.WriteAllBytes(path, Convert.FromBase64String(dataUrl[prefix.Length..]));
+        File.WriteAllBytes(path, jpeg);
         return path;
     }
 
