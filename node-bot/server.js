@@ -4704,6 +4704,8 @@ function registerRoutes(app, upload, deps = {}) {
                     typeof cleanLlamaOutput === "function"
                       ? cleanLlamaOutput(openAiReply)
                       : openAiReply,
+                  // #914: history lines are labelled with who said them.
+                  speaker: characterStore.active().name,
                 })
                 .catch((memErr) =>
                   console.warn(
@@ -5406,6 +5408,7 @@ function registerRoutes(app, upload, deps = {}) {
                 ? cleanLlamaOutput(reply)
                 : reply,
             toolCalls: lastToolCalls,
+            speaker: characterStore.active().name,
           })
           .catch((memErr) =>
             console.warn(
@@ -5493,6 +5496,7 @@ function registerRoutes(app, upload, deps = {}) {
                 sessionId,
                 user: userText,
                 assistant: assistantText,
+                speaker: characterStore.active().name,
               })
               .catch((memErr) =>
                 console.warn(

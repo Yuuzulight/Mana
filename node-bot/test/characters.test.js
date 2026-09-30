@@ -288,5 +288,7 @@ test("the reply's system prompt is the active character's persona", async () => 
     await app.locals.buildAssistantReply("hi", "", "", "default", "sess-characters", "casual", null, {});
     assert.match(prompts[0], /^You are Evil Mana/);
     assert.doesNotMatch(prompts[0], /You are Mana, an original/);
+    // Group mode's speaker-labelled history: the turn says who answered.
+    assert.equal(app.locals.acpMemoryStore.getSession("sess-characters").turns.at(-1).speaker, "Evil Mana");
   });
 });
