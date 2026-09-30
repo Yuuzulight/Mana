@@ -38,8 +38,10 @@ const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 const IDLE_CLOSE_MS = 5 * 60 * 1000;
 // #1159: tabs she may have open at once (MANA_BROWSER_MAX_TABS, 1 to 5).
 const DEFAULT_MAX_TABS = 3;
-const SESSION_METHODS = ["navigate", "click", "type", "select", "scroll", "hover", "press", "drag", "back", "find", "snapshot", "lookAndClick"];
+const SESSION_METHODS = ["navigate", "click", "type", "select", "scroll", "hover", "press", "drag", "back", "find", "snapshot", "lookAndClick", "devtools"];
 const CHECK_EVERY_MS = 30 * 1000;
+// #1161: console messages and requests kept per page.
+const MAX_LOG = 100;
 // #1158: how long a file I point her to stays hers to upload.
 const OFFER_MS = 30 * 60 * 1000;
 // Resolved, lower-cased path -> until when she may upload it.
@@ -118,9 +120,27 @@ async function launch(deps, options) {
 // the session that reads and acts on it.
 async function setUpTab(page) {
   const health = { blockedAds: 0 };
+  // #1161: the current page's console and network, for her dev tools.
+  const log = { console: [], network: [] };
+  // Requests we abort ourselves (ads, media) aren't the site's failures.
+  const aborted = new WeakSet();
   // #1168: what the current page lost to ad blocking.
   page.on("framenavigated", (frame) => {
-    if (frame === page.mainFrame()) health.blockedAds = 0;
+    if (frame !== page.mainFrame()) return;
+    health.blockedAds = 0;
+    log.console = [];
+    log.network = [];
+  });
+  const keep = (list, entry) => list.push(entry) > MAX_LOG && list.shift();
+  page.on("console", (message) => keep(log.console, { type: message.type(), text: String(message.text()).slice(0, 500) }));
+  page.on("pageerror", (error) => keep(log.console, { type: "error", text: String(error?.message || error).slice(0, 500) }));
+  page.on("requestfinished", async (request) => {
+    const response = await request.response().catch(() => null);
+    keep(log.network, { method: request.method(), url: request.url(), status: response?.status() ?? null, ms: Math.round(request.timing()?.responseEnd ?? -1) });
+  });
+  page.on("requestfailed", (request) => {
+    if (aborted.has(request)) return;
+    keep(log.network, { method: request.method(), url: request.url(), failure: request.failure()?.errorText || "failed" });
   });
   // #1158: a download waits for my OK (the tool source); from anywhere
   // else (the HTTP routes) it's dropped.
@@ -134,13 +154,16 @@ async function setUpTab(page) {
     const request = route.request();
     if (isAdHost(hostOf(request.url()))) {
       health.blockedAds += 1;
+      aborted.add(request);
       return route.abort();
     }
-    return BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.()
-      ? route.abort()
-      : route.continue();
+    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.()) {
+      aborted.add(request);
+      return route.abort();
+    }
+    return route.continue();
   });
-  return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }) }) };
+  return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }), pageLog: () => log }) };
 }
 
 async function startSession(deps) {

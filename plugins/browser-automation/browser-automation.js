@@ -19,6 +19,9 @@ const INTERACTIVE_ROLES = new Set([
   "switch", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
 const REF_RE = /^(?:f\d+)?e\d+$/;
+// #1161: the sizes she tests a page at.
+const VIEWPORTS = { phone: { width: 390, height: 844 }, tablet: { width: 820, height: 1180 }, desktop: { width: 1280, height: 720 } };
+const MAX_JS_RESULT_CHARS = 2000;
 // #1155: keys she may press -- the page's own keys, never a shortcut that
 // acts outside it (closing or opening tabs, printing, saving, devtools).
 const NAMED_KEYS = new Map(
@@ -318,6 +321,65 @@ function createBrowserSession(options = {}) {
     return afterAction();
   }
 
+  // #1161: her dev tools, on the current page. options.pageLog is the
+  // page's { console, network } (index.js). look(image) is her vision
+  // model's description of a screenshot.
+  const pageLog = options.pageLog || (() => ({ console: [], network: [] }));
+  async function devtools(args = {}, look = null) {
+    const { url, title } = { url: await page.url(), title: await page.title() };
+    if (args.do === "console") {
+      const messages = pageLog().console;
+      const rank = (m) => (m.type === "error" ? 0 : m.type === "warning" ? 1 : 2);
+      return { url, title, devtools: [...messages].sort((a, b) => rank(a) - rank(b)).slice(0, 30).map((m) => `${m.type}: ${m.text}`), what: `Console (${messages.length} messages, errors first)` };
+    }
+    if (args.do === "network") {
+      const requests = pageLog().network;
+      const failed = requests.filter((r) => r.failure || r.status >= 400);
+      const slowest = requests.filter((r) => r.ms >= 0).sort((a, b) => b.ms - a.ms).slice(0, 5);
+      return {
+        url,
+        title,
+        what: `Network (${requests.length} requests, ${failed.length} failed)`,
+        devtools: [
+          ...failed.slice(0, 20).map((r) => `failed: ${r.method} ${r.url} -- ${r.failure || `HTTP ${r.status}`}`),
+          ...slowest.map((r) => `slow: ${r.ms} ms ${r.method} ${r.url}`),
+        ],
+      };
+    }
+    if (args.do === "run_js") {
+      await refuseIfSensitive();
+      const code = String(args.code || "").trim();
+      if (!code) throw new Error("code is required: a JavaScript expression to run on the page");
+      const value = await acting(() => page.evaluate(code));
+      let shown;
+      try {
+        shown = JSON.stringify(value) ?? "undefined";
+      } catch (e) {
+        shown = String(value);
+      }
+      return { url, title, what: "Result", devtools: [shown.slice(0, MAX_JS_RESULT_CHARS)] };
+    }
+    if (args.do === "viewport") {
+      const size = VIEWPORTS[args.size];
+      if (!size) throw new Error('size must be "phone", "tablet" or "desktop"');
+      await page.setViewportSize(size);
+      return snapshot();
+    }
+    if (args.do === "color_scheme") {
+      if (args.scheme !== "light" && args.scheme !== "dark") throw new Error('scheme must be "light" or "dark"');
+      await page.emulateMedia({ colorScheme: args.scheme });
+      return snapshot();
+    }
+    if (args.do === "look") {
+      await refuseIfSensitive();
+      if (!look) throw new Error("looking at the page isn't available right now");
+      const shot = await page.screenshot({ type: "jpeg", quality: 70 });
+      const seen = await look(`data:image/jpeg;base64,${shot.toString("base64")}`, String(args.question || "Describe this page's layout and anything that looks broken."));
+      return { url, title, what: "What she sees", devtools: [String(seen || "")] };
+    }
+    throw new Error('do must be "console", "network", "run_js", "viewport", "color_scheme" or "look"');
+  }
+
   // #1157: for pages with no useful accessibility info (canvas apps,
   // unlabeled custom UIs). locate(imageDataUrl, width, height) is her
   // vision model's answer: { x, y } in the screenshot, or null.
@@ -343,7 +405,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, hover, press, drag, upload, lookAndClick, back, find, snapshot, screenshot, url: () => page.url() };
+  return { navigate, click, type, select, scroll, hover, press, drag, upload, lookAndClick, devtools, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {
@@ -357,4 +419,5 @@ module.exports = {
   refSelector,
   pageKey,
   blockedNote,
+  VIEWPORTS,
 };

@@ -45,6 +45,25 @@ gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
 
+## Developer tools (#1161)
+
+`devtools { do }` on the current page, on any site she's allowed to act on
+(#1154 -- no separate mode or allow-list):
+
+- `console`: the page's console messages and uncaught errors, errors first.
+- `network`: failed requests (errors, HTTP 4xx/5xx) and the slowest ones,
+  with timings. Requests we block ourselves (ads, media) aren't listed.
+- `run_js { code }`: one JavaScript expression, its value back as JSON
+  (capped at 2000 characters). Never on password or payment pages.
+- `viewport { size: phone | tablet | desktop }` and
+  `color_scheme { scheme: light | dark }`.
+- `look { question }`: a screenshot her vision model describes. Off while
+  gaming, never on password or payment pages.
+
+Each tab keeps its last 100 console messages and requests, cleared when it
+loads a new page. Everything the page says comes back inside the untrusted
+frame.
+
 ## Look and click (#1157)
 
 `look_and_click { description }` is the last resort for pages with no

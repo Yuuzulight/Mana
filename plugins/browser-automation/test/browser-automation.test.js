@@ -47,6 +47,7 @@ function createFakePage(overrides = {}) {
     async evaluate(fn, arg) {
       if (fn === extractTextInPage) return state.text.slice(0, arg);
       if (fn === sensitiveInPage) return state.sensitive;
+      if (typeof fn === "string") return state.js?.(fn);
       throw new Error("unexpected evaluate() call in test");
     },
     locator(selector) {
@@ -70,6 +71,8 @@ function createFakePage(overrides = {}) {
       wheel: async (x, y) => state.calls.push(["wheel", x, y]),
     },
     viewportSize: () => ({ width: 1000, height: 500 }),
+    setViewportSize: async (size) => state.calls.push(["viewport", size]),
+    emulateMedia: async (media) => state.calls.push(["media", media]),
     async waitForEvent(event) {
       state.calls.push(["wait", event]);
       return { setFiles: async (file) => state.calls.push(["chooser", file]) };
@@ -475,4 +478,49 @@ test("#1157: lookAndClick shows the vision model the screen and clicks where it 
   await assert.rejects(() => session.lookAndClick("a unicorn", async () => null), /couldn't see "a unicorn"/);
   page.state.sensitive = "a password";
   await assert.rejects(() => session.lookAndClick("Sign in", async () => ({ x: 1, y: 1 })), /asks for a password/);
+});
+
+test("#1161: console and network, errors and failures first", async () => {
+  const page = createFakePage();
+  const log = {
+    console: [{ type: "log", text: "hello" }, { type: "error", text: "Uncaught TypeError: x is undefined" }, { type: "warning", text: "deprecated" }],
+    network: [
+      { method: "GET", url: "https://a.test/", status: 200, ms: 120 },
+      { method: "GET", url: "https://a.test/api", status: 500, ms: 40 },
+      { method: "GET", url: "https://a.test/font.woff", failure: "net::ERR_NAME_NOT_RESOLVED" },
+      { method: "GET", url: "https://a.test/big.js", status: 200, ms: 900 },
+    ],
+  };
+  const session = createBrowserSession({ page, pageLog: () => log });
+  const consoleResult = await session.devtools({ do: "console" });
+  assert.equal(consoleResult.what, "Console (3 messages, errors first)");
+  assert.deepEqual(consoleResult.devtools, ["error: Uncaught TypeError: x is undefined", "warning: deprecated", "log: hello"]);
+  const network = await session.devtools({ do: "network" });
+  assert.equal(network.what, "Network (4 requests, 2 failed)");
+  assert.deepEqual(network.devtools, [
+    "failed: GET https://a.test/api -- HTTP 500",
+    "failed: GET https://a.test/font.woff -- net::ERR_NAME_NOT_RESOLVED",
+    "slow: 900 ms GET https://a.test/big.js",
+    "slow: 120 ms GET https://a.test/",
+    "slow: 40 ms GET https://a.test/api",
+  ]);
+});
+
+test("#1161: run_js returns JSON (capped), sizes and color schemes switch, never JS on a password page", async () => {
+  const page = createFakePage();
+  page.state.js = (code) => (code === "document.title" ? "Shop" : { big: "x".repeat(5000) });
+  const session = createBrowserSession({ page });
+  assert.deepEqual((await session.devtools({ do: "run_js", code: "document.title" })).devtools, ['"Shop"']);
+  assert.equal((await session.devtools({ do: "run_js", code: "window.data" })).devtools[0].length, 2000);
+  await assert.rejects(() => session.devtools({ do: "run_js", code: " " }), /code is required/);
+
+  assert.ok((await session.devtools({ do: "viewport", size: "phone" })).elements);
+  await session.devtools({ do: "color_scheme", scheme: "dark" });
+  assert.deepEqual(actions(page), [["viewport", { width: 390, height: 844 }], ["media", { colorScheme: "dark" }]]);
+  await assert.rejects(() => session.devtools({ do: "viewport", size: "watch" }), /size must be/);
+  await assert.rejects(() => session.devtools({ do: "teleport" }), /do must be/);
+
+  page.state.sensitive = "a password";
+  await assert.rejects(() => session.devtools({ do: "run_js", code: "document.forms[0].password.value" }), /asks for a password/);
+  await assert.rejects(() => session.devtools({ do: "look" }, async () => "a login form"), /asks for a password/);
 });
