@@ -5,7 +5,7 @@ const path = require("node:path");
 const { createEditorIntegrations } = require("./zed-integration");
 const { assertLocalAiPolicy } = require("./mana-acp-agent");
 const { isMcpServerEnabled } = require("./mcp-server");
-const { createModelManagement } = require("./model-management");
+const { createModelManagement, getGpu } = require("./model-management");
 const {
   findWhisperBin,
   findWhisperModel,
@@ -108,6 +108,26 @@ function checkMcpServer(env) {
     "pass",
     "MCP server is enabled. Run `npm run mcp` to start it over stdio for MCP clients like Claude Desktop or Claude Code.",
   );
+}
+
+// #1065: Mana's GPU paths (llama.cpp, Whisper, Fish Speech) are CUDA-only,
+// so anything but a working NVIDIA GPU means CPU. Supported, but slower --
+// a warn, not a fail.
+function checkGpu(gpu) {
+  if (gpu?.cuda) {
+    const vramGb = (gpu.vramMb / 1024).toFixed(1);
+    return makeCheck("gpu", "GPU", "pass", `${gpu.name} (${vramGb} GB VRAM): CUDA available for chat and voice.`, { gpu });
+  }
+  let message = "No NVIDIA GPU: voice and chat run on CPU.";
+  if (gpu?.vendor === "nvidia") {
+    message = `${gpu.name} found, but nvidia-smi isn't answering (check the NVIDIA driver): voice and chat run on CPU.`;
+  } else if (gpu) {
+    const memory = gpu.sharedMemory
+      ? "integrated, shared memory"
+      : gpu.vramMb ? `${(gpu.vramMb / 1024).toFixed(1)} GB VRAM` : "VRAM unknown";
+    message = `No NVIDIA GPU (found ${gpu.name}, ${memory}; Mana's GPU acceleration is CUDA-only): voice and chat run on CPU.`;
+  }
+  return makeCheck("gpu", "GPU", "warn", message, { gpu: gpu || null });
 }
 
 function checkRecommendedModelProfile(modelManagement) {
@@ -841,6 +861,7 @@ function runDoctorChecks(options = {}) {
     checkSessionSearchVectorIndex(options.sessionSearchVectorEnabled),
     checkPromptComposition(options.promptComposition),
     checkMcpServer(env),
+    checkGpu(options.gpu !== undefined ? options.gpu : getGpu()),
     checkRecommendedModelProfile(modelManagement),
     checkMobileAuth(env),
     checkMobile2fa(env),
