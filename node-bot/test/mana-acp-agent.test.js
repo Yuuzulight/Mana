@@ -87,7 +87,7 @@ test("createManaAcpAgent handles initialize with local metadata", async () => {
   assert.equal(response.result.workspace.path, "C:\\ManaAI\\Mana");
 });
 
-test("agent limit helpers parse autonomous mode and outside path settings", () => {
+test("agent limit helpers parse autonomous mode settings", () => {
   assert.equal(isAutonomousEnabled({}), false);
   assert.equal(isAutonomousEnabled({ MANA_AGENT_AUTONOMOUS: "1" }), true);
 
@@ -95,13 +95,11 @@ test("agent limit helpers parse autonomous mode and outside path settings", () =
     MANA_AGENT_AUTONOMOUS: "1",
     MANA_AGENT_MAX_ITERATIONS: "4",
     MANA_AGENT_MAX_FILES_CHANGED: "7",
-    MANA_AGENT_ALLOWED_PATHS: "C:\\Shared",
   });
 
   assert.equal(limits.autonomousEnabled, true);
   assert.equal(limits.maxIterations, 4);
   assert.equal(limits.maxFilesChanged, 7);
-  assert.equal(limits.allowedPaths.length, 1);
 });
 
 test("createManaAcpAgent reports manual and autonomous agent capabilities", async () => {
@@ -109,7 +107,6 @@ test("createManaAcpAgent reports manual and autonomous agent capabilities", asyn
   const autonomous = createManaAcpAgent({
     env: {
       MANA_AGENT_AUTONOMOUS: "1",
-      MANA_AGENT_ALLOWED_PATHS: "C:\\Shared",
     },
   });
 
@@ -126,10 +123,6 @@ test("createManaAcpAgent reports manual and autonomous agent capabilities", asyn
 
   assert.equal(manualInit.result.capabilities.autonomous.enabled, false);
   assert.equal(autoInit.result.capabilities.autonomous.enabled, true);
-  assert.deepEqual(autoInit.result.capabilities.filesystem.outsidePaths, {
-    mode: "allowlist",
-    configured: true,
-  });
   assert.equal(
     autoInit.result.capabilities.tools.includes("mana/agent/run"),
     true,

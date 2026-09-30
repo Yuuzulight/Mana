@@ -147,6 +147,23 @@ test("acp-autonomous-loop: file_read reads a file within repo root", async (t) =
   }
 });
 
+// #1004: a junction inside the repo that leads out doesn't count as inside.
+test("acp-autonomous-loop: file_read refuses a path through a junction out of the repo", async (t) => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mana-outside-"));
+  const link = path.join(__dirname, `tmp-1004-link-${process.pid}`);
+  fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
+  fs.symlinkSync(outside, link, "junction");
+  // rmSync removes the link itself, never what it points at.
+  t.after(() => fs.rmSync(link, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+
+  const relLink = path.relative(path.join(__dirname, "..", ".."), link).split(path.sep).join("/");
+  const reply = JSON.stringify([{ tool: "file_read", args: { path: `${relLink}/secret.txt` } }]);
+  const res = await executeAutonomousStep(reply, "junction-session");
+  assert.equal(res.results[0].status, "error");
+  assert.equal(res.results[0].detail, "path_outside_repo");
+});
+
 test("acp-autonomous-loop: file_read blocks paths outside repo", async (t) => {
   const origStat = fs.promises.stat;
   const origRead = fs.promises.readFile;

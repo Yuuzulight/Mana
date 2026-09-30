@@ -5,7 +5,6 @@ const fs = require("node:fs");
 const { createAcpAutonomousLoop } = require("./acp-autonomous-loop");
 const { createAcpBackendBridge } = require("./acp-backend-bridge");
 const { createAcpMemoryStore } = require("./acp-memory-store");
-const { parseAllowedPathList } = require("./acp-path-guard");
 const { createAcpTestRunner } = require("./acp-test-runner");
 
 const ACP_PROTOCOL_VERSION = 1;
@@ -260,11 +259,6 @@ function getAgentLimits(env = process.env) {
     autonomousEnabled: isAutonomousEnabled(env),
     maxIterations: Math.max(1, Number(env.MANA_AGENT_MAX_ITERATIONS || 20)),
     maxFilesChanged: Math.max(1, Number(env.MANA_AGENT_MAX_FILES_CHANGED || 5)),
-    // MANA_AGENT_ALLOWED_PATHS is always Windows-style (drive letters,
-    // semicolons) since this agent only ever runs on Windows -- pass
-    // platform explicitly rather than deferring to process.platform, so
-    // parsing is deterministic regardless of which OS actually runs it.
-    allowedPaths: parseAllowedPathList(env.MANA_AGENT_ALLOWED_PATHS || "", "win32"),
   };
 }
 
@@ -334,10 +328,6 @@ function createManaAcpAgent(options = {}) {
             filesystem: {
               read: "explicit-bounded",
               write: "approval-required",
-              outsidePaths: {
-                mode: "allowlist",
-                configured: agentLimits.allowedPaths.length > 0,
-              },
             },
             autonomous: {
               enabled: agentLimits.autonomousEnabled,

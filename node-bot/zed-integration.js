@@ -4,6 +4,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { getJavaScriptParser } = require("./utils/repo-map");
 const Diff = require("diff");
 const { createSnapshotStore } = require("./snapshot-store");
+const { isInsideRoot } = require("./acp-path-guard");
 
 const DEFAULT_INSPECTOR_EXCLUDES = new Set([
   ".git",
@@ -153,11 +154,8 @@ function toWorkspaceRelativePath(workspacePath, targetPath) {
   const resolvedWorkspace = path.resolve(workspacePath);
   const resolvedTarget = path.resolve(resolvedWorkspace, String(targetPath || ""));
   const relativePath = path.relative(resolvedWorkspace, resolvedTarget);
-  if (
-    !relativePath ||
-    relativePath.startsWith("..") ||
-    path.isAbsolute(relativePath)
-  ) {
+  // #1004: also by real path, so a junction inside the workspace can't lead out.
+  if (!relativePath || !isInsideRoot(resolvedTarget, resolvedWorkspace)) {
     throw new Error("file path must be inside the active workspace");
   }
   return {
