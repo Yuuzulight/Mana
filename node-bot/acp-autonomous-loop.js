@@ -202,15 +202,9 @@ async function archivePendingRequest(id, status, approverMeta, pendingPayload) {
 // archived approverMeta silently diverging between the two hand-written
 // copies) -- extracted after, not before, that happened, per rule-of-three.
 //
-// Deliberately has NO opinion on whether/how requireApproval is computed
-// -- that decision (e.g. file_write's model-controlled args.approved
-// escape hatch, itself gated behind its own ALLOW_FILE_WRITE master
-// switch, versus snapshot_restore's deliberate lack of any such escape
-// hatch since it has no equivalent kill-switch) stays entirely with each
-// caller, computed before this is ever called. Keeping that decision out
-// of this function is what lets both callers share it safely: the
-// security-relevant asymmetry between them can't leak into or be blurred
-// by shared code it never touches.
+// Whether approval is required at all stays with each caller. It never
+// comes from the tool call's own args: the model can't approve itself
+// (#1002).
 async function runApprovalGate(toolName, id, payload, requireApproval) {
   if (!requireApproval) {
     return { approvalId: null, approvalMeta: null, approvalPayload: null };
@@ -720,13 +714,12 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         }
         const refuted = review?.verdict === "refuted";
 
-        // If approval is required, and action not pre-approved via args.approved, create pending request and wait.
-        // #838: a refuted write always asks, whatever FILE_WRITE_REQUIRE_APPROVAL,
-        // args.approved or an approved hook ask say (Q16); otherwise an
-        // approved hook ask already was this write's approval (decision 4).
+        // #838: a refuted write always asks, whatever FILE_WRITE_REQUIRE_APPROVAL
+        // or an approved hook ask say (Q16); otherwise an approved hook ask
+        // already was this write's approval (decision 4). #1002: args.approved
+        // is the model's own say-so, so it counts for nothing.
         const { requireApproval: approvalConfigured } = getApprovalConfig();
-        const requireApproval =
-          refuted || (approvalConfigured && !(args && args.approved === true) && !askApproved);
+        const requireApproval = refuted || (approvalConfigured && !askApproved);
         const approvalReqId = makeApprovalId();
         const preview = String(content).slice(0, 2048);
         const approvalReqPayload = {
@@ -871,16 +864,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
     // Shares file_write's approval mechanics via the runApprovalGate/
     // archiveOutcome helpers above, gated by an independently-tunable
     // env var -- SNAPSHOT_RESTORE_REQUIRE_APPROVAL instead of
-    // FILE_WRITE_REQUIRE_APPROVAL. Unlike file_write, there is no
-    // model-controlled args.approved escape hatch here -- file_write's own
-    // use of that pattern is additionally gated behind ALLOW_FILE_WRITE
-    // (default off), but snapshot_restore has no equivalent master
-    // kill-switch, so honoring untrusted model-supplied "approved": true
-    // would let the model self-approve a restore on a stock deployment.
-    // This asymmetry lives entirely here, in what requireApproval gets
-    // computed to below (there's simply no args.approved check at all,
-    // unlike file_write's) -- runApprovalGate itself has no opinion on it,
-    // so sharing that helper can't blur or leak the difference.
+    // FILE_WRITE_REQUIRE_APPROVAL.
     if (tool === "snapshot_restore") {
       const id = args && args.id ? String(args.id) : null;
       if (!id) {
@@ -1241,8 +1225,8 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
     const askRule = preRules.find((rule) => rule.action === "ask");
     let askApproved = false;
     if (askRule) {
-      // Always a human: FILE_WRITE_REQUIRE_APPROVAL and args.approved don't
-      // apply to a hook's own ask.
+      // Always a human: FILE_WRITE_REQUIRE_APPROVAL doesn't apply to a
+      // hook's own ask.
       const askId = makeApprovalId("hook-ask");
       const gate = await runApprovalGate("hook_ask", askId, {
         id: askId,
