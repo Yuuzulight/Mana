@@ -106,6 +106,8 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildApprovalsTab());
         var voiceTab = BuildVoiceTab();
         tabs.TabPages.Add(voiceTab);
+        tabs.TabPages.Add(BuildBriefingTab());
+        tabs.TabPages.Add(new TabPage("Desktop") { Controls = { new DesktopFoldersPanel() } }); // #997
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLogsTab());
         tabs.TabPages.Add(BuildThemeTab());
@@ -114,6 +116,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildModelTab());
         tabs.TabPages.Add(BuildMobileDevicesTab());
         tabs.TabPages.Add(BuildAccountsTab());
+        tabs.TabPages.Add(BuildMailCalendarTab());
         tabs.TabPages.Add(BuildMcpServersTab());
         tabs.TabPages.Add(BuildHooksTab());
         foreach (TabPage page in tabs.TabPages)
@@ -140,12 +143,14 @@ internal sealed class SettingsPanel : UserControl
         await RefreshToolApprovalModeAsync();
         await RefreshVoiceTabAsync();
         await (refreshSpeechWords?.Invoke() ?? Task.CompletedTask);
+        await (refreshBriefing?.Invoke() ?? Task.CompletedTask);
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
         await RefreshLlamaBuildAsync();
         await RefreshMobileDevicesAsync();
         await RefreshAccountsAsync();
+        await RefreshMailCalendarAsync();
         await RefreshMcpServersAsync();
         await RefreshHooksAsync();
     }
@@ -995,7 +1000,7 @@ internal sealed class SettingsPanel : UserControl
 
         toolApprovalModeCombo.Items.AddRange(new object[]
         {
-            "Smart -- ask for anything that isn't read-only",
+            "Smart -- ask unless it's read-only or a small change like the volume",
             "Ask for every tool call",
             "Only destructive commands",
         });
@@ -1248,9 +1253,102 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(BuildVoiceTuningRow());
         layout.Controls.Add(BuildBargeInRow());
         layout.Controls.Add(BuildVoiceprintRow());
+        layout.Controls.Add(BuildSpeakerThresholdRow());
         layout.Controls.Add(BuildCameraRow());
         layout.Controls.Add(BuildSpeechWordsSection());
         return new TabPage("Voice") { Controls = { layout } };
+    }
+
+    // #907: node-bot's daily briefing (GET/POST /briefing). "Brief me" in
+    // chat gives it on demand whatever's set here.
+    private static readonly (string Key, string Label)[] BriefingSections =
+    {
+        ("reminders", "Today's reminders"),
+        ("memory", "What's coming up (memory)"),
+        ("news", "News on my topics"),
+        ("games", "Game patch and maintenance news"),
+        ("calendar", "Calendar and mail (once connected)"),
+    };
+    private Func<Task>? refreshBriefing;
+
+    private TabPage BuildBriefingTab()
+    {
+        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
+        TextBox Box(string name, int width) => new() { Width = width, AccessibleName = name, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        FlowLayoutPanel Row(params Control[] controls)
+        {
+            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+            row.Controls.AddRange(controls);
+            return row;
+        }
+
+        var enabled = new CheckBox { Text = "Give me a daily briefing, the first time I'm at the PC after", AutoSize = true, ForeColor = DarkTheme.Text };
+        var time = Box("Briefing time", 60);
+        var sections = BriefingSections.Select(s => new CheckBox { Text = s.Label, Tag = s.Key, AutoSize = true, ForeColor = DarkTheme.Text }).ToArray();
+        var topics = Box("News topics", 300);
+        var games = Box("Games", 300);
+        var save = new Button { Text = "Save", AutoSize = true };
+        DarkTheme.ApplyButton(save);
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+
+        void Render(ManaBriefingSettings settings)
+        {
+            if (enabled.IsDisposed)
+            {
+                return;
+            }
+            enabled.Checked = settings.Enabled;
+            time.Text = settings.Time;
+            foreach (var check in sections)
+            {
+                check.Checked = settings.Sections.Contains((string)check.Tag!);
+            }
+            topics.Text = settings.Topics;
+            games.Text = settings.Games;
+        }
+
+        save.Click += async (_, _) =>
+        {
+            try
+            {
+                Render(await backendClient.UpdateBriefingAsync(new ManaBriefingSettings
+                {
+                    Enabled = enabled.Checked,
+                    Time = time.Text,
+                    Sections = sections.Where(c => c.Checked).Select(c => (string)c.Tag!).ToList(),
+                    Topics = topics.Text,
+                    Games = games.Text,
+                }));
+                status.Text = "Saved.";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                if (!status.IsDisposed)
+                {
+                    status.Text = $"Couldn't save: {ex.Message}";
+                }
+            }
+        };
+        refreshBriefing = async () =>
+        {
+            try
+            {
+                Render(await backendClient.GetBriefingAsync());
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Console.WriteLine($"SettingsPanel: failed to load the briefing settings. {ex.Message}");
+            }
+        };
+
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
+        layout.Controls.Add(Row(enabled, time, Caption("(HH:MM)")));
+        layout.Controls.Add(Caption("It's a toast and Mana says it; while I'm playing it waits for a break. Say \"brief me\" any time for it on demand."));
+        layout.Controls.AddRange(sections);
+        layout.Controls.Add(Row(Caption("News topics (comma-separated)"), topics));
+        layout.Controls.Add(Row(Caption("Games"), games));
+        layout.Controls.Add(Row(save, status));
+        return new TabPage("Briefing") { Controls = { layout } };
     }
 
     // #923/#925/#926: node-bot's speech words (whisper listens for them),
@@ -1640,6 +1738,59 @@ internal sealed class SettingsPanel : UserControl
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
         row.Controls.Add(label);
         row.Controls.Add(combo);
+        row.Controls.Add(status);
+        return row;
+    }
+
+    // #965: how close to my voiceprint speech has to be (SpeakerGate), read
+    // each time listening starts; MANA_SPEAKER_THRESHOLD still wins. The
+    // recent speaker= scores from speech-debug.log are there to pick it by.
+    private static FlowLayoutPanel BuildSpeakerThresholdRow()
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var threshold = SpeakerGate.ResolveThreshold(null, ManaSettingsStore.Load().SpeakerThreshold);
+        var slider = new TrackBar
+        {
+            Minimum = 10,
+            Maximum = 90,
+            TickFrequency = 10,
+            LargeChange = 5,
+            Width = 200,
+            Value = Math.Clamp((int)Math.Round(threshold * 100), 10, 90),
+            BackColor = DarkTheme.Background,
+        };
+        var value = new Label { AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Text = (slider.Value / 100f).ToString("F2", inv) };
+        var status = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Anchor = AnchorStyles.Left,
+            Text = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD")) ? "" : "Set in the environment, which wins: MANA_SPEAKER_THRESHOLD",
+        };
+        var scores = VoiceDebugLog.RecentSpeakerScores();
+        var recent = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Anchor = AnchorStyles.Left,
+            Text = scores.Count == 0
+                ? "No voice match scores yet (speech-debug.log has them once the setting above is on)."
+                : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", inv)))}",
+        };
+        slider.ValueChanged += (_, _) =>
+        {
+            value.Text = (slider.Value / 100f).ToString("F2", inv);
+            var latest = ManaSettingsStore.Load();
+            latest.SpeakerThreshold = slider.Value / 100f;
+            latest.Save();
+            status.Text = "Saved -- applies next time listening starts.";
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(new Label { Text = "Voice match needed (higher = stricter)", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
+        row.Controls.Add(slider);
+        row.Controls.Add(value);
+        row.Controls.Add(recent);
         row.Controls.Add(status);
         return row;
     }
@@ -3146,6 +3297,155 @@ internal sealed class SettingsPanel : UserControl
             item.SubItems.Add(account.Role);
             accountsList.Items.Add(item);
         }
+    }
+
+    // #950 (#906): the email and calendar accounts Mana reads, through
+    // node-bot's /mail-calendar. I type my own app passwords here; node-bot
+    // saves them DPAPI-encrypted and never sends them back, so a blank
+    // password or calendar address keeps the saved one.
+    // docs/mail_calendar_setup.md has the steps per provider.
+    private readonly TextBox mailHostBox = new() { Width = 260, PlaceholderText = "imap.gmail.com" };
+    private readonly TextBox mailPortBox = new() { Width = 60 };
+    private readonly TextBox mailUserBox = new() { Width = 260 };
+    private readonly TextBox mailPasswordBox = new() { Width = 260, UseSystemPasswordChar = true };
+    private readonly TextBox mailMailboxBox = new() { Width = 260 };
+    private readonly Label mailStatusLabel = new() { AutoSize = true, MaximumSize = new Size(520, 0) };
+    private readonly TextBox calendarUrlBox = new() { Width = 420 };
+    private readonly TextBox calendarUserBox = new() { Width = 260, PlaceholderText = "blank for an iCal feed" };
+    private readonly TextBox calendarPasswordBox = new() { Width = 260, UseSystemPasswordChar = true };
+    private readonly Label calendarStatusLabel = new() { AutoSize = true, MaximumSize = new Size(520, 0) };
+
+    private TabPage BuildMailCalendarTab()
+    {
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
+        layout.Controls.Add(BuildMailCalendarGroup(
+            "Email (IMAP, read-only)",
+            "email",
+            new (string, TextBox)[] { ("Server", mailHostBox), ("Port", mailPortBox), ("Username", mailUserBox), ("App password", mailPasswordBox), ("Mailbox", mailMailboxBox) },
+            mailStatusLabel,
+            () => new { kind = "email", host = mailHostBox.Text.Trim(), port = mailPortBox.Text.Trim(), user = mailUserBox.Text.Trim(), password = mailPasswordBox.Text, mailbox = mailMailboxBox.Text.Trim() }));
+        layout.Controls.Add(BuildMailCalendarGroup(
+            "Calendar (CalDAV, or a Google/Outlook iCal feed)",
+            "calendar",
+            new (string, TextBox)[] { ("Address", calendarUrlBox), ("Username", calendarUserBox), ("App password", calendarPasswordBox) },
+            calendarStatusLabel,
+            () => new { kind = "calendar", url = calendarUrlBox.Text.Trim(), user = calendarUserBox.Text.Trim(), password = calendarPasswordBox.Text }));
+        layout.Controls.Add(new Label
+        {
+            Text = "Mana reads these only when I ask, and adds a calendar event only after I approve it. An iCal feed (Google's secret address, Outlook's published calendar) is read-only: leave its Username blank. Steps per provider: docs/mail_calendar_setup.md.",
+            AutoSize = true,
+            MaximumSize = new Size(520, 0),
+            ForeColor = DarkTheme.Muted,
+            Margin = new Padding(8),
+        });
+        return new TabPage("Calendar & Email") { Controls = { layout } };
+    }
+
+    private GroupBox BuildMailCalendarGroup(string title, string kind, (string Label, TextBox Box)[] rows, Label status, Func<object> change)
+    {
+        var group = NewGroup(title);
+        var table = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = DarkTheme.Background };
+        foreach (var (label, box) in rows)
+        {
+            StyleTextBox(box);
+            box.AccessibleName = label;
+            table.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) });
+            table.Controls.Add(box);
+        }
+        var saveButton = new Button { Text = "Save and test", AutoSize = true };
+        var removeButton = new Button { Text = "Remove", AutoSize = true };
+        DarkTheme.ApplyButton(saveButton);
+        DarkTheme.ApplyButton(removeButton);
+        saveButton.Click += async (_, _) => await SaveMailCalendarAsync(kind, change(), status, test: true);
+        removeButton.Click += async (_, _) => await SaveMailCalendarAsync(kind, new { kind, clear = true }, status, test: false);
+        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        buttonRow.Controls.Add(saveButton);
+        buttonRow.Controls.Add(removeButton);
+        status.ForeColor = DarkTheme.Muted;
+        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
+        stack.Controls.Add(table);
+        stack.Controls.Add(buttonRow);
+        stack.Controls.Add(status);
+        group.Controls.Add(stack);
+        return group;
+    }
+
+    private async Task SaveMailCalendarAsync(string kind, object change, Label status, bool test)
+    {
+        try
+        {
+            ShowMailCalendar(await backendClient.UpdateMailCalendarAsync(change));
+            if (!test || IsDisposed)
+            {
+                return;
+            }
+            status.ForeColor = DarkTheme.Muted;
+            status.Text = "Saved. Testing...";
+            var (ok, error) = await backendClient.TestMailCalendarAsync(kind);
+            if (!IsDisposed)
+            {
+                status.ForeColor = ok ? DarkTheme.Green : Color.Firebrick;
+                status.Text = ok ? "Saved and connected." : $"Saved, but the test failed: {error}";
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                status.ForeColor = Color.Firebrick;
+                status.Text = $"Failed: {ex.Message}";
+            }
+        }
+    }
+
+    private async Task RefreshMailCalendarAsync()
+    {
+        try
+        {
+            ShowMailCalendar(await backendClient.GetMailCalendarAsync());
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                mailStatusLabel.Text = calendarStatusLabel.Text = $"Failed to load: {ex.Message}";
+            }
+        }
+    }
+
+    // Fills in what node-bot sends back (never a password or feed address)
+    // and says what's set up.
+    private void ShowMailCalendar(ManaMailCalendar state)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+        const string unreadable = "The saved settings can't be read on this Windows account: enter them again.";
+        var email = state.Email;
+        mailHostBox.Text = email?.Host ?? "";
+        mailPortBox.Text = email is { Port: > 0 } ? email.Port.ToString() : "993";
+        mailUserBox.Text = email?.User ?? "";
+        mailMailboxBox.Text = email?.Mailbox ?? "INBOX";
+        mailPasswordBox.Clear();
+        mailPasswordBox.PlaceholderText = email?.PasswordSet == true ? "saved (blank keeps it)" : "";
+        mailStatusLabel.ForeColor = DarkTheme.Muted;
+        mailStatusLabel.Text = email is null ? "Not set up." : email.Unreadable ? unreadable : $"Set up: {email.User} on {email.Host}.";
+
+        var calendar = state.Calendar;
+        calendarUserBox.Text = calendar?.User ?? "";
+        calendarUrlBox.Clear();
+        calendarUrlBox.PlaceholderText = calendar is { Unreadable: false } ? "saved (blank keeps it)" : "https://...";
+        calendarPasswordBox.Clear();
+        calendarPasswordBox.PlaceholderText = calendar?.PasswordSet == true ? "saved (blank keeps it)" : "";
+        calendarStatusLabel.ForeColor = DarkTheme.Muted;
+        calendarStatusLabel.Text = calendar is null
+            ? "Not set up."
+            : calendar.Unreadable
+                ? unreadable
+                : calendar.ReadOnly
+                    ? $"Set up: iCal feed from {calendar.Host} (read-only)."
+                    : $"Set up: {calendar.User} on {calendar.Host}.";
     }
 
     // #567: registration goes through the approval gate server-side, not

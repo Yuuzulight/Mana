@@ -50,6 +50,7 @@ Project goal
      whisper-server is picked up from the same folder as `WHISPER_BIN`. On an RTX 5080 this uses ~1.0 GB of VRAM (1.2 GB peak) and ~0.1-0.2 GB more system RAM than base on the CPU. It transcribes in 0.15-0.35 s, against 0.7-1 s for base at 8 CPU threads and 1.7-2.2 s at the 2 threads Mana drops to while gaming. It also gets names and Japanese words right more often.
      - Point `WHISPER_BIN` at the CUDA build, not only the model: the whisper-cli fallback reuses `WHISPER_MODEL`, and turbo on the CPU takes ~12 s per clip even at 8 threads. On the GPU that fallback takes ~1.3 s.
      - Thread count doesn't change GPU speed. With `WHISPER_THREADS=2`, starting or stopping a game no longer restarts whisper-server. `STT_PROVIDER=parakeet` runs on the CPU and uses the same setting, so keep the higher thread count if you use Parakeet.
+     - The CUDA build skips whisper-server's model reload after each request (~0.65 s with turbo). Only the CPU build needs it to keep repeated transcripts identical. `MANA_WHISPER_RELOAD=1` turns it back on; `0` turns it off on the CPU build too.
      - Leave flash attention on (the build's default); turning it off costs VRAM. Don't pass `-ac`, which breaks turbo's transcripts. Don't set `GGML_CUDA_ENABLE_UNIFIED_MEMORY` (#801).
    - `LLAMA_BIN` should point to the Llama CLI executable you want to use.
    - `TTS_PROVIDER=kokoro` tells Mana to use the faster Kokoro ONNX service.
@@ -94,6 +95,11 @@ Project goal
      off partway through. Tune the pause length with
      `MANA_SILENCE_BUFFER_MS` (milliseconds) if that feels too short or
      too long for how you talk.
+   - With the Smart Turn model in `windows-native-launcher\assets\turn\`
+     (`smart-turn-v3.2-cpu.onnx`, see THIRD_PARTY.md), the native launcher
+     also hears whether you sound finished: a clear ending replies after
+     about half a second, a thinking pause waits longer. `MANA_SMART_TURN=off`
+     turns it off; a number such as `0.7` makes it slower to call you done.
    - The UI shows the transcript and model reply.
    - If the configured TTS service is running, the reply is synthesized and played back by the app.
 

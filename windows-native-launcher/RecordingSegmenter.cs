@@ -101,6 +101,35 @@ internal static class RecordingSegmenter
         return (baseMs, "default");
     }
 
+    // #909: Smart Turn's P(finished) for the current pause (SmartTurnRunner)
+    // refines the transcript's call above. Text and audio both saying "done"
+    // ends the turn fastest; audio alone "done" gets the complete-sentence
+    // wait; audio "not done" with no text signal waits like a trailing "and";
+    // a disagreement falls back to the base wait. A trailing transcript
+    // ("and...") always waits, and no fresh score (model off or missing, or
+    // speech since) leaves the transcript's call as it was before #909.
+    // So "done" never waits longer than the transcript alone would, and "not
+    // done" never shorter.
+    internal const long SmartTurnPauseMs = 200;
+    internal const long AgreedCompleteSilenceBufferMs = 500;
+
+    internal static (long SilenceBufferMs, string Reason) WithSmartTurn(
+        (long SilenceBufferMs, string Reason) text, float? pComplete, float threshold, long baseMs = DefaultSilenceBufferMs)
+    {
+        if (pComplete is not { } p || text.Reason == "trailing")
+        {
+            return text;
+        }
+        var done = p >= threshold;
+        return (text.Reason == "complete", done) switch
+        {
+            (true, true) => (Math.Min(AgreedCompleteSilenceBufferMs, baseMs), "complete+turn"),
+            (true, false) => (Math.Max(CompleteSilenceBufferMs, baseMs), "complete-turn"),
+            (false, true) => (Math.Min(CompleteSilenceBufferMs, baseMs), "turn"),
+            (false, false) => (Math.Max(TrailingSilenceBufferMs, baseMs), "midturn"),
+        };
+    }
+
     // #619: when VoiceLoop may ask /transcribe-partial for a live transcript
     // of the segment so far. Whisper load stays bounded: never overlapping
     // (inFlight), only once there's real speech the last request didn't

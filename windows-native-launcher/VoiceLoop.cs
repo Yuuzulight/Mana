@@ -176,6 +176,19 @@ internal sealed class VoiceLoop : IDisposable
     private const long SlowPartialMs = 2500;
     private static readonly TimeSpan PartialTimeout = TimeSpan.FromSeconds(5);
 
+    // #909: Smart Turn scores each pause once it reaches SmartTurnPauseMs of
+    // silence (off the capture thread); like a partial, the score only counts
+    // while no speech has arrived since (smartTurnSpeechMs == segmentSpeechMs).
+    // smartTurnThreshold null = MANA_SMART_TURN=off; smartTurn null = off or
+    // no model. Guarded by stateLock, except the runner's own Run.
+    private SmartTurnRunner? smartTurn;
+    private float? smartTurnThreshold;
+    private bool smartTurnInFlight;
+    private long smartTurnRequestedAtSpeechMs;
+    private float? smartTurnP;
+    private long smartTurnSpeechMs;
+    private long smartTurnMs;
+
     // #619 addendum: the ~1s after a turn closes, when resumed speech is
     // merged into it instead of becoming a second turn -- see TurnMergeWindow.
     private readonly TurnMergeWindow mergeWindow = new();
@@ -368,7 +381,7 @@ internal sealed class VoiceLoop : IDisposable
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
         wakeRearmMs = ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS"));
         speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
-        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"));
+        speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"), settings.SpeakerThreshold);
         voiceprint = speakerGateMode == SpeakerGateMode.Off ? null : settings.Voiceprint;
         if (voiceprint is not null)
         {
@@ -384,8 +397,14 @@ internal sealed class VoiceLoop : IDisposable
         {
             vad.Threshold = SileroVadRunner.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_VAD_THRESHOLD"), voiceSettings.VadThreshold);
         }
+        smartTurnThreshold = SmartTurnRunner.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SMART_TURN"));
+        if (smartTurnThreshold is not null)
+        {
+            smartTurn ??= SmartTurnRunner.TryLoad(ManaApplicationContext.FindRootDirectory());
+        }
         VoiceDebugLog.AppendNote(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"vad: {VadInUse}{(vad is not null && !vadFailed ? $" threshold={vad.Threshold:F2}/exit={vad.ExitThreshold:F2}" : $" minRms={SpeechFilters.MinSpeechRms:F3}")} silence={baseSilenceBufferMs}ms"));
+            $"vad: {VadInUse}{(vad is not null && !vadFailed ? $" threshold={vad.Threshold:F2}/exit={vad.ExitThreshold:F2}" : $" minRms={SpeechFilters.MinSpeechRms:F3}")} silence={baseSilenceBufferMs}ms"
+            + $" turn={(smartTurnThreshold is not { } turnThreshold ? "off" : smartTurn is null ? "missing" : $"{turnThreshold:F2}")}"));
 
         // #619: echo-cancelled capture first (EchoCancellation), falling back
         // to the plain capture this always used if Windows doesn't apply an
@@ -662,6 +681,7 @@ internal sealed class VoiceLoop : IDisposable
         disposed = true;
         Stop();
         speakerEmbedder?.Dispose();
+        smartTurn?.Dispose();
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
@@ -898,6 +918,8 @@ internal sealed class VoiceLoop : IDisposable
         partialsOffThisSegment = false;
         partialCount = 0;
         lastPartialMs = null;
+        smartTurnRequestedAtSpeechMs = 0;
+        smartTurnP = null;
     }
 
     // Caller must already hold stateLock.
@@ -1021,9 +1043,16 @@ internal sealed class VoiceLoop : IDisposable
 
         // #619: a fresh partial picks the end-of-turn silence (shorter when
         // it sounds complete, longer when it trails off); none, or a stale
-        // one, keeps the old fixed 2.2s.
+        // one, keeps the old fixed 2.2s. #909: a fresh Smart Turn score then
+        // refines that (RecordingSegmenter.WithSmartTurn).
         var partialFresh = lastPartial is not null && lastPartialSpeechMs == segmentSpeechMs;
-        var silenceBufferMs = partialFresh ? partialSilenceBufferMs : baseSilenceBufferMs;
+        var smartTurnFresh = smartTurnP is not null && smartTurnSpeechMs == segmentSpeechMs;
+        var (silenceBufferMs, eotReason) = RecordingSegmenter.WithSmartTurn(
+            partialFresh ? (partialSilenceBufferMs, partialEotReason)
+                : (baseSilenceBufferMs, !PartialsActive ? "off" : lastPartial is null ? "nopartial" : "stale"),
+            smartTurnFresh ? smartTurnP : null,
+            smartTurnThreshold ?? SmartTurnRunner.DefaultThreshold,
+            baseSilenceBufferMs);
 
         var stopReason = RecordingSegmenter.ShouldStopRecording(
             hasHeardSpeechInSegment,
@@ -1039,15 +1068,12 @@ internal sealed class VoiceLoop : IDisposable
         if (stopReason == RecordingStopReason.SilenceAfterSpeech
             || (stopReason == RecordingStopReason.MaxDuration && hasHeardSpeechInSegment))
         {
-            var eotReason = partialFresh ? partialEotReason
-                : !PartialsActive ? "off"
-                : lastPartial is null ? "nopartial"
-                : "stale";
             mode = ListenMode.Processing;
             _ = HandleSegmentClosedAsync(
                 wasCapturingInterruption,
                 stopReason == RecordingStopReason.MaxDuration ? "max" : "silence",
-                $"{silenceBufferMs}ms/{eotReason}");
+                $"{silenceBufferMs}ms/{eotReason}"
+                    + (smartTurnFresh ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $" turn={smartTurnP:F2}/{smartTurnMs}ms") : ""));
             return true;
         }
 
@@ -1063,7 +1089,49 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         MaybeRequestPartial();
+        MaybeScoreTurn();
         return false;
+    }
+
+    // Caller must already hold stateLock. #909: one Smart Turn run per pause,
+    // never overlapping (across segments too, like partials).
+    private void MaybeScoreTurn()
+    {
+        if (smartTurn is not { } runner || smartTurnThreshold is null || smartTurnInFlight
+            || !hasHeardSpeechInSegment || msSinceLastSpeech < RecordingSegmenter.SmartTurnPauseMs
+            || smartTurnRequestedAtSpeechMs == segmentSpeechMs)
+        {
+            return;
+        }
+        smartTurnInFlight = true;
+        smartTurnRequestedAtSpeechMs = segmentSpeechMs;
+        var take = Math.Min(segmentSamples.Count, SmartTurnRunner.MaxSamples);
+        var snapshot = segmentSamples.GetRange(segmentSamples.Count - take, take).ToArray();
+        var id = segmentId;
+        var speechMs = segmentSpeechMs;
+        _ = Task.Run(() =>
+        {
+            var stopwatch = Stopwatch.StartNew();
+            float? p = null;
+            try
+            {
+                p = runner.PredictComplete(snapshot);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"VoiceLoop: Smart Turn failed. {ex.Message}");
+            }
+            lock (stateLock)
+            {
+                smartTurnInFlight = false;
+                if (id == segmentId && p is not null)
+                {
+                    smartTurnP = p;
+                    smartTurnSpeechMs = speechMs;
+                    smartTurnMs = stopwatch.ElapsedMilliseconds;
+                }
+            }
+        });
     }
 
     private async Task HandleSegmentClosedAsync(bool wasInterruption, string closeReason, string eot)
@@ -1635,7 +1703,7 @@ internal sealed class VoiceLoop : IDisposable
                 // classification needed since there's nothing left to
                 // resume/discard against. Mirrors windows-launcher's
                 // handleBargeInTrigger wasNested branch.
-                await SpeakReplyAsync(commandText, screenText);
+                await SpeakReplyAsync(commandText, screenText, voice: true);
                 return;
             }
 
@@ -1685,7 +1753,7 @@ internal sealed class VoiceLoop : IDisposable
                         // interruption's own ProcessTurnAsync to
                         // discard/consume (the `nested` branch above);
                         // only clear it and resume when it truly completed.
-                        var answerCompleted = await SpeakReplyAsync(commandText, screenText);
+                        var answerCompleted = await SpeakReplyAsync(commandText, screenText, voice: true);
                         if (answerCompleted)
                         {
                             lock (stateLock)
@@ -1709,7 +1777,7 @@ internal sealed class VoiceLoop : IDisposable
             }
         }
 
-        await SpeakReplyAsync(commandText, screenText);
+        await SpeakReplyAsync(commandText, screenText, voice: true);
     }
 
     // #513: the early-exit counterpart to the dispatch at the bottom of
@@ -1750,13 +1818,15 @@ internal sealed class VoiceLoop : IDisposable
     // #661: every reply goes through here, so this is where the avatar
     // shows Thinking (until she starts speaking -- speech outranks it),
     // and the short Done beat once a reply finishes naturally.
-    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null)
+    // #911: voice -- a spoken turn (ProcessTurnAsync), which may run
+    // desktop actions mid-game.
+    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, bool voice = false)
     {
         lastError = null; // #687: a new reply clears the status line's error
         avatarOverlay.SetActivity(AvatarState.Thinking, true);
         try
         {
-            var reply = SpeakReplyCoreAsync(commandText, screenText, image, images);
+            var reply = SpeakReplyCoreAsync(commandText, screenText, image, images, voice);
             currentReply = reply; // #665: a ducked interruption waits on this after stopping her
             var completed = await reply;
             if (completed)
@@ -1772,7 +1842,7 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
-    private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images)
+    private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, bool voice)
     {
         string? reply;
         bool changed;
@@ -1783,7 +1853,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder, voice);
             if (stopMana)
             {
                 stopManaThinking = false;
@@ -1877,11 +1947,11 @@ internal sealed class VoiceLoop : IDisposable
 
         // One face for the whole reply (#623: the reply's own emotion tag
         // when the model gave one; the streaming path above switches per
-        // sentence instead).
+        // sentence instead). #964: the tag also paces her voice (Qwen3-TTS).
         var emotion = streamingReplyPlayer.FinalEmotion;
         var expression = ReplyEmotionDetector.DetectReplyEmotion(reply, emotion);
 
-        var next = backendClient.SynthesizeAsync(chunks[0]);
+        var next = backendClient.SynthesizeAsync(chunks[0], emotion);
         for (var i = 0; i < chunks.Count; i++)
         {
             byte[] chunkWav;
@@ -1900,7 +1970,7 @@ internal sealed class VoiceLoop : IDisposable
                 ReturnToIdle();
                 return false;
             }
-            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1]) : Task.FromResult(Array.Empty<byte>());
+            next = i + 1 < chunks.Count ? backendClient.SynthesizeAsync(chunks[i + 1], emotion) : Task.FromResult(Array.Empty<byte>());
 
             bool completedNaturally;
             var cutOff = false;
@@ -1999,6 +2069,8 @@ internal sealed class VoiceLoop : IDisposable
     }
 
     private const string ReplyFailedMessage = "Sorry, I couldn't answer that just now. Try again in a moment.";
+    // #964: said a little slower and lower, like an apology.
+    private const string ReplyFailedEmotion = "sad";
 
     // #905: a line nobody just asked for (a reminder firing), said through
     // the same player as replies, with SayReplyFailedAsync's mode handling.
@@ -2053,7 +2125,7 @@ internal sealed class VoiceLoop : IDisposable
         chatLog?.AppendReplySentence(chatText);
         try
         {
-            var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage);
+            var wav = await backendClient.SynthesizeAsync(ReplyFailedMessage, ReplyFailedEmotion);
             OnTalkingStateChanged(true);
             captions?.ShowSentence(ReplyFailedMessage);
             bubbles?.ShowSentence(ReplyFailedMessage);
