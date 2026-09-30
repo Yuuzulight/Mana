@@ -331,9 +331,8 @@ internal sealed partial class SessionListForm : Form
         // Before any RegisterRailTool.
         toolPanel = new ToolPanelHost(railToolTip);
 
-        // #538's rail: Artifacts then Background tasks on top, Settings
-        // docked at the bottom. (#538's Browser and Terminal icons stay off
-        // until those tools exist.)
+        // #538's rail: Artifacts, Background tasks and Terminal on top,
+        // Settings docked at the bottom.
         // #1119: Settings opens in the tool panel.
         RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
         // #1127: Mana's docs, opened from Settings (OpenDoc); no rail icon.
@@ -344,6 +343,8 @@ internal sealed partial class SessionListForm : Form
         artifacts.Added += OnArtifactAdded;
         // #1125: its Self-work section opens the "What I'm working on" window (#1016).
         RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient));
+        // #1121: the commands Mana runs.
+        RegisterRailTool("terminal", "terminal", "Terminal", () => new TerminalTool(backendClient));
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.

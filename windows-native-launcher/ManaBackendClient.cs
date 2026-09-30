@@ -2210,6 +2210,69 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1121: the commands Mana runs (node-bot/terminal-feed.js), newest
+    // first and without their output. Admin-gated.
+    public async Task<IReadOnlyList<ManaTerminalRun>> GetTerminalRunsAsync()
+    {
+        using var response = await http.GetAsync("/terminal/runs");
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var runs = new List<ManaTerminalRun>();
+        if (document.RootElement.TryGetProperty("runs", out var runsElement) && runsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in runsElement.EnumerateArray())
+            {
+                runs.Add(ReadTerminalRun(element));
+            }
+        }
+        return runs;
+    }
+
+    // One run with its output; null once it has dropped off the feed.
+    public async Task<ManaTerminalRun?> GetTerminalRunAsync(string id)
+    {
+        using var response = await http.GetAsync($"/terminal/runs/{Uri.EscapeDataString(id)}");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return ReadTerminalRun(document.RootElement);
+    }
+
+    // Through the stop path of whatever ran it; false when nothing could.
+    public async Task<bool> StopTerminalRunAsync(string id)
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/terminal/runs/{Uri.EscapeDataString(id)}/stop", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.TryGetProperty("stopped", out var stopped) && stopped.ValueKind == JsonValueKind.True;
+    }
+
+    private static ManaTerminalRun ReadTerminalRun(JsonElement e)
+    {
+        string Text(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()! : "";
+        long? Number(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : null;
+        bool Flag(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+        return new ManaTerminalRun
+        {
+            Id = Text("id"),
+            Source = Text("source"),
+            Command = Text("command"),
+            Cwd = Text("cwd"),
+            StartedAt = Number("startedAt") ?? 0,
+            Output = Text("output"),
+            DroppedChars = Number("droppedChars") ?? 0,
+            ExitCode = (int?)Number("exitCode"),
+            DurationMs = Number("durationMs"),
+            Running = Flag("running"),
+            Stoppable = Flag("stoppable"),
+            Stopped = Flag("stopped"),
+        };
+    }
+
     // #1125: everything Mana is doing or has scheduled (node-bot's
     // capabilities/background-tasks-capability.js, #1124). Admin-gated.
     public async Task<IReadOnlyList<ManaBackgroundTask>> GetBackgroundTasksAsync()
@@ -2864,6 +2927,25 @@ internal sealed record ManaTaskProgress(double Done, double Total, string? Unit)
 }
 
 // #646: one entry from GET /agent/activity (node-bot/agent-activity.js).
+// #1121: one entry of GET /terminal/runs (node-bot/terminal-feed.js).
+// Output is only filled by GetTerminalRunAsync.
+internal sealed class ManaTerminalRun
+{
+    public string Id { get; init; } = "";
+    public string Source { get; init; } = "";
+    public string Command { get; init; } = "";
+    public string Cwd { get; init; } = "";
+    public long StartedAt { get; init; }
+    public string Output { get; init; } = "";
+    public long DroppedChars { get; init; }
+    public int? ExitCode { get; init; }
+    public long? DurationMs { get; init; }
+    public bool Running { get; init; }
+    public bool Stoppable { get; init; }
+    // Ended by Stop (its process tree killed).
+    public bool Stopped { get; init; }
+}
+
 internal sealed class ManaAgentRun
 {
     public string Id { get; init; } = "";
