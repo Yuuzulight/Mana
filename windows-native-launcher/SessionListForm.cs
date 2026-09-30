@@ -343,8 +343,9 @@ internal sealed partial class SessionListForm : Form
         artifacts.Added += OnArtifactAdded;
         // #1125: its Self-work section opens the "What I'm working on" window (#1016).
         RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient));
-        // #1121: the commands Mana runs.
-        RegisterRailTool("terminal", "terminal", "Terminal", () => new TerminalTool(backendClient));
+        // #1121: the commands Mana runs, and my own shells in the repo folder.
+        RegisterRailTool("terminal", "terminal", "Terminal",
+            () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
         // #1122: her browser automation, docked.
         RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient));
 
@@ -895,6 +896,17 @@ internal sealed partial class SessionListForm : Form
         }
         g.DrawArc(pen, x + 3.5f, y + 3, 11, 11, 0, 180);
         g.DrawLine(pen, x + 9, y + 14, x + 9, y + 16.5f);
+    }
+
+    // #1121: My shell's "Send to Mana" -- a chat message from me, queued
+    // like a typed one while she's busy.
+    private async Task SendToManaAsync(string text)
+    {
+        if (messageQueue.Count > 0 || !await voiceLoop.SubmitTypedCommandAsync(text))
+        {
+            messageQueue.Add(text);
+            messageQueueTimer.Start();
+        }
     }
 
     // #1122: the floating browser window stays away while this is on screen.
