@@ -211,6 +211,11 @@ const {
 } = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const {
+  createRelationshipStore,
+  createRelationshipToolSource,
+  relationshipPromptBlock,
+} = require("./relationship-store");
+const {
   characterFilePath,
   DEFAULT_ID: DEFAULT_CHARACTER_ID,
   createCharacterStore,
@@ -1018,6 +1023,16 @@ const moodStore = perCharacter(
   characterStore,
   (id) => createMoodStore({ filePath: characterFilePath(moodFilePath, id) }),
   ["get", "record", "recordTurn", "reset", "setFrozen"],
+);
+// #914: each character's own notes on her relationship with me, beside
+// the mood (in memory under tests).
+const relationshipStore = perCharacter(
+  characterStore,
+  (id) =>
+    createRelationshipStore({
+      filePath: characterFilePath(moodFilePath && path.join(acpMemoryStore.dataDir, "relationship.json"), id),
+    }),
+  ["list", "add"],
 );
 
 // Procedural-memory skills store (see skills-store.js, issue #140)
@@ -4356,6 +4371,12 @@ function registerRoutes(app, upload, deps = {}) {
     } catch (moodErr) {
       console.warn("Failed to apply mood:", moodErr.message);
     }
+    // #914: her own notes on how we get along, same place and rules.
+    const relationshipText = relationshipPromptBlock(relationshipStore.list(), mode);
+    if (relationshipText) {
+      memoryExtraMessages.late.push({ role: "system", content: relationshipText });
+      flatMemorySuffix += `\n\n${relationshipText}`;
+    }
 
     // Issue #400: makes the composition of the prompt this reply actually
     // used observable (GET /prompt-composition), instead of only
@@ -4937,6 +4958,8 @@ function registerRoutes(app, upload, deps = {}) {
               : []),
             // #907: "brief me".
             ...(userChat ? [briefing.toolSource] : []),
+            // #914: her own notes on our relationship.
+            ...(userChat ? [createRelationshipToolSource({ store: relationshipStore })] : []),
             ...(userChat
               ? [
                   createDeepThinkingToolSource({
