@@ -52,3 +52,37 @@ test("camera requests go only to ?camera=1 clients, and hasCamera follows them",
   camera.close();
   screenOnly.close();
 });
+
+// #911: desktop actions only reach ?desktop=1 clients (the native launcher).
+test("desktop requests go only to ?desktop=1 clients and resolve with their result", async (t) => {
+  const server = http.createServer();
+  const bridge = createVisionCaptureBridge({ timeoutMs: 1000 });
+  registerVisionCaptureServer(server, { bridge });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `ws://127.0.0.1:${server.address().port}/ws/vision-capture`;
+  const open = (query) =>
+    new Promise((resolve, reject) => {
+      const ws = new WebSocket(url + query);
+      ws.once("open", () => resolve(ws));
+      ws.once("error", reject);
+    });
+
+  const electron = await open("");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(bridge.hasDesktop(), false);
+  await assert.rejects(() => bridge.requestDesktop("media", { key: "next" }), /no client connected/);
+
+  const launcher = await open("?camera=1&desktop=1");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(bridge.hasDesktop(), true);
+  const received = new Promise((resolve) => launcher.once("message", (raw) => resolve(JSON.parse(raw))));
+  const pending = bridge.requestDesktop("media", { key: "next" });
+  const message = await received;
+  assert.deepEqual({ ...message, requestId: undefined }, { type: "desktop-request", action: "media", args: { key: "next" }, requestId: undefined });
+  bridge.resolveCapture(message.requestId, { key: "next" });
+  assert.deepEqual(await pending, { key: "next" });
+
+  launcher.close();
+  electron.close();
+});

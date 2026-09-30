@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -235,11 +236,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
             openChat: () => RunOnUi(ShowSessionList),
             onDoctor: payload => RunOnUi(() => ShowDoctorAlert(payload)),
             // #905: a reminder is said out loud too, even mid-game.
-            onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text));
+            onSpeak: text => _ = voiceLoop.SpeakAnnouncementAsync(text),
+            // #914: the new character's Live2D model, loaded in place (and
+            // why not, when her own model can't be used).
+            onCharacter: payload => RunOnUi(() =>
+            {
+                avatarOverlay.LoadModel(payload.Model);
+                if (payload.Model is not null)
+                {
+                    ReportAvatarModelProblem();
+                }
+            }));
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
-        // #681: answers the model's mid-reply screenshot requests.
-        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, saveCameraSnapshot: SaveCameraSnapshotAsync);
+        // #681: answers the model's mid-reply screenshot requests, and
+        // #911's desktop actions (media keys, volume, apps, audio output, file moves).
+        visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, saveCameraSnapshot: SaveCameraSnapshotAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, ManaSettingsStore.Load().DesktopActionFolders));
 
         trayIcon = new NotifyIcon
         {
@@ -406,6 +418,13 @@ internal sealed class ManaApplicationContext : ApplicationContext
         };
         menu.Items.Add(framingMenu);
         menu.Items.Add(sizeMenu);
+        // #914: who's talking, listed from node-bot each time it opens (its
+        // data/characters.json can change). Picking one switches and she
+        // says her handoff line; her model follows via onCharacter.
+        var characterMenu = new ToolStripMenuItem("Character");
+        characterMenu.DropDownItems.Add(new ToolStripMenuItem("Mana") { Enabled = false }); // shows the arrow
+        characterMenu.DropDownOpening += async (_, _) => await FillCharacterMenuAsync(characterMenu);
+        menu.Items.Add(characterMenu);
         // #701: off by default.
         var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
         bubblesItem.Click += (_, _) =>
@@ -727,6 +746,38 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.AvatarTop = avatarOverlay.Top;
         }
         latest.Save();
+    }
+
+    // #914: the tray's Character submenu, the active one checked.
+    private async Task FillCharacterMenuAsync(ToolStripMenuItem characterMenu)
+    {
+        IEnumerable<ToolStripItem> items;
+        try
+        {
+            var (active, characters) = await backendClient.GetCharactersAsync();
+            items = characters.Select(c => new ToolStripMenuItem(c.Name, null, async (_, _) => await SwitchCharacterAsync(c.Id)) { Checked = c.Id == active });
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            items = [new ToolStripMenuItem("Mana isn't reachable") { Enabled = false }];
+        }
+        characterMenu.DropDownItems.Clear();
+        characterMenu.DropDownItems.AddRange(items.ToArray());
+    }
+
+    private async Task SwitchCharacterAsync(string id)
+    {
+        try
+        {
+            if (await backendClient.SetCharacterAsync(id) is string handoff)
+            {
+                await voiceLoop.SpeakAnnouncementAsync(handoff);
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            Console.WriteLine($"Couldn't switch character to {id}. {ex.Message}");
+        }
     }
 
     // #526: a fresh dialog per open -- simpler than keeping one instance

@@ -24,17 +24,24 @@ const DEFAULT_TIMEOUT_MS = 10000;
 function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   let sender = null;
   let cameraCheck = null;
+  let desktopCheck = null;
   const pending = new Map();
 
   // #912: hasCamera says whether a connected client can take camera
-  // snapshots (the native launcher declares it; Electron doesn't).
-  function setSender(fn, hasCamera) {
+  // snapshots (the native launcher declares it; Electron doesn't). #911:
+  // hasDesktop, likewise, whether one can carry out desktop actions.
+  function setSender(fn, hasCamera, hasDesktop) {
     sender = typeof fn === "function" ? fn : null;
     cameraCheck = typeof hasCamera === "function" ? hasCamera : null;
+    desktopCheck = typeof hasDesktop === "function" ? hasDesktop : null;
   }
 
   function hasCamera() {
     return Boolean(cameraCheck?.());
+  }
+
+  function hasDesktop() {
+    return Boolean(desktopCheck?.());
   }
 
   function clearPending(requestId) {
@@ -48,6 +55,17 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   // #962: save asks the launcher to write its last camera snapshot to disk
   // and answer with the file's path instead of an image.
   function requestCapture({ camera = false, save = false } = {}) {
+    const source = save ? "camera-save" : camera ? "camera" : null;
+    return request({ type: "capture-request", ...(source && { source }) }, "capture");
+  }
+
+  // #911: a desktop action the launcher carries out (ai/desktop-tool-source.js);
+  // resolves with its result object. ms: a longer wait (file moves).
+  function requestDesktop(action, args, ms = timeoutMs) {
+    return request({ type: "desktop-request", action, args: args || {} }, "desktop", ms);
+  }
+
+  function request(message, what, ms = timeoutMs) {
     return new Promise((resolve, reject) => {
       if (typeof sender !== "function") {
         reject(new Error("no client connected"));
@@ -56,11 +74,10 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
       const requestId = randomUUID();
       const timer = setTimeout(() => {
         pending.delete(requestId);
-        reject(new Error("capture request timed out"));
-      }, timeoutMs);
+        reject(new Error(`${what} request timed out`));
+      }, ms);
       pending.set(requestId, { resolve, reject, timer });
-      const source = save ? "camera-save" : camera ? "camera" : null;
-      const sent = sender({ type: "capture-request", requestId, ...(source && { source }) });
+      const sent = sender({ ...message, requestId });
       if (!sent) {
         clearPending(requestId);
         reject(new Error("no client connected"));
@@ -84,7 +101,7 @@ function createVisionCaptureBridge({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     return true;
   }
 
-  return { requestCapture, resolveCapture, rejectCapture, setSender, hasCamera };
+  return { requestCapture, requestDesktop, resolveCapture, rejectCapture, setSender, hasCamera, hasDesktop };
 }
 
 const visionCaptureBridge = createVisionCaptureBridge();

@@ -13,12 +13,14 @@ function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", 
   const clients = new Set();
   // #912: clients that connected with ?camera=1 can take camera snapshots.
   const cameraClients = new WeakSet();
+  // #911: clients that connected with ?desktop=1 carry out desktop actions.
+  const desktopClients = new WeakSet();
 
   wss.on("connection", (socket, req) => {
     clients.add(socket);
-    if (new URL(req?.url || "/", "http://localhost").searchParams.get("camera") === "1") {
-      cameraClients.add(socket);
-    }
+    const params = new URL(req?.url || "/", "http://localhost").searchParams;
+    if (params.get("camera") === "1") cameraClients.add(socket);
+    if (params.get("desktop") === "1") desktopClients.add(socket);
     socket.on("close", () => clients.delete(socket));
     socket.on("error", () => clients.delete(socket));
   });
@@ -39,17 +41,21 @@ function registerVisionCaptureServer(httpServer, { path = "/ws/vision-capture", 
     let sent = false;
     for (const client of clients) {
       if (String(message.source || "").startsWith("camera") && !cameraClients.has(client)) continue;
+      if (message.type === "desktop-request" && !desktopClients.has(client)) continue;
       try {
         if (isOpen(client)) {
           client.send(raw);
           sent = true;
+          // #911: one launcher runs a desktop action, never two.
+          if (message.type === "desktop-request") break;
         }
       } catch (e) {
         // ignore a single bad client; others may still be reachable
       }
     }
     return sent;
-  }, () => [...clients].some((client) => cameraClients.has(client) && isOpen(client)));
+  }, () => [...clients].some((client) => cameraClients.has(client) && isOpen(client)),
+  () => [...clients].some((client) => desktopClients.has(client) && isOpen(client)));
 
   return { wss };
 }

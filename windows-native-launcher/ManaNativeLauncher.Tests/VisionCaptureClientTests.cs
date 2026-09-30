@@ -108,6 +108,34 @@ public class VisionCaptureClientTests
         await client.RespondAsync("abc-123");
     }
 
+    // #911: a desktop request runs the (fake) action and posts its result
+    // or its error; only a client with desktop actions says so.
+    [Fact]
+    public async Task RespondDesktopAsync_PostsTheActionsResultOrError()
+    {
+        var parsed = VisionCaptureClient.TryParseDesktopRequest(
+            Json("""{"type":"desktop-request","requestId":"r1","action":"media","args":{"key":"next"}}"""));
+        Assert.NotNull(parsed);
+        var (id, action, args) = parsed.Value;
+        Assert.Equal(("r1", "media", "next"), (id, action, args.GetProperty("key").GetString()));
+        Assert.Null(VisionCaptureClient.TryParseDesktopRequest(Json("""{"type":"capture-request","requestId":"r1"}""")));
+
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+        });
+        using var client = new VisionCaptureClient(new ManaBackendClient(handler), captureScreen: () => "screen",
+            desktopAction: (name, a) => name == "media" ? new { key = a.GetProperty("key").GetString() } : throw new InvalidOperationException("nope"));
+
+        await client.RespondDesktopAsync("r1", action, args);
+        Assert.Equal("""{"requestId":"r1","result":{"key":"next"}}""", body);
+        await client.RespondDesktopAsync("r2", "focus_app", args);
+        Assert.Equal("""{"requestId":"r2","error":"nope"}""", body);
+        Assert.Equal("?desktop=1", VisionCaptureClient.BuildSocketUri(null, camera: false, desktop: true).Query);
+    }
+
     private static (VisionCaptureClient Client, Func<(string? Path, string? Body)> GetRequest) BuildClient(Func<string> capture)
     {
         string? path = null;
