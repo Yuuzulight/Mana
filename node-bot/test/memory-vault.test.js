@@ -88,7 +88,7 @@ test("a note keeps its own header lines, its line breaks and a BOM doesn't break
   const mine = "tags:\n  - hardware\n  - pc\naliases: [graphics card]\n# my comment\ncssclasses:\n- wide";
   t.write(
     "Facts/gpu.md",
-    `﻿${t.read("Facts/gpu.md").replace("pinned: false", `pinned: true\n${mine}`).replace("RTX 4080.", "RTX 5080,\n\nwater cooled.")}`,
+    `\uFEFF${t.read("Facts/gpu.md").replace("pinned: false", `pinned: true\n${mine}`).replace("RTX 4080.", "RTX 5080,\n\nwater cooled.")}`,
   );
   t.vault.sync();
   assert.equal(t.fact("gpu").text, "RTX 5080, water cooled.");
