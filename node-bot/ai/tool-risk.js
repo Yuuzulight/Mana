@@ -63,6 +63,9 @@ const BUILTIN_TIERS = {
   reminder__set: "read",
   reminder__list: "read",
   reminder__cancel: "read",
+  // #914: only the speaking character's own notes on our relationship
+  // (relationship-store.js), capped and shown to her alone.
+  relationship__note: "read",
   // #906: only reach the mail/calendar server I set up in Settings, and
   // change nothing there (read-only mailbox, BODY.PEEK).
   email__recent: "read",

@@ -18,8 +18,9 @@
 // (tools/qwen3tts_service.py refuses any other file). The active character is not
 // persisted: a restart brings Mana back.
 //
-// Facts about the user stay shared; each character's mood and personality
-// layer are her own (perCharacter below, wired in server.js).
+// Facts about the user stay shared; each character's mood, personality
+// layer and relationship notes are her own (perCharacter below, wired in
+// server.js).
 const fs = require("node:fs");
 const path = require("node:path");
 const { MANA_PERSONA } = require("./persona");
