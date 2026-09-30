@@ -617,6 +617,7 @@ ${
       const result = await runTests(command, cwd, {
         spawnImpl: (c, o) => spawn(c, { ...o, env: clean }),
         timeoutMs: TEST_TIMEOUT_MS,
+        terminal: { source: "self-work", stop },
       });
       const passed = result.exitCode === 0 && !result.timedOut;
       r.lastTestPassed = passed;
