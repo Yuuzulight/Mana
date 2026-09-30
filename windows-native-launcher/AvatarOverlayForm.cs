@@ -25,6 +25,9 @@ internal enum AvatarState
     Waiting,
     Done,
     Dreaming,
+    // The mic is on (waiting for her name, or awake after it): a patient,
+    // looping listening pose over her idle.
+    Listening,
 }
 
 // #479 sub-project 4: renders a real, parameter-driven Cubism model when
@@ -73,6 +76,7 @@ internal sealed class AvatarOverlayForm : Form
     private double doneStartedAt = double.NegativeInfinity;
     private double attentiveStartedAt = double.NegativeInfinity; // Q34: when she was last clicked
     private float sleepiness;
+    private float listening; // eased 0..1 blend of the Listening pose
     // Q6: the "^^" closed-eye smile -- until when, and how far in (eased).
     private double closedSmileUntil = double.NegativeInfinity;
     private float closedSmile;
@@ -83,6 +87,7 @@ internal sealed class AvatarOverlayForm : Form
     private CubismModel? cubismModel;
     private CubismRenderer? cubismRenderer;
     private System.Windows.Forms.Timer? renderTimer;
+    private readonly int fpsCap = ReadIntEnv("MANA_AVATAR_FPS", 0); // #683, Electron's knob
     private readonly Stopwatch renderClock = Stopwatch.StartNew();
     private long lastRenderTickMs;
     private float smoothedMouthOpen;
@@ -140,8 +145,14 @@ internal sealed class AvatarOverlayForm : Form
             Path.Combine(rootDirectory, "windows-native-launcher", "assets", "avatar", fileName),
             Path.Combine(rootDirectory, "windows-launcher", "assets", "avatar", fileName));
 
-    public AvatarOverlayForm(string rootDirectory)
+    // #914 group mode: partner is the second character's overlay, placed
+    // beside Mana's by its owner (BesideLocation); it never reads or saves
+    // the overlay's position.
+    private readonly bool partner;
+
+    public AvatarOverlayForm(string rootDirectory, bool partner = false)
     {
+        this.partner = partner;
         // #681: native's own copy first, Electron's as the fallback (see
         // CubismModelLocator.ModelDirectory).
         idlePath = AvatarPngPath(rootDirectory, "idle.png");
@@ -165,8 +176,16 @@ internal sealed class AvatarOverlayForm : Form
         Size = Frame(settings.OverlayFraming, settings.OverlayScale);
 
         SetState(AvatarState.Idle);
-        stateTimer.Tick += (_, _) => ShowResolvedState(reapply: false);
+        stateTimer.Tick += (_, _) =>
+        {
+            arbiter.Set(AvatarState.Listening, IsListening?.Invoke() == true);
+            ShowResolvedState(reapply: false);
+        };
         stateTimer.Start();
+        if (partner)
+        {
+            return; // placed by its owner
+        }
         // #899: a spot saved before framing existed was for the 1x full-body
         // window; move it once to where that window's bottom centre stood,
         // so she stays flush on the bottom edge if she was.
@@ -234,12 +253,9 @@ internal sealed class AvatarOverlayForm : Form
         }
         if (cubismModel is not null && cubismRenderer is not null)
         {
-            // ~60fps: WM_TIMER fires on the ~15.6ms system tick, so 15
-            // lands on every tick (16 would round up to every other one).
-            // MANA_AVATAR_FPS (#683, Electron's knob) can lower that.
-            var fps = ReadIntEnv("MANA_AVATAR_FPS", 0);
+            // RenderFrame re-paces it every tick (RenderIntervalMs).
             var (model, renderer) = (cubismModel, cubismRenderer);
-            renderTimer = new System.Windows.Forms.Timer { Interval = fps > 0 ? Math.Max(15, 1000 / fps) : 15 };
+            renderTimer = new System.Windows.Forms.Timer { Interval = RenderIntervalMs(gameRunning, speaking: false, fpsCap) };
             renderTimer.Tick += (_, _) => RenderFrame(model, renderer);
         }
 
@@ -296,7 +312,15 @@ internal sealed class AvatarOverlayForm : Form
         }
     }
 
-    private void KeepOnScreen() => PositionOverlay(ManaSettingsStore.Load());
+    private void KeepOnScreen()
+    {
+        if (partner)
+        {
+            Location = KeepInside(Bounds, Screen.FromRectangle(Bounds).WorkingArea);
+            return;
+        }
+        PositionOverlay(ManaSettingsStore.Load());
+    }
 
     // #684: `bounds` moved the least needed to lie fully inside `area`
     // (its top-left corner kept on screen if it's bigger than the area).
@@ -555,6 +579,11 @@ internal sealed class AvatarOverlayForm : Form
         // doing; Dreaming slowly closes her eyes, Done nods once.
         var shown = CurrentState;
         var speaking = AvatarStateArbiter.IsSpeech(shown);
+        var interval = RenderIntervalMs(gameRunning, speaking, fpsCap);
+        if (renderTimer is { } timer && timer.Interval != interval)
+        {
+            timer.Interval = interval;
+        }
         // Q34: a click gets a quick attentive look -- eyes straight to you
         // (switching to Attentive re-picks the gaze at once) and a head tilt.
         var sinceClick = nowSeconds - attentiveStartedAt;
@@ -586,6 +615,17 @@ internal sealed class AvatarOverlayForm : Form
         if (shown == AvatarState.Done)
         {
             SetLifeParameter(model, "ParamAngleY", model.GetParameterCurrentValue("ParamAngleY") + AvatarGaze.NodOffset(nowSeconds - doneStartedAt));
+        }
+        // Listening: a soft head tilt, a slow small nod and gently smiling
+        // eyes, eased in and out over ~0.6s so it never snaps.
+        listening += ((shown == AvatarState.Listening ? 1f : 0f) - listening) * Math.Min(1f, dtMs / 600f);
+        if (listening > 0.001f)
+        {
+            var (pitch, roll, eyeSmile) = AvatarGaze.ListeningPose(nowSeconds);
+            SetLifeParameter(model, "ParamAngleY", model.GetParameterCurrentValue("ParamAngleY") + (listening * pitch));
+            SetLifeParameter(model, "ParamAngleZ", model.GetParameterCurrentValue("ParamAngleZ") + (listening * roll));
+            SetLifeParameter(model, "ParamEyeLSmile", model.GetParameterCurrentValue("ParamEyeLSmile") + (listening * eyeSmile));
+            SetLifeParameter(model, "ParamEyeRSmile", model.GetParameterCurrentValue("ParamEyeRSmile") + (listening * eyeSmile));
         }
         if (gaze.GazeActive)
         {
@@ -671,6 +711,17 @@ internal sealed class AvatarOverlayForm : Form
         }
     }
 
+    // WM_TIMER fires on the ~15.6ms system tick, so intervals land on whole
+    // ticks: 15 is every tick (~64fps; 16 would round up to every other
+    // one), 31 every 2nd (~32fps), 46 every 3rd (~21fps). Full rate only
+    // while she speaks, ~30 at rest, ~20 while a game runs;
+    // MANA_AVATAR_FPS can only lower it.
+    internal static int RenderIntervalMs(bool gameRunning, bool speaking, int fpsCap)
+    {
+        var interval = gameRunning ? 46 : speaking ? 15 : 31;
+        return fpsCap > 0 ? Math.Max(interval, 1000 / fpsCap) : interval;
+    }
+
     private void UpdateRenderTimer()
     {
         if (renderTimer is not null)
@@ -733,6 +784,11 @@ internal sealed class AvatarOverlayForm : Form
         }
         ShowResolvedState(reapply: true);
     }
+
+    // Whether the mic is on (VoiceLoop.IsListening), polled by stateTimer so
+    // every way of turning it on or off (tray, hotkey, chat window, voice
+    // enrolment's pause) shows without each one telling the avatar.
+    public Func<bool>? IsListening { get; set; }
 
     // #661: Thinking/Working/Waiting/Dreaming on or off. Callable from any
     // thread, like SetState.
@@ -816,6 +872,7 @@ internal sealed class AvatarOverlayForm : Form
         {
             return;
         }
+        rescanVisibleTop = true; // idle and talking PNGs may differ
         // Framed like the Live2D model (#899); whole-body is a centred fit,
         // like the old PictureBox's Zoom.
         var width = Math.Max(1, ClientSize.Width);
@@ -863,15 +920,20 @@ internal sealed class AvatarOverlayForm : Form
             }
             previousBitmap = SelectObject(memoryDc, dibBitmap);
             dibSize = size;
+            rescanVisibleTop = true;
         }
 
         using (var pixmap = frame.PeekPixels())
         {
             pixmap.ReadPixels(new SKImageInfo(size.Width, size.Height, SKColorType.Bgra8888, SKAlphaType.Premul), dibBits, size.Width * 4);
         }
-        unsafe
+        if (rescanVisibleTop)
         {
-            visibleTop = FirstOpaqueRow(new ReadOnlySpan<byte>((void*)dibBits, size.Width * size.Height * 4), size.Width, size.Height);
+            rescanVisibleTop = false;
+            unsafe
+            {
+                visibleTop = FirstOpaqueRow(new ReadOnlySpan<byte>((void*)dibBits, size.Width * size.Height * 4), size.Width, size.Height);
+            }
         }
 
         const byte acSrcOver = 0;
@@ -1062,7 +1124,7 @@ internal sealed class AvatarOverlayForm : Form
             return;
         }
         pressedAt = null;
-        if (dragging)
+        if (dragging && !partner)
         {
             // Nothing on this UI thread catches exceptions, and a position
             // that didn't save isn't worth crashing the launcher over.
@@ -1138,6 +1200,14 @@ internal sealed class AvatarOverlayForm : Form
     // #899: flush in the bottom-right corner, like a streamer overlay: the
     // frame's bottom (the cut, when framed) on the working area's bottom
     // edge. MANA_AVATAR_LEFT/MANA_AVATAR_BOTTOM still move it.
+    // #914: the partner's spot: bottom-aligned just left of Mana's, or to
+    // her right when there's no room, kept inside the working area.
+    internal static Point BesideLocation(Rectangle mana, Size size, Rectangle workArea)
+    {
+        var left = mana.Left - size.Width >= workArea.Left ? mana.Left - size.Width : mana.Right;
+        return KeepInside(new Rectangle(left, mana.Bottom - size.Height, size.Width, size.Height), workArea);
+    }
+
     internal static Point DefaultLocation(Size size, Rectangle workArea, int? left, int bottom) =>
         new(left is int x ? workArea.Left + x : workArea.Right - size.Width, workArea.Bottom - size.Height - bottom);
 
@@ -1164,6 +1234,7 @@ internal sealed class AvatarOverlayForm : Form
     public void SetFraming(string? framing, float? scale)
     {
         var size = Frame(framing, scale);
+        rescanVisibleTop = true;
         var settings = ManaSettingsStore.Load();
         if (settings.AvatarLeft is null || settings.AvatarTop is null)
         {
@@ -1201,7 +1272,9 @@ internal sealed class AvatarOverlayForm : Form
     // #899: the first row of the last frame with any of her in it, so
     // captions sit over her head rather than the empty top of the window.
     // Written by Present (UI thread); read like Bounds, a plain field read.
+    // Only rescanned when the size, framing or picture changes, not every frame.
     private int visibleTop;
+    private bool rescanVisibleTop = true;
     public Rectangle VisibleBounds => VisiblePart(Bounds, visibleTop);
 
     internal static Rectangle VisiblePart(Rectangle bounds, int top) =>

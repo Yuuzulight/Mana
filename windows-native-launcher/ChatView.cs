@@ -135,14 +135,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
-    public void AppendReplySentence(string text) => RunOnUiThread(() =>
+    public void AppendReplySentence(string text) => AppendReplySentence(text, null);
+
+    // #914: a sentence from another character than the open reply's (group
+    // mode's second reply) starts her own message, labelled with her name.
+    public void AppendReplySentence(string text, string? speaker) => RunOnUiThread(() =>
     {
         var blocks = ChatMarkdownParser.Parse(text);
         if (blocks.Count == 0)
         {
             return;
         }
-        if (messages.Count > 0 && !messages[^1].FromUser)
+        if (messages.Count > 0 && !messages[^1].FromUser && (speaker is null || messages[^1].Speaker == speaker))
         {
             var current = messages[^1];
             if (current.FinalText == text)
@@ -157,7 +161,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 return;
             }
         }
-        var message = new Message(fromUser: false);
+        var message = new Message(fromUser: false) { Name = speaker };
         message.Blocks.AddRange(blocks);
         Add(message, forceScroll: false);
     });
@@ -273,6 +277,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         var message = new Message(fromUser: false) { FinalText = text };
         message.Blocks.AddRange(blocks);
+        Add(message, forceScroll: false);
+    });
+
+    // #914: "Noted: ..." -- her relationship note or milestone, its own
+    // finished line with an Undo button (never merged into the reply).
+    public void AppendNoted(string? speaker, string text, Func<Task<string?>> undo) => RunOnUiThread(() =>
+    {
+        var message = new Message(fromUser: false) { Name = speaker, FinalText = text };
+        message.Blocks.AddRange(ChatMarkdownParser.Parse(text));
+        message.Actions.Add(new ChatAction("Undo", false, undo));
         Add(message, forceScroll: false);
     });
 
@@ -728,9 +742,42 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         e.Graphics.FillRectangle(brush, ClientRectangle);
     }
 
+    // A new chat's card: how to start, and a few things she can do.
+    internal const string EmptyStateText = "Say \"Mana\" or type below to start.\n\n"
+        + "A few things she can do:\n"
+        + "•  chat, and answer questions\n"
+        + "•  look at your screen (\"what's this?\", \"translate my screen\")\n"
+        + "•  look things up and research a topic\n"
+        + "•  remember what you tell her about yourself";
+
+    private void PaintEmptyState(Graphics g)
+    {
+        const TextFormatFlags flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix;
+        var width = Math.Min(420, ClientSize.Width - 48);
+        if (width <= 0)
+        {
+            return;
+        }
+        var text = TextRenderer.MeasureText(g, EmptyStateText, bodyFont, new Size(width - (PadX * 2), int.MaxValue), flags);
+        var card = new Rectangle((ClientSize.Width - width) / 2, Math.Max(24, (ClientSize.Height - text.Height) / 3), width, text.Height + (PadY * 2));
+        using (var fill = new SolidBrush(DarkTheme.ManaBubble))
+        {
+            g.FillRectangle(fill, card);
+        }
+        using (var border = new Pen(DarkTheme.Border))
+        {
+            g.DrawRectangle(border, card.X, card.Y, card.Width - 1, card.Height - 1);
+        }
+        TextRenderer.DrawText(g, EmptyStateText, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text, flags);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
+        if (messages.Count == 0)
+        {
+            PaintEmptyState(g);
+        }
         var scroll = scrolling ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
         {
@@ -1444,7 +1491,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public Message(bool fromUser) => FromUser = fromUser;
 
         public bool FromUser { get; }
-        public string Speaker => FromUser ? "You" : "Mana";
+        // #914: the character's name on her messages (null: Mana).
+        public string? Name { get; init; }
+        public string Speaker => FromUser ? "You" : Name ?? "Mana";
         public List<MarkdownBlock> Blocks { get; } = new();
         public List<Line> Lines { get; set; } = new();
         public string Text { get; set; } = "";

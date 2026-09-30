@@ -639,6 +639,11 @@ internal sealed class VoiceLoop : IDisposable
     // #687: the chat window's status line (SessionListForm polls it), like
     // Electron's: the last error until the next reply starts, else what she's
     // doing. Read without the lock -- a stale read shows for one poll.
+    // #914: whose sentence is playing (group mode lip-syncs her avatar), and
+    // when a reply's talking ends (her mouth closes too).
+    public string? PlayingCharacter => streamingReplyPlayer.PlayingCharacter;
+    public event Action? TalkingEnded;
+
     public string StatusText => FormatStatus(lastError, IsListening, mode, awake, streamingReplyPlayer.SynthesizingSentence);
 
     internal static string FormatStatus(string? error, bool listening, ListenMode mode, bool awake, int? synthesizing)
@@ -1868,6 +1873,21 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
+    // #914: a relationship note or milestone she just made is a chat line
+    // with an Undo button (no approval needed, so I see each one).
+    private void ShowNoted(ReplyStreamEvent noted)
+    {
+        var kind = noted.Kind == "milestone" ? "milestones" : "notes";
+        chatLog?.AppendNoted(noted.CharacterName, NotedLine(noted.Kind, noted.Text ?? "", noted.Date), async () =>
+        {
+            await backendClient.RemoveRelationshipItemAsync(noted.Character ?? "mana", kind, noted.Id ?? "");
+            return "Forgotten.";
+        });
+    }
+
+    internal static string NotedLine(string? kind, string text, string? date) =>
+        kind == "milestone" ? $"I'll remember this: \"{text}\"{(date is null ? "" : $" ({date})")}" : $"Noted: \"{text}\"";
+
     private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, string? source)
     {
         string? reply;
@@ -1879,7 +1899,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), text => chatLog?.AppendReplySentence(text), screenText, image, images, currentPresetId, thinkHarder, source);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source, ShowNoted);
             if (stopMana)
             {
                 stopManaThinking = false;
@@ -2209,6 +2229,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             captions?.SpeechEnded();
             bubbles?.SpeechEnded();
+            TalkingEnded?.Invoke();
         }
         lock (stateLock)
         {

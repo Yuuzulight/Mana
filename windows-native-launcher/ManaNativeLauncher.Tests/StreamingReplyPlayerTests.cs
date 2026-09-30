@@ -32,7 +32,8 @@ public class StreamingReplyPlayerTests
                 var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 using var document = JsonDocument.Parse(body);
                 var emotion = document.RootElement.TryGetProperty("emotion", out var e) && e.ValueKind == JsonValueKind.String ? $"|{e.GetString()}" : "";
-                synthLog.Add($"synth:{document.RootElement.GetProperty("text").GetString()}{emotion}");
+                var character = document.RootElement.TryGetProperty("character", out var c) && c.ValueKind == JsonValueKind.String ? $"@{c.GetString()}" : "";
+                synthLog.Add($"synth:{document.RootElement.GetProperty("text").GetString()}{emotion}{character}");
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new ByteArrayContent(new byte[] { 1, 2, 3 }),
@@ -74,6 +75,55 @@ public class StreamingReplyPlayerTests
         Assert.Equal(new[] { "synth:Hello there.", "synth:How can I help?" }, synthLog);
         Assert.Equal(2, playLog.Count);
         Assert.Equal(new[] { true, false }, talkingStates);
+    }
+
+    // #914: a relationship note she made mid-reply reaches onNoted.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_PassesNotedEvents()
+    {
+        const string ndjson =
+            "{\"type\":\"noted\",\"kind\":\"milestone\",\"id\":\"m1\",\"text\":\"Our first duet.\",\"date\":\"2026-09-20\",\"character\":\"mana\",\"characterName\":\"Mana\"}\n" +
+            "{\"type\":\"sentence\",\"text\":\"Hehe.\"}\n" +
+            "{\"type\":\"final\",\"reply\":\"Hehe.\",\"changed\":false}\n";
+        var noted = new List<ReplyStreamEvent>();
+        var player = new StreamingReplyPlayer(BuildFakeClient(ndjson, new List<string>()), _ => Task.FromResult(true), _ => { });
+
+        var (reply, _, _, _, _) = await player.StreamReplyAndPlayAsync("sing with me", onNoted: noted.Add);
+
+        Assert.Equal("Hehe.", reply);
+        var milestone = Assert.Single(noted);
+        Assert.Equal(("milestone", "m1", "Our first duet.", "2026-09-20", "mana"), (milestone.Kind, milestone.Id, milestone.Text, milestone.Date, milestone.Character));
+    }
+
+    // #914: group mode -- each sentence in its character's voice and chat
+    // label; the sister's reaction plays too, and the first final is the reply.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_GroupReactionPlaysInHerVoiceAndTheFirstFinalIsTheReply()
+    {
+        const string ndjson =
+            "{\"type\":\"sentence\",\"text\":\"Me.\",\"character\":\"mana\",\"characterName\":\"Mana\"}\n" +
+            "{\"type\":\"final\",\"reply\":\"Me.\",\"changed\":false,\"character\":\"mana\",\"characterName\":\"Mana\"}\n" +
+            "{\"type\":\"sentence\",\"text\":\"She wishes.\",\"character\":\"evil-mana\",\"characterName\":\"Evil Mana\"}\n" +
+            "{\"type\":\"final\",\"reply\":\"She wishes.\",\"changed\":false,\"character\":\"evil-mana\",\"characterName\":\"Evil Mana\"}\n";
+        var synthLog = new List<string>();
+        var chat = new List<string>();
+        var speaking = new List<string?>();
+        StreamingReplyPlayer? player = null;
+        player = new StreamingReplyPlayer(BuildFakeClient(ndjson, synthLog), _ =>
+        {
+            speaking.Add(player!.PlayingCharacter); // whose avatar lip-syncs
+            return Task.FromResult(true);
+        }, _ => { });
+
+        var (reply, changed, _, interrupted, _) = await player.StreamReplyAndPlayAsync("who's smarter?", onSentence: (text, speaker) => chat.Add($"{speaker}: {text}"));
+
+        Assert.Equal("Me.", reply);
+        Assert.False(changed);
+        Assert.False(interrupted);
+        Assert.Equal(new[] { "synth:Me.@mana", "synth:She wishes.@evil-mana" }, synthLog);
+        Assert.Equal(new[] { "Mana: Me.", "Evil Mana: She wishes." }, chat);
+        Assert.Equal(new[] { "mana", "evil-mana" }, speaking);
+        Assert.Null(player.PlayingCharacter);
     }
 
     [Fact]
