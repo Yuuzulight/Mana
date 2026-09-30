@@ -20,6 +20,7 @@ const {
   createSessionGoalToolSource,
 } = require("./ai/session-goal-tool-source");
 const { createEditProposalStore } = require("./zed-integration");
+const protectedPaths = require("./protected-paths");
 
 // The label that makes an issue hers to work on. I add it (or starting a
 // run from the launcher adds it for me).
@@ -29,16 +30,6 @@ const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 const MAX_LIST = 100;
 const MAX_LOG = 30;
-
-// #1000's guardrail list. Until it's merged into this checkout the runner
-// refuses to start: her writes must not reach her own guardrails.
-function loadProtectedPaths() {
-  try {
-    return require("./protected-paths");
-  } catch {
-    return null;
-  }
-}
 
 // The code she writes runs in her tests; it gets a clean environment, not
 // the backend's keys and tokens.
@@ -177,7 +168,8 @@ function createSelfWork(options = {}) {
   const env = options.env || process.env;
   const runLoop = options.runLoop;
   const reviewEdit = options.reviewEdit || null;
-  const guard = options.protectedPaths === undefined ? loadProtectedPaths() : options.protectedPaths;
+  // #1000's guardrail list: her writes never reach it.
+  const guard = options.protectedPaths || protectedPaths;
   const runTests = options.runTests || runTestCommand;
   const onEvent = options.onEvent || ((run, text) => console.log(`[self-work #${run.issue}] ${text}`));
   const proposals = createEditProposalStore();
@@ -235,7 +227,6 @@ function createSelfWork(options = {}) {
   }
 
   async function begin(issueNumber) {
-    if (!guard) return { ok: false, error: "Self-work waits for my guardrail list (#1000) to be merged into this checkout." };
     const n = Number(issueNumber);
     if (!Number.isInteger(n) || n <= 0) return { ok: false, error: "Which issue? Give me its number." };
     let issue;

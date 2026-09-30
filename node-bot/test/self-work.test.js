@@ -218,13 +218,6 @@ test("a guardrail changed by anything in the run (her tests too) isn't pushed", 
   assert.throws(() => git(repos.origin, "rev-parse", "--verify", "mana/7-fix-the-add-helper"));
 });
 
-test("she refuses to start without the guardrail list", async () => {
-  const sw = createSelfWork({ protectedPaths: null, runLoop: async () => ({}) });
-  const result = await sw.start(7);
-  assert.equal(result.ok, false);
-  assert.match(result.error, /#1000/);
-});
-
 test("secrets: key shapes and the backend's own values are caught; her tests get a clean env", () => {
   const env = { DISCORD_TOKEN: "abcdefghijklmnop", PATH: "p" };
   assert.equal(findSecret("+const x = 'abcdefghijklmnop';", env), "the value of DISCORD_TOKEN");
