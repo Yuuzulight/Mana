@@ -3040,7 +3040,7 @@ function registerRoutes(app, upload, deps = {}) {
       }
 
       // fallback: synthesize audio and estimate timings locally
-      const audio = await ttsRuntime.synthesizeReply(text);
+      const audio = await ttsRuntime.synthesizeReply(text, opts.emotion);
       if (
         captionServer &&
         typeof captionServer.broadcastCaption === "function"

@@ -651,7 +651,9 @@ function registerCoreRoutes(app, upload, deps) {
         return res.status(400).json({ error: "TTS not configured" });
       }
 
-      const audio = await synthesizeReply(text);
+      // #909: the sentence's emotion tag (from /reply/stream) styles her voice.
+      const emotion = typeof req.body?.emotion === "string" ? req.body.emotion : undefined;
+      const audio = await synthesizeReply(text, { emotion });
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (e) {

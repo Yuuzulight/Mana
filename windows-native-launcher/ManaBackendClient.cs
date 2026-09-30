@@ -233,9 +233,11 @@ internal sealed class ManaBackendClient
         return document.RootElement.GetProperty("reply").GetString() ?? string.Empty;
     }
 
-    public async Task<byte[]> SynthesizeAsync(string text)
+    // #909: emotion is the sentence's tag, which Qwen3-TTS turns into her
+    // speaking rate; null leaves the voice as it is.
+    public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null)
     {
-        var payload = JsonSerializer.Serialize(new { text });
+        var payload = JsonSerializer.Serialize(new { text, emotion });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/synthesize", content);
         response.EnsureSuccessStatusCode();
