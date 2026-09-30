@@ -2091,9 +2091,11 @@ ensureDirectory(path.join(__dirname, "tmp"));
 
 // An upload's temp files are its multer name (32 random hex, no extension)
 // plus whatever ffmpeg/whisper appended: .wav, .out.json, .partial-out.json.
+// Both multer instances (here and mobile-routes.js) write to node-bot/tmp.
 function deleteUploadFiles(uploadPath) {
-  const dir = path.dirname(uploadPath);
+  const dir = path.join(__dirname, "tmp");
   const name = path.basename(uploadPath);
+  if (!/^[0-9a-f]{32}$/.test(name)) return;
   try {
     for (const entry of fs.readdirSync(dir)) {
       if (entry.startsWith(name)) fs.rmSync(path.join(dir, entry), { force: true });
