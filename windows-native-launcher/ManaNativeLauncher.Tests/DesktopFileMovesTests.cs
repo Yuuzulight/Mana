@@ -1,0 +1,123 @@
+using System;
+using System.IO;
+using System.Text.Json;
+using Mana.NativeLauncher;
+using Xunit;
+
+namespace ManaNativeLauncher.Tests;
+
+// #911: file moves, only inside the allowed folders. Every test uses its
+// own temp folders as the allowed ones -- never my real Desktop/Downloads.
+public sealed class DesktopFileMovesTests : IDisposable
+{
+    private readonly string temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "mana-moves-" + Guid.NewGuid().ToString("N"))).FullName;
+    private readonly string downloads;
+    private readonly string pictures;
+    private readonly string outside;
+
+    public DesktopFileMovesTests()
+    {
+        downloads = Directory.CreateDirectory(Path.Combine(temp, "Downloads")).FullName;
+        pictures = Directory.CreateDirectory(Path.Combine(temp, "Pictures", "Screenshots")).Parent!.FullName;
+        outside = Directory.CreateDirectory(Path.Combine(temp, "Outside")).FullName;
+    }
+
+    private string[] Roots => new[] { downloads, pictures };
+
+    private static string Json(object value) => JsonSerializer.Serialize(value);
+
+    [Fact]
+    public void MoveFiles_MovesIntoAFolderAndRecordsEachMove()
+    {
+        var a = Touch(downloads, "shot1.png");
+        var b = Touch(downloads, "shot2.png");
+        var screenshots = Path.Combine(pictures, "Screenshots");
+
+        var result = Json(DesktopActions.MoveFiles(new[] { a, b }, screenshots, exact: false, Roots));
+
+        Assert.True(File.Exists(Path.Combine(screenshots, "shot1.png")));
+        Assert.False(File.Exists(a));
+        Assert.Contains(JsonSerializer.Serialize(Path.Combine(screenshots, "shot2.png")), result);
+        Assert.Contains("\"failed\":[]", result);
+    }
+
+    [Fact]
+    public void MoveFiles_RenamesAndUndoesWithExact()
+    {
+        var a = Touch(downloads, "IMG_001.png");
+        var renamed = Path.Combine(downloads, "cat.png");
+
+        DesktopActions.MoveFiles(new[] { a }, renamed, exact: false, Roots);
+        Assert.True(File.Exists(renamed));
+        DesktopActions.MoveFiles(new[] { renamed }, a, exact: true, Roots);
+        Assert.True(File.Exists(a));
+        // a folder that doesn't exist yet is not a new file name
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a }, Path.Combine(pictures, "Cats"), exact: false, Roots));
+        Assert.True(File.Exists(a));
+    }
+
+    [Fact]
+    public void MoveFiles_NeverLeavesTheAllowedFoldersOrOverwrites()
+    {
+        var a = Touch(downloads, "a.txt");
+        File.WriteAllText(a, "from downloads");
+        var existing = Touch(pictures, "a.txt");
+        var secret = Touch(outside, "secret.txt");
+
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a }, outside, exact: false, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { secret }, pictures, exact: false, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { Path.Combine(downloads, "..", "Outside", "secret.txt") }, pictures, exact: false, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { downloads }, pictures, exact: false, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a }, pictures, exact: false, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { "a.txt" }, pictures, exact: false, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.MoveFiles(new[] { a + ":stream" }, pictures, exact: false, Roots));
+        Assert.True(File.Exists(a));
+        Assert.True(File.Exists(secret));
+        Assert.Equal("", File.ReadAllText(existing));
+    }
+
+    [Fact]
+    public void Allowed_RefusesAPathThroughALink()
+    {
+        var link = Path.Combine(downloads, "link");
+        try
+        {
+            Directory.CreateSymbolicLink(link, outside);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            return; // no symlink rights here (no Developer Mode / admin); CI runs it
+        }
+        Touch(outside, "secret.txt");
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.Allowed(Path.Combine(link, "secret.txt"), Roots));
+    }
+
+    [Fact]
+    public void ListFolder_ListsTheRootsOrAFolderNewestFirst()
+    {
+        var older = Touch(downloads, "old.png");
+        File.SetLastWriteTime(older, DateTime.Now.AddDays(-1));
+        Touch(downloads, "new.png");
+
+        Assert.Contains(JsonSerializer.Serialize(downloads), Json(DesktopActions.ListFolder(null, Roots)));
+        var listing = Json(DesktopActions.ListFolder(downloads, Roots));
+        Assert.True(listing.IndexOf("new.png", StringComparison.Ordinal) < listing.IndexOf("old.png", StringComparison.Ordinal));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.ListFolder(outside, Roots));
+    }
+
+    private static string Touch(string dir, string name)
+    {
+        var path = Path.Combine(dir, name);
+        File.WriteAllText(path, "");
+        return path;
+    }
+
+    public void Dispose()
+    {
+        foreach (var link in Directory.EnumerateDirectories(downloads, "link"))
+        {
+            Directory.Delete(link); // the link only, never its target
+        }
+        Directory.Delete(temp, recursive: true);
+    }
+}
