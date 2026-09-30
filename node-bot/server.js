@@ -262,6 +262,8 @@ const { createToolCallLog, wrapWithToolCallLog } = require("./tool-call-log");
 const { createAgentActivity } = require("./agent-activity");
 const { filterRelevantTools, wrapWithResultDigest } = require("./ai/tool-context-guard");
 const { toolCallLogCapability } = require("./capabilities/tool-call-log-capability");
+const { terminalCapability } = require("./capabilities/terminal-capability");
+const { terminalFeed } = require("./terminal-feed");
 const { createHooksStore, wrapWithHooks, wrapWithInputHooks } = require("./hooks-store");
 const { hooksCapability } = require("./capabilities/hooks-capability");
 const { createPronunciationLexiconStore } = require("./pronunciation-lexicon-store");
@@ -2366,6 +2368,7 @@ function registerRoutes(app, upload, deps = {}) {
     approvalGateCapability,
     mcpClientCapability,
     toolCallLogCapability,
+    terminalCapability,
     hooksCapability,
     pronunciationLexiconCapability,
     // Yellowlight enhancements (#496-#489) — optional plugins wired into capability system
@@ -2467,6 +2470,7 @@ function registerRoutes(app, upload, deps = {}) {
     snapshotStore,
     mcpClientRegistry: activeMcpClientRegistry,
     toolCallLog: deps.toolCallLog || toolCallLog,
+    terminalFeed,
     hooksStore: activeHooksStore,
     pronunciationLexiconStore: activePronunciationLexiconStore,
     // Issue #187: discord-bot's voice session needs the same full
@@ -4994,7 +4998,10 @@ function registerRoutes(app, upload, deps = {}) {
             }
             reportTool(name, "start");
             try {
-              const result = await executeLoggedTool(name, args);
+              // #1121: a command this call runs is stopped by this loop's Stop.
+              const result = await terminalFeed.runWith({ stop: () => agentActivity.stop(run.id) }, () =>
+                executeLoggedTool(name, args),
+              );
               turnTools.push(name);
               return result;
             } finally {

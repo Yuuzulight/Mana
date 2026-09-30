@@ -19,6 +19,7 @@ const { isCredentialPath } = require("./tool-policy");
 const { protectedPathFor, protectedPathMessage } = require("../protected-paths");
 const { formatReviewHeader } = require("./adversarial-verifier");
 const { killProcessTree } = require("../utils/kill-process-tree");
+const { terminalFeed } = require("../terminal-feed");
 
 const CODING_TOOL_PREFIX = "coding__";
 const CODING_EDIT_TOOL_NAME = `${CODING_TOOL_PREFIX}propose_edit`;
@@ -106,10 +107,12 @@ function detectTestCommand(dir, { env = process.env, fsImpl = fs } = {}) {
 
 // Runs a test command in cwd. The output keeps its tail, where test
 // runners put the failures and the summary.
+// terminal: how the run shows in the Terminal tool (#1121) -- its source
+// and stop path; a chat run's come from the tool loop.
 function runTestCommand(
   command,
   cwd,
-  { spawnImpl = spawn, killTree = killProcessTree, timeoutMs = TEST_TIMEOUT_MS } = {},
+  { spawnImpl = spawn, killTree = killProcessTree, timeoutMs = TEST_TIMEOUT_MS, terminal = {} } = {},
 ) {
   return new Promise((resolve) => {
     let output = "";
@@ -130,6 +133,7 @@ function runTestCommand(
       resolve({ exitCode, timedOut, output: dropped ? `...[${dropped} earlier chars cut]\n${output}` : output });
     };
     const child = spawnImpl(command, { cwd, shell: true, windowsHide: true });
+    terminalFeed.track(child, { source: "chat", command, cwd, ...terminal });
     // Settles right after the kill: a tree that never reports 'close' must
     // not hang the reply.
     const timer = setTimeout(() => {
