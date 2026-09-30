@@ -22,8 +22,9 @@ namespace Mana.NativeLauncher;
 // stateful AllowExit escape hatch to work around -- see DarkTheme.ApplyForm).
 // The Mana preset's glass title strip (SessionListForm.Caption.cs) keeps the
 // native frame and hands all of that back to Windows. Of #538's rail
-// (Browser/Terminal/Artifacts/Tasks) only Artifacts exists in this app
-// (the artifact viewer); the others are left off until they're built.
+// (Browser/Terminal/Artifacts/Tasks) Artifacts (the artifact viewer) and
+// Tasks (#1016's self-work window) exist in this app; the others are left
+// off until they're built.
 //
 // A standalone window for now (windows-launcher's own version lives
 // inside its main app window) -- created once and reused (Hide, not
@@ -322,13 +323,18 @@ internal sealed partial class SessionListForm : Form
             }
         };
 
-        // #538's rail: Artifacts on top, Settings docked at the bottom.
-        // (#538's Browser, Terminal and Tasks icons stay off until those
-        // tools exist.)
+        // #538's rail: Artifacts then Tasks on top, Settings docked at the
+        // bottom. (#538's Browser and Terminal icons stay off until those
+        // tools exist.) Docked last-added-first, so Tasks goes in before
+        // Artifacts.
         var railSettingsButton = MakeRailButton("settings", "Settings");
         railSettingsButton.Dock = DockStyle.Bottom;
         railSettingsButton.Click += (_, _) => OpenSettings();
         toolRail.Controls.Add(railSettingsButton);
+        // The same window as the tray's "What I'm working on" (#1016).
+        var railTasksButton = MakeRailButton("tasks", "What I'm working on");
+        railTasksButton.Click += (_, _) => new SelfWorkForm(backendClient).Show();
+        toolRail.Controls.Add(railTasksButton);
         var railArtifactsButton = MakeRailButton("artifacts", "Artifacts");
         railArtifactsButton.Click += (_, _) => ShowArtifacts?.Invoke();
         toolRail.Controls.Add(railArtifactsButton);
