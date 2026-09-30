@@ -245,4 +245,21 @@ public class ChatViewTests
 
         Assert.Equal(view.ClientSize.Width - 24, view.Messages[0].Bounds.Right); // no room kept for a scroll bar
     }
+
+    // #1147: a long word breaks between text elements, never inside one.
+    // Width here is 10 per UTF-16 unit and a line holds 3 units, so a
+    // Substring-length break would cut every one of these.
+    [Theory]
+    [InlineData("\U0001F468‍\U0001F469‍\U0001F467‍\U0001F466\U0001F468‍\U0001F469‍\U0001F467‍\U0001F466",
+        "\U0001F468‍\U0001F469‍\U0001F467‍\U0001F466|\U0001F468‍\U0001F469‍\U0001F467‍\U0001F466")] // ZWJ family, wider than a line: one each
+    [InlineData("\U0001F1EF\U0001F1F5\U0001F1FA\U0001F1F8\U0001F1EC\U0001F1E7", "\U0001F1EF\U0001F1F5|\U0001F1FA\U0001F1F8|\U0001F1EC\U0001F1E7")] // flags
+    [InlineData("ééé", "é|é|é")] // combining accents
+    [InlineData("ab\U0001F600cd", "ab|\U0001F600c|d")] // a surrogate pair
+    [InlineData("こんにちは世界", "こんに|ちは世|界")] // Japanese
+    public void LongWordsBreakBetweenTextElements(string word, string expected)
+    {
+        var pieces = ChatView.BreakToWidth(word, s => s.Length * 10, 30).ToArray();
+
+        Assert.Equal(expected.Split('|'), pieces);
+    }
 }
