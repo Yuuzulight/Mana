@@ -20,6 +20,8 @@ over inherited ones -- or set before running):
   whisper.cpp decoding tuning knobs, see docs/speech_recognition_improvement_plan.md
 - WHISPER_SERVER_BIN, WHISPER_SERVER_PORT : the whisper-server kept loaded for
   transcription (default: next to WHISPER_BIN, port 8093); whisper-cli is the fallback
+- MANA_WHISPER_RELOAD : 1/0 forces whisper-server's model reload after each
+  request on or off (default: on for the CPU build, off for the CUDA build)
 - LLAMA_BIN : full path to llama.cpp/main executable (e.g. C:\llama.cpp\main.exe)
 - LLAMA_MODEL : full path to a GGUF model file, or an HF repo shorthand like user/model:Q4_K_M
 - TTS_PROVIDER : "cli", "kokoro", or "fish" (default: "fish",

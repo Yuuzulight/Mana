@@ -119,6 +119,22 @@ test("reuses the running server and waits for the reload before the next request
   assert.deepEqual(server.calls.requests.map((r) => path.basename(r.url)), ["inference", "load", "inference", "load"]);
 }));
 
+test("the CUDA build skips the reload; MANA_WHISPER_RELOAD forces it either way", quietly(async () => {
+  const routes = async (env, cuda) => {
+    const files = tempInstall();
+    if (cuda) fs.writeFileSync(path.join(path.dirname(files.server), "ggml-cuda.dll"), "");
+    const server = fakeServer();
+    const whisper = make(server, files, env);
+    await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
+    await whisper.transcribe(files.audio, { prompt: "", temperature: "0" });
+    return server.calls.requests.map((r) => path.basename(r.url)).join(",");
+  };
+  assert.equal(await routes({}, false), "inference,load,inference,load");
+  assert.equal(await routes({}, true), "inference,inference");
+  assert.equal(await routes({ MANA_WHISPER_RELOAD: "1" }, true), "inference,load,inference,load");
+  assert.equal(await routes({ MANA_WHISPER_RELOAD: "0" }, false), "inference,inference");
+}));
+
 test("restarts the server with the new thread count when a game starts or stops", quietly(async () => {
   const files = tempInstall();
   const server = fakeServer();
