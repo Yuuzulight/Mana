@@ -273,32 +273,44 @@ function detectSystemMemoryMb(totalmem = os.totalmem) {
     : null;
 }
 
+// #1086: VRAM the voice stack holds next to the LLM. TTS by provider (Kokoro
+// and the CLI run on CPU; GPT-SoVITS isn't measured yet); Qwen3-TTS's is
+// docs/qwen3_tts.md's resident figure. Whisper by model size, from
+// whisper.cpp's README memory table.
+const TTS_VRAM_MB = { fish: FISH_VRAM_MB, qwen3tts: 2765 };
+const WHISPER_VRAM_MB = { large: 3990, medium: 2150, small: 852, base: 388, tiny: 273 };
+
+function voiceVramMb({ ttsProvider, whisperModel }) {
+  const name = path.basename(whisperModel || "").toLowerCase();
+  const size = Object.keys(WHISPER_VRAM_MB).find((key) => name.includes(key));
+  return (TTS_VRAM_MB[ttsProvider] || 0) + (size ? WHISPER_VRAM_MB[size] : 0);
+}
+
 // Thresholds are deliberately simple: this is a starting-point suggestion,
-// not a hardware benchmark. "fast" keeps headroom for TTS/whisper alongside
-// the LLM on tighter cards; "quality" assumes enough room to prefer the 8B
-// tier by default.
-function recommendModelProfile({ vramMb, ramMb }) {
+// not a hardware benchmark. #1086: they apply to the VRAM left for the LLM
+// once TTS and Whisper (voiceMb) have theirs -- roughly weights plus a 16k
+// context: ~5GB for the 4B tier, ~8GB for 8B.
+function recommendModelProfile({ vramMb, ramMb, voiceMb = 0 }) {
   if (vramMb != null) {
-    const vramGb = (vramMb / 1024).toFixed(1);
-    if (vramMb < 8192) {
+    const llmMb = vramMb - voiceMb;
+    const detected = voiceMb
+      ? `Detected ~${(vramMb / 1024).toFixed(1)}GB GPU VRAM (via nvidia-smi), ~${(voiceMb / 1024).toFixed(1)}GB of it held by TTS and Whisper, leaving ~${(Math.max(llmMb, 0) / 1024).toFixed(1)}GB for the LLM.`
+      : `Detected ~${(vramMb / 1024).toFixed(1)}GB GPU VRAM (via nvidia-smi) for the LLM.`;
+    if (llmMb < 5120) {
       return {
         profile: "fast",
-        reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). Under 8GB, the fast/1.5B-class profile leaves headroom for TTS and Whisper running alongside the LLM.`,
+        reason: `${detected} Under 5GB, the fast/1.5B-class profile is what fits.`,
       };
     }
-    // nvidia-smi reports usable VRAM, which comes in a bit under a card's
-    // nominal size (driver/OS reservations) -- a real 16GB card often
-    // reports ~16000-16300MB, not >=16384. Cut at 15360 (15GB) so it still
-    // lands in "quality" instead of being silently under-recommended.
-    if (vramMb < 15360) {
+    if (llmMb < 8192) {
       return {
         profile: "default",
-        reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 8-15GB comfortably fits the default 4B-class profile.`,
+        reason: `${detected} 5-8GB comfortably fits the default 4B-class profile.`,
       };
     }
     return {
       profile: "quality",
-      reason: `Detected ~${vramGb}GB GPU VRAM (via nvidia-smi). 15GB+ comfortably fits the quality 8-14B-class profile.`,
+      reason: `${detected} 8GB+ fits the quality 8-14B-class profile.`,
     };
   }
 
@@ -433,7 +445,11 @@ function createModelManagement(options = {}) {
     if (!cachedRecommendation) {
       const vramMb = detectGpuVramMb(spawnSync);
       const ramMb = detectSystemMemoryMb(totalmem);
-      const { profile, reason } = recommendModelProfile({ vramMb, ramMb });
+      const voiceMb = voiceVramMb({
+        ttsProvider: options.ttsProvider || env.TTS_PROVIDER,
+        whisperModel: options.whisperModel || env.WHISPER_MODEL,
+      });
+      const { profile, reason } = recommendModelProfile({ vramMb, ramMb, voiceMb });
       cachedRecommendation = {
         profile,
         label: LLAMA_MODEL_PROFILES[profile].label,

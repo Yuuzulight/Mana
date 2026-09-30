@@ -2277,6 +2277,9 @@ function registerRoutes(app, upload, deps = {}) {
     createModelManagement({
       env: deps.env || process.env,
       modelSettingsStore,
+      // #1086: the recommendation subtracts what these hold in VRAM.
+      ttsProvider: TTS_PROVIDER,
+      whisperModel: whisperDiscovery.findWhisperModel({ env: deps.env || process.env }),
     });
 
   // llama-server normally starts lazily on the first chat reply. Desktop
@@ -2582,6 +2585,7 @@ function registerRoutes(app, upload, deps = {}) {
         console.warn("Memory graph size check failed:", e?.message || e);
       }
       const result = await doctor({
+        modelManagement, // #1086: same recommendation as /models/status
         fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
         sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
         promptComposition: getMostRecentComposition(),
@@ -2609,6 +2613,7 @@ function registerRoutes(app, upload, deps = {}) {
     doctor: deps.doctor || runDoctorChecksAsync,
     notifyTray: deps.notifyTray || notifyTray,
     doctorOptions: () => ({
+      modelManagement,
       fishTtsWarmup: ttsRuntime.getFishWarmupStatus(),
       sessionSearchVectorEnabled: sessionSearchIndex.vectorEnabled(),
       memoryVault: memoryVaultStatus(),
