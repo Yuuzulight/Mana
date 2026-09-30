@@ -481,11 +481,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("Try a PR...", null, (_, _) => PromptTryPr());
         var backToMainItem = new ToolStripMenuItem("Back to main", null, (_, _) => _ = RunLauncherScriptAsync("try-pr.ps1", ["-Main"], "Going back to main", "Mana's switch back to main failed", "try-pr.log"));
         menu.Items.Add(backToMainItem);
+        menu.Items.Add("Revert a merged PR...", null, (_, _) => PromptRevertPr()); // #1011
         menu.Opening += (_, _) =>
         {
-            var trying = TryingPr(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
-            backToMainItem.Visible = trying is not null;
-            backToMainItem.Text = $"Back to main (trying PR #{trying})";
+            var running = RunningOffMain(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
+            backToMainItem.Visible = running is not null;
+            backToMainItem.Text = $"Back to main (running {running})";
         };
         menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
         return menu;
@@ -1110,11 +1111,40 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private Task RunUpdateScriptAsync() =>
         RunLauncherScriptAsync("update-mana.ps1", ["-Now"], "Updating Mana", "Mana's update failed", "update.log");
 
-    // #1010: the PR a "Try a PR" left running (bin/trying-pr), or null on main.
-    internal static int? TryingPr(string launcherDir)
+    // #1010: what try-pr.ps1 left running instead of main ("PR #1020", or
+    // #1011's "the previous build"), from bin/trying-pr; null on main.
+    internal static string? RunningOffMain(string launcherDir)
     {
         var marker = Path.Combine(launcherDir, "bin", "trying-pr");
-        return File.Exists(marker) && int.TryParse(File.ReadAllText(marker).Trim(), out var pr) ? pr : null;
+        var running = File.Exists(marker) ? File.ReadAllText(marker).Trim() : "";
+        return running.Length > 0 ? running : null;
+    }
+
+    // #1011: a merged PR broke something -- node-bot opens its issue and a
+    // revert PR, then the running build rolls back to the previous one.
+    private async void PromptRevertPr()
+    {
+        using var dialog = new TextPromptDialog("Revert a merged PR", "Merged PR number to revert:", "");
+        if (dialog.ShowDialog() != DialogResult.OK || !int.TryParse(dialog.Value.Trim().TrimStart('#'), out var pr) || pr <= 0)
+        {
+            return;
+        }
+        ManaRevertResult result;
+        try
+        {
+            result = await backendClient.RevertPrAsync(pr);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            result = new ManaRevertResult { Error = ex.Message };
+        }
+        if (result.PrUrl is null || result.MergeCommit is null)
+        {
+            ShowBalloon($"Mana couldn't revert #{pr}", result.Error ?? "No revert PR came back.", ToolTipIcon.Error);
+            return;
+        }
+        chatLog.AppendManaMessage($"I opened {result.PrUrl} to revert #{pr}, and I'm rolling back to the previous build.");
+        await RunLauncherScriptAsync("try-pr.ps1", ["-Previous", "-Without", result.MergeCommit], "Rolling back to the previous build", "Mana couldn't roll back", "try-pr.log");
     }
 
     private void PromptTryPr()
