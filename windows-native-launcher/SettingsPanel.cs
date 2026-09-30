@@ -338,16 +338,23 @@ internal sealed class SettingsPanel : UserControl
     internal static bool MatchesSearch(string query, params string?[] fields) =>
         string.IsNullOrWhiteSpace(query) || fields.Any(f => f?.Contains(query.Trim(), StringComparison.OrdinalIgnoreCase) == true);
 
-    private void OpenPluginGuide()
+    private void OpenPluginGuide() => OpenRepoDoc("plugins", "README.md");
+
+    // #1127: a Mana doc (a path under the repo), drawn by Folio in the chat
+    // window's tool panel -- or its own window when nothing set OpenDoc.
+    public Action<string>? OpenDoc { get; set; }
+
+    private void OpenRepoDoc(params string[] parts)
     {
-        var guide = Path.Combine(ManaApplicationContext.FindRootDirectory(), "plugins", "README.md");
-        try
+        var root = ManaApplicationContext.FindRootDirectory();
+        var doc = Path.Combine([root, .. parts]);
+        if (OpenDoc is { } open)
         {
-            Process.Start(new ProcessStartInfo(guide) { UseShellExecute = true });
+            open(doc);
         }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        else
         {
-            MessageBox.Show(this, $"Couldn't open {guide}: {ex.Message}", "Plugins", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DocsPanel.OpenWindow(root, doc);
         }
     }
 
@@ -3421,12 +3428,16 @@ internal sealed class SettingsPanel : UserControl
             () => new { kind = "calendar", url = calendarUrlBox.Text.Trim(), user = calendarUserBox.Text.Trim(), password = calendarPasswordBox.Text }));
         layout.Controls.Add(new Label
         {
-            Text = "Mana reads these only when I ask, and adds a calendar event only after I approve it. An iCal feed (Google's secret address, Outlook's published calendar) is read-only: leave its Username blank. Steps per provider: docs/mail_calendar_setup.md.",
+            Text = "Mana reads these only when I ask, and adds a calendar event only after I approve it. An iCal feed (Google's secret address, Outlook's published calendar) is read-only: leave its Username blank.",
             AutoSize = true,
             MaximumSize = new Size(520, 0),
             ForeColor = DarkTheme.Muted,
             Margin = new Padding(8),
         });
+        var guide = new Button { Text = "Setup steps per provider", AutoSize = true, Margin = new Padding(8, 0, 8, 8) };
+        DarkTheme.ApplyButton(guide);
+        guide.Click += (_, _) => OpenRepoDoc("docs", "mail_calendar_setup.md"); // #1127
+        layout.Controls.Add(guide);
         return new TabPage("Calendar & Email") { Controls = { layout } };
     }
 
