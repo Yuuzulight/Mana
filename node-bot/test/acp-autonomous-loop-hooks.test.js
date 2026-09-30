@@ -171,3 +171,117 @@ test("rollback-on-failure after a file_write overwrite restores that write's own
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(restored, ["snap-this-write"]);
 });
+
+// ---- #838 step 4: adversarial review of file_write, and one prompt ----
+
+// Fakes only the write target, so the real pending-request files still land
+// in the approval dir.
+function fakeTarget(t, target) {
+  const saved = {
+    stat: fs.promises.stat,
+    readFile: fs.promises.readFile,
+    writeFile: fs.promises.writeFile,
+    mkdir: fs.promises.mkdir,
+  };
+  const writes = [];
+  const hit = (p) => String(p).includes(target);
+  fs.promises.stat = async (p, ...rest) => (hit(p) ? { isFile: () => true, size: 3 } : saved.stat(p, ...rest));
+  fs.promises.readFile = async (p, ...rest) => (hit(p) ? "old" : saved.readFile(p, ...rest));
+  fs.promises.writeFile = async (p, content, ...rest) => (hit(p) ? writes.push(content) : saved.writeFile(p, content, ...rest));
+  fs.promises.mkdir = async (p, ...rest) => (hit(p) ? undefined : saved.mkdir(p, ...rest));
+  t.after(() => Object.assign(fs.promises, saved));
+  return writes;
+}
+
+function approvalEnv(t, requireApproval) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-pb-review-"));
+  const saved = {
+    ALLOW_FILE_WRITE: process.env.ALLOW_FILE_WRITE,
+    FILE_WRITE_REQUIRE_APPROVAL: process.env.FILE_WRITE_REQUIRE_APPROVAL,
+    MANA_PENDING_WRITES_DIR: process.env.MANA_PENDING_WRITES_DIR,
+  };
+  Object.assign(process.env, { ALLOW_FILE_WRITE: "1", FILE_WRITE_REQUIRE_APPROVAL: requireApproval, MANA_PENDING_WRITES_DIR: dir });
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return dir;
+}
+
+async function approveNext(dir) {
+  const pendingFile = await waitForPendingFile(dir);
+  const payload = JSON.parse(fs.readFileSync(path.join(dir, pendingFile), "utf8"));
+  fs.writeFileSync(path.join(dir, pendingFile.replace(/\.json$/, ".approved.json")), JSON.stringify({ approver: "test" }));
+  // Wait for the loop to consume (archive) it before the next one appears.
+  for (let i = 0; i < 100 && fs.existsSync(path.join(dir, pendingFile)); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return payload;
+}
+
+test("a refuted source-file write asks, even with approved:true and approvals off", async (t) => {
+  const dir = approvalEnv(t, "0");
+  const writes = fakeTarget(t, "pb-review.js");
+  const reviewed = [];
+  const reviewWrite = async (input) => {
+    reviewed.push(input);
+    return { verdict: "refuted", failingCase: "an empty list crashes it", reason: "" };
+  };
+
+  const running = executeAutonomousStep(
+    step("file_write", { path: "src/pb-review.js", content: "new", mode: "overwrite", approved: true }),
+    "pb-review",
+    { reviewWrite, hooksStore: hooksWith(), snapshotStore: { recordSnapshot: () => ({ id: "s" }) } },
+  );
+  const pending = await approveNext(dir);
+  const res = await running;
+
+  assert.deepEqual(reviewed, [{ path: path.join("src", "pb-review.js"), before: "old", after: "new", summary: "file_write (overwrite)" }]);
+  assert.equal(pending.adversarialReview.failingCase, "an empty list crashes it");
+  assert.equal(res.results[0].status, "ok");
+  assert.deepEqual(writes, ["new"]);
+});
+
+test("a write the review holds, or a non-source file, needs no extra approval", async (t) => {
+  approvalEnv(t, "0");
+  fakeTarget(t, "pb-review");
+  const reviewed = [];
+  const reviewWrite = async (input) => {
+    reviewed.push(input.path);
+    return { verdict: "holds", failingCase: "", reason: "" };
+  };
+  const options = { reviewWrite, hooksStore: hooksWith(), snapshotStore: { recordSnapshot: () => ({ id: "s" }) } };
+
+  const js = await executeAutonomousStep(step("file_write", { path: "src/pb-review.js", content: "x" }), "pb-review", options);
+  const txt = await executeAutonomousStep(step("file_write", { path: "src/pb-review.txt", content: "x" }), "pb-review", options);
+
+  assert.equal(js.results[0].status, "ok");
+  assert.equal(txt.results[0].status, "ok");
+  assert.deepEqual(reviewed, [path.join("src", "pb-review.js")], "only the source file is reviewed");
+});
+
+test("one prompt: an approved hook ask is the write's approval, unless the review refutes it", async (t) => {
+  const dir = approvalEnv(t, "1");
+  fakeTarget(t, "pb-review.js");
+  let verdict = "holds";
+  const options = {
+    reviewWrite: async () => ({ verdict, failingCase: verdict === "refuted" ? "breaks on null" : "", reason: "" }),
+    hooksStore: hooksWith({ phase: "pre", action: "ask", toolName: "write", reason: "check writes" }),
+    snapshotStore: { recordSnapshot: () => ({ id: "s" }) },
+  };
+  const write = () => executeAutonomousStep(step("file_write", { path: "src/pb-review.js", content: "x" }), "pb-review", options);
+
+  const once = write();
+  assert.equal((await approveNext(dir)).kind, "hook-ask");
+  assert.equal((await once).results[0].status, "ok", "no second prompt after the approved ask");
+
+  verdict = "refuted";
+  const twice = write();
+  assert.equal((await approveNext(dir)).kind, "hook-ask");
+  const second = await approveNext(dir);
+  assert.equal(second.adversarialReview.failingCase, "breaks on null");
+  assert.equal((await twice).results[0].status, "ok");
+});

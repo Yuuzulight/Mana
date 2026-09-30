@@ -9,6 +9,7 @@ const { createSnapshotStore } = require("./snapshot-store");
 const { previewRestore } = require("./ai/snapshot-tool-source");
 const { execFile } = require("child_process");
 const { createHooksStore, applyInputRules, runPostCommandHook } = require("./hooks-store");
+const { isReviewableFile } = require("./ai/adversarial-verifier");
 const {
   createScratchWorkspaceCopy,
   removeScratchWorkspaceCopy,
@@ -371,6 +372,9 @@ const defaultSnapshotStore = createSnapshotStore({});
 // #838: the same hooks.json as Pipeline A (read on every call, so a rule
 // edited through /hooks applies from the next action).
 const defaultHooksStore = createHooksStore({});
+// #838: the adversarial review is one 200-token call on an already-loaded
+// model; past this the write goes on unreviewed.
+const REVIEW_TIMEOUT_MS = 60 * 1000;
 
 // #838: a hook-ask pending request shows the call's args, but a
 // file_write's content can be a whole file -- long strings are cut to the
@@ -388,6 +392,9 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
   const snapshotStore = options.snapshotStore || defaultSnapshotStore;
   const hooksStore = options.hooksStore || defaultHooksStore;
   const execFileFn = options.execFile || execFile;
+  // #838: ({path, before, after, summary}) => review | null -- the backend's
+  // adversarial verifier (acp-backend-bridge.js's reviewEdit). Optional.
+  const reviewWrite = options.reviewWrite || null;
   const makeScratchCopy =
     options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
   const removeScratchCopy =
@@ -440,7 +447,8 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
 
   // #838: one action's dispatch -- pushes its result onto `results`. The
   // hooks below wrap it in one place instead of in every case.
-  async function runAction(tool, args) {
+  // askApproved: a hook's ask for this call was approved (#838 decision 4).
+  async function runAction(tool, args, { askApproved = false } = {}) {
     if (tool === "local_retrieve") {
       const query = args && args.query ? String(args.query) : "";
       console.error(
@@ -641,18 +649,47 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
           recursive: true,
         });
 
-        // If approval is required, and action not pre-approved via args.approved, create pending request and wait
+        // #838 decision 3: a source-file write gets the adversarial review
+        // first. It only changes anything when it refutes the write; an
+        // unreachable backend or a failed review leaves the write as it was.
+        const relativePath = path.relative(REPO_ROOT, resolvedPath);
+        let review = null;
+        if (reviewWrite && isReviewableFile(relativePath)) {
+          try {
+            const before = await fs.promises.readFile(resolvedPath, "utf8").catch(() => "");
+            // A backend that never answers mustn't hang the step: no review.
+            review = await Promise.race([
+              reviewWrite({
+                path: relativePath,
+                before,
+                after: mode === "append" ? before + content : content,
+                summary: `file_write (${mode})`,
+              }),
+              new Promise((resolve) => setTimeout(() => resolve(null), REVIEW_TIMEOUT_MS).unref()),
+            ]);
+          } catch (e) {
+            console.warn("file_write adversarial review failed:", e?.message || e);
+          }
+        }
+        const refuted = review?.verdict === "refuted";
+
+        // If approval is required, and action not pre-approved via args.approved, create pending request and wait.
+        // #838: a refuted write always asks, whatever FILE_WRITE_REQUIRE_APPROVAL,
+        // args.approved or an approved hook ask say (Q16); otherwise an
+        // approved hook ask already was this write's approval (decision 4).
         const { requireApproval: approvalConfigured } = getApprovalConfig();
-        const requireApproval = approvalConfigured && !(args && args.approved === true);
+        const requireApproval =
+          refuted || (approvalConfigured && !(args && args.approved === true) && !askApproved);
         const approvalReqId = makeApprovalId();
         const preview = String(content).slice(0, 2048);
         const approvalReqPayload = {
           id: approvalReqId,
-          path: path.relative(REPO_ROOT, resolvedPath),
+          path: relativePath,
           requestedPath: resolvedPath,
           mode,
           sessionId: sessionId || null,
           preview,
+          ...(refuted ? { adversarialReview: review } : {}),
           createdAt: new Date().toISOString(),
         };
         const gate = await runApprovalGate("file_write", approvalReqId, approvalReqPayload, requireApproval);
@@ -1143,6 +1180,7 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
       continue;
     }
     const askRule = preRules.find((rule) => rule.action === "ask");
+    let askApproved = false;
     if (askRule) {
       // Always a human: FILE_WRITE_REQUIRE_APPROVAL and args.approved don't
       // apply to a hook's own ask.
@@ -1161,10 +1199,11 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
         continue;
       }
       await archiveOutcome(askId, "approved", gate.approvalMeta, gate.approvalPayload);
+      askApproved = true;
     }
 
     const produced = results.length;
-    await runAction(tool, args);
+    await runAction(tool, args, { askApproved });
 
     // #838: post rules, only after a call that actually succeeded -- never
     // after a denied, rejected or failed one. Fire-and-forget, as in
@@ -1227,7 +1266,11 @@ async function createAcpAutonomousLoop(options = {}) {
           return await executeAutonomousStep(
             params.modelReply,
             params.sessionId,
-            { testRunner: options.testRunner },
+            {
+              testRunner: options.testRunner,
+              // #838: file_write's adversarial review goes through the backend.
+              reviewWrite: options.backendBridge?.reviewEdit,
+            },
           );
         } catch (e) {
           return { status: "error", error: String(e?.message || e) };
