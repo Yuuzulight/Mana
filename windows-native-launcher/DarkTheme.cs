@@ -12,10 +12,11 @@ namespace Mana.NativeLauncher;
 // theme-tokens.css), applied here to the real, backend-wired controls that
 // actually shipped instead of #538's placeholder ones. Deliberately keeps
 // every control's real Win32 type (ListView, TabControl, Button, Form) --
-// no FormBorderStyle.None/custom-drawn chrome, so window drag/resize/snap,
-// keyboard navigation and screen readers all keep working exactly as the
-// OS provides them; #538's own custom chrome needed a stateful AllowExit
-// escape hatch for exactly this reason (see PR #538's own review).
+// no FormBorderStyle.None chrome, so window drag/resize/snap, keyboard
+// navigation and screen readers all keep working exactly as the OS provides
+// them; #538's own custom chrome needed a stateful AllowExit escape hatch
+// for exactly this reason (see PR #538's own review). The chat window's
+// Mana-preset title strip keeps the native frame (SessionListForm.Caption.cs).
 internal static class DarkTheme
 {
     // #576: mutable (not readonly) so ApplyPreset can swap the whole
@@ -321,7 +322,19 @@ internal static class DarkTheme
         {
             DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeLegacy, ref useDark, sizeof(int));
         }
+        // Re-asks the window for its frame: the chat window draws its own
+        // title strip in the Mana preset only (SessionListForm.Caption.cs).
+        SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
     }
+
+    private const uint SwpNoSize = 0x1;
+    private const uint SwpNoMove = 0x2;
+    private const uint SwpNoZOrder = 0x4;
+    private const uint SwpNoActivate = 0x10;
+    private const uint SwpFrameChanged = 0x20;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
 
     public static void ApplyListView(ListView list)
     {

@@ -17,10 +17,11 @@ namespace Mana.NativeLauncher;
 // layout this window used before -- see the comparison review linked
 // from this PR's description for why #538's own logic wasn't kept
 // alongside its layout. One real, deliberate departure from #538's own
-// version: no FormBorderStyle.None/custom-drawn titlebar (this keeps the
-// OS's native drag/resize/snap and keyboard/screen-reader behavior,
-// which #538's version gave up and then needed a stateful AllowExit
-// escape hatch to work around -- see DarkTheme.ApplyForm). The rail's
+// version: no FormBorderStyle.None titlebar (that gave up the OS's native
+// drag/resize/snap and keyboard/screen-reader behavior, and then needed a
+// stateful AllowExit escape hatch to work around -- see DarkTheme.ApplyForm).
+// The Mana preset's glass title strip (SessionListForm.Caption.cs) keeps the
+// native frame and hands all of that back to Windows. The rail's
 // Browser/Terminal/Artifacts/Tasks icons are kept as #538 had them --
 // none of those tools exist in this app yet, so each opens the same
 // slide-out panel saying so directly, rather than pretending to be a
@@ -30,7 +31,7 @@ namespace Mana.NativeLauncher;
 // inside its main app window) -- created once and reused (Hide, not
 // Close) by ManaApplicationContext, same lazy-create-and-reuse shape as
 // QuickEntryForm.
-internal sealed class SessionListForm : Form
+internal sealed partial class SessionListForm : Form
 {
     private readonly ManaBackendClient backendClient;
     private readonly VoiceLoop voiceLoop;
