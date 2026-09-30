@@ -383,9 +383,7 @@ test("#1168: ad and tracker domains are always blocked and counted per page, whi
   assert.equal(await outcome("https://www.googletagmanager.com/gtm.js"), "abort");
   assert.equal(await outcome("https://site.test/app.js"), "continue");
   assert.equal(await outcome("https://site.test/logo.png", "image"), "continue"); // watched
-  page.listeners.pageerror(new Error("adsbygoogle is not defined"));
-
-  // The page is empty and threw: the session flags what was blocked.
+  // The page is empty: the session flags what was blocked.
   page.ariaSnapshot = async () => "";
   page.evaluate = async (fn) => (fn.name === "extractTextInPage" ? "" : null);
   page._url = "https://site.test/";

@@ -24,8 +24,9 @@ browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
   Browser panel is on screen, for its screenshot.
 - Ad and tracker domains (`ad-hosts.js`, a short hand-kept list) are always
   blocked (#1168): under site isolation each cross-site ad iframe is its own
-  renderer. When ads were blocked and the page looks broken (script errors,
-  next to nothing to read or use, or an action timing out), her result and
+  renderer. When ads were blocked and the page looks broken (next to
+  nothing to read or use, or an action or page load timing out; script
+  errors alone don't count, #1179), her result and
   the Browser panel say the site may need them, with "Open in my browser".
   She doesn't retry without blocking.
 - Closes after 5 idle minutes, and never starts (or closes at once) while

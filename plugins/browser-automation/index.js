@@ -112,13 +112,11 @@ async function launch(deps, options) {
 // One tab: its page, with the resource blocking and health counters, and
 // the session that reads and acts on it.
 async function setUpTab(page) {
-  const health = { blockedAds: 0, pageErrors: 0 };
-  // #1168: what the current page lost to ad blocking, and its script
-  // errors -- together they say the site may need what was blocked.
+  const health = { blockedAds: 0 };
+  // #1168: what the current page lost to ad blocking.
   page.on("framenavigated", (frame) => {
-    if (frame === page.mainFrame()) Object.assign(health, { blockedAds: 0, pageErrors: 0 });
+    if (frame === page.mainFrame()) health.blockedAds = 0;
   });
-  page.on("pageerror", () => (health.pageErrors += 1));
   // Images, video and fonts only while the rail's Browser panel is
   // watching, for its screenshot; she reads and acts without them. Ad
   // and tracker domains never (#1168).
