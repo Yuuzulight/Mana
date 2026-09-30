@@ -98,6 +98,7 @@ test("a coding test run shows in the shared feed with its source", async () => {
 test("routes need the admin key; list, get, stop and stream", async () => {
   const feed = createTerminalFeed();
   const app = express();
+  app.use(express.json());
   terminalCapability.registerRoutes(app, {
     terminalFeed: feed,
     checkAdminAuth: (req, res) => req.headers["x-admin-token"] === "k" || (res.status(401).json({}), false),
@@ -123,6 +124,22 @@ test("routes need the admin key; list, get, stop and stream", async () => {
     assert.deepEqual(stopped, { stopped: true });
     assert.equal((await fetch(`${base}/terminal/runs/999`, auth)).status, 404);
     assert.equal((await (await fetch(`${base}/terminal/runs/${id}`, auth)).json()).output, "line\n");
+
+    // The editor agent's batch: recorded, never started, not stoppable here.
+    const batch = [
+      { type: "start", run: { id: "1", source: "editor", command: "npm test", cwd: "D:\\ws" } },
+      { type: "end", id: "1", exitCode: 0 },
+    ];
+    const post = (body, headers) =>
+      fetch(`${base}/terminal/events`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await post({ events: batch }, {})).status, 401);
+    assert.equal((await post({ events: batch }, auth.headers)).status, 200);
+    const [editor] = (await (await fetch(`${base}/terminal/runs`, auth)).json()).runs;
+    assert.deepEqual([editor.source, editor.command, editor.exitCode, editor.stoppable], ["editor", "npm test", 0, false]);
   });
 });
 

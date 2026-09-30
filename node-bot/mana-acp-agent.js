@@ -882,11 +882,21 @@ if (require.main === module) {
     );
   } else if (process.argv.includes("--acp")) {
     // #1121: the commands this agent runs show in the chat rail's Terminal
-    // tool. In order, one at a time; a backend that isn't up just misses them.
+    // tool. Batched once a second (a verbose test run prints hundreds of
+    // lines; one request each would trip the backend's rate limit), in
+    // order; a backend that isn't up just misses them.
     const bridge = createAcpBackendBridge({ backendUrl: process.env.MANA_BACKEND_URL });
+    let queue = [];
+    let flushTimer = null;
     let sent = Promise.resolve();
     terminalFeed.subscribe((event) => {
-      sent = sent.then(() => bridge.reportTerminalEvent(event)).catch(() => {});
+      queue.push(event);
+      flushTimer ??= setTimeout(() => {
+        const events = queue;
+        queue = [];
+        flushTimer = null;
+        sent = sent.then(() => bridge.reportTerminalEvents(events)).catch(() => {});
+      }, 1000);
     });
     createStdioAcpServer();
   } else {

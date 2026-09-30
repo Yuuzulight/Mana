@@ -106,9 +106,9 @@ function createAcpBackendBridge({
     return payload.reply;
   }
 
-  // #1121: a terminal-feed.js event for the chat rail's Terminal tool.
-  function reportTerminalEvent(event) {
-    return request("POST", "/terminal/events", event);
+  // #1121: terminal-feed.js events for the chat rail's Terminal tool.
+  function reportTerminalEvents(events) {
+    return request("POST", "/terminal/events", { events });
   }
 
   return {
@@ -121,7 +121,7 @@ function createAcpBackendBridge({
     listWorkspaceFiles,
     readWorkspaceFile,
     reply,
-    reportTerminalEvent,
+    reportTerminalEvents,
     request,
     reviewEdit,
     setWorkspace,
