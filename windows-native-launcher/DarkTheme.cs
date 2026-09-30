@@ -50,6 +50,11 @@ internal static class DarkTheme
     // #688: bumped on every palette change, for anything that caches a
     // rendering of the theme (ChatView's glow).
     public static int Version { get; private set; }
+
+    // #1141: raised after a live switch (ApplyPresetLive), for what draws
+    // the theme into content of its own (ArtifactView's code pages).
+    public static event Action? Changed;
+
     public static Color OnAccent
     {
         get
@@ -198,6 +203,7 @@ internal static class DarkTheme
                     }
                 }
             }
+            Changed?.Invoke();
         }
         finally
         {
