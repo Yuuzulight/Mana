@@ -28,6 +28,16 @@ public class AvatarMotionPlayerTests
         Assert.Null(AvatarMotionPlayer.GroupForState(AvatarState.Sad, groups));
     }
 
+    // hiyori_pro has no listening clip, so she keeps her idle loop (the pose
+    // is layered procedurally); a model with a Listen group plays it.
+    [Fact]
+    public void Listening_UsesAListenGroupElseKeepsTheIdleLoop()
+    {
+        string[] hiyori = ["Idle", "Flick", "FlickDown", "FlickUp", "Tap", "Tap@Body", "Flick@Body"];
+        Assert.Null(AvatarMotionPlayer.GroupForState(AvatarState.Listening, hiyori));
+        Assert.Equal("listen", AvatarMotionPlayer.GroupForState(AvatarState.Listening, ["Idle", "listen"]));
+    }
+
     [Fact]
     public void Idle_PlaysTheIdleGroup_CyclingClipsAsEachEnds_WithACrossfade()
     {
@@ -67,6 +77,14 @@ public class AvatarMotionPlayerTests
         player.Update(1.5);
         Assert.Same(tap, player.CurrentMotion); // IDLE priority: let the reaction finish
         player.Update(3.01);
+        Assert.Same(idle, player.CurrentMotion);
+
+        // Listening (no clip of its own) returns to idle the same way.
+        player.SetState(AvatarState.Excited, 4.0);
+        player.SetState(AvatarState.Listening, 4.5);
+        player.Update(4.5);
+        Assert.Same(tap, player.CurrentMotion);
+        player.Update(6.01);
         Assert.Same(idle, player.CurrentMotion);
     }
 
@@ -124,6 +142,13 @@ public class AvatarMotionPlayerTests
         player.Update(5.0);
         Assert.Same(spirit, player.CurrentMotion);
         player.Update(6.01);
+        Assert.Same(idle, player.CurrentMotion);
+
+        // Listening is at rest with the mic on: "idle" ones still fire.
+        player.SetState(AvatarState.Listening, 6.5);
+        player.Update(10.0);
+        Assert.Same(spirit, player.CurrentMotion);
+        player.Update(11.01);
         Assert.Same(idle, player.CurrentMotion);
 
         // Not while talking (not in its states).

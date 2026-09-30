@@ -129,10 +129,9 @@ internal sealed class VoiceSegmentLogEntry
 // SPEECH_DEBUG_LOG_PATH), one line per closed VAD segment, so a "Mana
 // didn't hear me" report can be diagnosed after the fact -- the live run
 // that motivated this dropped every segment in the #342 acoustic
-// pre-filter without a trace. Unlike Electron's it's on by default (that
-// silent failure is exactly what it exists to catch); it holds the user's
-// own transcripts, so it stays local, is capped at MaxBytes plus one
-// rotated ".1" file, and MANA_SPEECH_DEBUG=0 turns it off.
+// pre-filter without a trace. It holds my own transcripts, so like
+// Electron's it's off unless MANA_SPEECH_DEBUG=1, stays local, and is
+// capped at MaxBytes plus one rotated ".1" file.
 internal static class VoiceDebugLog
 {
     internal static readonly string DefaultPath = Path.Combine(
@@ -183,7 +182,7 @@ internal static class VoiceDebugLog
 
     private static void Write(Func<string> format, string? path, long maxBytes)
     {
-        if (Environment.GetEnvironmentVariable("MANA_SPEECH_DEBUG") != "0")
+        if (Environment.GetEnvironmentVariable("MANA_SPEECH_DEBUG") == "1")
         {
             WriteLine(format, path ?? DefaultPath, maxBytes);
         }
