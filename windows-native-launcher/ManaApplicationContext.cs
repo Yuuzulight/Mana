@@ -218,7 +218,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
             glanceTimer.Start();
         }
-        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog) { ShowArtifacts = ShowArtifactViewer };
+        sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog, artifactViewer);
+        artifactViewer.CurrentSessionId = () => voiceLoop.CurrentSessionId; // #1120
         // Creating the first form installed WinForms' context on this (UI)
         // thread; RunOnUi posts to it.
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
