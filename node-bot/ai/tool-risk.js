@@ -62,9 +62,21 @@ const BUILTIN_TIERS = {
   reminder__set: "read",
   reminder__list: "read",
   reminder__cancel: "read",
+  // #906: only reach the mail/calendar server I set up in Settings, and
+  // change nothing there (read-only mailbox, BODY.PEEK).
+  email__recent: "read",
+  email__search: "read",
+  email__read: "read",
+  calendar__events: "read",
+  calendar__add_event: "write",
   // #911 (ai/desktop-tool-source.js): the launcher only focuses a window
-  // that's already open, and only opens Start-menu apps.
+  // that's already open, and only opens Start-menu apps. Switching the audio
+  // output and moving files are "write": they ask first.
   desktop__focus_app: "read",
+  desktop__list_audio_outputs: "read",
+  desktop__set_audio_output: "write",
+  desktop__list_folder: "read",
+  desktop__move_files: "write",
   desktop__media: "low",
   desktop__set_volume: "low",
   desktop__open_app: "low",
@@ -83,7 +95,8 @@ const BUILTIN_TIERS = {
 };
 
 // Built-ins that already ask through the approval gate themselves
-// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests, browser-
+// (memory-write, skill-write/skill-run, snapshot-restore, coding-run-tests,
+// calendar-add-event, browser-
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
@@ -92,6 +105,7 @@ const SELF_GATED = new Set([
   "skill__run",
   "snapshot__restore",
   "coding__run_tests",
+  "calendar__add_event",
   "browser_automation__navigate",
   "browser_automation__click",
   "browser_automation__type",
@@ -442,9 +456,15 @@ function bindCall(name, args, overrides = {}) {
   return { digest, cwd, executables };
 }
 
-function describeCall(name, risk) {
+// #911: a call without a command line shows its arguments, so approving
+// desktop__set_audio_output says which device.
+function describeCall(name, risk, args) {
   const parts = [`${name} (${risk.tier})`];
   if (risk.command) parts.push(`runs: ${risk.command.slice(0, 200)}`);
+  else if (args && typeof args === "object" && Object.keys(args).length) {
+    const json = JSON.stringify(args);
+    parts.push(`with ${json.length > 300 ? `${json.slice(0, 300)}...` : json}`);
+  }
   if (risk.cwd) parts.push(`in ${risk.cwd}`);
   if (risk.reasons.length) parts.push(`destructive: ${risk.reasons.join(", ")}`);
   if (risk.hosts.length) parts.push(`will contact ${risk.hosts.join(", ")}`);
@@ -483,7 +503,7 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
   async function ask(name, args, risk) {
     const binding = risk.command ? bindCall(name, args, bindingDeps) : null;
     const outcome = await approvalGate.requestApproval(`tool-${risk.tier}`, {
-      summary: describeCall(name, risk),
+      summary: describeCall(name, risk, args),
       payload: { name, args, ...(binding ? { digest: binding.digest } : {}) },
       scanText: risk.command || undefined,
       grantKey: binding ? `tool-exec:${binding.digest}` : undefined,

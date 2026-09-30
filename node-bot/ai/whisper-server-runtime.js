@@ -59,7 +59,8 @@ function createWhisperServer(options = {}) {
     sleep: options.sleep,
   });
 
-  // A request in flight, and the model reload that follows each one.
+  // A request in flight, and the model reload that follows each one (on
+  // the CPU build, see reloadsAfterEachRequest).
   let busy = false;
   let reset = Promise.resolve();
 
@@ -81,6 +82,17 @@ function createWhisperServer(options = {}) {
     if (env.NODE_ENV === "test" || env.NODE_TEST_CONTEXT) return false;
     const bin = serverBin();
     return Boolean(bin && findModel() && fs.existsSync(bin));
+  }
+
+  // #993: the drift that the reload in transcribe() fixes is the CPU
+  // build's. Over 288-432 back-to-back requests per run, the CPU build
+  // without reloads changed the text of 59 of 144 clip/prompt pairs, the
+  // CUDA build none (turbo and base, -l en and auto). So the CUDA build
+  // (ggml-cuda.dll next to whisper-server) skips the reload, ~650 ms with
+  // turbo. MANA_WHISPER_RELOAD=1/0 forces it either way.
+  function reloadsAfterEachRequest() {
+    if (env.MANA_WHISPER_RELOAD) return env.MANA_WHISPER_RELOAD !== "0";
+    return !fs.existsSync(path.join(path.dirname(serverBin()), "ggml-cuda.dll"));
   }
 
   // The transcript, or null (not installed, failed to start, request
@@ -113,13 +125,15 @@ function createWhisperServer(options = {}) {
       // ("(singing in foreign language)"). Reloading the model (~200 ms,
       // after this transcript is on its way) makes every request match a
       // fresh whisper-cli run; the next request waits for it.
-      const load = new FormData();
-      load.append("model", findModel());
-      reset = fetchImpl(`${baseUrl()}/load`, {
-        method: "POST",
-        body: load,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      }).catch(() => {});
+      if (reloadsAfterEachRequest()) {
+        const load = new FormData();
+        load.append("model", findModel());
+        reset = fetchImpl(`${baseUrl()}/load`, {
+          method: "POST",
+          body: load,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        }).catch(() => {});
+      }
       // One line per segment; a segment can end mid-word ("Genki\nami").
       return body.text.replace(/\n/g, "").trim();
     } catch (e) {
