@@ -5,7 +5,9 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createApp, sweepStaleTmpFiles } = require("../server");
-const { withServer } = require("./helpers");
+const { withServer, useTestAdminToken } = require("./helpers");
+
+const fetch = useTestAdminToken();
 
 async function gone(files) {
   for (let i = 0; i < 50 && files.some((f) => fs.existsSync(f)); i += 1) {
