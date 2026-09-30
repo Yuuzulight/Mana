@@ -1,5 +1,11 @@
 import { App, Notice, Plugin, PluginSettingTab, Setting, normalizePath } from "obsidian";
-import { fetchManaMemory, fetchManaMemoryNotes } from "./mana-client.js";
+import {
+  fetchManaMemory,
+  fetchManaMemoryNotes,
+  isManaOwnedPath,
+  withoutFactNotes,
+  withoutKeyFacts,
+} from "./mana-client.js";
 
 interface ManaMemorySyncSettings {
   serverUrl: string;
@@ -37,8 +43,14 @@ export default class ManaMemorySyncPlugin extends Plugin {
       new Notice("Mana Memory Sync: set an API key in plugin settings first.");
       return;
     }
+    // Mana syncs Facts/, Views/ and Journal/ herself (#935): never write there.
+    if (isManaOwnedPath(this.settings.notePath) || isManaOwnedPath(this.settings.notesFolder)) {
+      new Notice("Mana Memory Sync: Facts/, Views/ and Journal/ belong to Mana's own vault sync. Pick another note path and folder.");
+      return;
+    }
     try {
-      const markdown = await fetchManaMemory(this.settings.serverUrl, this.settings.apiKey);
+      // Mana syncs her facts herself now, so they're left out here.
+      const markdown = withoutKeyFacts(await fetchManaMemory(this.settings.serverUrl, this.settings.apiKey));
       await this.writeNote(this.settings.notePath, markdown);
 
       // Per-entity linked notes require a Mana server new enough to expose
@@ -47,7 +59,7 @@ export default class ManaMemorySyncPlugin extends Plugin {
       let notesWritten = 0;
       let notesError: string | null = null;
       try {
-        const notes = await fetchManaMemoryNotes(this.settings.serverUrl, this.settings.apiKey);
+        const notes = withoutFactNotes(await fetchManaMemoryNotes(this.settings.serverUrl, this.settings.apiKey));
         const folder = normalizePath(this.settings.notesFolder);
         if (notes.length && !this.app.vault.getAbstractFileByPath(folder)) {
           await this.app.vault.createFolder(folder);
@@ -147,7 +159,7 @@ class ManaMemorySyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Notes folder")
       .setDesc(
-        "Vault-relative folder for one linked note per cross-session entity/fact/connection " +
+        "Vault-relative folder for one linked note per cross-session entity/connection " +
           "(Obsidian's graph view clusters them). Existing notes here are overwritten; notes " +
           "for entities Mana no longer tracks are not deleted automatically."
       )

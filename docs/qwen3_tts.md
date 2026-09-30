@@ -48,7 +48,15 @@ Without them it's roughly double.
 Limits:
 - **Malay** isn't a Qwen3-TTS language. Malay text is sent with `auto` and
   comes out read as best the model can.
-- **Emotion tags** are ignored: there's no emotion control on a cloned voice.
+- **Emotion tags** (#909) only change her pace. The 0.6B Base model has no
+  emotion control on a cloned voice: I measured faster-qwen3-tts's `instruct`
+  ("speak sadly", "speak excitedly", ...) and got no change in pace or pitch
+  beyond take-to-take noise. So the service resamples each sentence by its
+  tag instead: excited 7% faster (and ~1.1 semitones higher), happy 4%,
+  sad 7% slower (~1.2 semitones lower), and so on (`EMOTION_RATES`), at
+  ~5 ms per sentence. `QWEN3_TTS_EMOTION=off` turns it off. Real emotional
+  delivery would need emotion-specific reference clips of her voice or a
+  model with instruct on cloned voices (e.g. Fun-CosyVoice3).
 
 ## Setup
 

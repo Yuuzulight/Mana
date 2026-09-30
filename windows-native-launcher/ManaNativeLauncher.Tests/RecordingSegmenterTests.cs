@@ -134,4 +134,31 @@ public class RecordingSegmenterTests
     {
         Assert.Equal(expected, RecordingSegmenter.ShouldRequestPartial(false, segmentSpeechMs: 2000, uncoveredSpeechMs: 400, msSinceLastSpeech, msSinceLastRequest));
     }
+
+    // #909: text x audio -> wait. No score, or a trailing transcript, keeps
+    // the pre-#909 call; the rest never ends sooner on "not done" or later
+    // on "done" than the transcript alone would.
+    [Theory]
+    [InlineData(800, "complete", null, 800, "complete")]
+    [InlineData(3500, "trailing", 0.99f, 3500, "trailing")]
+    [InlineData(800, "complete", 0.9f, 500, "complete+turn")]
+    [InlineData(800, "complete", 0.1f, 2200, "complete-turn")]
+    [InlineData(2200, "stale", 0.9f, 800, "turn")]
+    [InlineData(2200, "nopartial", 0.1f, 3500, "midturn")]
+    [InlineData(2200, "off", 0.5f, 800, "turn")]
+    public void WithSmartTurn_CombinesTranscriptAndAudio(long textMs, string textReason, float? p, long expectedMs, string expectedReason)
+    {
+        var (ms, reason) = RecordingSegmenter.WithSmartTurn((textMs, textReason), p, threshold: 0.5f);
+
+        Assert.Equal(expectedMs, ms);
+        Assert.Equal(expectedReason, reason);
+    }
+
+    [Fact]
+    public void WithSmartTurn_RespectsACustomBase()
+    {
+        Assert.Equal(400, RecordingSegmenter.WithSmartTurn((400, "default"), 0.9f, 0.5f, baseMs: 400).SilenceBufferMs);
+        Assert.Equal(800, RecordingSegmenter.WithSmartTurn((800, "complete"), 0.1f, 0.5f, baseMs: 400).SilenceBufferMs);
+        Assert.Equal(6000, RecordingSegmenter.WithSmartTurn((6000, "default"), 0.1f, 0.5f, baseMs: 6000).SilenceBufferMs);
+    }
 }

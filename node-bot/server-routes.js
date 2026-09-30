@@ -77,6 +77,7 @@ function registerCoreRoutes(app, upload, deps) {
     synthesizeReply,
     clampText,
     SCREEN_CONTEXT_MAX_CHARS,
+    currentGame = () => null, // #908
   } = deps;
 
   // Every save path (recordChatTurn here, server.js's reply builder) skips
@@ -365,6 +366,7 @@ function registerCoreRoutes(app, upload, deps) {
             pluginSettingsStore,
             world,
             screenText,
+            game: currentGame(),
           })
         : "";
       const assistantMode = optionalString(
@@ -516,6 +518,7 @@ function registerCoreRoutes(app, upload, deps) {
             pluginSettingsStore,
             world,
             screenText,
+            game: currentGame(),
           })
         : "";
       const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);
@@ -609,6 +612,7 @@ function registerCoreRoutes(app, upload, deps) {
           pluginSettingsStore,
           world: UNIVERSALIS_DEFAULT_WORLD,
           screenText: "",
+          game: currentGame(),
         },
       );
       const assistantMode = optionalString(
@@ -651,7 +655,9 @@ function registerCoreRoutes(app, upload, deps) {
         return res.status(400).json({ error: "TTS not configured" });
       }
 
-      const audio = await synthesizeReply(text);
+      // #909: the sentence's emotion tag (from /reply/stream) styles her voice.
+      const emotion = typeof req.body?.emotion === "string" ? req.body.emotion : undefined;
+      const audio = await synthesizeReply(text, { emotion });
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (e) {
