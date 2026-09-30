@@ -131,6 +131,9 @@ public class BrowserToolTests
         Assert.Contains("<img src=\"data:image/png;base64,AQID\" alt=\"Start line\">", html);
         Assert.Contains("<em>Tracker</em>", html); // never a web src Folio could fetch
         Assert.DoesNotContain("<script>", html);
+        // The extractor escapes \ and | in table cells; the cells show them as written.
+        var table = ReaderView.Html(new ManaReaderPage { Text = "| Path | Pipe |\n| --- | --- |\n" + @"| C:\\dir | a\|b |" });
+        Assert.Contains(@"<td>C:\dir</td><td>a|b</td>", table);
 
         RunSta(() =>
         {

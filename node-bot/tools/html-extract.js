@@ -59,10 +59,6 @@ function parseAttrs(source) {
 }
 
 function parseHtml(html) {
-  const source = String(html || "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    // Raw text: their insides aren't markup, and none of it is content.
-    .replace(/<(script|style|noscript|template|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
   const root = { tag: "#root", attrs: {}, children: [], parent: null };
   const stack = [root];
   const top = () => stack[stack.length - 1];
@@ -76,15 +72,18 @@ function parseHtml(html) {
     }
   };
 
-  const token = /<(\/?)([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>|<![^>]*>|<\?[^>]*>|([^<]+|<)/g;
-  for (const m of source.matchAll(token)) {
-    if (m[4] !== undefined) {
-      top().children.push(decodeEntities(m[4]));
+  // Skipped whole, to their end or the page's: comments, and raw-text
+  // elements (their insides aren't markup, and none of it is content).
+  // Then a tag, other <!...>/<?...> (skipped), or text.
+  const token = /<!--[\s\S]*?(?:-->|$)|<(script|style|noscript|template|textarea|title)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)|<(\/?)([a-z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>|<![^>]*>|<\?[^>]*>|([^<]+|<)/gi;
+  for (const m of String(html || "").matchAll(token)) {
+    if (m[5] !== undefined) {
+      top().children.push(decodeEntities(m[5]));
       continue;
     }
-    if (!m[2]) continue; // doctype, CDATA, processing instruction
-    const tag = m[2].toLowerCase();
-    if (m[1]) {
+    if (!m[3]) continue; // comment, raw text, doctype, CDATA, processing instruction
+    const tag = m[3].toLowerCase();
+    if (m[2]) {
       for (let i = stack.length - 1; i > 0; i -= 1) {
         if (stack[i].tag === tag) {
           popThrough(stack[i]);
@@ -95,10 +94,10 @@ function parseHtml(html) {
     }
     if (CLOSES_P.has(tag) && top().tag === "p") stack.pop();
     if (IMPLIED[tag]) closeOpen(...IMPLIED[tag]);
-    const node = { tag, attrs: parseAttrs(m[3]), children: [], parent: top() };
+    const node = { tag, attrs: parseAttrs(m[4]), children: [], parent: top() };
     top().children.push(node);
     // Past MAX_DEPTH (thousands of unclosed tags) children go to the parent: the walks below recurse.
-    if (!VOID.has(tag) && !/\/\s*$/.test(m[3]) && stack.length < MAX_DEPTH) stack.push(node);
+    if (!VOID.has(tag) && !/\/\s*$/.test(m[4]) && stack.length < MAX_DEPTH) stack.push(node);
   }
   return root;
 }
@@ -290,7 +289,7 @@ function table(node, s) {
   if (cols < 2) {
     return `\n\n${node.children.map((child) => toMarkdown(child, s)).join("")}\n\n`;
   }
-  const cell = (c) => oneLine(c.children.map((child) => toMarkdown(child, s)).join("")).replace(/\|/g, "\\|");
+  const cell = (c) => oneLine(c.children.map((child) => toMarkdown(child, s)).join("")).replace(/[\\|]/g, "\\$&");
   const lines = rows.map((r) => {
     const cells = r.map(cell);
     while (cells.length < cols) cells.push("");

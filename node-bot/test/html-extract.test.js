@@ -78,3 +78,10 @@ test("thousands of unclosed tags don't overflow the stack", () => {
   const html = `<article><p>${"<span>".repeat(20000)}Deep words, still read.</p></article>`;
   assert.equal(extractMainContent(html, "https://x.example/").markdown, "Deep words, still read.");
 });
+
+test("comments and raw-text elements are skipped whole, and table cells escape backslash and pipe", () => {
+  const html = String.raw`<article><p>Kept words, before.</p><!-- <p>commented out</p> --><script>var s = "</p><p>not text";</script>
+    <table><tr><th>Path</th><th>Pipe</th></tr><tr><td>C:\dir</td><td>a|b</td></tr></table><style>p { x: 1 }`;
+  const { markdown } = extractMainContent(html, "https://x.example/");
+  assert.equal(markdown, "Kept words, before.\n\n| Path | Pipe |\n| --- | --- |\n" + String.raw`| C:\\dir | a\|b |`);
+});
