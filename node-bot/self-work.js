@@ -695,4 +695,4 @@ ${
   return { start, startIdle, stop, status, chatToolSource, _current: () => current };
 }
 
-module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL };
+module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };

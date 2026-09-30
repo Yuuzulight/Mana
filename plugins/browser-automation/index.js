@@ -1,6 +1,8 @@
 const fs = require("fs");
+const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
+const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
 
 // Windows ships Edge (Chromium-based) on every install -- since Mana
 // targets Windows, this is the "already available" browser rather than
@@ -23,12 +25,47 @@ function resolveExecutablePath(env, fsLike = fs) {
 // requests (navigate/click/type/snapshot are steps in the same flow, not
 // independent one-shot calls), same pattern as cron-scheduler's scheduler
 // singleton.
+//
+// #1137: a persistent Edge profile of Mana's own, so a site I log in to
+// once stays logged in; started on her first browser call, one page, no
+// GPU, and closed again when idle, when a game starts or when RAM is high.
+const PROFILE_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "browser-profile");
+const LAUNCH_ARGS = ["--disable-gpu", "--renderer-process-limit=1"];
+const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
+const IDLE_CLOSE_MS = 5 * 60 * 1000;
+const CHECK_EVERY_MS = 30 * 1000;
+
 let session = null;
-let browserHandle = null;
+let context = null;
+let starting = null;
+let closing = null;
+let checkTimer = null;
+let lastUsedAt = 0;
+// The latest caller's deps: the game/RAM gates, the clock, and whether
+// the rail's Browser panel is watching.
+let gateDeps = {};
 
-async function getSession(deps) {
+// Why her browser mustn't run right now, or null -- self-work's gates.
+function blocker(deps) {
+  if (deps.isGaming?.()) return "a game is running";
+  const ram = (deps.ramPercent || systemRamPercent)();
+  return ram > MAX_RAM_PERCENT ? `RAM is at ${ram}%` : null;
+}
+
+async function getSession(deps = {}) {
+  gateDeps = deps;
+  const blocked = blocker(deps);
+  if (blocked) {
+    await closeSession();
+    throw new Error(`the browser stays closed while ${blocked}`);
+  }
+  lastUsedAt = (deps.now || Date.now)();
   if (session) return session;
+  starting = starting || startSession(deps).finally(() => (starting = null));
+  return starting;
+}
 
+async function startSession(deps) {
   const env = deps.env || process.env;
   // #670: the browser is its own program, outside node-bot's connection
   // guard, and any page can pull from the internet.
@@ -40,20 +77,59 @@ async function getSession(deps) {
     );
   }
 
-  const chromium = deps.chromium || require("playwright-core").chromium;
+  // playwright-core lives in node-bot's packages; a bare require from this
+  // folder never found it.
+  const chromium = deps.chromium || require("../../node-bot/node_modules/playwright-core").chromium;
   const headless = env.MANA_BROWSER_HEADLESS !== "0";
-  browserHandle = await chromium.launch({ executablePath, headless });
-  const page = await browserHandle.newPage();
+  // A profile is locked while any browser has it open.
+  await closing;
+  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, { executablePath, headless, args: LAUNCH_ARGS });
+  // Edge went away under us (crashed, killed): start fresh next call.
+  ctx.on("close", () => context === ctx && forget());
+  let page;
+  try {
+    page = ctx.pages()[0] || (await ctx.newPage());
+    // Images, video and fonts only while the rail's Browser panel is
+    // watching, for its screenshot; she reads and acts without them.
+    await page.route("**/*", (route) =>
+      BLOCKED_RESOURCE_TYPES.has(route.request().resourceType()) && !gateDeps.isWatched?.()
+        ? route.abort()
+        : route.continue(),
+    );
+  } catch (e) {
+    await ctx.close().catch(() => {});
+    throw e;
+  }
+  context = ctx;
   session = createBrowserSession({ page });
+  checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
+  checkTimer.unref?.();
   return session;
 }
 
-async function closeSession() {
-  if (browserHandle) {
-    await browserHandle.close().catch(() => {});
-  }
-  browserHandle = null;
+// Closes her browser after IDLE_CLOSE_MS without a call, and at once when
+// a game starts or RAM climbs past the limit.
+async function checkSession() {
+  if (!session) return;
+  const idle = (gateDeps.now || Date.now)() - lastUsedAt >= IDLE_CLOSE_MS;
+  if (idle || blocker(gateDeps)) await closeSession();
+}
+
+function forget() {
+  clearInterval(checkTimer);
+  checkTimer = null;
+  context = null;
   session = null;
+}
+
+async function closeSession() {
+  if (starting) await starting.catch(() => {});
+  const ctx = context;
+  forget();
+  if (ctx) {
+    closing = ctx.close().catch(() => {});
+    await closing;
+  }
 }
 
 function registerBrowserAutomationRoutes(app, deps = {}) {
@@ -143,10 +219,16 @@ module.exports = {
     };
   },
   resolveExecutablePath,
+  checkSession,
+  closeSession,
+  PROFILE_DIR,
+  IDLE_CLOSE_MS,
   // Test-only escape hatch to reset the module-level singleton between
   // test files/runs -- production code never calls this.
   _resetForTests: () => {
-    session = null;
-    browserHandle = null;
+    forget();
+    starting = null;
+    closing = null;
+    gateDeps = {};
   },
 };
