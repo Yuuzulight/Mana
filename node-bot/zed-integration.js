@@ -990,6 +990,7 @@ function createEditorIntegrations(options = {}) {
 
 module.exports = {
   buildZedOpenTarget,
+  createEditProposalStore,
   createEditorIntegrations,
   createEditorWorkspaceInspector,
   createEditorWorkspaceStore,

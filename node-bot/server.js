@@ -248,6 +248,7 @@ const { createDesktopToolSource, registerFileMoveRestorer } = require("./ai/desk
 const { createDeepThinkingState, createDeepThinkingToolSource } = require("./ai/deep-thinking-tool-source");
 const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
+const { createSelfWork } = require("./self-work");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -2601,6 +2602,26 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/agent/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ stopped: agentActivity.stop(String(req.body?.id ?? "")) });
+  });
+
+  // #1006: Mana works one of my issues in her own worktree and opens a PR.
+  const selfWork =
+    deps.selfWork ||
+    createSelfWork({
+      runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
+      reviewEdit,
+    });
+  app.get("/self-work", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(selfWork.status());
+  });
+  app.post("/self-work/start", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(await selfWork.start(req.body?.issue));
+  });
+  app.post("/self-work/stop", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json({ stopped: selfWork.stop() });
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
