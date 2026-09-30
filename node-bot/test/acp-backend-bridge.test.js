@@ -103,3 +103,19 @@ test("backend bridge sends the admin token as x-admin-token when it has one", as
   assert.equal(headers[0]["x-admin-token"], "tok");
   assert.equal(headers[1]["x-admin-token"], undefined);
 });
+
+test("#838: reviewEdit posts the write to /editors/review and returns the review", async () => {
+  const calls = [];
+  const bridge = createAcpBackendBridge({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return createJsonResponse({ review: { verdict: "refuted", failingCase: "x" } });
+    },
+  });
+
+  const review = await bridge.reviewEdit({ path: "src/a.js", before: "a", after: "b", summary: "s" });
+
+  assert.deepEqual(review, { verdict: "refuted", failingCase: "x" });
+  assert.equal(calls[0].url, "http://127.0.0.1:5005/editors/review");
+  assert.deepEqual(calls[0].body, { path: "src/a.js", before: "a", after: "b", summary: "s" });
+});
