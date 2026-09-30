@@ -21,7 +21,14 @@ function fakeBridge({ desktop = true, answer = { level: 40 } } = {}) {
 test("offered only while a launcher that does desktop actions is connected", () => {
   assert.equal(createDesktopToolSource({ bridge: fakeBridge({ desktop: false }) }).listToolSchemas().length, 0);
   const names = createDesktopToolSource({ bridge: fakeBridge() }).listToolSchemas().map((t) => t.function.name);
-  assert.deepEqual(names, ["desktop__media", "desktop__set_volume", "desktop__open_app", "desktop__focus_app"]);
+  assert.deepEqual(names, [
+    "desktop__media",
+    "desktop__set_volume",
+    "desktop__open_app",
+    "desktop__focus_app",
+    "desktop__list_audio_outputs",
+    "desktop__set_audio_output",
+  ]);
 });
 
 test("relays the call and returns the launcher's result or error", async () => {

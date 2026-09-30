@@ -1,9 +1,10 @@
 // #911: safe desktop actions -- media keys, volume, opening or focusing an
-// app from the Start menu -- carried out by the native launcher (Windows
+// app from the Start menu, the audio output -- carried out by the native launcher (Windows
 // APIs) over the vision-capture socket, which only a launcher that
 // connected with ?desktop=1 answers. The launcher validates every argument;
 // nothing here clicks or types into other apps. Tiers are in
-// ai/tool-risk.js: focusing is "read", the rest "low".
+// ai/tool-risk.js: focusing and listing are "read", switching the output
+// is "write" (asks first), the rest "low".
 const DESKTOP_TOOL_PREFIX = "desktop__";
 
 const APP_NAME = {
@@ -55,6 +56,27 @@ const TOOL_SCHEMAS = [
       name: `${DESKTOP_TOOL_PREFIX}focus_app`,
       description: "Bring an app that's already open to the front. Doesn't start anything.",
       parameters: { type: "object", properties: { name: APP_NAME }, required: ["name"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: `${DESKTOP_TOOL_PREFIX}list_audio_outputs`,
+      description: "List the PC's audio output devices (speakers, headsets) and which one is in use.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: `${DESKTOP_TOOL_PREFIX}set_audio_output`,
+      description:
+        "Switch the PC's sound to another output device. The user approves it first. Use a name from desktop__list_audio_outputs.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "The device's name, or a unique part of it." } },
+        required: ["name"],
+      },
     },
   },
 ];

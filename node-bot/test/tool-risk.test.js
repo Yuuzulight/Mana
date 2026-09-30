@@ -264,6 +264,8 @@ test("#669 smart auto-approve: a read-only call runs without a prompt, a write s
 test("#911 low tier: runs without a prompt in smart mode, asks in ask mode", async () => {
   assert.equal(classifyToolCall("desktop__set_volume", { level: 20 }).tier, "low");
   assert.equal(classifyToolCall("desktop__focus_app", { name: "Discord" }).tier, "read");
+  assert.equal(classifyToolCall("desktop__list_audio_outputs", {}).tier, "read");
+  assert.equal(classifyToolCall("desktop__set_audio_output", { name: "Headset" }).tier, "write");
   const smart = setup({ mode: "smart" });
   assert.equal(await smart.wrapped.executeTool("desktop__media", { key: "next" }), "ran desktop__media");
   const ask = setup({ mode: "ask" });
