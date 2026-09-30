@@ -997,7 +997,7 @@ internal sealed class SettingsPanel : UserControl
 
         toolApprovalModeCombo.Items.AddRange(new object[]
         {
-            "Smart -- ask for anything that isn't read-only",
+            "Smart -- ask unless it's read-only or a small change like the volume",
             "Ask for every tool call",
             "Only destructive commands",
         });
