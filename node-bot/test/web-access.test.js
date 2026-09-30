@@ -352,3 +352,38 @@ test("buildWebContextForPrompt gives up on a slow game wiki after about 5 s", as
   assert.ok(elapsed >= 4500 && elapsed < 8000, `took ${elapsed} ms`);
   assert.match(warnings.join("\n"), /wiki lookup failed/);
 });
+
+test("#963 a typed mid-game question waits past 5 s for the wiki", async () => {
+  const game = { name: "Final Fantasy XIV", sites: ["ffxiv.consolegameswiki.com"] };
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await withMockedDnsLookup(async () => [{ address: "93.184.216.34", family: 4 }], async () => {
+      await withMockedFetch(async (url, options) => {
+        if (String(url).includes("/search?")) {
+          // Slower than the spoken 5 s budget, well inside the typed one.
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, 5500);
+            options.signal.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(options.signal.reason);
+            });
+          });
+          return jsonResponse({ results: [{ title: "Aetheryte", url: "https://ffxiv.consolegameswiki.com/wiki/Aetheryte", content: "Limsa Lominsa Lower Decks" }] });
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name.toLowerCase() === "content-type" ? "text/html" : null) },
+          body: null,
+          text: async () => "<html><body>The aetheryte plaza is in Lower Decks.</body></html>",
+        };
+      }, async () => {
+        const context = await buildWebContextForPrompt("where is the aetheryte in Limsa?", {}, game, true);
+        assert.match(context, /aetheryte plaza/);
+        assert.match(context, /and asking: answer/); // not "by voice"
+      });
+    });
+  } finally {
+    clearInterval(keepAlive);
+  }
+});

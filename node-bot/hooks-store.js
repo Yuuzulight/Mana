@@ -116,8 +116,8 @@ function normalizeRule(rule) {
   if (rule.action === "modify-input" && !(isArgsObject && Object.keys(rule.set).length)) {
     throw new Error("set (an object of argument values) is required for a modify-input rule");
   }
-  // #838: Pipeline B's file_write skips its approval on args.approved ===
-  // true, so a rewrite must never be able to set it.
+  // #838: a rewrite must never be able to set approved. Since #1002 no tool
+  // honors it, but a rule that looks like an approval stays refused.
   if (rule.action === "modify-input" && Object.prototype.hasOwnProperty.call(rule.set, "approved")) {
     throw new Error("a modify-input rule may not set approved");
   }

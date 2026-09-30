@@ -40,6 +40,15 @@ test("camera requests go only to ?camera=1 clients, and hasCamera follows them",
   assert.equal(await snapshot, "data:image/jpeg;base64,cam");
   assert.equal(screenOnlyGotOne, false);
 
+  // #962: a save request is for the camera client too.
+  const saveReceived = nextMessage(camera);
+  const saved = bridge.requestCapture({ save: true });
+  const saveMessage = await saveReceived;
+  assert.equal(saveMessage.source, "camera-save");
+  bridge.resolveCapture(saveMessage.requestId, "C:\Pictures\Mana\snap.jpg");
+  assert.equal(await saved, "C:\Pictures\Mana\snap.jpg");
+  assert.equal(screenOnlyGotOne, false);
+
   camera.close();
   screenOnly.close();
 });
