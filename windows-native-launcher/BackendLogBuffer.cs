@@ -14,6 +14,23 @@ internal sealed class BackendLogBuffer
     private readonly object gate = new();
     private readonly Queue<string> lines = new();
 
+    // Each line also goes to this file once set (node-bot/data/logs/backend.log),
+    // so a crash is still there after the launcher closes. Opened per line and
+    // closed again: no handle stays open. Best effort.
+    // ponytail: no size cap within a run; a cap if a long run's log gets big.
+    private string? filePath;
+
+    // A fresh file for a new backend run; the last one becomes *.prev.log.
+    // Under the lock, so no line is being written while the file moves.
+    public void StartFile(string path)
+    {
+        lock (gate)
+        {
+            ManaProcessManager.StartLogFile(path);
+            filePath = path;
+        }
+    }
+
     public void Add(string line)
     {
         lock (gate)
@@ -22,6 +39,17 @@ internal sealed class BackendLogBuffer
             while (lines.Count > MaxLines)
             {
                 lines.Dequeue();
+            }
+            if (filePath is { } path)
+            {
+                try
+                {
+                    File.AppendAllText(path, line + Environment.NewLine);
+                }
+                catch
+                {
+                    // Best effort.
+                }
             }
         }
     }

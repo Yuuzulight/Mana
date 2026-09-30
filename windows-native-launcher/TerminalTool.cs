@@ -242,7 +242,7 @@ internal sealed class TerminalTool : Panel
     }
 
     internal static string Result(ManaTerminalRun run) =>
-        run.Running ? "running" : run.ExitCode is int code ? $"exit {code}" : "ended";
+        run.Running ? (run.Stopped ? "stopping" : "running") : run.Stopped ? "stopped" : run.ExitCode is int code ? $"exit {code}" : "ended";
 
     internal static string FormatTime(ManaTerminalRun run)
     {

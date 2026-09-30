@@ -329,6 +329,33 @@ test("runLocalAssistantReply splices extraMessages.early/late around the system/
   assert.equal(capturedMessages.filter((m) => m.role === "system").length, 1);
 });
 
+// #914: the default system prompt is the active character's, read per call.
+test("a systemPrompt function is read on every call", async () => {
+  const systems = [];
+  let serverUp = false;
+  let prompt = "You are Mana.";
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    systemPrompt: () => prompt,
+    fetch: async (url, init) => {
+      if (String(url).endsWith("/health")) return { ok: serverUp };
+      systems.push(JSON.parse(init.body).messages[0].content);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    },
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  prompt = "You are Evil Mana.";
+  await runtime.runLocalReplyIfSafelyLoaded("brief me", 64);
+  assert.deepEqual(systems, ["You are Mana.", "You are Evil Mana."]);
+});
+
 test("runLocalAssistantReply keeps the plain 2-message shape when extraMessages is omitted", async () => {
   let capturedMessages = null;
   let serverUp = false;
@@ -1415,15 +1442,25 @@ test("runToolAwareReply hits the round cap and forces a tools-disabled final ans
     fs: makeFakeFs(),
     fetch: fakeFetch,
     spawn: () => {
+      loadingSeen = runtime.getStatus().loading;
       serverUp = true;
       return makeFakeChild();
     },
     sleep: async () => {},
     registerExitHandlers: false,
   });
+  let loadingSeen = null;
 
   const policy = makeFakePolicy({ executeTool: () => "ok" });
-  const result = await runtime.runToolAwareReply("loop forever", policy, { maxRounds: 2 });
+  const rounds = [];
+  const result = await runtime.runToolAwareReply("loop forever", policy, {
+    maxRounds: 2,
+    onRound: (round, limit) => rounds.push([round, limit]),
+  });
+  // #1124: each round is reported, and the model load was visible while it ran.
+  assert.deepEqual(rounds, [[1, 2], [2, 2]]);
+  assert.ok(loadingSeen?.model, "loading is set while the server starts");
+  assert.equal(runtime.getStatus().loading, null);
 
   // 2 rounds (both requesting tools) + 1 forced tools-disabled final call.
   assert.equal(bodies.length, 3);

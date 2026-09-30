@@ -66,11 +66,13 @@ public class TerminalToolTests
     }
 
     [Theory]
-    [InlineData(true, null, "running")]
-    [InlineData(false, 0, "exit 0")]
-    [InlineData(false, null, "ended")]
-    public void Result_SaysRunningExitOrEnded(bool running, int? exitCode, string expected) =>
-        Assert.Equal(expected, TerminalTool.Result(new ManaTerminalRun { Running = running, ExitCode = exitCode }));
+    [InlineData(true, null, false, "running")]
+    [InlineData(true, null, true, "stopping")]
+    [InlineData(false, 0, false, "exit 0")]
+    [InlineData(false, null, false, "ended")]
+    [InlineData(false, null, true, "stopped")]
+    public void Result_SaysRunningExitEndedOrStopped(bool running, int? exitCode, bool stopped, string expected) =>
+        Assert.Equal(expected, TerminalTool.Result(new ManaTerminalRun { Running = running, ExitCode = exitCode, Stopped = stopped }));
 
     [Theory]
     [InlineData(250L, "250ms")]

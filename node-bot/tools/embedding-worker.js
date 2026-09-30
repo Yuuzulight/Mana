@@ -8,6 +8,10 @@ let total = 0;
 let processed = 0;
 let lastError = null;
 let workerPromise = null;
+// #1124: when this run started and what `processed` was then, so the
+// Background tasks panel can time this run alone.
+let runStartedAt = null;
+let runStartProcessed = 0;
 
 const DEFAULT_DELAY_MS = Number(
   process.env.RETRIEVER_EMBED_BATCH_DELAY_MS || 100,
@@ -24,6 +28,8 @@ function status() {
     processed,
     remaining: Math.max(0, queue.length),
     lastError,
+    startedAt: running ? runStartedAt : null,
+    startProcessed: runStartProcessed,
   };
 }
 
@@ -53,6 +59,8 @@ async function startWorker(opts = {}) {
   if (running) return;
   if (process.env.NODE_ENV === "test") return; // don't run in tests
   running = true;
+  runStartedAt = Date.now();
+  runStartProcessed = processed;
   lastError = null;
   try {
     while (queue.length > 0) {
