@@ -2062,38 +2062,67 @@ function getGamingStatus() {
   };
 }
 
-function getManaProcessSnapshot() {
-  if (process.platform !== "win32") {
-    return {
-      totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
-      processes: [],
-    };
-  }
+// /perf/status is polled by the launcher, and the PowerShell process
+// listing takes a second or more: it runs in the background at most every
+// 15 s, and the route answers with the last result (the backend's own RSS
+// until the first one lands). It used to be a spawnSync on every poll.
+const MANA_PROCESS_SNAPSHOT_MS = 15 * 1000;
+let manaProcessSnapshot = null;
+let manaProcessSnapshotAt = 0;
+let manaProcessSnapshotPending = false;
 
+function getManaProcessSnapshot() {
+  const ownOnly = {
+    totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    processes: [],
+  };
+  if (process.platform !== "win32") {
+    return ownOnly;
+  }
+  if (!manaProcessSnapshotPending && Date.now() - manaProcessSnapshotAt >= MANA_PROCESS_SNAPSHOT_MS) {
+    manaProcessSnapshotPending = true;
+    readManaProcessSnapshot()
+      .then((snapshot) => {
+        manaProcessSnapshot = snapshot;
+      })
+      .catch(() => {})
+      .finally(() => {
+        manaProcessSnapshotAt = Date.now();
+        manaProcessSnapshotPending = false;
+      });
+  }
+  return manaProcessSnapshot || ownOnly;
+}
+
+async function readManaProcessSnapshot() {
   const command = [
     "$items = Get-CimInstance Win32_Process |",
     "Where-Object { $_.CommandLine -match 'C:\\\\ManaAI\\\\Mana' -and $_.CommandLine -notmatch 'Get-CimInstance Win32_Process' } |",
     "Select-Object ProcessId,Name,WorkingSetSize,CommandLine;",
     "$items | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
-  const result = spawnSync(
-    "powershell",
+  // Full path, like the gaming watch's tasklist: a bare name is looked up
+  // in the cwd first.
+  const powershell = path.win32.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const { stdout } = await promisify(execFile)(
+    powershell,
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
     {
-      encoding: "utf8",
       maxBuffer: 5 * 1024 * 1024,
       windowsHide: true,
     },
   );
-
-  if (result.status !== 0 || !result.stdout.trim()) {
-    return {
-      totalMemoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
-      processes: [],
-    };
+  if (!stdout.trim()) {
+    return null;
   }
 
-  const parsed = JSON.parse(result.stdout);
+  const parsed = JSON.parse(stdout);
   const rows = Array.isArray(parsed) ? parsed : [parsed];
   const processes = rows.map((row) => ({
     pid: row.ProcessId,
