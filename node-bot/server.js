@@ -2450,6 +2450,9 @@ function registerRoutes(app, upload, deps = {}) {
   // note asks for the user's OK under its own action type, so denying one
   // never counts against (or grants) Mana's own memory writes.
   activeApprovalGate.registerExecutor("memory-vault-note", (payload) => acpMemoryStore.rememberFact(payload));
+  activeApprovalGate.registerExecutor("memory-vault-pin", (payload) =>
+    acpMemoryStore.setFactPinned(payload.key, payload.pinned === true),
+  );
   let memoryVault = null;
   if (process.env.MANA_VAULT_DIR && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
     try {

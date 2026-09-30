@@ -267,18 +267,21 @@ function createMemoryVault(options = {}) {
     );
   }
 
-  function requestOk(key, text) {
+  // A new note or a pin change always needs the user's own OK: no grant,
+  // always-allow or Guardian verdict skips it.
+  function ask(actionType, key, request) {
     if (!approvalGate) return;
     approvalGate
-      .requestApproval("memory-vault-note", {
-        summary: `Remember "${key}" from your vault: ${text}`,
-        payload: { key, action: "confirm", source: "vault", expectedVersions: [{ key, version: store.getFactVersion(key) }] },
-        scanText: text,
-        // A new note always needs the user's own OK: no grant, always-allow
-        // or Guardian verdict skips it.
-        forceReview: true,
-      })
+      .requestApproval(actionType, { ...request, forceReview: true })
       .catch((e) => log(`couldn't ask about "${key}": ${e?.message || e}`));
+  }
+
+  function requestOk(key, text) {
+    ask("memory-vault-note", key, {
+      summary: `Remember "${key}" from your vault: ${text}`,
+      payload: { key, action: "confirm", source: "vault", expectedVersions: [{ key, version: store.getFactVersion(key) }] },
+      scanText: text,
+    });
   }
 
   // Returns {key} when the note was taken in (Mana may now rewrite or move
@@ -361,8 +364,17 @@ function createMemoryVault(options = {}) {
       if (current === "pending") requestOk(fact.key, body);
     }
     if (current === "pending") return { key: fact.key };
-    if (typeof header.pinned === "boolean" && header.pinned !== Boolean(fact.pinned)) {
-      store.setFactPinned(fact.key, header.pinned);
+    // A pinned fact is in every prompt, so pinning is asked about like a new
+    // note (executor in server.js); the note shows the current pin until
+    // then. Unpinning only takes it out of the prompt: applied directly.
+    if (header.pinned === false && fact.pinned) {
+      store.setFactPinned(fact.key, false);
+    } else if (header.pinned === true && !fact.pinned) {
+      ask("memory-vault-pin", fact.key, {
+        summary: `Pin "${fact.key}" from your vault: ${fact.text}`,
+        payload: { key: fact.key, pinned: true },
+      });
+      log(`pinning "${note.rel}" is waiting for your OK in Mana.`);
     }
     if (fact.trigger && typeof header.paused === "boolean" && header.paused !== Boolean(fact.paused)) {
       store.setFactPaused(fact.key, header.paused);

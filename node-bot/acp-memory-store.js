@@ -69,11 +69,18 @@ function isLiveFact(fact) {
   return fact.status === "active" || fact.status === "pending";
 }
 
+// #935: a pending fact read in from a note in the Obsidian vault is a file
+// nobody has reviewed yet (anything that can write to the vault can make
+// one), so it stays out of the prompt until the user confirms it in Mana.
+function isVaultPending(fact) {
+  return fact.status === "pending" && fact.origin?.kind === "vault_edit";
+}
+
 // Issue #317/#277/#431: unverified, archived/stale and invalidated facts
 // never auto-surface -- unchanged from the key-match-only version. #663:
-// pending facts do, marked tentative (factsBlockFor).
+// pending facts do, marked tentative (factsBlockFor), except vault ones.
 function isRecallable(fact) {
-  return isLiveFact(fact) && !fact.unverifiedSource && !fact.invalidatedAt;
+  return isLiveFact(fact) && !fact.unverifiedSource && !fact.invalidatedAt && !isVaultPending(fact);
 }
 
 // Facts from before ids existed fall back to their (active-unique) key;
@@ -802,7 +809,7 @@ function createAcpMemoryStore(options = {}) {
   // one for a rephrased version of the same fact.
   function listFactKeys() {
     return loadFacts()
-      .filter((f) => isLiveFact(f) && !f.invalidatedAt)
+      .filter((f) => isLiveFact(f) && !f.invalidatedAt && !isVaultPending(f))
       .map((f) => ({
         key: f.key,
         preview: cleanText(f.text, 80),

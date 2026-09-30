@@ -2206,6 +2206,20 @@ test("a pending fact is recalled marked unconfirmed, and confirm makes it active
   assert.equal(store.rememberFact({ key: "nothing here", action: "confirm" }).found, false);
 });
 
+test("a pending fact from a vault note stays out of the prompt until confirmed (#935)", () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  store.rememberFact({ key: "coffee order", text: "oat flat white", source: "vault", origin: { kind: "vault_edit" } });
+  store.rememberFact({ key: "tea order", text: "genmaicha", origin: { kind: "model_inferred" } });
+  assert.deepEqual(store.listFacts().map((f) => f.status), ["pending", "pending"]);
+  assert.deepEqual(store.listFactKeys().map((f) => f.key), ["tea order"]);
+  const recalled = store.getRelatedFacts("my coffee order and tea order");
+  assert.doesNotMatch(recalled, /oat flat white/);
+  assert.match(recalled, /genmaicha \(unconfirmed/);
+
+  store.rememberFact({ key: "coffee order", action: "confirm" });
+  assert.match(store.getRelatedFacts("my coffee order"), /oat flat white/);
+});
+
 test("patching a pending fact keeps it one fact; an explicit restatement confirms it; a model-inferred correction needs confirming again, an identical one changes nothing (issues #663, #673)", () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir() });
   store.rememberFact({ key: "pet", text: "has a cat", origin: { kind: "model_inferred" } });
