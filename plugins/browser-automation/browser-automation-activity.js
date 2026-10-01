@@ -19,6 +19,15 @@ function describeBrowserAction(action, args) {
   if (action === "select") return `Choosing "${args?.value ?? ""}" in element ${args?.ref ?? "?"}`;
   if (action === "scroll") return `Scrolling ${args?.direction || "down"}`;
   if (action === "back") return "Going back";
+  if (action === "test_site") return `Testing ${[].concat(args?.urls || []).join(", ") || "a site"}`;
+  if (action === "devtools") return `Dev tools: ${args?.do || "?"}${args?.size ? ` (${args.size})` : ""}${args?.scheme ? ` (${args.scheme})` : ""}`;
+  if (action === "look_and_click") return `Looking for and clicking ${args?.description || "something"}`;
+  if (action === "upload") return `Uploading ${args?.file || "a file"} into element ${args?.ref ?? "?"}`;
+  if (action === "download") return `A download waits for your OK: ${args?.name || "a file"}`;
+  if (action === "tab") {
+    if (args?.do === "open") return `Opening a tab at ${args?.url || "an unknown URL"}`;
+    return `${args?.do === "close" ? "Closing" : "Switching to"} tab ${args?.number ?? "?"}`;
+  }
   if (action === "hover") return `Hovering over element ${args?.ref ?? "?"}`;
   if (action === "press") return `Pressing ${args?.key ?? "?"}`;
   if (action === "drag") return `Dragging element ${args?.from ?? "?"} to ${args?.to ?? "?"}`;
@@ -73,13 +82,23 @@ function createBrowserActivityLog(options = {}) {
     blocked = count > 0 && typeof url === "string" ? { url, count } : null;
   }
 
+  // #1161: the latest site test report ({ title, text, images, at }); the
+  // feed only says there is one, the panel fetches it.
+  let siteTest = null;
+  function recordSiteTest(report) {
+    siteTest = { ...report, at: now() };
+  }
+  function getSiteTest() {
+    return siteTest;
+  }
+
   function recordTurnPages(pages) {
     turnPages = Array.isArray(pages) ? pages : [];
   }
 
   function getActivity() {
     lastReadAt = clock();
-    return { log, screenshot: latestScreenshot, page, turnPages, blocked };
+    return { log, screenshot: latestScreenshot, page, turnPages, blocked, siteTest: siteTest && { title: siteTest.title, at: siteTest.at } };
   }
 
   // Someone's looking at her browser (the Browser panel), so its pages
@@ -97,7 +116,7 @@ function createBrowserActivityLog(options = {}) {
     blocked = null;
   }
 
-  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, recordBlocked, getActivity, isWatched, reset };
+  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, recordBlocked, recordSiteTest, getSiteTest, getActivity, isWatched, reset };
 }
 
 module.exports = { createBrowserActivityLog, describeBrowserAction, MAX_LOG_ENTRIES };

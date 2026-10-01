@@ -68,6 +68,39 @@ public class LiveThemeTests
         Assert.Equal(DarkTheme.Border.ToArgb(), window.Send.FlatAppearance.MouseOverBackColor.ToArgb());
     }
 
+    // A window another thread owns (another test class's, running in
+    // parallel) may be closed at any moment, so a live switch leaves it alone.
+    [Fact]
+    public void LiveSwitch_LeavesAnotherThreadsWindowAlone()
+    {
+        DarkTheme.ApplyPreset("violet", null);
+        var violet = DarkTheme.Background.ToArgb();
+        ThemedWindow? other = null;
+        using var created = new ManualResetEventSlim();
+        using var done = new ManualResetEventSlim();
+        var thread = new Thread(() =>
+        {
+            other = new ThemedWindow();
+            created.Set();
+            done.Wait();
+            other.Dispose();
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        created.Wait();
+        try
+        {
+            DarkTheme.ApplyPresetLive("light", null);
+            Assert.Equal(violet, other!.BackColor.ToArgb());
+        }
+        finally
+        {
+            done.Set();
+            thread.Join();
+            DarkTheme.ApplyPreset("violet", null);
+        }
+    }
+
     [Fact]
     public void Remap_KeepsTwoEqualColoursApartOnceItKnowsWhichIsWhich()
     {

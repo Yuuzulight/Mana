@@ -47,6 +47,7 @@ function createFakePage(overrides = {}) {
     async evaluate(fn, arg) {
       if (fn === extractTextInPage) return state.text.slice(0, arg);
       if (fn === sensitiveInPage) return state.sensitive;
+      if (typeof fn === "string") return state.js?.(fn);
       throw new Error("unexpected evaluate() call in test");
     },
     locator(selector) {
@@ -58,15 +59,24 @@ function createFakePage(overrides = {}) {
         hover: async () => state.calls.push(["hover", selector]),
         press: async (key) => state.calls.push(["press", selector, key]),
         dragTo: async (target) => state.calls.push(["drag", selector, target.selector]),
+        evaluate: async (fn) => fn({ tagName: state.fileInputs?.includes(selector) ? "INPUT" : "BUTTON", type: "file" }),
+        setInputFiles: async (file) => state.calls.push(["setInputFiles", selector, file]),
         selector,
       };
     },
     keyboard: { press: async (key) => state.calls.push(["key", key]) },
     mouse: {
+      click: async (x, y) => state.calls.push(["mouseClick", x, y]),
       move: async (x, y) => state.calls.push(["move", x, y]),
       wheel: async (x, y) => state.calls.push(["wheel", x, y]),
     },
     viewportSize: () => ({ width: 1000, height: 500 }),
+    setViewportSize: async (size) => state.calls.push(["viewport", size]),
+    emulateMedia: async (media) => state.calls.push(["media", media]),
+    async waitForEvent(event) {
+      state.calls.push(["wait", event]);
+      return { setFiles: async (file) => state.calls.push(["chooser", file]) };
+    },
     async goBack() {
       state.calls.push(["back"]);
       state.url = "https://example.com/previous";
@@ -293,21 +303,20 @@ test("#1168: isAdHost matches listed domains and their subdomains only", () => {
   assert.equal(isAdHost(""), false);
 });
 
-test("#1168: blocked ads only flag the page when it looks broken: errors or next to nothing there", async () => {
-  let health = { blockedAds: 4, pageErrors: 0 };
+test("#1168/#1179: blocked ads only flag a page that looks thin, not one that threw errors but works", async () => {
+  let health = { blockedAds: 4 };
   const page = createFakePage();
   const session = createBrowserSession({ page, pageHealth: () => health });
-  assert.equal((await session.snapshot()).blockedMayBreak, undefined); // 6 elements, fine
+  // bbc.com-like: six ads blocked, script errors, but plenty to read and use.
+  health = { blockedAds: 6, pageErrors: 5 };
+  page.state.text = "News ".repeat(100);
+  assert.equal((await session.snapshot()).blockedMayBreak, undefined);
 
-  health = { blockedAds: 4, pageErrors: 1 };
-  assert.equal((await session.snapshot()).blockedMayBreak, 4);
-
-  health = { blockedAds: 4, pageErrors: 0 };
   page.state.aria = '- button "Only" [ref=e1]';
   page.state.text = "Loading...";
-  assert.equal((await session.snapshot()).blockedMayBreak, 4);
+  assert.equal((await session.snapshot()).blockedMayBreak, 6);
 
-  health = { blockedAds: 0, pageErrors: 3 };
+  health = { blockedAds: 0 };
   assert.equal((await session.snapshot()).blockedMayBreak, undefined);
 });
 
@@ -321,7 +330,7 @@ test("#1168: an action that times out on a page with blocked ads says the site m
   const noAds = createBrowserSession({ page });
   await assert.rejects(() => noAds.click("e5"), (e) => !/may need/.test(e.message));
 
-  const session = createBrowserSession({ page, pageHealth: () => ({ blockedAds: 2, pageErrors: 0 }) });
+  const session = createBrowserSession({ page, pageHealth: () => ({ blockedAds: 2 }) });
   await assert.rejects(
     () => session.click("e5"),
     (e) => /Timeout 5000ms exceeded\. -- this site may need the 2 ad or tracker requests that were blocked/.test(e.message) && e.blockedMayBreak === 2,
@@ -399,4 +408,235 @@ test("#1156: find looks at the whole page, beyond the snapshot's cap", async () 
   assert.deepEqual(result.matches, ['button "Checkout" [ref=e999]']);
   assert.equal(result.description, "the checkout button");
   await assert.rejects(() => createBrowserSession({ page }).find("  "), /say what to look for/);
+});
+
+test("#1158: upload fills a file input directly, or answers the chooser a button opens", async () => {
+  const page = createFakePage();
+  page.state.fileInputs = ["aria-ref=e4"];
+  const session = createBrowserSession({ page });
+  await session.upload("e4", "C:\\cv.pdf");
+  await session.upload("e5", "C:\\cv.pdf");
+  assert.deepEqual(actions(page), [
+    ["setInputFiles", "aria-ref=e4", "C:\\cv.pdf"],
+    ["wait", "filechooser"],
+    ["click", "aria-ref=e5", { timeout: 5000 }],
+    ["chooser", "C:\\cv.pdf"],
+  ]);
+  page.state.sensitive = "payment details";
+  await assert.rejects(() => session.upload("e4", "C:\\cv.pdf"), /asks for payment details/);
+});
+
+test("#1158: downloads wait for my OK every time, then land in the folder, never overwriting, with the chat told", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { createApprovalGate } = require("../../../node-bot/approval-gate");
+  const { createBrowserDownloads, safeName } = require("../browser-downloads");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mana-downloads-"));
+  const gate = createApprovalGate({ dataDir: path.join(tmp, "gate") });
+  const notes = [];
+  const downloads = createBrowserDownloads({ approvalGate: gate, dir: path.join(tmp, "Downloads"), pendingDir: path.join(tmp, "pending"), notify: async (n) => notes.push(n) });
+  const fakeDownload = (name) => ({
+    suggestedFilename: () => name,
+    url: () => "https://files.test/get?id=1",
+    saveAs: async (to) => fs.writeFileSync(to, "the bytes"),
+  });
+
+  assert.deepEqual(await downloads.handle(fakeDownload("..\\..\\report.pdf")), { name: "report.pdf", status: "pending" });
+  assert.equal(fs.existsSync(path.join(tmp, "Downloads")), false); // nothing delivered before I say so
+  const [first] = gate.listPending();
+  assert.equal(first.summary, `Save "report.pdf" from files.test to ${path.join(tmp, "Downloads")}`);
+  assert.equal(first.forceReview, true);
+  await gate.decide(first.id, "always-allow"); // still asks next time
+  assert.equal(fs.readFileSync(path.join(tmp, "Downloads", "report.pdf"), "utf8"), "the bytes");
+  assert.match(notes[0].text, /^Saved "report\.pdf" from files\.test to .*It came from a web page, so open it with care\.$/);
+  assert.equal(notes[0].type, "browser-download");
+
+  await downloads.handle(fakeDownload("report.pdf"));
+  assert.equal(gate.listPending().length, 1);
+  await gate.decide(gate.listPending()[0].id, "allow-once");
+  assert.equal(fs.existsSync(path.join(tmp, "Downloads", "report (2).pdf")), true);
+  assert.deepEqual(fs.readdirSync(path.join(tmp, "pending")), []);
+
+  assert.equal(safeName('a<b>:c"d|e?.exe'), "a_b__c_d_e_.exe");
+  assert.equal(safeName(" .. "), "download");
+  const started = Date.now();
+  assert.equal(safeName(`a${" ".repeat(100000)}b`).length, 150); // fast on a long run of spaces
+  assert.ok(Date.now() - started < 1000);
+});
+
+test("#1157: lookAndClick shows the vision model the screen and clicks where it says", async () => {
+  const page = createFakePage();
+  const session = createBrowserSession({ page });
+  let seen = null;
+  const result = await session.lookAndClick("the Play button", async (image, width, height) => {
+    seen = { image, width, height };
+    return { x: 640, y: 400 };
+  });
+  assert.match(seen.image, /^data:image\/jpeg;base64,/);
+  assert.deepEqual([seen.width, seen.height], [1000, 500]);
+  assert.deepEqual(actions(page).slice(-1), [["mouseClick", 640, 400]]);
+  assert.deepEqual(result.clickedAt, { x: 640, y: 400 });
+
+  await assert.rejects(() => session.lookAndClick("a unicorn", async () => null), /couldn't see "a unicorn"/);
+  page.state.sensitive = "a password";
+  await assert.rejects(() => session.lookAndClick("Sign in", async () => ({ x: 1, y: 1 })), /asks for a password/);
+});
+
+test("#1161: console and network, errors and failures first", async () => {
+  const page = createFakePage();
+  const log = {
+    console: [{ type: "log", text: "hello" }, { type: "error", text: "Uncaught TypeError: x is undefined" }, { type: "warning", text: "deprecated" }],
+    network: [
+      { method: "GET", url: "https://a.test/", status: 200, ms: 120 },
+      { method: "GET", url: "https://a.test/api", status: 500, ms: 40 },
+      { method: "GET", url: "https://a.test/font.woff", failure: "net::ERR_NAME_NOT_RESOLVED" },
+      { method: "GET", url: "https://a.test/big.js", status: 200, ms: 900 },
+    ],
+  };
+  const session = createBrowserSession({ page, pageLog: () => log });
+  const consoleResult = await session.devtools({ do: "console" });
+  assert.equal(consoleResult.what, "Console (3 messages, errors first)");
+  assert.deepEqual(consoleResult.devtools, ["error: Uncaught TypeError: x is undefined", "warning: deprecated", "log: hello"]);
+  const network = await session.devtools({ do: "network" });
+  assert.equal(network.what, "Network (4 requests, 2 failed)");
+  assert.deepEqual(network.devtools, [
+    "failed: GET https://a.test/api -- HTTP 500",
+    "failed: GET https://a.test/font.woff -- net::ERR_NAME_NOT_RESOLVED",
+    "slow: 900 ms GET https://a.test/big.js",
+    "slow: 120 ms GET https://a.test/",
+    "slow: 40 ms GET https://a.test/api",
+  ]);
+});
+
+test("#1161: run_js returns JSON (capped), sizes and color schemes switch, never JS on a password page", async () => {
+  const page = createFakePage();
+  page.state.js = (code) => (code === "document.title" ? "Shop" : { big: "x".repeat(5000) });
+  const session = createBrowserSession({ page });
+  assert.deepEqual((await session.devtools({ do: "run_js", code: "document.title" })).devtools, ['"Shop"']);
+  assert.equal((await session.devtools({ do: "run_js", code: "window.data" })).devtools[0].length, 2000);
+  await assert.rejects(() => session.devtools({ do: "run_js", code: " " }), /code is required/);
+
+  assert.ok((await session.devtools({ do: "viewport", size: "phone" })).elements);
+  await session.devtools({ do: "color_scheme", scheme: "dark" });
+  assert.deepEqual(actions(page), [["viewport", { width: 390, height: 844 }], ["media", { colorScheme: "dark" }]]);
+  await assert.rejects(() => session.devtools({ do: "viewport", size: "watch" }), /size must be/);
+  await assert.rejects(() => session.devtools({ do: "teleport" }), /do must be/);
+
+  page.state.sensitive = "a password";
+  await assert.rejects(() => session.devtools({ do: "run_js", code: "document.forms[0].password.value" }), /asks for a password/);
+  await assert.rejects(() => session.devtools({ do: "look" }, async () => "a login form"), /asks for a password/);
+});
+
+test("#1161: inspectInPage finds sideways scrolling, missing alt text and labels, unnamed buttons and low contrast", () => {
+  const { inspectInPage } = require("../site-test");
+  const el = (props) => ({
+    nodeType: 1,
+    textContent: "",
+    childNodes: [],
+    getAttribute: (name) => props.attrs?.[name] ?? null,
+    hasAttribute: (name) => name in (props.attrs || {}),
+    getBoundingClientRect: () => props.box || { width: 10, right: 100 },
+    getClientRects: () => [1],
+    querySelector: () => null,
+    parentElement: null,
+    style: props.style || {},
+    ...props,
+  });
+  const grey = el({ textContent: "Fine print", childNodes: [{ nodeType: 3, textContent: "Fine print" }], style: { color: "rgb(119, 119, 119)", backgroundColor: "rgb(255, 255, 255)", fontSize: "14px", fontWeight: "400" } });
+  const black = el({ textContent: "Readable", childNodes: [{ nodeType: 3, textContent: "Readable" }], style: { color: "rgb(0, 0, 0)", backgroundColor: "rgba(0, 0, 0, 0)", fontSize: "14px", fontWeight: "400" } });
+  const wide = el({ box: { width: 600, right: 600 }, style: { position: "static" } });
+  const noAlt = el({ attrs: {} });
+  const input = el({ labels: [], attrs: {} });
+  const emptyButton = el({ attrs: {} });
+  const link = el({ textContent: "Home", href: "https://a.test/" });
+  const selectors = {
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea': [input],
+    "button, a[href]": [emptyButton, link],
+    "p, span, a, li, h1, h2, h3, h4, h5, h6, button, label, td, th": [grey, black],
+    "a[href]": [link, link, { href: "mailto:x@a.test" }],
+  };
+  global.window = { innerWidth: 390 };
+  global.document = {
+    documentElement: { scrollWidth: 600 },
+    body: { querySelectorAll: () => [wide, grey] },
+    images: [noAlt],
+    querySelectorAll: (s) => selectors[s] || [],
+  };
+  global.getComputedStyle = (node) => node.style || {};
+  try {
+    const found = inspectInPage();
+    assert.deepEqual(found.layout, ["the page is 600px wide in a 390px window (it scrolls sideways)", "1 elements stick out past the right edge"]);
+    assert.deepEqual(found.a11y, [
+      "1 images without alt text",
+      "1 form fields without a label",
+      "1 buttons or links without a name",
+      '1 text elements with low contrast, e.g. "Fine print"',
+    ]);
+    assert.deepEqual(found.links, ["https://a.test/"]);
+  } finally {
+    delete global.window;
+    delete global.document;
+    delete global.getComputedStyle;
+  }
+});
+
+test("#1161: testPage checks each size, then the links once, and goes back to desktop", async () => {
+  const page = createFakePage();
+  const { inspectInPage } = require("../site-test");
+  const evaluate = page.evaluate;
+  page.evaluate = async (fn, arg) =>
+    fn === inspectInPage ? { layout: page.state.viewport?.width === 390 ? ["the page is 500px wide in a 390px window (it scrolls sideways)"] : [], a11y: ["2 images without alt text"], links: ["https://other.test/x", "https://example.com/gone", "https://example.com/ok", "https://example.com/down"] } : evaluate(fn, arg);
+  page.setViewportSize = async (size) => (page.state.viewport = size);
+  page.request = {
+    head: async (url) => {
+      if (url.includes("other")) throw new Error("other sites aren't fetched");
+      if (url.endsWith("down")) throw new Error("net::ERR_CONNECTION_RESET\nmore");
+      return { status: () => (url.endsWith("gone") ? 404 : 200) };
+    },
+  };
+  const log = { console: [{ type: "error", text: "boom" }, { type: "log", text: "hi" }], network: [{ method: "GET", url: "https://example.com/api", status: 500 }] };
+  const session = createBrowserSession({ page, pageLog: () => log });
+  const result = await session.testPage("https://example.com/", ["phone", "desktop"]);
+
+  assert.deepEqual(result.sizes.map((s) => [s.size, s.width, s.height]), [["phone", 390, 844], ["desktop", 1280, 720]]);
+  assert.deepEqual(result.sizes[0].layout, ["the page is 500px wide in a 390px window (it scrolls sideways)"]);
+  assert.deepEqual(result.sizes[1].layout, []);
+  assert.deepEqual(result.sizes[0].consoleErrors, ["boom"]);
+  assert.deepEqual(result.sizes[0].failedRequests, ["GET https://example.com/api -- HTTP 500"]);
+  assert.match(result.sizes[0].screenshot, /^data:image\/jpeg;base64,/);
+  // Only this site's links; a failure keeps its first line.
+  assert.deepEqual(result.brokenLinks, ["https://example.com/gone (HTTP 404)", "https://example.com/down (net::ERR_CONNECTION_RESET)"]);
+  assert.equal(result.linksChecked, 3);
+  assert.deepEqual(page.state.viewport, { width: 1280, height: 720 });
+  await assert.rejects(() => session.testPage("https://example.com/", ["watch"]), /isn't a size/);
+});
+
+test("#1161: the report is Markdown with its screenshots as data images, and a short summary for her", () => {
+  const { reportMarkdown, reportSummary } = require("../site-test");
+  const report = {
+    site: "example.com",
+    when: "1 Oct 2026, 14:03",
+    pages: [
+      {
+        url: "https://example.com/",
+        title: "Home",
+        brokenLinks: ["https://example.com/gone (HTTP 404)"],
+        linksChecked: 3,
+        sizes: [
+          { size: "phone", width: 390, height: 844, consoleErrors: ["boom"], failedRequests: [], layout: [], a11y: ["2 images without alt text"], screenshot: "data:image/jpeg;base64,AAA" },
+        ],
+      },
+    ],
+  };
+  const { title, text, images } = reportMarkdown(report);
+  assert.equal(title, "Site test: example.com");
+  assert.match(text, /^# Site test: example\.com\n\n1 Oct 2026, 14:03 · 1 page × 1 sizes · 3 problems\n\n## Home\nhttps:\/\/example\.com\/\n\n### phone \(390×844\)\n!\[phone screenshot\]\(shot-1\)/);
+  assert.match(text, /- \*\*Console errors\*\* \(1\):\n  - boom\n- Failed requests: none\n- Layout: none\n- \*\*Accessibility\*\* \(1\):\n  - 2 images without alt text/);
+  assert.match(text, /- \*\*Broken links \(3 checked\)\*\* \(1\):\n  - https:\/\/example\.com\/gone \(HTTP 404\)$/);
+  assert.deepEqual(images, { "shot-1": "data:image/jpeg;base64,AAA" });
+  assert.equal(
+    reportSummary(report),
+    "https://example.com/:\n  phone: 1 console errors, 0 failed requests, layout ok, 2 images without alt text\n  broken links: https://example.com/gone (HTTP 404)",
+  );
 });
