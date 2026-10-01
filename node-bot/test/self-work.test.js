@@ -96,8 +96,10 @@ function scriptedLoop(calls, answer, seen = []) {
 const fix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: "return a + b;", summary: "add adds" }];
 const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
+// #1211: every issue run plans before its first edit.
+const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"] }];
 
-function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
+function selfWork(repos, { calls, planned = true, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
   const ghCalls = [];
   const testRuns = [];
   const sw = createSelfWork({
@@ -107,7 +109,7 @@ function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
     protectedPaths: guard,
     reviewEdit: async () => review,
-    runLoop: scriptedLoop(calls, answer, seen),
+    runLoop: scriptedLoop(planned ? [plan, ...calls] : calls, answer, seen),
     runTests: async (command, cwd, opts) => {
       testRuns.push({ command, cwd, opts });
       onTest(cwd);
@@ -188,7 +190,7 @@ test("writes stay inside her worktree and off her guardrails", async () => {
   });
   await sw.start(7);
   await sw._current().done;
-  const errors = seen.filter((s) => s.name).map((s) => s.error);
+  const errors = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.error);
   assert.match(errors[0], /one of my guardrails/);
   assert.match(errors[1], /outside my worktree/);
   assert.match(errors[2], /escapes/);
@@ -329,7 +331,7 @@ test("a run going nowhere stops after 8 steps without anything new", async () =>
   await sw.start(7);
   await sw._current().done;
   assert.equal(sw.status().state, "stuck");
-  const results = seen.filter((s) => s.name).map((s) => s.result || s.error);
+  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result || s.error);
   assert.doesNotMatch(results[8], /blocked/); // the first read plus 8 repeats run
   assert.match(results[9], /"blocked"/);
   assert.match(results[10], /"blocked"/); // her fix isn't written once she's stuck
@@ -626,6 +628,26 @@ test("#1194: an idle moment offers, once, to update her live copy to her merged 
   assert.equal(offers.length, 1);
   assert.match(offers[0].text, /^My merged PR #30 isn't in my live copy yet\. Say "update to main"/);
   assert.equal(offers[0].notice, true);
+});
+
+test("#1211: her first edit waits for a plan, and the plan is checked off in her run", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const calls = [fix, plan, ["self_work__plan", { done: [1] }], fix];
+  const { sw } = selfWork(repos, { calls, planned: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.match(results[0], /Write a short plan with self_work__plan before your first edit/);
+  assert.equal(results[1], "[ ] 1. Make add() add\n[ ] 2. Test it");
+  assert.equal(results[2], "[x] 1. Make add() add\n[ ] 2. Test it");
+  assert.equal(JSON.parse(results[3]).plan, "[x] 1. Make add() add\n[ ] 2. Test it");
+  assert.deepEqual(sw.status().plan, [
+    { text: "Make add() add", done: true },
+    { text: "Test it", done: false },
+  ]);
+  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
 });
 
 test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
