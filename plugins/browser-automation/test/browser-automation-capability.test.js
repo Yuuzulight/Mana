@@ -570,3 +570,11 @@ test("#1161: each tab keeps its console and network for dev tools, without the r
   assert.deepEqual((await session.devtools({ do: "console" })).devtools, []);
   await browserAutomationPlugin.closeSession();
 });
+
+test("pathsIn stays fast on a long run of punctuation after a path", () => {
+  const started = Date.now();
+  const bang = "!".repeat(100000);
+  assert.deepEqual(browserAutomationPlugin.pathsIn(`see C:\\a\\b.pdf${bang}x`), [`C:\\a\\b.pdf${bang}x`]);
+  assert.deepEqual(browserAutomationPlugin.pathsIn("see C:\\a\\b.pdf!)."), ["C:\\a\\b.pdf"]);
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+});
