@@ -8,7 +8,7 @@
 //
 //   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
-//     [--server-args "<extra llama-server flags>"] [--attempts N]
+//     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--out <dir>] [--verify]
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
@@ -465,7 +465,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     }, 250);
     const { spawn } = require("node:child_process");
     const args = ["-m", runtime.findLlamaModel("default"), "--host", "127.0.0.1", "--port", BENCH_LLAMA_PORT, "-c", String(context || env.LLAMA_CONTEXT || 16384)];
-    args.push("--no-webui", "--cache-ram", "0", "-t", String(env.LLAMA_THREADS || 4), ...serverArgs.split(/\s+/).filter(Boolean));
+    args.push("--no-webui", "--cache-ram", "0", "-t", String(env.LLAMA_THREADS || 4), ...serverArgs.split(/[\s,]+/).filter(Boolean));
     console.log(`Starting the bench's llama-server: ${args.join(" ")}`);
     server = spawn(runtime.findLlamaServerBin(), args, { windowsHide: true, stdio: "ignore" });
     for (let waited = 0; waited < 600; waited += 2) {
