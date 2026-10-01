@@ -25,6 +25,7 @@ const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
 // asked (allow once / for the session / always / deny / never), per site.
 // Reading, scrolling and going back never ask.
 const SITE_ACTION_TYPE = "browser-site";
+const JS_ACTION_TYPE = "browser-js";
 // #1161: her dev tools too, on any site she's allowed to act on.
 const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag", "upload", "look_and_click", "devtools"]);
 
@@ -253,34 +254,37 @@ function createBrowserAutomationToolSource(options = {}) {
     throw new Error("an approvalGate is required");
   }
   approvalGate.registerExecutor(APPROVAL_ACTION_TYPE, async () => ({ approved: true }));
-  // "Allow once" lets her next action on that site through.
+  // "Allow once" lets her next action of that kind on that site through.
   const allowedOnce = new Set();
 
   // One action type per site, so the gate's grants, "never" and its
-  // three-denials stop are all per site.
-  async function requireSitePermission(pageUrl) {
+  // three-denials stop are all per site. js: running JavaScript there
+  // (#1161's run_js), asked for on its own -- allowing a site for clicks
+  // doesn't allow scripts.
+  async function requireSitePermission(pageUrl, js = false) {
     const site = siteOf(pageUrl);
     if (!site) throw new Error("open a web page first");
-    const actionType = `${SITE_ACTION_TYPE}:${site}`;
-    if (approvalGate.isGranted(actionType) || allowedOnce.delete(site)) return;
+    const actionType = `${js ? JS_ACTION_TYPE : SITE_ACTION_TYPE}:${site}`;
+    const doing = js ? "running JavaScript" : "clicking or typing";
+    if (approvalGate.isGranted(actionType) || allowedOnce.delete(actionType)) return;
     approvalGate.registerExecutor(actionType, async () => {
-      allowedOnce.add(site);
+      allowedOnce.add(actionType);
       return { approved: true };
     });
     const result = await approvalGate.requestApproval(actionType, {
-      summary: `Let Mana click and type on ${site}`,
+      summary: js ? `Let Mana run JavaScript on ${site}` : `Let Mana click and type on ${site}`,
       payload: { site },
     });
     if (result.status === "approved") {
-      allowedOnce.delete(site);
+      allowedOnce.delete(actionType);
       return;
     }
     throw new Error(
       result.status === "pending"
-        ? `clicking or typing on ${site} needs the user's OK first (request ${result.requestId}); tell them, and try again once they allow it. Reading pages there doesn't need it.`
+        ? `${doing} on ${site} needs the user's OK first (request ${result.requestId}); tell them, and try again once they allow it. Reading pages there doesn't need it.`
         : result.never
-          ? `the user said never for clicking or typing on ${site}; don't act there`
-          : `clicking or typing on ${site} isn't allowed: ${result.reason || "denied"}`,
+          ? `the user said never for ${doing} on ${site}; don't do it there`
+          : `${doing} on ${site} isn't allowed: ${result.reason || "denied"}`,
     );
   }
 
@@ -354,6 +358,7 @@ function createBrowserAutomationToolSource(options = {}) {
     let result;
     try {
       if (ACTS_ON_SITE.has(action)) await requireSitePermission(await session.url());
+      if (action === "devtools" && args?.do === "run_js") await requireSitePermission(await session.url(), true);
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
       else if (action === "find") result = await session.find(args?.description);

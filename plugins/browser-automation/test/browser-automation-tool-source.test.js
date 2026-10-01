@@ -620,3 +620,30 @@ test("#1161: test_site asks for every site in it, keeps the report for the panel
   await assert.rejects(() => source.executeTool("browser_automation__test_site", { urls: [] }), /name 1 to 5 pages/);
   await assert.rejects(() => source.executeTool("browser_automation__test_site", { urls: ["file:///C:/x"] }), /isn't a web page/);
 });
+
+test("#1161: run_js asks for the site on its own, even where clicking is always allowed", async () => {
+  const { createBrowserSession } = require("../browser-automation");
+  const page = createFakePage();
+  page.evaluate = async (fn) => (typeof fn === "string" ? 42 : fn.name === "sensitiveInPage" ? null : "page text");
+  const { source, approvalGate } = createSource({ session: createBrowserSession({ page }) });
+  await source.executeTool("browser_automation__snapshot", {}).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending()[0].id, "always-allow");
+  await source.executeTool("browser_automation__navigate", { url: "https://mysite.test/" });
+  await source.executeTool("browser_automation__click", { ref: "e2" }).catch(() => {});
+  await approvalGate.decide(approvalGate.listPending().find((p) => p.actionType === "browser-site:mysite.test").id, "always-allow");
+  assert.match(await source.executeTool("browser_automation__devtools", { do: "console" }), /Console/); // no JS: no ask
+
+  await assert.rejects(
+    () => source.executeTool("browser_automation__devtools", { do: "run_js", code: "1 + 1" }),
+    /running JavaScript on mysite\.test needs the user's OK first/,
+  );
+  const ask = approvalGate.listPending().find((p) => p.actionType === "browser-js:mysite.test");
+  assert.equal(ask.summary, "Let Mana run JavaScript on mysite.test");
+  await approvalGate.decide(ask.id, "allow-once");
+  assert.match(await source.executeTool("browser_automation__devtools", { do: "run_js", code: "1 + 1" }), /Result:\n42/);
+  await assert.rejects(() => source.executeTool("browser_automation__devtools", { do: "run_js", code: "1 + 1" }), /needs the user's OK first/);
+
+  await approvalGate.decide(approvalGate.listPending().find((p) => p.actionType === "browser-js:mysite.test").id, "never");
+  await assert.rejects(() => source.executeTool("browser_automation__devtools", { do: "run_js", code: "1" }), /said never for running JavaScript on mysite\.test/);
+  await source.executeTool("browser_automation__click", { ref: "e2" }); // clicking still allowed
+});
