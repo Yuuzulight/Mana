@@ -16,6 +16,7 @@ namespace ManaNativeLauncher.Tests;
 // #1154: Settings > Approvals lists the remembered always/never answers
 // (her per-site browser permissions among them) and forgets one. #1191:
 // its "Git and GitHub" section, one choice per tier. STA, never shown.
+[Collection("DarkTheme palette")] // builds SettingsPanels: see SettingsPanelLayoutTests
 public class RememberedApprovalsTests
 {
     private const string Remembered = """
