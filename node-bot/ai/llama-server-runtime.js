@@ -48,6 +48,9 @@ const MEMORY_SAVE_CLAIM_RE = new RegExp(
 const KEEP_RECENT_TOOL_RESULTS = 4;
 // #1214: how long her context switch waits for replies in flight to end.
 const CONTEXT_SWITCH_WAIT_MS = 2 * 60 * 1000;
+// #1209: what she's told when llama-server couldn't parse her tool call.
+const TOOL_CALL_UNPARSED_NOTE =
+  "Your last tool call couldn't be parsed: its arguments were cut off or weren't valid JSON. Make the call again with shorter arguments (for a code change, replace only the lines that change).";
 
 // "saved" when a memory__remember call wrote (or was approved), "pending"
 // when one is waiting on approval, else "none".
@@ -1526,25 +1529,42 @@ function createLlamaServerRuntime(options = {}) {
     const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```|<tool_call>([\s\S]*?)<\/tool_call>/g)].map(
       (m) => m[1] ?? m[2],
     );
-    const calls = [];
+    const found = [];
     for (const raw of blocks.length ? blocks : [text]) {
-      let parsed;
       try {
-        parsed = JSON.parse(raw.trim());
-      } catch (e) {
-        continue;
+        found.push(...[].concat(JSON.parse(raw.trim())));
+      } catch (e) {}
+    }
+    // #1209: Qwen3.5's own form, <function=NAME><parameter=KEY>VALUE
+    // </parameter></function>, left in the text when llama-server's parser
+    // didn't take it (measured: 6 of 10 benchmark runs ended on one).
+    // Values are text; a non-string schema type gets them parsed as JSON.
+    if (!found.length) {
+      for (const [, name, body] of text.matchAll(/<function=([\w.-]+)>([\s\S]*?)(?:<\/function>|$)/g)) {
+        const props = params.get(name)?.properties || {};
+        const args = {};
+        for (const [, key, value] of body.matchAll(/<parameter=([\w.-]+)>\r?\n?([\s\S]*?)\r?\n?<\/parameter>/g)) {
+          args[key] = value;
+          if (props[key]?.type && props[key].type !== "string") {
+            try {
+              args[key] = JSON.parse(value.trim());
+            } catch (e) {}
+          }
+        }
+        found.push({ name, arguments: args });
       }
-      for (const call of [].concat(parsed)) {
-        const schema = call && params.get(call.name);
-        const args = call && call.arguments;
-        if (!schema || !args || typeof args !== "object" || Array.isArray(args)) continue;
-        if (!(schema.required || []).every((key) => key in args)) continue;
-        calls.push({
-          id: `text_${Date.now()}_${calls.length}`,
-          type: "function",
-          function: { name: call.name, arguments: JSON.stringify(args) },
-        });
-      }
+    }
+    const calls = [];
+    for (const call of found) {
+      const schema = call && params.get(call.name);
+      const args = call && call.arguments;
+      if (!schema || !args || typeof args !== "object" || Array.isArray(args)) continue;
+      if (!(schema.required || []).every((key) => key in args)) continue;
+      calls.push({
+        id: `text_${Date.now()}_${calls.length}`,
+        type: "function",
+        function: { name: call.name, arguments: JSON.stringify(args) },
+      });
     }
     return calls;
   }
@@ -2012,11 +2032,19 @@ function createLlamaServerRuntime(options = {}) {
       try {
         json = await complete(true);
       } catch (e) {
+        // #1209: a call llama-server couldn't parse (arguments cut off at the
+        // token limit, or badly escaped) goes back as a tool error to make
+        // again, shorter -- up to the consecutive-error cap.
+        const unparsed = /Failed to parse tool call arguments/i.test(e.message);
+        if (unparsed && ++consecutiveToolErrors < MAX_CONSECUTIVE_TOOL_ERRORS) {
+          messages.push({ role: "user", content: TOOL_CALL_UNPARSED_NOTE });
+          continue;
+        }
         // #787: one round's tool results (file contents, test output) can
         // jump past the 80% guard below and the whole context. Keep the run's
         // work and say why it stopped, rather than failing the reply.
-        if (!goalMode || !/exceeds the available context/i.test(e.message)) throw e;
-        notDone = "the conversation outgrew the model's context";
+        if (!goalMode || !(unparsed || /exceeds the available context/i.test(e.message))) throw e;
+        notDone = unparsed ? "the tool calls kept failing to parse" : "the conversation outgrew the model's context";
         break;
       }
       promptTokens = (Number(json?.timings?.cache_n) || 0) + (Number(json?.timings?.prompt_n) || 0);

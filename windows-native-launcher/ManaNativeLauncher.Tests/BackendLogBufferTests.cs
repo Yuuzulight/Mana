@@ -58,8 +58,9 @@ public class BackendLogBufferTests
             buffer.StartFile(log);
             buffer.Add("second run");
 
-            Assert.Equal(new[] { "second run" }, File.ReadAllLines(log));
-            Assert.Equal(new[] { "first run crashed" }, File.ReadAllLines(Path.Combine(dir.FullName, "logs", "backend.prev.log")));
+            const string stamp = @"^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] ";
+            Assert.Matches(stamp + "second run$", Assert.Single(File.ReadAllLines(log)));
+            Assert.Matches(stamp + "first run crashed$", Assert.Single(File.ReadAllLines(Path.Combine(dir.FullName, "logs", "backend.prev.log"))));
             Assert.Equal(new[] { "before any file", "first run crashed", "second run" }, buffer.Snapshot());
         }
         finally
