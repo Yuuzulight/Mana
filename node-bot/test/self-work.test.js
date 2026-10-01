@@ -732,7 +732,7 @@ test("#1245: 600 lines of reading before her first edit, then only search and ed
   const { sw } = selfWork(repos, { calls, seen });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
 
   assert.doesNotMatch(results[0], /lines of reading left/);
   assert.match(results[1], /\[100 of 600 lines of reading left before your first edit\. Plan your change now\.\]$/);
