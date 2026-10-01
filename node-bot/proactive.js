@@ -10,7 +10,7 @@
 // mid-game.
 const fs = require("node:fs");
 const path = require("node:path");
-const { notifyTray } = require("./tray-notifier");
+const { notifyTray, hasListeners } = require("./tray-notifier");
 
 const SCORE_THRESHOLD = 0.5;
 // The issue's starting budget is "around 6-8" a day; adapting it (3-10)
@@ -23,7 +23,9 @@ const MIN_GAP_MS = 60 * 1000;
 
 // candidate: { reason, payload, score (0..1, default 1), urgent, explicit, ttlMs }.
 // payload is the tray notification, sent as-is.
-function createProactive({ deliver, isGaming = () => false, inBreak = () => false, now = Date.now }) {
+// canDeliver: false while nobody would receive it -- the candidate stays
+// held (a reminder that fired just after a backend start isn't lost).
+function createProactive({ deliver, isGaming = () => false, inBreak = () => false, canDeliver = () => true, now = Date.now }) {
   let held = [];
   let day = "";
   let spentToday = 0;
@@ -69,7 +71,7 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     const inGameBreak = gaming && inBreak();
     if (!inGameBreak) breakUsed = false;
     const gameHold = gaming && (!inGameBreak || breakUsed);
-    const next = t - lastSentAt < MIN_GAP_MS ? null : held.find((c) => (gameHold ? c.explicit : c.urgent || spentToday < DAILY_BUDGET));
+    const next = t - lastSentAt < MIN_GAP_MS || !canDeliver() ? null : held.find((c) => (gameHold ? c.explicit : c.urgent || spentToday < DAILY_BUDGET));
     if (next) {
       held.splice(held.indexOf(next), 1);
       if (!next.urgent) spentToday += 1;
@@ -120,6 +122,7 @@ const proactive = createProactive({
   },
   isGaming: () => gamingCheck(),
   inBreak: () => breakCheck(),
+  canDeliver: hasListeners,
 });
 
 function watchGaming(isGaming, inBreak = () => false) {
