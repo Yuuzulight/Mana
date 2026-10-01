@@ -289,10 +289,205 @@ test("removing a worktree unlinks its node_modules link first and never deletes 
   assert.match(parsed(await call("git__change", { repo, action: "worktree_remove", name: "wt1" })).error, /isn't one of/);
 });
 
+// #1192: GitHub writes. The repo gets a bare origin; gh stays scripted.
+function withOrigin(ctx) {
+  const origin = path.join(ctx.base, "origin.git");
+  git(ctx.base, "init", "-q", "--bare", "-b", "main", origin);
+  git(ctx.repo, "remote", "add", "origin", origin);
+  git(ctx.repo, "push", "-q", "-u", "origin", "main");
+  return origin;
+}
+
+test("push asks (ask once), says how many commits, then pushes; the default branch isn't a GitHub write", async () => {
+  const ctx = setup({ "repo view": "main\n" });
+  const origin = withOrigin(ctx);
+  const { repo, gate, call } = ctx;
+  git(repo, "switch", "-q", "-c", "feat/y");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "one");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "two");
+  assert.equal(parsed(await call("git__push", { repo })).status, "pending");
+  const [req] = gate.listPending();
+  assert.equal(req.actionType, `git-github:${idOf(repo)}`);
+  assert.match(req.summary, /^Push feat\/y \(2 commit\(s\), a new branch\) to origin from /);
+  assert.match((await gate.decide(req.id, "allow-once")).result, /Pushed feat\/y/);
+  assert.match(git(origin, "branch", "--list", "feat/y"), /feat\/y/);
+  // Part 4 (#1193): the default branch is the dangerous tier's.
+  assert.equal(parsed(await call("git__push", { repo, branch: "main" })).status, "pending");
+  assert.equal(gate.listPending().at(-1).actionType, `git-danger:${idOf(repo)}`);
+});
+
+test("push runs the secret scan on what it would send, whoever committed it", async () => {
+  const ctx = setup({ "repo view": "main\n" });
+  withOrigin(ctx);
+  const { repo, gate, call } = ctx;
+  gate.setGitApprovalMode("github", "off");
+  git(repo, "switch", "-q", "-c", "leak");
+  fs.writeFileSync(path.join(repo, "k.txt"), `AKIA${"A".repeat(16)}\n`);
+  git(repo, "add", "k.txt");
+  git(repo, "commit", "-q", "-m", "key");
+  assert.match(parsed(await call("git__push", { repo })).error, /key-shaped string.*didn't push/);
+});
+
+test("PR and issue text is sanitized, passed as flag values, and shown in the prompt", async () => {
+  const ctx = setup({ "repo view": "main\n", "pr create": "https://github.com/x/y/pull/9\n", "pr view": "Old title\n", "issue view": "Bug\n" }, {
+    DISCORD_TOKEN: "discord-secret-value-123",
+  });
+  const { repo, gate, ghCalls, call } = ctx;
+  git(repo, "switch", "-q", "-c", "feat/z");
+  const body = "-- I changed C:\\Users\\me\\x.js, token discord-secret-value-123.\n\nCo-authored-by: Bot <b@x>";
+  await call("github__write", { repo, action: "pr_create", title: "--help", body });
+  const [req] = gate.listPending();
+  assert.match(req.summary, /^Open a PR in .*: feat\/z -> main, "--help": "-- I changed \[local path\],? token \[redacted\]\."$/);
+  await gate.decide(req.id, "allow-once");
+  const create = ghCalls.find((c) => c.args[1] === "create").args;
+  assert.deepEqual(create.slice(0, 4), ["pr", "create", "--base=main", "--head=feat/z"]);
+  assert.equal(create[4], "--title=--help");
+  assert.match(create[5], /^--body=-- I changed \[local path\],? token \[redacted\]\.$/);
+
+  gate.setGitApprovalMode("github", "off");
+  assert.match(await call("github__write", { repo, action: "pr_edit", number: 9, add_labels: ["bug"], remove_labels: ["-x"] }), /Edited pr #9/);
+  assert.deepEqual(ghCalls.at(-1).args, ["pr", "edit", "9", "--add-label=bug", "--remove-label=-x"]);
+  assert.match(parsed(await call("github__write", { repo, action: "issue_edit", number: 3, add_labels: ["a,b"] })).error, /isn't a label/);
+  assert.match(await call("github__write", { repo, action: "issue_close", number: 3, reason: "not_planned" }), /as not planned/);
+  assert.deepEqual(ghCalls.at(-1).args, ["issue", "close", "3", "--reason=not planned"]);
+  assert.match(parsed(await call("github__write", { repo, action: "rerun_failed", run_id: "1 --web" })).error, /run_id/);
+  assert.match(parsed(await call("github__write", { repo, action: "pr_comment", number: 9 })).error, /body is required/);
+});
+
+test("GitHub writes are refused while a game runs", async () => {
+  const { repo, gate, call, ghCalls, state } = setup({ "issue view": "Bug\n" });
+  gate.setGitApprovalMode("github", "off");
+  state.gaming = true;
+  assert.match(parsed(await call("github__write", { repo, action: "issue_comment", number: 3, body: "hi" })).error, /game is running/);
+  assert.ok(!ghCalls.some((c) => c.args[1] === "comment"));
+});
+
+// #1193: the dangerous tier.
+test("merging a PR always asks by default, shows what it merges and its failing checks, and pins the head commit", async () => {
+  const pr = { title: "Add x", state: "OPEN", isDraft: false, headRefName: "feat/x", baseRefName: "main", headRefOid: "abc123", commits: [{}, {}, {}] };
+  const { repo, gate, ghCalls, call } = setup({
+    "pr view": JSON.stringify(pr),
+    "pr checks": { code: 1, stdout: JSON.stringify([{ name: "tests", bucket: "fail" }, { name: "lint", bucket: "pass" }]), stderr: "" },
+  });
+  assert.equal(parsed(await call("github__write", { repo, action: "pr_merge", number: 7, method: "squash" })).status, "pending");
+  const [req] = gate.listPending();
+  assert.equal(req.actionType, `git-danger:${idOf(repo)}`);
+  assert.match(req.summary, /^Merge PR #7 "Add x" in .* \(squash\): feat\/x -> main, 3 commit\(s\); checks NOT green: tests \(fail\)$/);
+  await gate.decide(req.id, "always-allow");
+  assert.deepEqual(ghCalls.at(-1).args, ["pr", "merge", "7", "--squash", "--match-head-commit=abc123"]);
+  // "Always" didn't stick: the next merge asks again.
+  assert.equal(parsed(await call("github__write", { repo, action: "pr_merge", number: 7 })).status, "pending");
+  assert.equal(gate.isGranted(`git-danger:${idOf(repo)}`), false);
+  // Unless I choose "ask once" for this tier myself.
+  gate.setGitApprovalMode("danger", "once");
+  await call("github__write", { repo, action: "pr_merge", number: 7 });
+  await gate.decide(gate.listPending().at(-1).id, "always-allow");
+  assert.match(await call("github__write", { repo, action: "pr_merge", number: 7 }), /Merged PR #7/);
+});
+
+test("pushing to the default branch, force-pushing and deleting a remote branch are dangerous", async () => {
+  const ctx = setup({ "repo view": "main\n" });
+  const origin = withOrigin(ctx);
+  const { repo, gate, call } = ctx;
+  const decide = async () => (await gate.decide(gate.listPending().at(-1).id, "allow-once")).result;
+
+  git(repo, "commit", "-q", "--allow-empty", "-m", "on main");
+  await call("git__push", { repo, branch: "main" });
+  assert.match(gate.listPending().at(-1).summary, /^Push 1 commit\(s\) to main, the default branch, on origin, from /);
+  assert.equal(gate.listPending().at(-1).actionType, `git-danger:${idOf(repo)}`);
+  assert.match(await decide(), /Pushed main/);
+  assert.equal(git(origin, "log", "-1", "--format=%s", "main"), "on main");
+
+  git(repo, "switch", "-q", "-c", "feat/f");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "f1");
+  git(repo, "push", "-q", "-u", "origin", "feat/f");
+  git(repo, "commit", "-q", "--amend", "--allow-empty", "-m", "f1 again");
+  await call("git__push", { repo, force: true });
+  assert.match(gate.listPending().at(-1).summary, /^Force-push feat\/f to origin from .*, with lease: drops 1 commit\(s\) now on origin and pushes 1$/);
+  assert.match(await decide(), /Force-pushed feat\/f/);
+  assert.equal(git(origin, "log", "-1", "--format=%s", "feat/f"), "f1 again");
+
+  await call("git__push", { repo, branch: "feat/f", delete: true });
+  assert.match(gate.listPending().at(-1).summary, /^Delete the branch feat\/f on origin, from .* \(at \w{8}; 1 commit\(s\) on it aren't on main\)$/);
+  assert.match(await decide(), /Deleted feat\/f/);
+  assert.equal(git(origin, "branch", "--list", "feat/f"), "");
+  assert.match(parsed(await call("git__push", { repo, branch: "main", delete: true })).error, /never delete it/);
+});
+
+test("the lease holds: a force-push asked for before origin moved doesn't overwrite the new commit", async () => {
+  const ctx = setup({ "repo view": "main\n" });
+  const origin = withOrigin(ctx);
+  const { base, repo, gate, call } = ctx;
+  git(repo, "switch", "-q", "-c", "feat/l");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "l1");
+  git(repo, "push", "-q", "-u", "origin", "feat/l");
+  git(repo, "commit", "-q", "--amend", "--allow-empty", "-m", "l1 rewritten");
+  await call("git__push", { repo, force: true });
+  // Someone else pushes to the branch before I approve.
+  const other = path.join(base, "other");
+  git(base, "clone", "-q", "-b", "feat/l", origin, other);
+  git(other, "-c", "user.name=O", "-c", "user.email=o@x", "commit", "-q", "--allow-empty", "-m", "theirs");
+  git(other, "push", "-q", "origin", "feat/l");
+  git(repo, "fetch", "-q", "origin");
+  await assert.rejects(gate.decide(gate.listPending()[0].id, "allow-once"), /stale info|rejected/);
+  assert.equal(git(origin, "log", "-1", "--format=%s", "feat/l"), "theirs");
+});
+
+test("reset and rebase are local until they rewrite pushed commits; a hard reset is always dangerous", async () => {
+  const ctx = setup({ "repo view": "main\n" });
+  withOrigin(ctx);
+  const { repo, gate, call } = ctx;
+  git(repo, "commit", "-q", "--allow-empty", "-m", "pushed");
+  git(repo, "push", "-q", "origin", "main");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "local only");
+  await call("git__change", { repo, action: "reset", ref: "HEAD~1", mode: "soft" });
+  let req = gate.listPending().at(-1);
+  assert.equal(req.actionType, `git-local:${idOf(repo)}`);
+  assert.match(req.summary, /Reset .* to HEAD~1 \(soft\): takes 1 commit\(s\), 0 of them already pushed off the branch/);
+  await call("git__change", { repo, action: "reset", ref: "HEAD~2", mode: "mixed" });
+  req = gate.listPending().at(-1);
+  assert.equal(req.actionType, `git-danger:${idOf(repo)}`);
+  assert.match(req.summary, /2 commit\(s\), 1 of them already pushed/);
+  await call("git__change", { repo, action: "reset", ref: "HEAD", mode: "hard" });
+  assert.equal(gate.listPending().at(-1).actionType, `git-danger:${idOf(repo)}`);
+  assert.match(gate.listPending().at(-1).summary, /throwing away uncommitted changes/);
+  await call("git__change", { repo, action: "rebase", ref: "HEAD~2" });
+  assert.equal(gate.listPending().at(-1).actionType, `git-danger:${idOf(repo)}`);
+  assert.match(parsed(await call("git__change", { repo, action: "reset", ref: "--hard" })).error, /isn't a ref/);
+});
+
+test("a rebase that conflicts lists the files, and rebase_abort undoes it", async () => {
+  const { repo, gate, call } = setup();
+  gate.setGitApprovalMode("local", "off");
+  git(repo, "switch", "-q", "-c", "side");
+  fs.writeFileSync(path.join(repo, "a.txt"), "side\n");
+  git(repo, "commit", "-q", "-am", "side");
+  git(repo, "switch", "-q", "main");
+  fs.writeFileSync(path.join(repo, "a.txt"), "main\n");
+  git(repo, "commit", "-q", "-am", "main");
+  git(repo, "switch", "-q", "side");
+  assert.match(await call("git__change", { repo, action: "rebase", ref: "main" }), /stopped at conflicts in:\na\.txt[\s\S]*rebase_continue \(or rebase_abort\)/);
+  assert.match(await call("git__change", { repo, action: "rebase_abort" }), /Aborted the rebase/);
+  assert.equal(git(repo, "log", "-1", "--format=%s"), "side");
+});
+
 test("runCommand fails, not cuts short, when the output passes its cap", async () => {
   const r = await runCommand(process.execPath, ["-e", "process.stdout.write(\"x\".repeat(17 * 1024 * 1024))"]);
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /passed 16 MB/);
+});
+
+// #1194
+test("a review reply goes to the comment's thread; a reply after outside text asks even with no approval set", async () => {
+  const { repo, gate, ghCalls, source, call } = setup({ "pr view": "My PR\n" });
+  gate.setGitApprovalMode("github", "off");
+  assert.match(await call("github__write", { repo, action: "review_reply", number: 8, comment_id: "55", body: "Renamed it." }), /Replied to review comment 55/);
+  assert.deepEqual(ghCalls.at(-1).args, ["api", "--method=POST", "repos/{owner}/{repo}/pulls/8/comments/55/replies", "--raw-field=body=Renamed it.", "--jq", ".html_url"]);
+  assert.match(parsed(await call("github__write", { repo, action: "review_reply", number: 8, comment_id: "x", body: "hi" })).error, /comment_id/);
+
+  const tainted = parsed(await source.executeTool("github__write", { repo, action: "review_reply", number: 8, comment_id: "56", body: "ok", untrusted_sources: ["GitHub review comments"] }));
+  assert.equal(tainted.status, "pending");
+  assert.ok(gate.listPending()[0].forceReview);
 });
 
 test("after outside content, a git change raises exactly one prompt: what she'll do and what she just read", async () => {
@@ -319,5 +514,33 @@ test("after outside content, a git change raises exactly one prompt: what she'll
   // A clean turn: she can't claim outside content herself; the setting applies.
   const clean = wrapWithRiskGate(policy, gate, { mode: "ask" });
   assert.match(await clean.executeTool("git__change", { repo, action: "switch", branch: "main", untrusted_sources: ["made up"] }), /Switched/);
+  assert.equal(gate.listPending().length, 0);
+});
+
+test("after outside content, a GitHub write raises exactly one prompt too", async () => {
+  const { wrapWithRiskGate } = require("../ai/tool-risk");
+  const { repo, gate, source, ghCalls } = setup({ "issue view": "Bug\n" });
+  const policy = { tools: [], isKnownTool: () => true, executeTool: (name, args) => source.executeTool(name, args) };
+  const tainted = wrapWithRiskGate(policy, gate, { mode: "smart", untrustedSources: ["GitHub"] });
+  assert.equal(parsed(await tainted.executeTool("github__write", { repo, action: "issue_comment", number: 3, body: "hi" })).status, "pending");
+  const [req, ...more] = gate.listPending();
+  assert.equal(more.length, 0);
+  assert.match(req.summary, /^Comment on issue #3 \("Bug"\) in .*: "hi" -- she just read outside text this turn \(from: GitHub\)/);
+  await gate.decide(req.id, "allow-once");
+  assert.equal(gate.listPending().length, 0);
+  assert.deepEqual(ghCalls.at(-1).args, ["issue", "comment", "3", "--body=hi"]);
+});
+
+test("after outside content, merging a PR raises exactly one prompt", async () => {
+  const { wrapWithRiskGate } = require("../ai/tool-risk");
+  const pr = { title: "Add x", state: "OPEN", isDraft: false, headRefName: "feat/x", baseRefName: "main", headRefOid: "abc123", commits: [{}] };
+  const { repo, gate, source } = setup({ "pr view": JSON.stringify(pr), "pr checks": JSON.stringify([]) });
+  const policy = { tools: [], isKnownTool: () => true, executeTool: (name, args) => source.executeTool(name, args) };
+  const tainted = wrapWithRiskGate(policy, gate, { mode: "ask", untrustedSources: ["CI log"] });
+  assert.equal(parsed(await tainted.executeTool("github__write", { repo, action: "pr_merge", number: 7 })).status, "pending");
+  const pending = gate.listPending();
+  assert.equal(pending.length, 1);
+  assert.match(pending[0].summary, /^Merge PR #7 "Add x" .* -- she just read outside text this turn \(from: CI log\)/);
+  await gate.decide(pending[0].id, "allow-once");
   assert.equal(gate.listPending().length, 0);
 });

@@ -298,11 +298,13 @@ function isOffered(file, now = Date.now()) {
   return (offered.get(path.resolve(String(file || "")).toLowerCase()) || 0) > now;
 }
 
-// Full Windows paths in a message: "C:\with spaces\a.pdf" in quotes, or
-// C:\no\spaces.pdf without.
+// Full paths in a message: "C:\with spaces\a.pdf" in quotes, or
+// C:\no\spaces.pdf (or /no/spaces.pdf) without.
 function pathsIn(text) {
-  const quoted = [...String(text || "").matchAll(/"([a-zA-Z]:\\[^"\n]+)"/g)].map((m) => m[1]);
-  const bare = [...String(text || "").matchAll(/(?:^|\s)([a-zA-Z]:\\[^\s"'<>|?*]+)/g)].map((m) => trimEnd(m[1], (c) => ".,;:!)".includes(c)));
+  // #1204: Windows (C:\...) or POSIX (/...) -- whichever the backend runs
+  // on; only files that exist are offered, so the other kind finds nothing.
+  const quoted = [...String(text || "").matchAll(/"((?:[a-zA-Z]:\\|\/)[^"\n]+)"/g)].map((m) => m[1]);
+  const bare = [...String(text || "").matchAll(/(?:^|\s)((?:[a-zA-Z]:\\|\/)[^\s"'<>|?*]+)/g)].map((m) => trimEnd(m[1], (c) => ".,;:!)".includes(c)));
   return [...quoted, ...bare];
 }
 
