@@ -5,6 +5,7 @@ const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
 const trayNotifier = require("../../node-bot/tray-notifier");
+const { isCredentialPath, trimEnd } = require("../../node-bot/ai/tool-policy");
 
 // Windows ships Edge (Chromium-based) on every install -- since Mana
 // targets Windows, this is the "already available" browser rather than
@@ -35,11 +36,22 @@ const PROFILE_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "browse
 const LAUNCH_ARGS = ["--disable-gpu", "--renderer-process-limit=1"];
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 const IDLE_CLOSE_MS = 5 * 60 * 1000;
+// #1159: tabs she may have open at once (MANA_BROWSER_MAX_TABS, 1 to 5).
+const DEFAULT_MAX_TABS = 3;
+const SESSION_METHODS = ["navigate", "click", "type", "select", "scroll", "hover", "press", "drag", "back", "find", "snapshot", "lookAndClick", "devtools"];
 const CHECK_EVERY_MS = 30 * 1000;
+// #1161: console messages and requests kept per page.
+const MAX_LOG = 100;
+// #1158: how long a file I point her to stays hers to upload.
+const OFFER_MS = 30 * 60 * 1000;
+// Resolved, lower-cased path -> until when she may upload it.
+const offered = new Map();
 
 let session = null;
 let context = null;
-let activePage = null;
+// #1159: her open tabs ([{ page, session }]) and which one she's on.
+let tabs = [];
+let current = 0;
 let starting = null;
 let closing = null;
 let checkTimer = null;
@@ -53,6 +65,8 @@ let takenOver = null;
 let opening = false;
 let resumeUrl = null;
 let needsYou = null;
+// #1161: a site test loads images whether or not the panel watches.
+let loadMedia = false;
 
 // Why her browser mustn't run right now, or null -- self-work's gates.
 function blocker(deps) {
@@ -104,47 +118,208 @@ async function launch(deps, options) {
   return chromium.launchPersistentContext(PROFILE_DIR, { executablePath, args: LAUNCH_ARGS, ...options });
 }
 
+// One tab: its page, with the resource blocking and health counters, and
+// the session that reads and acts on it.
+async function setUpTab(page) {
+  const health = { blockedAds: 0 };
+  // #1161: the current page's console and network, for her dev tools.
+  const log = { console: [], network: [] };
+  // Requests we abort ourselves (ads, media) aren't the site's failures.
+  const aborted = new WeakSet();
+  // #1168: what the current page lost to ad blocking.
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame()) return;
+    health.blockedAds = 0;
+    log.console = [];
+    log.network = [];
+  });
+  const keep = (list, entry) => list.push(entry) > MAX_LOG && list.shift();
+  page.on("console", (message) => keep(log.console, { type: message.type(), text: String(message.text()).slice(0, 500) }));
+  page.on("pageerror", (error) => keep(log.console, { type: "error", text: String(error?.message || error).slice(0, 500) }));
+  page.on("requestfinished", async (request) => {
+    const response = await request.response().catch(() => null);
+    keep(log.network, { method: request.method(), url: request.url(), status: response?.status() ?? null, ms: Math.round(request.timing()?.responseEnd ?? -1) });
+  });
+  page.on("requestfailed", (request) => {
+    if (aborted.has(request)) return;
+    keep(log.network, { method: request.method(), url: request.url(), failure: request.failure()?.errorText || "failed" });
+  });
+  // #1158: a download waits for my OK (the tool source); from anywhere
+  // else (the HTTP routes) it's dropped.
+  page.on("download", (download) => {
+    Promise.resolve(gateDeps.onDownload ? gateDeps.onDownload(download) : download.cancel()).catch(() => {});
+  });
+  // Images, video and fonts only while the rail's Browser panel is
+  // watching, for its screenshot; she reads and acts without them. Ad
+  // and tracker domains never (#1168).
+  await page.route("**/*", (route) => {
+    const request = route.request();
+    if (isAdHost(hostOf(request.url()))) {
+      health.blockedAds += 1;
+      aborted.add(request);
+      return route.abort();
+    }
+    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.() && !loadMedia) {
+      aborted.add(request);
+      return route.abort();
+    }
+    return route.continue();
+  });
+  return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }), pageLog: () => log }) };
+}
+
 async function startSession(deps) {
   const env = deps.env || process.env;
   const ctx = await launch(deps, { headless: env.MANA_BROWSER_HEADLESS !== "0" });
   // Edge went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());
-  let page;
-  const health = { blockedAds: 0, pageErrors: 0 };
+  let tab;
   try {
-    page = ctx.pages()[0] || (await ctx.newPage());
-    // #1168: what the current page lost to ad blocking, and its script
-    // errors -- together they say the site may need what was blocked.
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame()) Object.assign(health, { blockedAds: 0, pageErrors: 0 });
-    });
-    page.on("pageerror", () => (health.pageErrors += 1));
-    // Images, video and fonts only while the rail's Browser panel is
-    // watching, for its screenshot; she reads and acts without them. Ad
-    // and tracker domains never (#1168).
-    await page.route("**/*", (route) => {
-      const request = route.request();
-      if (isAdHost(hostOf(request.url()))) {
-        health.blockedAds += 1;
-        return route.abort();
-      }
-      return BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.()
-        ? route.abort()
-        : route.continue();
-    });
+    tab = await setUpTab(ctx.pages()[0] || (await ctx.newPage()));
     // #1139: after I hand back, she carries on where I left off.
-    if (resumeUrl) await page.goto(resumeUrl).catch(() => {});
+    if (resumeUrl) await tab.page.goto(resumeUrl).catch(() => {});
     resumeUrl = null;
   } catch (e) {
     await ctx.close().catch(() => {});
     throw e;
   }
   context = ctx;
-  activePage = page;
-  session = createBrowserSession({ page, pageHealth: () => ({ ...health }) });
+  tabs = [tab];
+  current = 0;
+  session = tabbedSession(deps);
   checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
   checkTimer.unref?.();
   return session;
+}
+
+const currentPage = () => tabs[current]?.page || null;
+
+// #1159: what the tools call -- every page action on the tab she's on,
+// each result listing her tabs once there's more than one, plus
+// tab({ do: "open" | "switch" | "close" }).
+function tabbedSession(deps) {
+  const env = deps.env || process.env;
+  const maxTabs = Math.min(5, Math.max(1, Math.floor(Number(env.MANA_BROWSER_MAX_TABS)) || DEFAULT_MAX_TABS));
+
+  async function withTabs(result) {
+    if (tabs.length < 2) return result;
+    const list = await Promise.all(tabs.map(async (t, i) => `${i + 1}. ${await t.page.title()} -- ${await t.page.url()}${i === current ? " (current)" : ""}`));
+    return { ...result, tabs: list };
+  }
+
+  function tabNumber(number) {
+    const n = Number(number);
+    if (!Number.isInteger(n) || n < 1 || n > tabs.length) throw new Error(`there's no tab ${number}; she has ${tabs.length}`);
+    return n - 1;
+  }
+
+  async function open(url) {
+    if (tabs.length >= maxTabs) throw new Error(`${tabs.length} tabs are open, the most she may have; close one first`);
+    // The RAM gate applies to every tab she adds.
+    const blocked = blocker(gateDeps);
+    if (blocked) throw new Error(`no new tab while ${blocked}`);
+    const tab = await setUpTab(await context.newPage());
+    try {
+      const result = await tab.session.navigate(url);
+      tabs.push(tab);
+      current = tabs.length - 1;
+      return withTabs(result);
+    } catch (e) {
+      await tab.page.close().catch(() => {});
+      throw e;
+    }
+  }
+
+  async function close(number) {
+    const i = tabNumber(number);
+    if (tabs.length === 1) throw new Error("that's her only tab");
+    const [tab] = tabs.splice(i, 1);
+    if (current > i || current === tabs.length) current -= 1;
+    await tab.page.close().catch(() => {});
+    return withTabs(await tabs[current].session.snapshot());
+  }
+
+  async function tab(args = {}) {
+    if (args.do === "open") return open(args.url);
+    if (args.do === "switch") {
+      current = tabNumber(args.number);
+      return withTabs(await tabs[current].session.snapshot());
+    }
+    if (args.do === "close") return close(args.number);
+    throw new Error('do must be "open", "switch" or "close"');
+  }
+
+  // #1158: only a file I pointed her to.
+  async function upload(ref, file) {
+    if (!isOffered(file)) {
+      throw new Error("she can only upload a file the user pointed her to (the Browser panel's \"Give her a file\", or its full path in their message)");
+    }
+    return withTabs(await tabs[current].session.upload(ref, path.resolve(String(file))));
+  }
+
+  // #1161: a site test sees the pages as I would, images included.
+  async function testPage(url, sizes) {
+    loadMedia = true;
+    try {
+      return await tabs[current].session.testPage(url, sizes);
+    } finally {
+      loadMedia = false;
+    }
+  }
+
+  const facade = { tab, upload, testPage, screenshot: () => tabs[current].session.screenshot(), url: () => currentPage().url() };
+  for (const name of SESSION_METHODS) {
+    facade[name] = async (...args) => withTabs(await tabs[current].session[name](...args));
+  }
+  return facade;
+}
+
+// #1158: files I point her to -- from the Browser panel's picker, or full
+// paths in my own chat message -- are the only ones she may upload, for
+// OFFER_MS. Returns the ones that exist and aren't secrets.
+function offerFiles(paths, now = Date.now()) {
+  const added = [];
+  for (const p of Array.isArray(paths) ? paths : []) {
+    const full = path.resolve(String(p));
+    // Keys and secrets (.env, id_rsa, *.pem...) never, even if I name them.
+    if (isCredentialPath(path.basename(full))) continue;
+    try {
+      if (!fs.statSync(full).isFile()) continue;
+    } catch (e) {
+      continue;
+    }
+    offered.set(full.toLowerCase(), now + OFFER_MS);
+    added.push(full);
+  }
+  return added;
+}
+
+function isOffered(file, now = Date.now()) {
+  return (offered.get(path.resolve(String(file || "")).toLowerCase()) || 0) > now;
+}
+
+// Full Windows paths in a message: "C:\with spaces\a.pdf" in quotes, or
+// C:\no\spaces.pdf without.
+function pathsIn(text) {
+  const quoted = [...String(text || "").matchAll(/"([a-zA-Z]:\\[^"\n]+)"/g)].map((m) => m[1]);
+  const bare = [...String(text || "").matchAll(/(?:^|\s)([a-zA-Z]:\\[^\s"'<>|?*]+)/g)].map((m) => trimEnd(m[1], (c) => ".,;:!)".includes(c)));
+  return [...quoted, ...bare];
+}
+
+function offerFilesFromMessage(text) {
+  return offerFiles(pathsIn(text));
+}
+
+// #1159: when her task (the reply) ends, only the tab she's on stays --
+// popups a site opened by itself go too.
+async function closeExtraTabs() {
+  if (!tabs.length) return;
+  const keep = tabs[current];
+  const extra = new Set([...tabs.map((t) => t.page), ...(context?.pages?.() || [])]);
+  extra.delete(keep.page);
+  tabs = [keep];
+  current = 0;
+  await Promise.all([...extra].map((page) => page.close().catch(() => {})));
 }
 
 // #1139: Chromium can't turn a headless session visible, so Take over
@@ -156,7 +331,7 @@ async function takeOver(deps = {}, fallbackUrl = null) {
   if (takenOver || opening) return;
   opening = true;
   try {
-    let url = activePage ? await activePage.url() : null;
+    let url = currentPage() ? await currentPage().url() : null;
     if (!/^https?:/i.test(url || "")) url = /^https?:/i.test(fallbackUrl || "") ? fallbackUrl : null;
     await closeSession();
     // No viewport emulation (the page fits the window), and no "controlled
@@ -213,7 +388,8 @@ function forget() {
   clearInterval(checkTimer);
   checkTimer = null;
   context = null;
-  activePage = null;
+  tabs = [];
+  current = 0;
   session = null;
 }
 
@@ -291,6 +467,12 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
 
   // #1139: the Browser panel's Take over and Done.
   const checkAdminAuth = deps.checkAdminAuth || (() => true);
+
+  // #1158: the Browser panel's "Give her a file".
+  app.post("/browser/offer-files", (req, res) => {
+    if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+    return res.json({ offered: offerFiles(req.body?.paths) });
+  });
   app.post("/browser/take-over", async (req, res) => {
     if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
     try {
@@ -335,6 +517,10 @@ module.exports = {
   resolveExecutablePath,
   checkSession,
   closeSession,
+  closeExtraTabs,
+  offerFiles,
+  offerFilesFromMessage,
+  pathsIn,
   takeOver,
   handBack,
   requestHandOver,
@@ -350,6 +536,8 @@ module.exports = {
     gateDeps = {};
     takenOver = null;
     opening = false;
+    offered.clear();
+    loadMedia = false;
     resumeUrl = null;
     needsYou = null;
   },

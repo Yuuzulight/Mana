@@ -49,6 +49,8 @@ public class BrowserToolTests
                 "/browser-automation/activity" => activity(),
                 "/browser/close" => """{"ok":true}""",
                 "/browser/take-over" or "/browser/hand-back" => NotTakenOver,
+                "/browser-automation/site-test" => """{"url":"","title":"Site test: shop.test","text":"# Site test: shop.test\n\n### phone\n![phone screenshot](shot-1)\n\n- Console errors: none","images":{"shot-1":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},"truncated":false,"needsBrowser":null}""",
+                "/browser/offer-files" => """{"offered":["C:\\files\\cv.pdf"]}""",
                 "/web/read" => readerPage,
                 _ => null,
             };
@@ -197,6 +199,52 @@ public class BrowserToolTests
             blocked = "null";
             Pump(tool.RefreshAsync());
             Assert.Equal("", Note().Text);
+        });
+    }
+
+    // #1161: the Test report button opens her latest site test in the
+    // reader, drawn by Folio; it's off until there is one.
+    [Fact]
+    public void Tool_OpensHerLatestSiteTestReport()
+    {
+        RunSta(() =>
+        {
+            var requests = new List<string>();
+            var siteTest = "null";
+            using var tool = new BrowserTool(Backend(requests, () => Activity("t1").Replace("\"takeOver\":", $"\"siteTest\":{siteTest},\"takeOver\":")));
+            var report = tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Test report");
+            Pump(tool.RefreshAsync());
+            Assert.False(report.Enabled);
+
+            siteTest = """{"title":"Site test: shop.test","at":"t1"}""";
+            Pump(tool.RefreshAsync());
+            Assert.True(report.Enabled);
+            Click(report);
+            Pump(() => tool.Reader.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Label>()).Any(l => l.Text == "Site test: shop.test"));
+            Assert.Contains("GET /browser-automation/site-test", requests);
+        });
+    }
+
+    // #1158: the files she may upload come from my picker; nothing is sent
+    // when I cancel it.
+    [Fact]
+    public void Tool_GivesHerOnlyTheFilesIPick()
+    {
+        RunSta(() =>
+        {
+            var requests = new List<string>();
+            using var tool = new BrowserTool(Backend(requests, () => Activity("t1")));
+            string[]? picked = null;
+            tool.PickFiles = () => picked;
+            var give = tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Give her a file");
+
+            Click(give);
+            Assert.DoesNotContain(requests, r => r.Contains("offer-files"));
+
+            picked = [@"C:\files\cv.pdf"];
+            Click(give);
+            Pump(() => tool.Controls.OfType<Label>().Last().Text == "She may upload: cv.pdf");
+            Assert.Contains("""POST /browser/offer-files {"paths":["C:\\files\\cv.pdf"]}""", requests);
         });
     }
 

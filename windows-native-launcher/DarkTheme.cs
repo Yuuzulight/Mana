@@ -173,9 +173,12 @@ internal static class DarkTheme
     // no flicker.
     public static void ApplyPresetLive(string presetId, string? accentHex)
     {
-        var themed = Alive(ThemedForms).ToHashSet();
+        // Only this thread's windows: a window another thread owns can be
+        // closed under us mid-switch (the tests run one window per thread in
+        // parallel), and touching it from here is cross-thread anyway.
+        var themed = Alive(ThemedForms).Where(f => !f.InvokeRequired).ToHashSet();
         var forms = themed.Concat(Alive(TrackedForms)).Concat(Application.OpenForms.Cast<Form>())
-            .Where(f => !f.IsDisposed).Distinct().ToList();
+            .Where(f => !f.IsDisposed && !f.InvokeRequired).Distinct().ToList();
         // Only visible windows: WM_SETREDRAW on would also show a hidden one.
         var frozen = forms.Where(f => f.IsHandleCreated && f.Visible).ToList();
         foreach (var form in frozen)
