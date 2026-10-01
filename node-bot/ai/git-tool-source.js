@@ -329,14 +329,21 @@ function createGitToolSource(options = {}) {
   // (unless I said never), logged in the approvals audit; otherwise the
   // gate asks -- "ask" as forceReview, so "always" never sticks -- and runs
   // it once I allow it. payload: plain JSON of the checked change.
-  async function gated(tier, repo, summary, payload) {
+  // untrusted: where outside text this turn came from (ai/tool-risk.js
+  // passes it as untrusted_sources); then it asks whatever the setting
+  // says, in one prompt that says so.
+  async function gated(tier, repo, summary, payload, untrusted = []) {
     if (isGaming()) throw new Error(GAMING);
     if (!approvalGate) throw new Error("changes need the approval gate");
     const mode = resolveGitApprovalModes(approvalGate.getGitApprovalModes())[tier];
     const actionType = `git-${tier}:${repo.id}`;
     approvalGate.registerExecutor(actionType, perform);
     const never = approvalGate.listRemembered().some((r) => r.key === actionType && r.answer === "never");
-    if (mode === "off" && !never) {
+    const tainted = Array.isArray(untrusted) && untrusted.length > 0;
+    if (tainted) {
+      summary += ` -- she just read outside text this turn (from: ${untrusted.map((u) => String(u).slice(0, 40)).join(", ")}), so this asks whatever the setting says`;
+    }
+    if (mode === "off" && !never && !tainted) {
       const entry = { name: actionType, args: payload, decision: "no approval (setting)", summary };
       try {
         const result = await perform(payload);
@@ -347,7 +354,7 @@ function createGitToolSource(options = {}) {
         throw e;
       }
     }
-    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" });
+    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" || tainted });
     if (outcome.status === "approved") return outcome.result;
     if (outcome.status === "pending") {
       return JSON.stringify({
@@ -445,7 +452,7 @@ function createGitToolSource(options = {}) {
     const { top } = repo;
     const on = (await git(["rev-parse", "--abbrev-ref", "HEAD"], top)).trim();
     const where = `${top} (on ${on})`;
-    const local = (summary, payload) => gated("local", repo, summary, { top, ...payload });
+    const local = (summary, payload) => gated("local", repo, summary, { top, ...payload }, args.untrusted_sources);
     const branchArgs = () => {
       const branch = checkBranch(args.branch);
       const start = args.create && args.start ? checkRef(args.start) : undefined;

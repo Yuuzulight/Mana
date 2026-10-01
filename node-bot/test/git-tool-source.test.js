@@ -294,3 +294,26 @@ test("runCommand fails, not cuts short, when the output passes its cap", async (
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /passed 16 MB/);
 });
+
+test("after outside content, a git change raises exactly one prompt: what she'll do and what she just read", async () => {
+  const { wrapWithRiskGate } = require("../ai/tool-risk");
+  const { repo, gate, source } = setup();
+  gate.setGitApprovalMode("local", "off");
+  const policy = { tools: [], isKnownTool: () => true, executeTool: (name, args) => source.executeTool(name, args) };
+  const tainted = wrapWithRiskGate(policy, gate, { mode: "ask", untrustedSources: ["web page"] });
+  const out = parsed(await tainted.executeTool("git__change", { repo, action: "switch", branch: "x", create: true }));
+  assert.equal(out.status, "pending");
+  const pending = gate.listPending();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].actionType, `git-local:${idOf(repo)}`);
+  assert.match(pending[0].summary, /^Switch .* \(on main\) to a new branch x -- she just read outside text this turn \(from: web page\)/);
+  assert.equal(pending[0].forceReview, true);
+  await gate.decide(pending[0].id, "allow-once");
+  assert.equal(gate.listPending().length, 0, "allowing it doesn't raise a second prompt");
+  assert.equal(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), "x");
+
+  // A clean turn: she can't claim outside content herself; the setting applies.
+  const clean = wrapWithRiskGate(policy, gate, { mode: "ask" });
+  assert.match(await clean.executeTool("git__change", { repo, action: "switch", branch: "main", untrusted_sources: ["made up"] }), /Switched/);
+  assert.equal(gate.listPending().length, 0);
+});
