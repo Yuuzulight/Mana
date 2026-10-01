@@ -22,7 +22,7 @@ const DEFAULT_ROOTS = [path.join(__dirname, "..", ".."), "D:\\GitHub Projects\\F
 const REPO_ACTION_TYPE = "git-repo";
 const TIMEOUT_MS = 30 * 1000;
 const NETWORK_TIMEOUT_MS = 2 * 60 * 1000;
-const MAX_BUFFER = 4 * 1024 * 1024;
+const MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_OUTPUT = 12000;
 // origin/main, HEAD~2, v1.0, a sha, main..feature -- never a leading dash.
 const REF_RE = /^\w[\w./~^@{}-]{0,199}$/;
@@ -72,12 +72,17 @@ function stripAttribution(text) {
 function runCommand(cmd, args, { cwd, env, timeoutMs = TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     execFile(cmd, args, { cwd, env, windowsHide: true, timeout: timeoutMs, maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
-      // Past the buffer: keep what came, it's capped below anyway.
-      const full = err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-      const timedOut = Boolean(err?.killed) && !full;
-      const code = !err || full ? 0 : typeof err.code === "number" ? err.code : 1;
-      const why = timedOut ? `timed out after ${timeoutMs / 1000}s` : err && !full ? err.message : "";
-      resolve({ code, stdout: String(stdout || ""), stderr: String(stderr || "") || why, timedOut });
+      // Past the buffer is a failure, never a cut-short success: a diff the
+      // secret scan only saw part of must not pass it.
+      const tooBig = err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      const timedOut = Boolean(err?.killed) && !tooBig;
+      const code = !err ? 0 : typeof err.code === "number" ? err.code : 1;
+      const why = tooBig
+        ? `its output passed ${MAX_BUFFER / 1024 / 1024} MB; narrow it down`
+        : timedOut
+          ? `timed out after ${timeoutMs / 1000}s`
+          : err?.message || "";
+      resolve({ code, stdout: String(stdout || ""), stderr: tooBig || timedOut ? why : String(stderr || why), timedOut });
     });
   });
 }

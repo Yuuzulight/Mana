@@ -169,3 +169,9 @@ test("runCommand stops a call at its timeout", async () => {
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /timed out/);
 });
+
+test("runCommand fails, not cuts short, when the output passes its cap", async () => {
+  const r = await runCommand(process.execPath, ["-e", "process.stdout.write(\"x\".repeat(17 * 1024 * 1024))"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /passed 16 MB/);
+});
