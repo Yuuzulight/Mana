@@ -4970,6 +4970,8 @@ function registerRoutes(app, upload, deps = {}) {
         reply = await replyMaybeWithToolsUnmetered(promptText);
       } finally {
         agentActivity.finish(activityRun);
+        // #1159: her task is over; only the tab she's on stays open.
+        browserAutomationPlugin.closeExtraTabs().catch(() => {});
       }
       const usageAfter = activeLlamaServerRuntime.getLastPromptUsage?.();
       turnPromptUsage = usageAfter && usageAfter !== usageBefore ? usageAfter : null;

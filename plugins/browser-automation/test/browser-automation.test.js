@@ -293,21 +293,20 @@ test("#1168: isAdHost matches listed domains and their subdomains only", () => {
   assert.equal(isAdHost(""), false);
 });
 
-test("#1168: blocked ads only flag the page when it looks broken: errors or next to nothing there", async () => {
-  let health = { blockedAds: 4, pageErrors: 0 };
+test("#1168/#1179: blocked ads only flag a page that looks thin, not one that threw errors but works", async () => {
+  let health = { blockedAds: 4 };
   const page = createFakePage();
   const session = createBrowserSession({ page, pageHealth: () => health });
-  assert.equal((await session.snapshot()).blockedMayBreak, undefined); // 6 elements, fine
+  // bbc.com-like: six ads blocked, script errors, but plenty to read and use.
+  health = { blockedAds: 6, pageErrors: 5 };
+  page.state.text = "News ".repeat(100);
+  assert.equal((await session.snapshot()).blockedMayBreak, undefined);
 
-  health = { blockedAds: 4, pageErrors: 1 };
-  assert.equal((await session.snapshot()).blockedMayBreak, 4);
-
-  health = { blockedAds: 4, pageErrors: 0 };
   page.state.aria = '- button "Only" [ref=e1]';
   page.state.text = "Loading...";
-  assert.equal((await session.snapshot()).blockedMayBreak, 4);
+  assert.equal((await session.snapshot()).blockedMayBreak, 6);
 
-  health = { blockedAds: 0, pageErrors: 3 };
+  health = { blockedAds: 0 };
   assert.equal((await session.snapshot()).blockedMayBreak, undefined);
 });
 
@@ -321,7 +320,7 @@ test("#1168: an action that times out on a page with blocked ads says the site m
   const noAds = createBrowserSession({ page });
   await assert.rejects(() => noAds.click("e5"), (e) => !/may need/.test(e.message));
 
-  const session = createBrowserSession({ page, pageHealth: () => ({ blockedAds: 2, pageErrors: 0 }) });
+  const session = createBrowserSession({ page, pageHealth: () => ({ blockedAds: 2 }) });
   await assert.rejects(
     () => session.click("e5"),
     (e) => /Timeout 5000ms exceeded\. -- this site may need the 2 ad or tracker requests that were blocked/.test(e.message) && e.blockedMayBreak === 2,

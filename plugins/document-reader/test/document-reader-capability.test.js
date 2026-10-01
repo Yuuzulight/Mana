@@ -84,5 +84,5 @@ test("plugin metadata matches the shape other Mana plugins use", () => {
   assert.equal(documentReaderPlugin.category, "Knowledge");
   assert.equal(typeof documentReaderPlugin.registerRoutes, "function");
   const health = documentReaderPlugin.getHealth();
-  assert.ok(["configured", "degraded"].includes(health.status));
+  assert.equal(health.status, "configured");
 });

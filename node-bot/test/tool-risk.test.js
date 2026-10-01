@@ -89,6 +89,7 @@ test("#669 tiers: built-ins keep their fixed tier and are not content-inspected"
   assert.equal(classifyToolCall("browser_automation__press", { key: "Enter" }).tier, "network");
   assert.equal(classifyToolCall("browser_automation__drag", { from: "e1", to: "e2" }).tier, "network");
   assert.equal(classifyToolCall("browser_automation__hover", { ref: "e1" }).tier, "read");
+  assert.equal(classifyToolCall("browser_automation__batch", { steps: [] }).tier, "network");
   assert.deepEqual(classifyToolCall("session_search__query", { query: "https://x.com" }).hosts, []);
 });
 

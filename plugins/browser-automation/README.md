@@ -24,8 +24,9 @@ browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
   Browser panel is on screen, for its screenshot.
 - Ad and tracker domains (`ad-hosts.js`, a short hand-kept list) are always
   blocked (#1168): under site isolation each cross-site ad iframe is its own
-  renderer. When ads were blocked and the page looks broken (script errors,
-  next to nothing to read or use, or an action timing out), her result and
+  renderer. When ads were blocked and the page looks broken (next to
+  nothing to read or use, or an action or page load timing out; script
+  errors alone don't count, #1179), her result and
   the Browser panel say the site may need them, with "Open in my browser".
   She doesn't retry without blocking.
 - Closes after 5 idle minutes, and never starts (or closes at once) while
@@ -43,6 +44,21 @@ elements that appeared or went; a new page (or one that mostly changed)
 gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
+
+## Tabs (#1159)
+
+`tab { do: "open", url }`, `{ do: "switch", number }`, `{ do: "close", number }`:
+up to 3 tabs (`MANA_BROWSER_MAX_TABS`, 1 to 5) for comparing pages. With
+more than one open, every answer lists them (title and URL). A new tab
+isn't opened while RAM is above 85%, and when her reply ends only the tab
+she's on stays open (popups a site opened go too).
+
+## Batches (#1160)
+
+`batch { steps }` runs up to five steps (any action but `hand_over`, each
+with its own arguments) in one call. Each step goes through the same site
+check and activity feed as when called alone. The first step that fails
+or needs my OK ends the batch, and she gets a fresh look at the page.
 
 ## Finding an element by description (#1156)
 
