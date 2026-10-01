@@ -597,6 +597,71 @@ public class ManaProcessManagerTests
         }
     }
 
+    [Fact]
+    public async Task BackendCrashed_FiresWithTheExitCodeWhenNodeBotDiesOnItsOwn()
+    {
+        var root = FakeNodeBot("setTimeout(() => process.exit(3), 300);");
+        var crashed = new TaskCompletionSource<int>();
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "kokoro"); // see RestartBackendAsync_...
+        try
+        {
+            using var manager = new ManaProcessManager(root, handler);
+            manager.BackendCrashed += code => crashed.TrySetResult(code);
+            await manager.StartAsync();
+
+            Assert.Equal(3, await crashed.Task.WaitAsync(TimeSpan.FromSeconds(60)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+            DeleteBestEffort(root);
+        }
+    }
+
+    [Fact]
+    public async Task BackendCrashed_StaysQuietWhenTheLauncherStopsNodeBotItself()
+    {
+        var root = FakeNodeBot("require('fs').writeFileSync('started', ''); setInterval(() => {}, 1000);");
+        var crashed = new TaskCompletionSource<int>();
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "kokoro"); // see RestartBackendAsync_...
+        try
+        {
+            using var manager = new ManaProcessManager(root, handler);
+            manager.BackendCrashed += code => crashed.TrySetResult(code);
+            await manager.StartAsync();
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            while (!File.Exists(Path.Combine(root, "node-bot", "started")))
+            {
+                Assert.True(DateTime.UtcNow < deadline, "the fake node-bot never started");
+                await Task.Delay(50);
+            }
+
+            await manager.StopAllAsync();
+
+            await Assert.ThrowsAsync<TimeoutException>(() => crashed.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+            DeleteBestEffort(root);
+        }
+    }
+
+    [Fact]
+    public void RecordCrash_GivesUpOnTheThirdCrashInsideFiveMinutesOnly()
+    {
+        var crashes = new Queue<DateTime>();
+        var t = new DateTime(2026, 10, 2, 12, 0, 0, DateTimeKind.Utc);
+
+        Assert.True(ManaApplicationContext.RecordCrash(crashes, t));
+        Assert.True(ManaApplicationContext.RecordCrash(crashes, t.AddMinutes(1)));
+        Assert.False(ManaApplicationContext.RecordCrash(crashes, t.AddMinutes(2)));
+        // The first two have aged out by now.
+        Assert.True(ManaApplicationContext.RecordCrash(crashes, t.AddMinutes(6.5)));
+    }
+
     private static bool IsRunning(int pid)
     {
         try

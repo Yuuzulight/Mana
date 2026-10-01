@@ -283,8 +283,39 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
         layout.Controls.Add(BuildLocalOnlyRow(settings.LocalOnly));
+        layout.Controls.Add(BuildStartWithWindowsRow());
 
         return new TabPage("Connection") { Controls = { layout } };
+    }
+
+    // Saved at once, straight to the Run key (StartWithWindows).
+    internal static FlowLayoutPanel BuildStartWithWindowsRow(string runKeyPath = StartWithWindows.RunKeyPath)
+    {
+        var check = new CheckBox
+        {
+            Text = "Start Mana when I sign in to Windows",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = StartWithWindows.IsOn(runKeyPath),
+        };
+        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        check.CheckedChanged += (_, _) =>
+        {
+            try
+            {
+                StartWithWindows.Set(check.Checked, StartWithWindows.LauncherExe, runKeyPath);
+                status.Text = "Saved.";
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+            {
+                status.Text = $"Couldn't change it: {ex.Message}";
+            }
+        };
+
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        row.Controls.Add(check);
+        row.Controls.Add(status);
+        return row;
     }
 
     // #670: saved at once like the Voice tab's checkboxes; the backend
