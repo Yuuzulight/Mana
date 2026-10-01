@@ -198,3 +198,23 @@ test("#1154: never is remembered, listed with always, and Forget clears either (
   });
   assert.equal(gate.isGranted("browser-site:a.test"), true);
 });
+
+test("#1191: the Git and GitHub approval modes default per tier, save per tier (admin only), and persist", async () => {
+  const dataDir = createTempDir();
+  const gate = createApprovalGate({ dataDir });
+  let admin = false;
+  const app = buildApp(gate, { checkAdminAuth: (req, res) => admin || (res.status(401).json({ error: "no" }), false) });
+  await withServer(app, async (baseUrl) => {
+    const get = async () => (await (await fetch(`${baseUrl}/approvals/git-mode`)).json()).modes;
+    const post = (body) =>
+      fetch(`${baseUrl}/approvals/git-mode`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    assert.deepEqual(await get(), { local: "once", github: "once", danger: "ask" });
+    assert.equal((await post({ tier: "danger", mode: "off" })).status, 401);
+    admin = true;
+    assert.equal((await post({ tier: "__proto__", mode: "off" })).status, 400);
+    assert.equal((await post({ tier: "danger", mode: "always" })).status, 400);
+    const saved = await post({ tier: "danger", mode: "off" });
+    assert.deepEqual((await saved.json()).modes, { local: "once", github: "once", danger: "off" });
+  });
+  assert.deepEqual(createApprovalGate({ dataDir }).getGitApprovalModes(), { danger: "off" }, "persisted");
+});

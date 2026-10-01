@@ -45,6 +45,12 @@ internal sealed class SettingsPanel : UserControl
     // #669: index-aligned with ToolApprovalModes below.
     private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private static readonly string[] ToolApprovalModes = { "smart", "ask", "off" };
+    // #1191: "Git and GitHub" approval, one choice per tier; each combo is
+    // index-aligned with GitApprovalModes.
+    private static readonly string[] GitApprovalTiers = { "local", "github", "danger" };
+    private static readonly string[] GitApprovalModes = { "ask", "once", "off" };
+    private readonly ComboBox[] gitApprovalCombos = Array.ConvertAll(GitApprovalTiers, tier => new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, AccessibleName = $"Git approval: {tier}" });
+    private readonly Label gitDangerWarning = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.OrangeRed, AccessibleName = "Git danger warning" };
     private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Voice provider" };
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
@@ -191,6 +197,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshApprovalsAsync();
         await RefreshRememberedAsync();
         await RefreshToolApprovalModeAsync();
+        await RefreshGitApprovalModesAsync();
         await RefreshVoiceTabAsync();
         await (refreshSpeechWords?.Invoke() ?? Task.CompletedTask);
         await (refreshBriefing?.Invoke() ?? Task.CompletedTask);
@@ -1171,6 +1178,30 @@ internal sealed class SettingsPanel : UserControl
         modePanel.Controls.Add(modeRow);
         modePanel.Controls.Add(new Label { Text = "Destructive commands (rm -rf, registry edits, download-and-run...) always ask, in every mode.", AutoSize = true, ForeColor = DarkTheme.Muted });
 
+        // #1191: Mana's own git and GitHub actions. Reads never ask; a game
+        // running, the secret scan and "never" still apply in every mode.
+        modePanel.Controls.Add(new Label { Text = "Git and GitHub", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 12, 3, 3) });
+        string[] tierNames =
+        {
+            "Local changes (branch, commit, merge main in):",
+            "GitHub writes (push a branch, PRs, issues, comments):",
+            "Merge a PR, push to main, force-push, delete branches, rewrite history:",
+        };
+        for (var i = 0; i < gitApprovalCombos.Length; i++)
+        {
+            var combo = gitApprovalCombos[i];
+            var tier = GitApprovalTiers[i];
+            combo.Items.AddRange(new object[] { "Ask every time", "Ask once, then always allow", "No approval" });
+            combo.BackColor = DarkTheme.Panel2;
+            combo.ForeColor = DarkTheme.Text;
+            combo.SelectionChangeCommitted += async (_, _) => await SaveGitApprovalModeAsync(tier, combo);
+            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+            row.Controls.Add(new Label { Text = tierNames[i], AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 6, 3, 3) });
+            row.Controls.Add(combo);
+            modePanel.Controls.Add(row);
+        }
+        modePanel.Controls.Add(gitDangerWarning);
+
         var page = new TabPage("Approvals");
         page.Controls.Add(approvalsList);
         page.Controls.Add(buttonRow);
@@ -1245,6 +1276,58 @@ internal sealed class SettingsPanel : UserControl
         if (!IsDisposed)
         {
             toolApprovalModeCombo.SelectedIndex = Array.IndexOf(ToolApprovalModes, mode);
+        }
+    }
+
+    internal async Task RefreshGitApprovalModesAsync()
+    {
+        IReadOnlyDictionary<string, string> modes;
+        try
+        {
+            modes = await backendClient.GetGitApprovalModesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load the git approval modes. {ex.Message}");
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        for (var i = 0; i < GitApprovalTiers.Length; i++)
+        {
+            gitApprovalCombos[i].SelectedIndex = modes.TryGetValue(GitApprovalTiers[i], out var mode) ? Array.IndexOf(GitApprovalModes, mode) : -1;
+        }
+        UpdateGitDangerWarning();
+    }
+
+    private void UpdateGitDangerWarning()
+    {
+        var off = gitApprovalCombos[Array.IndexOf(GitApprovalTiers, "danger")].SelectedIndex == Array.IndexOf(GitApprovalModes, "off");
+        gitDangerWarning.Text = off
+            ? "Warning: Mana can merge PRs, push to main, force-push and delete branches without asking you. Each one is still logged."
+            : "";
+    }
+
+    private async Task SaveGitApprovalModeAsync(string tier, ComboBox combo)
+    {
+        if (combo.SelectedIndex < 0)
+        {
+            return;
+        }
+        UpdateGitDangerWarning();
+        try
+        {
+            await backendClient.SetGitApprovalModeAsync(tier, GitApprovalModes[combo.SelectedIndex]);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                MessageBox.Show(this, $"Failed to save the git approval setting: {ex.Message}", "Approvals", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                await RefreshGitApprovalModesAsync();
+            }
         }
     }
 

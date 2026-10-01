@@ -10,6 +10,11 @@
 // GitHub text (issues, PRs, comments, CI logs) and commits by someone else
 // come back in the untrusted-content frame, which taints the turn
 // (ai/tool-risk.js).
+//
+// #1191: local changes (git__change), through the approval setting for
+// their tier (Settings > Approvals, "Git and GitHub"): ask every time, ask
+// once per repo until I say always, or no approval (still logged). Refused
+// while a game runs, whatever the setting. No git stash, ever.
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
@@ -28,6 +33,22 @@ const MAX_OUTPUT = 12000;
 const REF_RE = /^\w[\w./~^@{}-]{0,199}$/;
 // Every git call: a repo's own config can't start a program on a read.
 const GIT_BASE = ["-c", "core.fsmonitor=false"];
+const GIT_CHANGE_TOOL = "git__change";
+const GAMING = "A game is running, so I'm leaving git alone until it's closed.";
+// A commit or merge runs the repo's hooks, which may run its tests.
+const HOOK_TIMEOUT_MS = 10 * 60 * 1000;
+// A branch she names or creates: feat/x, mana/12-fix -- no dash first, no "..".
+const BRANCH_RE = /^\w[\w./-]{0,199}$/;
+const WORKTREE_NAME_RE = /^\w[\w.-]{0,63}$/;
+// #1191: per tier, "ask" (every time; "always" never sticks), "once" (asked
+// per repo until I say always) or "off" (no approval).
+const GIT_APPROVAL_MODES = ["ask", "once", "off"];
+const GIT_APPROVAL_DEFAULTS = { local: "once", github: "once", danger: "ask" };
+function resolveGitApprovalModes(saved) {
+  return Object.fromEntries(
+    Object.entries(GIT_APPROVAL_DEFAULTS).map(([tier, mode]) => [tier, GIT_APPROVAL_MODES.includes(saved?.[tier]) ? saved[tier] : mode]),
+  );
+}
 
 // What git hooks and tests run with: a clean environment, not the
 // backend's keys and tokens.
@@ -102,6 +123,12 @@ function checkRef(ref) {
   return String(ref);
 }
 
+function checkBranch(name) {
+  const s = String(name ?? "");
+  if (!BRANCH_RE.test(s) || /\.\.|\/\/|[/.]$|\.lock$/.test(s)) throw new Error(`"${s}" isn't a branch name I can use`);
+  return s;
+}
+
 function positiveInt(value, what) {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) throw new Error(`${what} must be a positive number`);
@@ -122,16 +149,44 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: GIT_READ_TOOL,
-      description: "Read a git repo: status, diff (capped), log, show a commit, or list branches. Changes nothing.",
+      description:
+        "Read a git repo: status, diff (capped), log, show a commit, list branches, or list the files with merge conflicts. Changes nothing.",
       parameters: {
         type: "object",
         properties: {
           repo: REPO_PARAM,
-          action: { type: "string", enum: ["status", "diff", "log", "show", "branches"] },
+          action: { type: "string", enum: ["status", "diff", "log", "show", "branches", "conflicts"] },
           ref: { type: "string", description: "diff/log: a ref or range (origin/main, main..HEAD). show: the commit. Default HEAD." },
           path: { type: "string", description: "diff/log: only this file or folder." },
           staged: { type: "boolean", description: "diff: what's staged for the next commit." },
           count: { type: "integer", description: "log: how many commits (default 15, at most 50)." },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: GIT_CHANGE_TOOL,
+      description:
+        "Change a git repo on this PC: switch (or create) a branch, add or remove a worktree, stage files, commit, fetch, pull (merges), merge a ref such as origin/main into the current branch, or abort a merge. Resolve conflicts by editing the files, then stage and commit. The user's approval setting decides whether it asks first; if it asks, it runs once they allow it.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: REPO_PARAM,
+          action: {
+            type: "string",
+            enum: ["switch", "worktree_add", "worktree_remove", "stage", "commit", "fetch", "pull", "merge", "merge_abort"],
+          },
+          branch: { type: "string", description: "switch/worktree_add: the branch." },
+          create: { type: "boolean", description: "switch/worktree_add: create the branch." },
+          start: { type: "string", description: "switch/worktree_add with create: where the new branch starts (default HEAD)." },
+          name: { type: "string", description: "worktree_add/worktree_remove: the worktree's folder name, next to the repo in <repo>-worktrees." },
+          paths: { type: "array", items: { type: "string" }, description: "stage: the files or folders." },
+          all: { type: "boolean", description: "stage: every change, new files included." },
+          message: { type: "string", description: "commit: the message (first line a short title). No Co-authored-by lines." },
+          ref: { type: "string", description: "merge: what to merge in. Default origin/<default branch>." },
         },
         required: ["action"],
       },
@@ -161,12 +216,14 @@ const TOOL_SCHEMAS = [
 const TOOL_NAMES = new Set(TOOL_SCHEMAS.map((t) => t.function.name));
 
 // options.roots: the folders whose repos she may use (default above).
-// options.approvalGate: asks me about a repo outside them.
+// options.approvalGate: asks me about a repo outside them, and about changes.
+// options.isGaming: changes are refused while it's true.
 // options.exec/env: injectable for tests.
 function createGitToolSource(options = {}) {
   const exec = options.exec || runCommand;
   const env = options.env || process.env;
   const approvalGate = options.approvalGate || null;
+  const isGaming = options.isGaming || (() => false);
   const roots = (options.roots || DEFAULT_ROOTS).map((r) => path.resolve(r));
   const defaultRepo = roots[0];
   const gitEnv = { ...testEnv(env), GIT_TERMINAL_PROMPT: "0" };
@@ -192,8 +249,10 @@ function createGitToolSource(options = {}) {
       .split(/\r?\n/)
       .map((p) => path.resolve(p));
     const main = path.basename(common).toLowerCase() === ".git" ? path.dirname(common) : common;
-    const key = `${REPO_ACTION_TYPE}:${main.replace(/\\/g, "/").toLowerCase()}`;
-    const repo = { top, main, key };
+    // d:/mana: what her approvals for this repo are keyed by.
+    const id = main.replace(/\\/g, "/").toLowerCase();
+    const key = `${REPO_ACTION_TYPE}:${id}`;
+    const repo = { top, main, id };
     if (roots.some((root) => within(root, main)) || onceRepos.has(key) || approvalGate?.isGranted(key)) return repo;
     if (!approvalGate) throw new Error(`${main} isn't one of the repos I may use`);
     approvalGate.registerExecutor(key, async () => {
@@ -231,6 +290,10 @@ function createGitToolSource(options = {}) {
     const pathArg = rel ? ["--", repoPath(top, rel)] : [];
     const head = `git ${action} in ${top}:`;
     if (action === "status") return `${head}\n${cap(await git(["status", "--short", "--branch"], top))}`;
+    if (action === "conflicts") {
+      const files = await conflictList(top);
+      return `${head}\n${files.length ? files.join("\n") : "No conflicts."}`;
+    }
     if (action === "branches") {
       const format = "--format=%(HEAD) %(refname:short) %(upstream:short) %(upstream:track)";
       return `${head}\n${cap(await git(["branch", "--all", "--no-color", format], top))}`;
@@ -256,6 +319,197 @@ function createGitToolSource(options = {}) {
       return (await byOthers(top, [author])) ? `${head}\n${wrapUntrusted("git history", text)}` : `${head}\n${text}`;
     }
     throw new Error(`unknown action: ${action}`);
+  }
+
+  async function conflictList(top) {
+    return (await git(["diff", "--name-only", "--diff-filter=U"], top)).split(/\r?\n/).filter(Boolean);
+  }
+
+  // #1191: a change runs through its tier's setting. "off" runs it now
+  // (unless I said never), logged in the approvals audit; otherwise the
+  // gate asks -- "ask" as forceReview, so "always" never sticks -- and runs
+  // it once I allow it. payload: plain JSON of the checked change.
+  // untrusted: where outside text this turn came from (ai/tool-risk.js
+  // passes it as untrusted_sources); then it asks whatever the setting
+  // says, in one prompt that says so.
+  async function gated(tier, repo, summary, payload, untrusted = []) {
+    if (isGaming()) throw new Error(GAMING);
+    if (!approvalGate) throw new Error("changes need the approval gate");
+    const mode = resolveGitApprovalModes(approvalGate.getGitApprovalModes())[tier];
+    const actionType = `git-${tier}:${repo.id}`;
+    approvalGate.registerExecutor(actionType, perform);
+    const never = approvalGate.listRemembered().some((r) => r.key === actionType && r.answer === "never");
+    const tainted = Array.isArray(untrusted) && untrusted.length > 0;
+    if (tainted) {
+      summary += ` -- she just read outside text this turn (from: ${untrusted.map((u) => String(u).slice(0, 40)).join(", ")}), so this asks whatever the setting says`;
+    }
+    if (mode === "off" && !never && !tainted) {
+      const entry = { name: actionType, args: payload, decision: "no approval (setting)", summary };
+      try {
+        const result = await perform(payload);
+        approvalGate.guardianAuditLog.append({ ...entry, ok: true });
+        return result;
+      } catch (e) {
+        approvalGate.guardianAuditLog.append({ ...entry, ok: false, error: e.message });
+        throw e;
+      }
+    }
+    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" || tainted });
+    if (outcome.status === "approved") return outcome.result;
+    if (outcome.status === "pending") {
+      return JSON.stringify({
+        status: "pending",
+        requestId: outcome.requestId,
+        asked: summary,
+        note: "It runs once the user allows it in Approvals. Tell them what you asked for; don't ask again.",
+      });
+    }
+    throw new Error(`not allowed: ${outcome.reason || outcome.status}`);
+  }
+
+  // Runs an approved change; a game may have started since it was asked.
+  function perform(payload) {
+    if (isGaming()) throw new Error(GAMING);
+    return changes[payload.action](payload);
+  }
+
+  // A merge or a pull may stop at conflicts: that's a result for her to
+  // work on, not a failure.
+  async function mergeLike(args, top, what) {
+    const r = await exec("git", [...GIT_BASE, ...args], { cwd: top, env: gitEnv, timeoutMs: HOOK_TIMEOUT_MS });
+    if (r.code === 0) return cap(`${what}: done.\n${r.stdout.trim()}`);
+    const conflicts = await conflictList(top);
+    if (!conflicts.length) throw new Error(`git ${args[0]} failed: ${cap((r.stderr || r.stdout).trim(), 500)}`);
+    return `${what} stopped at conflicts in:\n${conflicts.join("\n")}\nEdit those files, then stage and commit them (or merge_abort).`;
+  }
+
+  // A node_modules link (a junction on Windows) is unlinked first, as a
+  // link: removing the worktree must never delete through it into the live
+  // packages. If one can't be unlinked, that throws and nothing is removed.
+  function unlinkModules(wt) {
+    const dirs = fs
+      .readdirSync(wt, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name !== ".git")
+      .map((d) => path.join(wt, d.name));
+    for (const link of [wt, ...dirs].map((d) => path.join(d, "node_modules"))) {
+      let stat = null;
+      try {
+        stat = fs.lstatSync(link);
+      } catch {}
+      if (stat?.isSymbolicLink()) fs.unlinkSync(link);
+    }
+  }
+
+  const changes = {
+    async switch({ top, branch, create, start }) {
+      await git(["switch", ...(create ? ["-c", branch, ...(start ? [start] : [])] : [branch])], top);
+      return `Switched ${top} to ${branch}.`;
+    },
+    async worktree_add({ top, wt, branch, create, start }) {
+      await git(["worktree", "add", ...(create ? ["-b", branch, wt, ...(start ? [start] : [])] : [wt, branch])], top);
+      return `Added the worktree ${wt} on ${branch}.`;
+    },
+    async worktree_remove({ top, wt }) {
+      unlinkModules(wt);
+      await git(["worktree", "remove", wt], top);
+      return `Removed the worktree ${wt}.`;
+    },
+    async stage({ top, paths, all }) {
+      await git(["add", ...(all ? ["-A"] : ["--", ...paths])], top);
+      return `Staged. Now:\n${cap(await git(["status", "--short"], top))}`;
+    },
+    // The secret scan runs here, on what's staged when it actually commits.
+    async commit({ top, message }) {
+      const diff = await git(["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"], top);
+      if (!diff.trim()) throw new Error("nothing is staged to commit");
+      const secret = findSecret(diff, env);
+      if (secret) throw new Error(`the staged changes have ${secret} in them, so I didn't commit`);
+      await git(["commit", "-m", message], top, HOOK_TIMEOUT_MS);
+      return `Committed: ${(await git(["log", "-1", "--format=%h %s"], top)).trim()}`;
+    },
+    async fetch({ top }) {
+      await git(["fetch", "--prune", "origin"], top, NETWORK_TIMEOUT_MS);
+      return "Fetched origin.";
+    },
+    pull: ({ top }) => mergeLike(["pull", "--no-rebase", "--no-edit"], top, "Pull"),
+    merge: ({ top, ref }) => mergeLike(["merge", "--no-edit", ref], top, `Merging ${ref}`),
+    async merge_abort({ top }) {
+      await git(["merge", "--abort"], top);
+      return "Aborted the merge.";
+    },
+  };
+
+  // The branch origin/HEAD points at, else main.
+  async function defaultBranch(top) {
+    const r = await exec("git", [...GIT_BASE, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { cwd: top, env: gitEnv });
+    return r.code === 0 ? r.stdout.trim().replace(/^origin\//, "") : "main";
+  }
+
+  // Checks what she asked for, then hands it to gated() with a summary
+  // that says exactly what will happen.
+  async function gitChange(args) {
+    const repo = await openRepo(args.repo);
+    const { top } = repo;
+    const on = (await git(["rev-parse", "--abbrev-ref", "HEAD"], top)).trim();
+    const where = `${top} (on ${on})`;
+    const local = (summary, payload) => gated("local", repo, summary, { top, ...payload }, args.untrusted_sources);
+    const branchArgs = () => {
+      const branch = checkBranch(args.branch);
+      const start = args.create && args.start ? checkRef(args.start) : undefined;
+      return { branch, create: Boolean(args.create), start };
+    };
+    const describe = ({ branch, create, start }) => `${create ? "a new branch " : ""}${branch}${start ? ` from ${start}` : ""}`;
+    const worktree = () => {
+      if (!WORKTREE_NAME_RE.test(String(args.name || ""))) throw new Error("name must be a plain folder name");
+      return path.join(path.dirname(repo.main), `${path.basename(repo.main)}-worktrees`, args.name);
+    };
+    switch (args.action) {
+      case "switch": {
+        const b = branchArgs();
+        return local(`Switch ${where} to ${describe(b)}`, { action: "switch", ...b });
+      }
+      case "worktree_add": {
+        const b = branchArgs();
+        const wt = worktree();
+        if (fs.existsSync(wt)) throw new Error(`${wt} already exists`);
+        return local(`Add a worktree of ${repo.main} at ${wt} on ${describe(b)}`, { action: "worktree_add", wt, ...b });
+      }
+      case "worktree_remove": {
+        const wt = worktree();
+        const listed = (await git(["worktree", "list", "--porcelain"], top))
+          .split(/\r?\n/)
+          .filter((l) => l.startsWith("worktree "))
+          .map((l) => path.resolve(l.slice("worktree ".length)));
+        // The first one listed is the main checkout itself.
+        if (!listed.slice(1).some((p) => within(p, wt) && within(wt, p))) throw new Error(`${wt} isn't one of ${repo.main}'s worktrees`);
+        return local(`Remove the worktree ${wt} (a node_modules link in it is unlinked first, never deleted through)`, { action: "worktree_remove", wt });
+      }
+      case "stage": {
+        if (args.all) return local(`Stage every change in ${where}`, { action: "stage", all: true });
+        const paths = (Array.isArray(args.paths) ? args.paths : []).map((p) => repoPath(top, p));
+        if (!paths.length) throw new Error("give paths, or all: true");
+        return local(`Stage ${paths.join(", ")} in ${where}`, { action: "stage", paths });
+      }
+      case "commit": {
+        const message = cap(stripAttribution(args.message), 5000);
+        if (!message) throw new Error("a commit needs a message");
+        const files = (await git(["diff", "--cached", "--name-only"], top)).split(/\r?\n/).filter(Boolean);
+        if (!files.length) throw new Error("nothing is staged to commit");
+        return local(`Commit ${files.length} staged file(s) in ${where}: "${message.split(/\r?\n/)[0]}"`, { action: "commit", message });
+      }
+      case "fetch":
+        return local(`Fetch from origin in ${top}`, { action: "fetch" });
+      case "pull":
+        return local(`Pull origin into ${where}, merging (not rebasing)`, { action: "pull" });
+      case "merge": {
+        const ref = args.ref ? checkRef(args.ref) : `origin/${await defaultBranch(top)}`;
+        return local(`Merge ${ref} into ${where}`, { action: "merge", ref });
+      }
+      case "merge_abort":
+        return local(`Abort the merge in progress in ${where}`, { action: "merge_abort" });
+      default:
+        throw new Error(`unknown action: ${args.action}`);
+    }
   }
 
   const who = (u) => u?.login || "someone";
@@ -341,7 +595,7 @@ function createGitToolSource(options = {}) {
     throw new Error(`unknown action: ${action}`);
   }
 
-  const executors = { [GIT_READ_TOOL]: gitRead, [GITHUB_READ_TOOL]: githubRead };
+  const executors = { [GIT_READ_TOOL]: gitRead, [GIT_CHANGE_TOOL]: gitChange, [GITHUB_READ_TOOL]: githubRead };
   return {
     listToolSchemas: () => TOOL_SCHEMAS,
     isKnownToolName: (name) => TOOL_NAMES.has(name),
@@ -357,10 +611,14 @@ function createGitToolSource(options = {}) {
 }
 
 module.exports = {
+  GIT_APPROVAL_DEFAULTS,
+  GIT_APPROVAL_MODES,
+  GIT_CHANGE_TOOL,
   GIT_READ_TOOL,
   GITHUB_READ_TOOL,
   createGitToolSource,
   findSecret,
+  resolveGitApprovalModes,
   runCommand,
   stripAttribution,
   testEnv,

@@ -2874,7 +2874,9 @@ function registerRoutes(app, upload, deps = {}) {
     });
   // #1182: git and GitHub in my chat. One instance, so a repo I "allow
   // once" stays allowed until restart.
-  const gitTools = deps.gitTools || createGitToolSource({ approvalGate: activeApprovalGate });
+  const gitTools =
+    deps.gitTools ||
+    createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
   app.get("/self-work", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json(selfWork.status());
