@@ -152,3 +152,31 @@ test("the report has a row per case and each case's diff", async () => {
   assert.equal(json.results[0].patch, undefined);
   assert.match(fs.readFileSync(path.join(out, "1-add-subtracts.diff"), "utf8"), /a \+ b/);
 });
+
+// #1231: a generated case is a bug patched into the base, with the test that
+// catches it out of the tree until she's done.
+function generatedCase(r) {
+  const file = path.join(r.repo, "node-bot", "util.js");
+  const good = fs.readFileSync(file, "utf8");
+  fs.writeFileSync(file, good.replace("a + b", "a - b"));
+  const mutation = `${git(r.repo, "diff", "--", "node-bot/util.js")}\n`;
+  git(r.repo, "checkout", "--", "node-bot/util.js");
+  return { ...r.c, id: "gen-add", base: r.c.fix, mutation };
+}
+
+test("a generated case: the bug is patched in, its test hidden, and her diff is only her fix", async () => {
+  const r = makeRepo();
+  const c = generatedCase(r);
+  const d = deps(r, []);
+  const fixIt = fakeModel([edit("node-bot/util.js", "a - b", "a + b"), finish], d.tokens);
+  d.runLoop = async (prompt, policy, opts) => {
+    await assert.rejects(policy.executeTool("self_work__read", { path: "node-bot/test/util.test.js" }));
+    return fixIt(prompt, policy, opts);
+  };
+  const result = await runCase(c, d);
+
+  assert.equal(result.passed, true, result.hiddenTail);
+  assert.deepEqual(result.diff, { files: ["node-bot/util.js"], added: 1, removed: 1 });
+  assert.match(result.patch, /-  return a - b;\n\+  return a \+ b;/);
+  assert.deepEqual(verifyCase(c, { repoRoot: r.repo, worktreesDir: r.worktrees }), { id: c.id, ok: true, failsAtBase: true, passesWithFix: true, tail: "" });
+});
