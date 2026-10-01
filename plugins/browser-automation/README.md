@@ -54,7 +54,9 @@ the Browser panel, taken while it's on screen; the model never sees one.
 - `network`: failed requests (errors, HTTP 4xx/5xx) and the slowest ones,
   with timings. Requests we block ourselves (ads, media) aren't listed.
 - `run_js { code }`: one JavaScript expression, its value back as JSON
-  (capped at 2000 characters). Never on password or payment pages.
+  (capped at 2000 characters). It asks for the site on its own
+  (`browser-js:<host>`: once, session, always, deny, never); allowing a
+  site for clicks doesn't allow scripts. Never on password or payment pages.
 - `viewport { size: phone | tablet | desktop }` and
   `color_scheme { scheme: light | dark }`.
 - `look { question }`: a screenshot her vision model describes. Off while
