@@ -1865,6 +1865,32 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1191: the "Git and GitHub" approval per tier ("local", "github",
+    // "danger") -> "ask" | "once" | "off".
+    public async Task<IReadOnlyDictionary<string, string>> GetGitApprovalModesAsync()
+    {
+        using var response = await http.GetAsync("/approvals/git-mode");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var modes = new Dictionary<string, string>();
+        if (document.RootElement.TryGetProperty("modes", out var map) && map.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var entry in map.EnumerateObject())
+            {
+                modes[entry.Name] = entry.Value.GetString() ?? "";
+            }
+        }
+        return modes;
+    }
+
+    public async Task SetGitApprovalModeAsync(string tier, string mode)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { tier, mode }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/approvals/git-mode", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #1154: the remembered always/never answers, for Settings > Approvals.
     public async Task<IReadOnlyList<ManaRememberedApproval>> GetRememberedApprovalsAsync()
     {
@@ -2889,8 +2915,25 @@ internal sealed class ManaRememberedApproval
     public string Key { get; init; } = "";
     public string Answer { get; init; } = "";
 
-    // What Settings shows: a browser site by name, anything else by its key.
-    public string Label => Key.StartsWith("browser-site:", StringComparison.Ordinal) ? $"Browser: {Key["browser-site:".Length..]}" : Key;
+    // What Settings shows: a browser site or a git repo (#1182) by name,
+    // anything else by its key.
+    public string Label
+    {
+        get
+        {
+            var colon = Key.IndexOf(':');
+            var what = colon < 0 ? null : Key[..colon] switch
+            {
+                "browser-site" => "Browser",
+                "git-repo" => "Git repo",
+                "git-local" => "Git local changes",
+                "git-github" => "GitHub writes",
+                "git-danger" => "Git merges, force-pushes and deletes",
+                _ => null,
+            };
+            return what is null ? Key : $"{what}: {Key[(colon + 1)..]}";
+        }
+    }
 }
 
 internal sealed class ManaPendingApproval

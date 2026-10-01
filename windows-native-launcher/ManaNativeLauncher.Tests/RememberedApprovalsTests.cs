@@ -14,8 +14,9 @@ using Xunit;
 namespace ManaNativeLauncher.Tests;
 
 // #1154: Settings > Approvals lists the remembered always/never answers
-// (her per-site browser permissions among them) and forgets one. STA,
-// never shown.
+// (her per-site browser permissions among them) and forgets one. #1191:
+// its "Git and GitHub" section, one choice per tier. STA, never shown.
+[Collection("DarkTheme palette")] // builds SettingsPanels: see SettingsPanelLayoutTests
 public class RememberedApprovalsTests
 {
     private const string Remembered = """
@@ -33,6 +34,7 @@ public class RememberedApprovalsTests
                 "/approvals/remembered" => Remembered,
                 "/approvals/remembered/forget" => """{"forgotten":true}""",
                 "/approvals/req-1/decide" => """{"status":"denied"}""",
+                "/approvals/git-mode" => """{"modes":{"local":"once","github":"ask","danger":"ask"}}""",
                 _ => null,
             };
             return json is null
@@ -74,6 +76,43 @@ public class RememberedApprovalsTests
             forget.GetType().GetMethod("OnClick", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(forget, [EventArgs.Empty]);
             Pump(() => requests.Count(r => r == "GET /approvals/remembered") == 2);
             Assert.Contains("""POST /approvals/remembered/forget {"key":"browser-site:bad.test"}""", requests);
+        });
+    }
+
+    [Fact]
+    public async Task Client_ReadsAndSavesGitApprovalModesPerTier()
+    {
+        var requests = new List<string>();
+        var client = Backend(requests);
+        var modes = await client.GetGitApprovalModesAsync();
+        Assert.Equal("once", modes["local"]);
+        Assert.Equal("ask", modes["danger"]);
+        await client.SetGitApprovalModeAsync("danger", "off");
+        Assert.Contains("""POST /approvals/git-mode {"tier":"danger","mode":"off"}""", requests);
+        Assert.Equal("Git local changes: d:/mana", new ManaRememberedApproval { Key = "git-local:d:/mana" }.Label);
+        Assert.Equal("Git repo: d:/other", new ManaRememberedApproval { Key = "git-repo:d:/other" }.Label);
+    }
+
+    [Fact]
+    public void Settings_ShowsEachGitTier_AndWarnsWhenTheDangerousOneNeedsNoApproval()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var requests = new List<string>();
+            using var panel = new SettingsPanel(Backend(requests), new BackendLogBuffer());
+            Pump(panel.RefreshGitApprovalModesAsync());
+            ComboBox Combo(string tier) => All<ComboBox>(panel).Single(c => c.AccessibleName == $"Git approval: {tier}");
+            Assert.Equal("Ask once, then always allow", Combo("local").SelectedItem);
+            Assert.Equal("Ask every time", Combo("github").SelectedItem);
+            var warning = All<Label>(panel).Single(l => l.AccessibleName == "Git danger warning");
+            Assert.Equal("", warning.Text);
+
+            var danger = Combo("danger");
+            danger.SelectedIndex = 2; // No approval
+            danger.GetType().GetMethod("OnSelectionChangeCommitted", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(danger, [EventArgs.Empty]);
+            Pump(() => requests.Any(r => r.StartsWith("POST /approvals/git-mode", StringComparison.Ordinal)));
+            Assert.Contains("""POST /approvals/git-mode {"tier":"danger","mode":"off"}""", requests);
+            Assert.StartsWith("Warning:", warning.Text);
         });
     }
 

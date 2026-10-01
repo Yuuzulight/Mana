@@ -180,6 +180,16 @@ function createApprovalGate(options = {}) {
   function setToolApprovalMode(mode) {
     writeJson(settingsPath, { ...(readJson(settingsPath, {}) || {}), toolApprovalMode: mode });
   }
+  // #1191: the saved "Git and GitHub" choices per tier ({ local, github,
+  // danger }); ai/git-tool-source.js validates them and fills in defaults.
+  function getGitApprovalModes() {
+    const saved = (readJson(settingsPath, {}) || {}).gitApproval;
+    return saved && typeof saved === "object" ? saved : {};
+  }
+  function setGitApprovalMode(tier, mode) {
+    const settings = readJson(settingsPath, {}) || {};
+    writeJson(settingsPath, { ...settings, gitApproval: { ...getGitApprovalModes(), [tier]: mode } });
+  }
 
   async function runExecutor(actionType, payload) {
     const fn = executors.get(actionType);
@@ -388,6 +398,8 @@ function createApprovalGate(options = {}) {
     forget,
     getToolApprovalMode,
     setToolApprovalMode,
+    getGitApprovalModes,
+    setGitApprovalMode,
     guardianAuditLog,
   };
 }

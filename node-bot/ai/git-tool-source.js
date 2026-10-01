@@ -10,11 +10,29 @@
 // GitHub text (issues, PRs, comments, CI logs) and commits by someone else
 // come back in the untrusted-content frame, which taints the turn
 // (ai/tool-risk.js).
+//
+// #1191: local changes (git__change), through the approval setting for
+// their tier (Settings > Approvals, "Git and GitHub"): ask every time, ask
+// once per repo until I say always, or no approval (still logged). Refused
+// while a game runs, whatever the setting. No git stash, ever.
+//
+// #1192: GitHub writes (git__push of a branch that isn't the default one,
+// github__write for PRs, issues, comments, labels and CI reruns), through
+// the "GitHub writes" setting. What she writes there goes through the
+// bridge-output sanitizer first: no keys, no local paths, no attribution.
+//
+// #1193: the dangerous tier, through its own setting (default: ask every
+// time, and "always" never sticks): merging a PR, pushing to the default
+// branch, force-pushing (with lease only), deleting a remote branch, and
+// resetting or rebasing commits already pushed (or any hard reset). The
+// prompt says exactly what will happen, and what runs is what it showed:
+// the PR's head commit, the remote commit the lease expects.
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
 const { resolveWithinRoot, isCredentialPath } = require("./tool-policy");
 const { wrapUntrusted } = require("./untrusted-content");
+const { sanitizeBridgeOutput } = require("../bridge-output-sanitizer");
 
 const GIT_READ_TOOL = "git__read";
 const GITHUB_READ_TOOL = "github__read";
@@ -28,6 +46,29 @@ const MAX_OUTPUT = 12000;
 const REF_RE = /^\w[\w./~^@{}-]{0,199}$/;
 // Every git call: a repo's own config can't start a program on a read.
 const GIT_BASE = ["-c", "core.fsmonitor=false"];
+const GIT_CHANGE_TOOL = "git__change";
+const GIT_PUSH_TOOL = "git__push";
+const GITHUB_WRITE_TOOL = "github__write";
+// A label, passed as --add-label=<it>: gh splits on commas.
+const LABEL_RE = /^[^,\r\n]{1,50}$/;
+const MAX_TITLE = 256;
+// Under Windows' command-line limit, with the rest of the gh call.
+const MAX_BODY = 20000;
+const GAMING = "A game is running, so I'm leaving git alone until it's closed.";
+// A commit or merge runs the repo's hooks, which may run its tests.
+const HOOK_TIMEOUT_MS = 10 * 60 * 1000;
+// A branch she names or creates: feat/x, mana/12-fix -- no dash first, no "..".
+const BRANCH_RE = /^\w[\w./-]{0,199}$/;
+const WORKTREE_NAME_RE = /^\w[\w.-]{0,63}$/;
+// #1191: per tier, "ask" (every time; "always" never sticks), "once" (asked
+// per repo until I say always) or "off" (no approval).
+const GIT_APPROVAL_MODES = ["ask", "once", "off"];
+const GIT_APPROVAL_DEFAULTS = { local: "once", github: "once", danger: "ask" };
+function resolveGitApprovalModes(saved) {
+  return Object.fromEntries(
+    Object.entries(GIT_APPROVAL_DEFAULTS).map(([tier, mode]) => [tier, GIT_APPROVAL_MODES.includes(saved?.[tier]) ? saved[tier] : mode]),
+  );
+}
 
 // What git hooks and tests run with: a clean environment, not the
 // backend's keys and tokens.
@@ -102,6 +143,12 @@ function checkRef(ref) {
   return String(ref);
 }
 
+function checkBranch(name) {
+  const s = String(name ?? "");
+  if (!BRANCH_RE.test(s) || s === "HEAD" || /\.\.|\/\/|[/.]$|\.lock$/.test(s)) throw new Error(`"${s}" isn't a branch name I can use`);
+  return s;
+}
+
 function positiveInt(value, what) {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) throw new Error(`${what} must be a positive number`);
@@ -122,16 +169,48 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: GIT_READ_TOOL,
-      description: "Read a git repo: status, diff (capped), log, show a commit, or list branches. Changes nothing.",
+      description:
+        "Read a git repo: status, diff (capped), log, show a commit, list branches, or list the files with merge conflicts. Changes nothing.",
       parameters: {
         type: "object",
         properties: {
           repo: REPO_PARAM,
-          action: { type: "string", enum: ["status", "diff", "log", "show", "branches"] },
+          action: { type: "string", enum: ["status", "diff", "log", "show", "branches", "conflicts"] },
           ref: { type: "string", description: "diff/log: a ref or range (origin/main, main..HEAD). show: the commit. Default HEAD." },
           path: { type: "string", description: "diff/log: only this file or folder." },
           staged: { type: "boolean", description: "diff: what's staged for the next commit." },
           count: { type: "integer", description: "log: how many commits (default 15, at most 50)." },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: GIT_CHANGE_TOOL,
+      description:
+        "Change a git repo on this PC: switch (or create) a branch, add or remove a worktree, stage files, commit, fetch, pull (merges), merge a ref such as origin/main into the current branch, abort a merge, reset, or rebase (and continue or abort it). Resolve conflicts by editing the files, then stage and commit. The user's approval setting decides whether it asks first; if it asks, it runs once they allow it.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: REPO_PARAM,
+          action: {
+            type: "string",
+            enum: [
+              "switch", "worktree_add", "worktree_remove", "stage", "commit", "fetch", "pull", "merge", "merge_abort",
+              "reset", "rebase", "rebase_continue", "rebase_abort",
+            ],
+          },
+          branch: { type: "string", description: "switch/worktree_add: the branch." },
+          create: { type: "boolean", description: "switch/worktree_add: create the branch." },
+          start: { type: "string", description: "switch/worktree_add with create: where the new branch starts (default HEAD)." },
+          name: { type: "string", description: "worktree_add/worktree_remove: the worktree's folder name, next to the repo in <repo>-worktrees." },
+          paths: { type: "array", items: { type: "string" }, description: "stage: the files or folders." },
+          all: { type: "boolean", description: "stage: every change, new files included." },
+          message: { type: "string", description: "commit: the message (first line a short title). No Co-authored-by lines." },
+          ref: { type: "string", description: "merge: what to merge in (default origin/<default branch>). reset/rebase: where to." },
+          mode: { type: "string", enum: ["soft", "mixed", "hard"], description: "reset. Default mixed; hard discards uncommitted changes." },
         },
         required: ["action"],
       },
@@ -157,16 +236,69 @@ const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: GIT_PUSH_TOOL,
+      description:
+        "Push a branch to origin on GitHub, force-push it (with lease), or delete it on origin. The user's approval setting decides whether it asks first; if it asks, it runs once they allow it.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: REPO_PARAM,
+          branch: { type: "string", description: "The local branch. Default: the current one." },
+          force: { type: "boolean", description: "Force-push, with a lease on what origin has now." },
+          delete: { type: "boolean", description: "Delete this branch on origin instead." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: GITHUB_WRITE_TOOL,
+      description:
+        "Write to the repo on GitHub: open, edit, comment on or merge a PR; open, edit, comment on or close an issue; add or remove labels (with an edit); rerun a CI run's failed jobs. Written in first person as the user. The user's approval setting decides whether it asks first.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: REPO_PARAM,
+          action: {
+            type: "string",
+            enum: [
+              "pr_create", "pr_edit", "pr_comment", "pr_merge", "review_reply",
+              "issue_create", "issue_edit", "issue_comment", "issue_close", "rerun_failed",
+            ],
+          },
+          number: { type: "integer", description: "The PR or issue number (edit, comment, close)." },
+          title: { type: "string", description: "pr_create/issue_create, or a new title with an edit." },
+          body: { type: "string", description: "The description or comment (markdown)." },
+          head: { type: "string", description: "pr_create: the branch with the changes. Default: the current one." },
+          base: { type: "string", description: "pr_create: the branch to merge into. Default: the default branch." },
+          draft: { type: "boolean", description: "pr_create: open it as a draft." },
+          add_labels: { type: "array", items: { type: "string" }, description: "Labels to add (edit, issue_create)." },
+          remove_labels: { type: "array", items: { type: "string" }, description: "Labels to remove (edit)." },
+          reason: { type: "string", enum: ["completed", "not_planned"], description: "issue_close. Default completed." },
+          run_id: { type: "string", description: "rerun_failed: the CI run's id." },
+          method: { type: "string", enum: ["merge", "squash", "rebase"], description: "pr_merge. Default merge." },
+          comment_id: { type: "string", description: "review_reply: the review comment's id (from github__read review_comments)." },
+        },
+        required: ["action"],
+      },
+    },
+  },
 ];
 const TOOL_NAMES = new Set(TOOL_SCHEMAS.map((t) => t.function.name));
 
 // options.roots: the folders whose repos she may use (default above).
-// options.approvalGate: asks me about a repo outside them.
+// options.approvalGate: asks me about a repo outside them, and about changes.
+// options.isGaming: changes are refused while it's true.
 // options.exec/env: injectable for tests.
 function createGitToolSource(options = {}) {
   const exec = options.exec || runCommand;
   const env = options.env || process.env;
   const approvalGate = options.approvalGate || null;
+  const isGaming = options.isGaming || (() => false);
   const roots = (options.roots || DEFAULT_ROOTS).map((r) => path.resolve(r));
   const defaultRepo = roots[0];
   const gitEnv = { ...testEnv(env), GIT_TERMINAL_PROMPT: "0" };
@@ -192,8 +324,10 @@ function createGitToolSource(options = {}) {
       .split(/\r?\n/)
       .map((p) => path.resolve(p));
     const main = path.basename(common).toLowerCase() === ".git" ? path.dirname(common) : common;
-    const key = `${REPO_ACTION_TYPE}:${main.replace(/\\/g, "/").toLowerCase()}`;
-    const repo = { top, main, key };
+    // d:/mana: what her approvals for this repo are keyed by.
+    const id = main.replace(/\\/g, "/").toLowerCase();
+    const key = `${REPO_ACTION_TYPE}:${id}`;
+    const repo = { top, main, id };
     if (roots.some((root) => within(root, main)) || onceRepos.has(key) || approvalGate?.isGranted(key)) return repo;
     if (!approvalGate) throw new Error(`${main} isn't one of the repos I may use`);
     approvalGate.registerExecutor(key, async () => {
@@ -231,6 +365,10 @@ function createGitToolSource(options = {}) {
     const pathArg = rel ? ["--", repoPath(top, rel)] : [];
     const head = `git ${action} in ${top}:`;
     if (action === "status") return `${head}\n${cap(await git(["status", "--short", "--branch"], top))}`;
+    if (action === "conflicts") {
+      const files = await conflictList(top);
+      return `${head}\n${files.length ? files.join("\n") : "No conflicts."}`;
+    }
     if (action === "branches") {
       const format = "--format=%(HEAD) %(refname:short) %(upstream:short) %(upstream:track)";
       return `${head}\n${cap(await git(["branch", "--all", "--no-color", format], top))}`;
@@ -256,6 +394,435 @@ function createGitToolSource(options = {}) {
       return (await byOthers(top, [author])) ? `${head}\n${wrapUntrusted("git history", text)}` : `${head}\n${text}`;
     }
     throw new Error(`unknown action: ${action}`);
+  }
+
+  async function conflictList(top) {
+    return (await git(["diff", "--name-only", "--diff-filter=U"], top)).split(/\r?\n/).filter(Boolean);
+  }
+
+  // #1191: a change runs through its tier's setting. "off" runs it now
+  // (unless I said never), logged in the approvals audit; otherwise the
+  // gate asks -- "ask" as forceReview, so "always" never sticks -- and runs
+  // it once I allow it. payload: plain JSON of the checked change.
+  // untrusted: where outside text this turn came from (ai/tool-risk.js
+  // passes it as untrusted_sources); then it asks whatever the setting
+  // says, in one prompt that says so.
+  async function gated(tier, repo, summary, payload, untrusted = []) {
+    if (isGaming()) throw new Error(GAMING);
+    if (!approvalGate) throw new Error("changes need the approval gate");
+    const mode = resolveGitApprovalModes(approvalGate.getGitApprovalModes())[tier];
+    const actionType = `git-${tier}:${repo.id}`;
+    approvalGate.registerExecutor(actionType, perform);
+    const never = approvalGate.listRemembered().some((r) => r.key === actionType && r.answer === "never");
+    const tainted = Array.isArray(untrusted) && untrusted.length > 0;
+    if (tainted) {
+      summary += ` -- she just read outside text this turn (from: ${untrusted.map((u) => String(u).slice(0, 40)).join(", ")}), so this asks whatever the setting says`;
+    }
+    if (mode === "off" && !never && !tainted) {
+      const entry = { name: actionType, args: payload, decision: "no approval (setting)", summary };
+      try {
+        const result = await perform(payload);
+        approvalGate.guardianAuditLog.append({ ...entry, ok: true });
+        return result;
+      } catch (e) {
+        approvalGate.guardianAuditLog.append({ ...entry, ok: false, error: e.message });
+        throw e;
+      }
+    }
+    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" || tainted });
+    if (outcome.status === "approved") return outcome.result;
+    if (outcome.status === "pending") {
+      return JSON.stringify({
+        status: "pending",
+        requestId: outcome.requestId,
+        asked: summary,
+        note: "It runs once the user allows it in Approvals. Tell them what you asked for; don't ask again.",
+      });
+    }
+    throw new Error(`not allowed: ${outcome.reason || outcome.status}`);
+  }
+
+  // Runs an approved change; a game may have started since it was asked.
+  function perform(payload) {
+    if (isGaming()) throw new Error(GAMING);
+    return changes[payload.action](payload);
+  }
+
+  // A merge or a pull may stop at conflicts: that's a result for her to
+  // work on, not a failure.
+  async function mergeLike(args, top, what, abort = "merge_abort") {
+    // No editor to wait for: a rebase --continue keeps each message.
+    const r = await exec("git", [...GIT_BASE, ...args], { cwd: top, env: { ...gitEnv, GIT_EDITOR: "true" }, timeoutMs: HOOK_TIMEOUT_MS });
+    if (r.code === 0) return cap(`${what}: done.\n${r.stdout.trim()}`);
+    const conflicts = await conflictList(top);
+    if (!conflicts.length) throw new Error(`git ${args[0]} failed: ${cap((r.stderr || r.stdout).trim(), 500)}`);
+    return `${what} stopped at conflicts in:\n${conflicts.join("\n")}\nEdit those files, then stage them and ${abort === "merge_abort" ? "commit" : "rebase_continue"} (or ${abort}).`;
+  }
+
+  // A node_modules link (a junction on Windows) is unlinked first, as a
+  // link: removing the worktree must never delete through it into the live
+  // packages. If one can't be unlinked, that throws and nothing is removed.
+  function unlinkModules(wt) {
+    const dirs = fs
+      .readdirSync(wt, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name !== ".git")
+      .map((d) => path.join(wt, d.name));
+    for (const link of [wt, ...dirs].map((d) => path.join(d, "node_modules"))) {
+      let stat = null;
+      try {
+        stat = fs.lstatSync(link);
+      } catch {}
+      if (stat?.isSymbolicLink()) fs.unlinkSync(link);
+    }
+  }
+
+  const changes = {
+    async switch({ top, branch, create, start }) {
+      await git(["switch", ...(create ? ["-c", branch, ...(start ? [start] : [])] : [branch])], top);
+      return `Switched ${top} to ${branch}.`;
+    },
+    async worktree_add({ top, wt, branch, create, start }) {
+      await git(["worktree", "add", ...(create ? ["-b", branch, wt, ...(start ? [start] : [])] : [wt, branch])], top);
+      return `Added the worktree ${wt} on ${branch}.`;
+    },
+    async worktree_remove({ top, wt }) {
+      unlinkModules(wt);
+      await git(["worktree", "remove", wt], top);
+      return `Removed the worktree ${wt}.`;
+    },
+    async stage({ top, paths, all }) {
+      await git(["add", ...(all ? ["-A"] : ["--", ...paths])], top);
+      return `Staged. Now:\n${cap(await git(["status", "--short"], top))}`;
+    },
+    // The secret scan runs here, on what's staged when it actually commits.
+    async commit({ top, message }) {
+      const diff = await git(["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"], top);
+      if (!diff.trim()) throw new Error("nothing is staged to commit");
+      const secret = findSecret(diff, env);
+      if (secret) throw new Error(`the staged changes have ${secret} in them, so I didn't commit`);
+      await git(["commit", "-m", message], top, HOOK_TIMEOUT_MS);
+      return `Committed: ${(await git(["log", "-1", "--format=%h %s"], top)).trim()}`;
+    },
+    async fetch({ top }) {
+      await git(["fetch", "--prune", "origin"], top, NETWORK_TIMEOUT_MS);
+      return "Fetched origin.";
+    },
+    pull: ({ top }) => mergeLike(["pull", "--no-rebase", "--no-edit"], top, "Pull"),
+    merge: ({ top, ref }) => mergeLike(["merge", "--no-edit", ref], top, `Merging ${ref}`),
+    async merge_abort({ top }) {
+      await git(["merge", "--abort"], top);
+      return "Aborted the merge.";
+    },
+    // #1192: the GitHub writes. The outgoing diff gets the secret scan
+    // again when it's pushed, whoever made its commits.
+    // lease: the remote commit a force-push may replace, and only that one.
+    async push({ top, branch, base, lease }) {
+      const diff = await git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", base, branch], top);
+      const secret = findSecret(diff, env);
+      if (secret) throw new Error(`the changes I'd push have ${secret} in them, so I didn't push`);
+      const force = lease ? [`--force-with-lease=refs/heads/${branch}:${lease}`] : [];
+      await git(["push", ...force, "-u", "origin", `${branch}:refs/heads/${branch}`], top, HOOK_TIMEOUT_MS);
+      return `${lease ? "Force-pushed" : "Pushed"} ${branch} to origin.`;
+    },
+    async delete_remote({ top, branch, lease }) {
+      await git(["push", `--force-with-lease=refs/heads/${branch}:${lease}`, "origin", `:refs/heads/${branch}`], top, NETWORK_TIMEOUT_MS);
+      return `Deleted ${branch} on origin.`;
+    },
+    // sha: the head commit the prompt showed; gh refuses if the PR moved.
+    async pr_merge({ top, number, method, sha }) {
+      await gh(["pr", "merge", number, `--${method}`, `--match-head-commit=${sha}`], top);
+      return `Merged PR #${number}.`;
+    },
+    async reset({ top, ref, mode }) {
+      await git(["reset", `--${mode}`, ref], top);
+      return `Reset to ${ref} (${mode}). Now:\n${cap(await git(["status", "--short", "--branch"], top))}`;
+    },
+    rebase: ({ top, ref }) => mergeLike(["rebase", ref], top, `Rebasing onto ${ref}`, "rebase_abort"),
+    rebase_continue: ({ top }) => mergeLike(["rebase", "--continue"], top, "Rebase", "rebase_abort"),
+    async rebase_abort({ top }) {
+      await git(["rebase", "--abort"], top);
+      return "Aborted the rebase.";
+    },
+    async pr_create({ top, head, base, title, body, draft }) {
+      const out = await gh(["pr", "create", `--base=${base}`, `--head=${head}`, `--title=${title}`, `--body=${body}`, ...(draft ? ["--draft"] : [])], top);
+      return `Opened ${out.trim().split(/\s+/).pop()}`;
+    },
+    async edit({ top, kind, number, title, body, add, remove }) {
+      const labels = [...add.map((l) => `--add-label=${l}`), ...remove.map((l) => `--remove-label=${l}`)];
+      await gh([kind, "edit", number, ...(title ? [`--title=${title}`] : []), ...(body ? [`--body=${body}`] : []), ...labels], top);
+      return `Edited ${kind} #${number}.`;
+    },
+    async review_reply({ top, number, commentId, body }) {
+      const path = `repos/{owner}/{repo}/pulls/${number}/comments/${commentId}/replies`;
+      await gh(["api", "--method=POST", path, `--raw-field=body=${body}`, "--jq", ".html_url"], top);
+      return `Replied to review comment ${commentId} on PR #${number}.`;
+    },
+    async comment({ top, kind, number, body }) {
+      return `Commented: ${(await gh([kind, "comment", number, `--body=${body}`], top)).trim()}`;
+    },
+    async issue_create({ top, title, body, labels }) {
+      const out = await gh(["issue", "create", `--title=${title}`, `--body=${body}`, ...labels.map((l) => `--label=${l}`)], top);
+      return `Opened ${out.trim().split(/\s+/).pop()}`;
+    },
+    async issue_close({ top, number, body, reason }) {
+      await gh(["issue", "close", number, `--reason=${reason}`, ...(body ? [`--comment=${body}`] : [])], top);
+      return `Closed issue #${number} as ${reason}.`;
+    },
+    async rerun_failed({ top, runId }) {
+      await gh(["run", "rerun", runId, "--failed"], top);
+      return `Rerunning the failed jobs of run ${runId}.`;
+    },
+  };
+
+  // The branch origin/HEAD points at, else main.
+  async function defaultBranch(top) {
+    const r = await exec("git", [...GIT_BASE, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { cwd: top, env: gitEnv });
+    return r.code === 0 ? r.stdout.trim().replace(/^origin\//, "") : "main";
+  }
+
+  async function currentBranch(top) {
+    return (await git(["rev-parse", "--abbrev-ref", "HEAD"], top)).trim();
+  }
+
+  // The default branch as GitHub says, else as origin/HEAD says.
+  async function remoteDefault(top) {
+    const r = await exec("gh", ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"], { cwd: top, env: ghEnv, timeoutMs: NETWORK_TIMEOUT_MS });
+    return (r.code === 0 && r.stdout.trim()) || defaultBranch(top);
+  }
+
+  // What she writes to GitHub: no attribution lines, keys or local paths.
+  const outgoing = (text, max) => cap(sanitizeBridgeOutput(stripAttribution(text), { env }), max);
+  const labelList = (list) =>
+    (Array.isArray(list) ? list : []).map((l) => {
+      const s = String(l).trim();
+      if (!LABEL_RE.test(s)) throw new Error(`"${s}" isn't a label I can use`);
+      return s;
+    });
+  const preview = (body) => (body ? `: "${body.slice(0, 300)}${body.length > 300 ? "..." : ""}"` : "");
+
+  async function gitPush(args) {
+    const repo = await openRepo(args.repo);
+    const { top } = repo;
+    const branch = checkBranch(args.branch || (await currentBranch(top)));
+    const main = await remoteDefault(top);
+    // main and master count too, in case the lookup fell back to a guess.
+    const isDefault = [main, "main", "master"].includes(branch);
+    const remoteSha = async () => {
+      const r = await exec("git", [...GIT_BASE, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: top, env: gitEnv });
+      return r.code === 0 ? r.stdout.trim() : null;
+    };
+    const count = async (range) => (await git(["rev-list", "--count", range], top)).trim();
+    const lease = await remoteSha();
+    if (args.delete) {
+      if (isDefault) throw new Error(`${branch} is the default branch; I never delete it`);
+      if (!lease) throw new Error(`origin has no ${branch} that I know of (fetch first)`);
+      return gated("danger", repo, `Delete the branch ${branch} on origin, from ${repo.main} (at ${lease.slice(0, 8)}; ${await count(`origin/${main}..${lease}`)} commit(s) on it aren't on ${main})`, {
+        action: "delete_remote", top, branch, lease,
+      }, args.untrusted_sources);
+    }
+    await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], top);
+    const onDefault = isDefault ? `, the default branch,` : "";
+    if (args.force && lease) {
+      const dropped = await count(`${branch}..${lease}`);
+      return gated("danger", repo, `Force-push ${branch}${onDefault} to origin from ${repo.main}, with lease: drops ${dropped} commit(s) now on origin and pushes ${await count(`${lease}..${branch}`)}`, {
+        action: "push", top, branch, base: lease, lease,
+      }, args.untrusted_sources);
+    }
+    // Against its own remote branch, else the default branch it starts from.
+    const base = lease || (await git(["merge-base", `origin/${main}`, branch], top)).trim();
+    const commits = `${await count(`${base}..${branch}`)} commit(s)${lease ? "" : ", a new branch"}`;
+    if (isDefault) return gated("danger", repo, `Push ${commits} to ${branch}${onDefault} on origin, from ${repo.main}`, { action: "push", top, branch, base }, args.untrusted_sources);
+    return gated("github", repo, `Push ${branch} (${commits}) to origin from ${repo.main}`, { action: "push", top, branch, base }, args.untrusted_sources);
+  }
+
+  async function githubWrite(args) {
+    const repo = await openRepo(args.repo);
+    const { top } = repo;
+    const where = `in ${repo.main}`;
+    const github = (summary, payload) => gated("github", repo, summary, { top, ...payload }, args.untrusted_sources);
+    const title = () => {
+      const t = outgoing(args.title, MAX_TITLE).split(/\r?\n/)[0].trim();
+      if (!t) throw new Error("title is required");
+      return t;
+    };
+    const body = (required) => {
+      const b = outgoing(args.body, MAX_BODY);
+      if (required && !b) throw new Error("body is required");
+      return b;
+    };
+    const kind = /^(pr_|review_)/.test(args.action) ? "pr" : "issue";
+    const named = async () => {
+      const number = positiveInt(args.number, "number");
+      const current = (await gh([kind, "view", number, "--json", "title", "--jq", ".title"], top)).trim();
+      return { number, label: `${kind === "pr" ? "PR" : "issue"} #${number} ("${current}")` };
+    };
+    switch (args.action) {
+      case "pr_create": {
+        const head = checkBranch(args.head || (await currentBranch(top)));
+        const base = checkBranch(args.base || (await remoteDefault(top)));
+        if (head === base) throw new Error("head and base are the same branch");
+        const t = title();
+        const b = body(false);
+        return github(`Open a ${args.draft ? "draft " : ""}PR ${where}: ${head} -> ${base}, "${t}"${preview(b)}`, {
+          action: "pr_create", head, base, title: t, body: b, draft: Boolean(args.draft),
+        });
+      }
+      case "pr_edit":
+      case "issue_edit": {
+        const { number, label } = await named();
+        const t = args.title ? title() : "";
+        const b = body(false);
+        const add = labelList(args.add_labels);
+        const remove = labelList(args.remove_labels);
+        const parts = [t && `title "${t}"`, b && `description${preview(b)}`, add.length && `add labels ${add.join(", ")}`, remove.length && `remove labels ${remove.join(", ")}`].filter(Boolean);
+        if (!parts.length) throw new Error("nothing to change");
+        return github(`Edit ${label} ${where}: ${parts.join("; ")}`, { action: "edit", kind, number, title: t, body: b, add, remove });
+      }
+      case "pr_merge": {
+        const number = positiveInt(args.number, "number");
+        const fields = "title,state,isDraft,headRefName,baseRefName,headRefOid,commits";
+        const p = JSON.parse(await gh(["pr", "view", number, "--json", fields], top));
+        if (p.state !== "OPEN") throw new Error(`PR #${number} is ${String(p.state).toLowerCase()}`);
+        const method = ["merge", "squash", "rebase"].includes(args.method) ? args.method : "merge";
+        // gh exits non-zero while checks fail or are pending; its JSON is still the answer.
+        const r = await exec("gh", ["pr", "checks", number, "--json", "name,bucket"], { cwd: top, env: ghEnv, timeoutMs: NETWORK_TIMEOUT_MS });
+        let checks = [];
+        try {
+          checks = JSON.parse(r.stdout);
+        } catch {}
+        const notGreen = checks.filter((c) => !["pass", "skipping"].includes(c.bucket));
+        const checkText = !checks.length
+          ? "no checks"
+          : notGreen.length
+            ? `checks NOT green: ${notGreen.map((c) => `${c.name} (${c.bucket})`).join(", ")}`
+            : "checks green";
+        const summary = `Merge PR #${number} "${p.title}" in ${repo.main} (${method}): ${p.headRefName} -> ${p.baseRefName}, ${(p.commits || []).length} commit(s); ${checkText}${p.isDraft ? "; it's a draft" : ""}`;
+        return gated("danger", repo, summary, { top, action: "pr_merge", number, method, sha: p.headRefOid }, args.untrusted_sources);
+      }
+      case "review_reply": {
+        const { number, label } = await named();
+        if (!/^\d{1,20}$/.test(String(args.comment_id || ""))) throw new Error("comment_id must be a review comment's id");
+        const b = body(true);
+        return github(`Reply to review comment ${args.comment_id} on ${label} ${where}${preview(b)}`, {
+          action: "review_reply", number, commentId: String(args.comment_id), body: b,
+        });
+      }
+      case "pr_comment":
+      case "issue_comment": {
+        const { number, label } = await named();
+        const b = body(true);
+        return github(`Comment on ${label} ${where}${preview(b)}`, { action: "comment", kind, number, body: b });
+      }
+      case "issue_create": {
+        const t = title();
+        const b = body(false);
+        const labels = labelList(args.add_labels);
+        return github(`Open an issue ${where}: "${t}"${preview(b)}${labels.length ? ` (labels ${labels.join(", ")})` : ""}`, {
+          action: "issue_create", title: t, body: b, labels,
+        });
+      }
+      case "issue_close": {
+        const { number, label } = await named();
+        const b = body(false);
+        const reason = args.reason === "not_planned" ? "not planned" : "completed";
+        return github(`Close ${label} ${where} as ${reason}${b ? `, commenting${preview(b)}` : ""}`, { action: "issue_close", number, body: b, reason });
+      }
+      case "rerun_failed": {
+        if (!/^\d{1,20}$/.test(String(args.run_id || ""))) throw new Error("run_id must be a CI run's number");
+        return github(`Rerun the failed jobs of CI run ${args.run_id} ${where}`, { action: "rerun_failed", runId: String(args.run_id) });
+      }
+      default:
+        throw new Error(`unknown action: ${args.action}`);
+    }
+  }
+
+  // Checks what she asked for, then hands it to gated() with a summary
+  // that says exactly what will happen.
+  async function gitChange(args) {
+    const repo = await openRepo(args.repo);
+    const { top } = repo;
+    const on = (await git(["rev-parse", "--abbrev-ref", "HEAD"], top)).trim();
+    const where = `${top} (on ${on})`;
+    const local = (summary, payload) => gated("local", repo, summary, { top, ...payload }, args.untrusted_sources);
+    const branchArgs = () => {
+      const branch = checkBranch(args.branch);
+      const start = args.create && args.start ? checkRef(args.start) : undefined;
+      return { branch, create: Boolean(args.create), start };
+    };
+    const describe = ({ branch, create, start }) => `${create ? "a new branch " : ""}${branch}${start ? ` from ${start}` : ""}`;
+    const worktree = () => {
+      if (!WORKTREE_NAME_RE.test(String(args.name || ""))) throw new Error("name must be a plain folder name");
+      return path.join(path.dirname(repo.main), `${path.basename(repo.main)}-worktrees`, args.name);
+    };
+    switch (args.action) {
+      case "switch": {
+        const b = branchArgs();
+        return local(`Switch ${where} to ${describe(b)}`, { action: "switch", ...b });
+      }
+      case "worktree_add": {
+        const b = branchArgs();
+        const wt = worktree();
+        if (fs.existsSync(wt)) throw new Error(`${wt} already exists`);
+        return local(`Add a worktree of ${repo.main} at ${wt} on ${describe(b)}`, { action: "worktree_add", wt, ...b });
+      }
+      case "worktree_remove": {
+        const wt = worktree();
+        const listed = (await git(["worktree", "list", "--porcelain"], top))
+          .split(/\r?\n/)
+          .filter((l) => l.startsWith("worktree "))
+          .map((l) => path.resolve(l.slice("worktree ".length)));
+        // The first one listed is the main checkout itself.
+        if (!listed.slice(1).some((p) => within(p, wt) && within(wt, p))) throw new Error(`${wt} isn't one of ${repo.main}'s worktrees`);
+        return local(`Remove the worktree ${wt} (a node_modules link in it is unlinked first, never deleted through)`, { action: "worktree_remove", wt });
+      }
+      case "stage": {
+        if (args.all) return local(`Stage every change in ${where}`, { action: "stage", all: true });
+        const paths = (Array.isArray(args.paths) ? args.paths : []).map((p) => repoPath(top, p));
+        if (!paths.length) throw new Error("give paths, or all: true");
+        return local(`Stage ${paths.join(", ")} in ${where}`, { action: "stage", paths });
+      }
+      case "commit": {
+        const message = cap(stripAttribution(args.message), 5000);
+        if (!message) throw new Error("a commit needs a message");
+        const files = (await git(["diff", "--cached", "--name-only"], top)).split(/\r?\n/).filter(Boolean);
+        if (!files.length) throw new Error("nothing is staged to commit");
+        return local(`Commit ${files.length} staged file(s) in ${where}: "${message.split(/\r?\n/)[0]}"`, { action: "commit", message });
+      }
+      case "fetch":
+        return local(`Fetch from origin in ${top}`, { action: "fetch" });
+      case "pull":
+        return local(`Pull origin into ${where}, merging (not rebasing)`, { action: "pull" });
+      case "merge": {
+        const ref = args.ref ? checkRef(args.ref) : `origin/${await defaultBranch(top)}`;
+        return local(`Merge ${ref} into ${where}`, { action: "merge", ref });
+      }
+      case "merge_abort":
+        return local(`Abort the merge in progress in ${where}`, { action: "merge_abort" });
+      case "rebase_abort":
+        return local(`Abort the rebase in progress in ${where}`, { action: "rebase_abort" });
+      case "rebase_continue":
+        return local(`Continue the rebase in progress in ${where}`, { action: "rebase_continue" });
+      // #1193: dangerous once it rewrites anything already pushed, or
+      // throws away uncommitted work (a hard reset).
+      case "reset":
+      case "rebase": {
+        if (!args.ref) throw new Error("ref is required");
+        const ref = checkRef(args.ref);
+        const mode = args.action === "reset" ? (["soft", "mixed", "hard"].includes(args.mode) ? args.mode : "mixed") : undefined;
+        const count = async (...extra) => Number((await git(["rev-list", "--count", `${ref}..HEAD`, ...extra], top)).trim());
+        const total = await count();
+        const pushed = total - (await count("--not", "--remotes"));
+        const tier = pushed > 0 || mode === "hard" ? "danger" : "local";
+        const rewrites = `${total} commit(s), ${pushed} of them already pushed`;
+        const summary =
+          args.action === "reset"
+            ? `Reset ${where} to ${ref} (${mode}${mode === "hard" ? ", throwing away uncommitted changes" : ""}): takes ${rewrites} off the branch`
+            : `Rebase ${where} onto ${ref}: rewrites ${rewrites}`;
+        return gated(tier, repo, summary, { top, action: args.action, ref, mode }, args.untrusted_sources);
+      }
+      default:
+        throw new Error(`unknown action: ${args.action}`);
+    }
   }
 
   const who = (u) => u?.login || "someone";
@@ -341,7 +908,13 @@ function createGitToolSource(options = {}) {
     throw new Error(`unknown action: ${action}`);
   }
 
-  const executors = { [GIT_READ_TOOL]: gitRead, [GITHUB_READ_TOOL]: githubRead };
+  const executors = {
+    [GIT_READ_TOOL]: gitRead,
+    [GIT_CHANGE_TOOL]: gitChange,
+    [GIT_PUSH_TOOL]: gitPush,
+    [GITHUB_READ_TOOL]: githubRead,
+    [GITHUB_WRITE_TOOL]: githubWrite,
+  };
   return {
     listToolSchemas: () => TOOL_SCHEMAS,
     isKnownToolName: (name) => TOOL_NAMES.has(name),
@@ -357,10 +930,16 @@ function createGitToolSource(options = {}) {
 }
 
 module.exports = {
+  GIT_APPROVAL_DEFAULTS,
+  GIT_APPROVAL_MODES,
+  GIT_CHANGE_TOOL,
+  GIT_PUSH_TOOL,
   GIT_READ_TOOL,
   GITHUB_READ_TOOL,
+  GITHUB_WRITE_TOOL,
   createGitToolSource,
   findSecret,
+  resolveGitApprovalModes,
   runCommand,
   stripAttribution,
   testEnv,
