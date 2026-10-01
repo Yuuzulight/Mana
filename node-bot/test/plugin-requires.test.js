@@ -16,10 +16,7 @@ const PLUGINS = path.join(__dirname, "..", "..", "plugins");
 const SKIP_DIRS = new Set(["node_modules", "test", "obsidian-plugin"]);
 
 // Known broken, tracked separately. Remove an entry once it's fixed.
-const KNOWN = new Set([
-  "browser-automation/index.js playwright-core", // fixed by #1162
-  "document-reader/document-reader.js pdf-parse", // not a node-bot dependency yet
-]);
+const KNOWN = new Set([]);
 
 function jsFiles(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

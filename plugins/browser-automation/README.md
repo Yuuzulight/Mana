@@ -24,8 +24,9 @@ browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
   Browser panel is on screen, for its screenshot.
 - Ad and tracker domains (`ad-hosts.js`, a short hand-kept list) are always
   blocked (#1168): under site isolation each cross-site ad iframe is its own
-  renderer. When ads were blocked and the page looks broken (script errors,
-  next to nothing to read or use, or an action timing out), her result and
+  renderer. When ads were blocked and the page looks broken (next to
+  nothing to read or use, or an action or page load timing out; script
+  errors alone don't count, #1179), her result and
   the Browser panel say the site may need them, with "Open in my browser".
   She doesn't retry without blocking.
 - Closes after 5 idle minutes, and never starts (or closes at once) while
@@ -43,6 +44,69 @@ elements that appeared or went; a new page (or one that mostly changed)
 gets a fresh snapshot. Everything from the page reaches the model inside
 one untrusted frame (`ai/untrusted-content.js`). Screenshots are only for
 the Browser panel, taken while it's on screen; the model never sees one.
+
+## Developer tools (#1161)
+
+`devtools { do }` on the current page, on any site she's allowed to act on
+(#1154 -- no separate mode or allow-list):
+
+- `console`: the page's console messages and uncaught errors, errors first.
+- `network`: failed requests (errors, HTTP 4xx/5xx) and the slowest ones,
+  with timings. Requests we block ourselves (ads, media) aren't listed.
+- `run_js { code }`: one JavaScript expression, its value back as JSON
+  (capped at 2000 characters). It asks for the site on its own
+  (`browser-js:<host>`: once, session, always, deny, never); allowing a
+  site for clicks doesn't allow scripts. Never on password or payment pages.
+- `viewport { size: phone | tablet | desktop }` and
+  `color_scheme { scheme: light | dark }`.
+- `look { question }`: a screenshot her vision model describes. Off while
+  gaming, never on password or payment pages.
+
+Each tab keeps its last 100 console messages and requests, cleared when it
+loads a new page. Everything the page says comes back inside the untrusted
+frame.
+
+## Test this site (#1161)
+
+`test_site { urls, sizes? }` loads up to 5 pages at phone, tablet and
+desktop size (images included) and checks each for console errors, failed
+requests, layout that breaks out of the window, and basic accessibility
+(missing alt text and labels, unnamed buttons and links, low contrast), with
+a screenshot. Each page's links on the same site (up to 25) are checked
+once. Every site in it needs her permission (#1154). She gets the counts;
+the Browser panel's "Test report" opens the full report, with screenshots,
+drawn by Folio. `GET /browser-automation/site-test` serves the latest one.
+
+## Look and click (#1157)
+
+`look_and_click { description }` is the last resort for pages with no
+useful accessibility info (canvas apps, unlabeled custom UIs). It only
+runs when `find` sees nothing matching; then her own vision model gets a
+screenshot and answers with x,y, and she clicks there. Off while a game
+runs, asks for the site like a click, refused on password/payment pages.
+Images on the page only show while the Browser panel is on screen (#1137),
+so an image-only icon is easier to spot with the panel open.
+
+## Uploads and downloads (#1158)
+
+- `upload { ref, file }` fills a file input, or answers the file chooser a
+  button opens, only with a file I pointed her to in the last 30 minutes:
+  its full path in my own chat message, or one I picked with the Browser
+  panel's "Give her a file". Never keys or secrets (`.env`, `id_rsa`...),
+  never one she chooses herself. It asks for the site like a click.
+- A download waits in `node-bot/data/browser-downloads-pending` for my OK
+  in Approvals, every time (never "always"). Approved, it goes into one
+  folder (`MANA_BROWSER_DOWNLOAD_DIR`, default `Downloads\Mana`), never
+  overwriting, marked as from the internet (Zone.Identifier), and the chat
+  says where it is. She never opens it. Unapproved ones are swept after a day.
+
+## Tabs (#1159)
+
+`tab { do: "open", url }`, `{ do: "switch", number }`, `{ do: "close", number }`:
+up to 3 tabs (`MANA_BROWSER_MAX_TABS`, 1 to 5) for comparing pages. With
+more than one open, every answer lists them (title and URL). A new tab
+isn't opened while RAM is above 85%, and when her reply ends only the tab
+she's on stays open (popups a site opened go too).
 
 ## Batches (#1160)
 
