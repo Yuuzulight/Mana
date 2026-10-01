@@ -20,6 +20,13 @@
 // github__write for PRs, issues, comments, labels and CI reruns), through
 // the "GitHub writes" setting. What she writes there goes through the
 // bridge-output sanitizer first: no keys, no local paths, no attribution.
+//
+// #1193: the dangerous tier, through its own setting (default: ask every
+// time, and "always" never sticks): merging a PR, pushing to the default
+// branch, force-pushing (with lease only), deleting a remote branch, and
+// resetting or rebasing commits already pushed (or any hard reset). The
+// prompt says exactly what will happen, and what runs is what it showed:
+// the PR's head commit, the remote commit the lease expects.
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
@@ -183,14 +190,17 @@ const TOOL_SCHEMAS = [
     function: {
       name: GIT_CHANGE_TOOL,
       description:
-        "Change a git repo on this PC: switch (or create) a branch, add or remove a worktree, stage files, commit, fetch, pull (merges), merge a ref such as origin/main into the current branch, or abort a merge. Resolve conflicts by editing the files, then stage and commit. The user's approval setting decides whether it asks first; if it asks, it runs once they allow it.",
+        "Change a git repo on this PC: switch (or create) a branch, add or remove a worktree, stage files, commit, fetch, pull (merges), merge a ref such as origin/main into the current branch, abort a merge, reset, or rebase (and continue or abort it). Resolve conflicts by editing the files, then stage and commit. The user's approval setting decides whether it asks first; if it asks, it runs once they allow it.",
       parameters: {
         type: "object",
         properties: {
           repo: REPO_PARAM,
           action: {
             type: "string",
-            enum: ["switch", "worktree_add", "worktree_remove", "stage", "commit", "fetch", "pull", "merge", "merge_abort"],
+            enum: [
+              "switch", "worktree_add", "worktree_remove", "stage", "commit", "fetch", "pull", "merge", "merge_abort",
+              "reset", "rebase", "rebase_continue", "rebase_abort",
+            ],
           },
           branch: { type: "string", description: "switch/worktree_add: the branch." },
           create: { type: "boolean", description: "switch/worktree_add: create the branch." },
@@ -199,7 +209,8 @@ const TOOL_SCHEMAS = [
           paths: { type: "array", items: { type: "string" }, description: "stage: the files or folders." },
           all: { type: "boolean", description: "stage: every change, new files included." },
           message: { type: "string", description: "commit: the message (first line a short title). No Co-authored-by lines." },
-          ref: { type: "string", description: "merge: what to merge in. Default origin/<default branch>." },
+          ref: { type: "string", description: "merge: what to merge in (default origin/<default branch>). reset/rebase: where to." },
+          mode: { type: "string", enum: ["soft", "mixed", "hard"], description: "reset. Default mixed; hard discards uncommitted changes." },
         },
         required: ["action"],
       },
@@ -230,12 +241,14 @@ const TOOL_SCHEMAS = [
     function: {
       name: GIT_PUSH_TOOL,
       description:
-        "Push a branch to origin on GitHub (not the default branch). The user's approval setting decides whether it asks first; if it asks, it runs once they allow it.",
+        "Push a branch to origin on GitHub, force-push it (with lease), or delete it on origin. The user's approval setting decides whether it asks first; if it asks, it runs once they allow it.",
       parameters: {
         type: "object",
         properties: {
           repo: REPO_PARAM,
           branch: { type: "string", description: "The local branch. Default: the current one." },
+          force: { type: "boolean", description: "Force-push, with a lease on what origin has now." },
+          delete: { type: "boolean", description: "Delete this branch on origin instead." },
         },
       },
     },
@@ -245,14 +258,14 @@ const TOOL_SCHEMAS = [
     function: {
       name: GITHUB_WRITE_TOOL,
       description:
-        "Write to the repo on GitHub: open, edit or comment on a PR; open, edit, comment on or close an issue; add or remove labels (with an edit); rerun a CI run's failed jobs. Written in first person as the user. The user's approval setting decides whether it asks first.",
+        "Write to the repo on GitHub: open, edit, comment on or merge a PR; open, edit, comment on or close an issue; add or remove labels (with an edit); rerun a CI run's failed jobs. Written in first person as the user. The user's approval setting decides whether it asks first.",
       parameters: {
         type: "object",
         properties: {
           repo: REPO_PARAM,
           action: {
             type: "string",
-            enum: ["pr_create", "pr_edit", "pr_comment", "issue_create", "issue_edit", "issue_comment", "issue_close", "rerun_failed"],
+            enum: ["pr_create", "pr_edit", "pr_comment", "pr_merge", "issue_create", "issue_edit", "issue_comment", "issue_close", "rerun_failed"],
           },
           number: { type: "integer", description: "The PR or issue number (edit, comment, close)." },
           title: { type: "string", description: "pr_create/issue_create, or a new title with an edit." },
@@ -264,6 +277,7 @@ const TOOL_SCHEMAS = [
           remove_labels: { type: "array", items: { type: "string" }, description: "Labels to remove (edit)." },
           reason: { type: "string", enum: ["completed", "not_planned"], description: "issue_close. Default completed." },
           run_id: { type: "string", description: "rerun_failed: the CI run's id." },
+          method: { type: "string", enum: ["merge", "squash", "rebase"], description: "pr_merge. Default merge." },
         },
         required: ["action"],
       },
@@ -432,12 +446,13 @@ function createGitToolSource(options = {}) {
 
   // A merge or a pull may stop at conflicts: that's a result for her to
   // work on, not a failure.
-  async function mergeLike(args, top, what) {
-    const r = await exec("git", [...GIT_BASE, ...args], { cwd: top, env: gitEnv, timeoutMs: HOOK_TIMEOUT_MS });
+  async function mergeLike(args, top, what, abort = "merge_abort") {
+    // No editor to wait for: a rebase --continue keeps each message.
+    const r = await exec("git", [...GIT_BASE, ...args], { cwd: top, env: { ...gitEnv, GIT_EDITOR: "true" }, timeoutMs: HOOK_TIMEOUT_MS });
     if (r.code === 0) return cap(`${what}: done.\n${r.stdout.trim()}`);
     const conflicts = await conflictList(top);
     if (!conflicts.length) throw new Error(`git ${args[0]} failed: ${cap((r.stderr || r.stdout).trim(), 500)}`);
-    return `${what} stopped at conflicts in:\n${conflicts.join("\n")}\nEdit those files, then stage and commit them (or merge_abort).`;
+    return `${what} stopped at conflicts in:\n${conflicts.join("\n")}\nEdit those files, then stage them and ${abort === "merge_abort" ? "commit" : "rebase_continue"} (or ${abort}).`;
   }
 
   // A node_modules link (a junction on Windows) is unlinked first, as a
@@ -496,12 +511,33 @@ function createGitToolSource(options = {}) {
     },
     // #1192: the GitHub writes. The outgoing diff gets the secret scan
     // again when it's pushed, whoever made its commits.
-    async push({ top, branch, base }) {
+    // lease: the remote commit a force-push may replace, and only that one.
+    async push({ top, branch, base, lease }) {
       const diff = await git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", base, branch], top);
       const secret = findSecret(diff, env);
       if (secret) throw new Error(`the changes I'd push have ${secret} in them, so I didn't push`);
-      await git(["push", "-u", "origin", `${branch}:refs/heads/${branch}`], top, HOOK_TIMEOUT_MS);
-      return `Pushed ${branch} to origin.`;
+      const force = lease ? [`--force-with-lease=refs/heads/${branch}:${lease}`] : [];
+      await git(["push", ...force, "-u", "origin", `${branch}:refs/heads/${branch}`], top, HOOK_TIMEOUT_MS);
+      return `${lease ? "Force-pushed" : "Pushed"} ${branch} to origin.`;
+    },
+    async delete_remote({ top, branch, lease }) {
+      await git(["push", `--force-with-lease=refs/heads/${branch}:${lease}`, "origin", `:refs/heads/${branch}`], top, NETWORK_TIMEOUT_MS);
+      return `Deleted ${branch} on origin.`;
+    },
+    // sha: the head commit the prompt showed; gh refuses if the PR moved.
+    async pr_merge({ top, number, method, sha }) {
+      await gh(["pr", "merge", number, `--${method}`, `--match-head-commit=${sha}`], top);
+      return `Merged PR #${number}.`;
+    },
+    async reset({ top, ref, mode }) {
+      await git(["reset", `--${mode}`, ref], top);
+      return `Reset to ${ref} (${mode}). Now:\n${cap(await git(["status", "--short", "--branch"], top))}`;
+    },
+    rebase: ({ top, ref }) => mergeLike(["rebase", ref], top, `Rebasing onto ${ref}`, "rebase_abort"),
+    rebase_continue: ({ top }) => mergeLike(["rebase", "--continue"], top, "Rebase", "rebase_abort"),
+    async rebase_abort({ top }) {
+      await git(["rebase", "--abort"], top);
+      return "Aborted the rebase.";
     },
     async pr_create({ top, head, base, title, body, draft }) {
       const out = await gh(["pr", "create", `--base=${base}`, `--head=${head}`, `--title=${title}`, `--body=${body}`, ...(draft ? ["--draft"] : [])], top);
@@ -559,20 +595,35 @@ function createGitToolSource(options = {}) {
     const repo = await openRepo(args.repo);
     const { top } = repo;
     const branch = checkBranch(args.branch || (await currentBranch(top)));
-    await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], top);
     const main = await remoteDefault(top);
     // main and master count too, in case the lookup fell back to a guess.
-    if ([main, "main", "master"].includes(branch)) throw new Error(`${branch} is the default branch; I don't push to it`);
-    const tracked = (await exec("git", [...GIT_BASE, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: top, env: gitEnv })).code === 0;
+    const isDefault = [main, "main", "master"].includes(branch);
+    const remoteSha = async () => {
+      const r = await exec("git", [...GIT_BASE, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: top, env: gitEnv });
+      return r.code === 0 ? r.stdout.trim() : null;
+    };
+    const count = async (range) => (await git(["rev-list", "--count", range], top)).trim();
+    const lease = await remoteSha();
+    if (args.delete) {
+      if (isDefault) throw new Error(`${branch} is the default branch; I never delete it`);
+      if (!lease) throw new Error(`origin has no ${branch} that I know of (fetch first)`);
+      return gated("danger", repo, `Delete the branch ${branch} on origin, from ${repo.main} (at ${lease.slice(0, 8)}; ${await count(`origin/${main}..${lease}`)} commit(s) on it aren't on ${main})`, {
+        action: "delete_remote", top, branch, lease,
+      }, args.untrusted_sources);
+    }
+    await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], top);
+    const onDefault = isDefault ? `, the default branch,` : "";
+    if (args.force && lease) {
+      const dropped = await count(`${branch}..${lease}`);
+      return gated("danger", repo, `Force-push ${branch}${onDefault} to origin from ${repo.main}, with lease: drops ${dropped} commit(s) now on origin and pushes ${await count(`${lease}..${branch}`)}`, {
+        action: "push", top, branch, base: lease, lease,
+      }, args.untrusted_sources);
+    }
     // Against its own remote branch, else the default branch it starts from.
-    const base = tracked ? `origin/${branch}` : (await git(["merge-base", `origin/${main}`, branch], top)).trim();
-    const count = (await git(["rev-list", "--count", `${base}..${branch}`], top)).trim();
-    return gated("github", repo, `Push ${branch} (${count} commit(s)${tracked ? "" : ", a new branch"}) to origin from ${repo.main}`, {
-      action: "push",
-      top,
-      branch,
-      base,
-    }, args.untrusted_sources);
+    const base = lease || (await git(["merge-base", `origin/${main}`, branch], top)).trim();
+    const commits = `${await count(`${base}..${branch}`)} commit(s)${lease ? "" : ", a new branch"}`;
+    if (isDefault) return gated("danger", repo, `Push ${commits} to ${branch}${onDefault} on origin, from ${repo.main}`, { action: "push", top, branch, base }, args.untrusted_sources);
+    return gated("github", repo, `Push ${branch} (${commits}) to origin from ${repo.main}`, { action: "push", top, branch, base }, args.untrusted_sources);
   }
 
   async function githubWrite(args) {
@@ -617,6 +668,27 @@ function createGitToolSource(options = {}) {
         const parts = [t && `title "${t}"`, b && `description${preview(b)}`, add.length && `add labels ${add.join(", ")}`, remove.length && `remove labels ${remove.join(", ")}`].filter(Boolean);
         if (!parts.length) throw new Error("nothing to change");
         return github(`Edit ${label} ${where}: ${parts.join("; ")}`, { action: "edit", kind, number, title: t, body: b, add, remove });
+      }
+      case "pr_merge": {
+        const number = positiveInt(args.number, "number");
+        const fields = "title,state,isDraft,headRefName,baseRefName,headRefOid,commits";
+        const p = JSON.parse(await gh(["pr", "view", number, "--json", fields], top));
+        if (p.state !== "OPEN") throw new Error(`PR #${number} is ${String(p.state).toLowerCase()}`);
+        const method = ["merge", "squash", "rebase"].includes(args.method) ? args.method : "merge";
+        // gh exits non-zero while checks fail or are pending; its JSON is still the answer.
+        const r = await exec("gh", ["pr", "checks", number, "--json", "name,bucket"], { cwd: top, env: ghEnv, timeoutMs: NETWORK_TIMEOUT_MS });
+        let checks = [];
+        try {
+          checks = JSON.parse(r.stdout);
+        } catch {}
+        const notGreen = checks.filter((c) => !["pass", "skipping"].includes(c.bucket));
+        const checkText = !checks.length
+          ? "no checks"
+          : notGreen.length
+            ? `checks NOT green: ${notGreen.map((c) => `${c.name} (${c.bucket})`).join(", ")}`
+            : "checks green";
+        const summary = `Merge PR #${number} "${p.title}" in ${repo.main} (${method}): ${p.headRefName} -> ${p.baseRefName}, ${(p.commits || []).length} commit(s); ${checkText}${p.isDraft ? "; it's a draft" : ""}`;
+        return gated("danger", repo, summary, { top, action: "pr_merge", number, method, sha: p.headRefOid }, args.untrusted_sources);
       }
       case "pr_comment":
       case "issue_comment": {
@@ -709,6 +781,28 @@ function createGitToolSource(options = {}) {
       }
       case "merge_abort":
         return local(`Abort the merge in progress in ${where}`, { action: "merge_abort" });
+      case "rebase_abort":
+        return local(`Abort the rebase in progress in ${where}`, { action: "rebase_abort" });
+      case "rebase_continue":
+        return local(`Continue the rebase in progress in ${where}`, { action: "rebase_continue" });
+      // #1193: dangerous once it rewrites anything already pushed, or
+      // throws away uncommitted work (a hard reset).
+      case "reset":
+      case "rebase": {
+        if (!args.ref) throw new Error("ref is required");
+        const ref = checkRef(args.ref);
+        const mode = args.action === "reset" ? (["soft", "mixed", "hard"].includes(args.mode) ? args.mode : "mixed") : undefined;
+        const count = async (...extra) => Number((await git(["rev-list", "--count", `${ref}..HEAD`, ...extra], top)).trim());
+        const total = await count();
+        const pushed = total - (await count("--not", "--remotes"));
+        const tier = pushed > 0 || mode === "hard" ? "danger" : "local";
+        const rewrites = `${total} commit(s), ${pushed} of them already pushed`;
+        const summary =
+          args.action === "reset"
+            ? `Reset ${where} to ${ref} (${mode}${mode === "hard" ? ", throwing away uncommitted changes" : ""}): takes ${rewrites} off the branch`
+            : `Rebase ${where} onto ${ref}: rewrites ${rewrites}`;
+        return gated(tier, repo, summary, { top, action: args.action, ref, mode }, args.untrusted_sources);
+      }
       default:
         throw new Error(`unknown action: ${args.action}`);
     }
