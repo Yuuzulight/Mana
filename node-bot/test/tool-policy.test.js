@@ -202,3 +202,12 @@ test("read_file does NOT refuse .environment or other unrelated .env-prefixed do
   const policy = createToolPolicy({ allowedRoot: "C:\\project", ...fakeFs });
   assert.equal(policy.executeTool("read_file", { path: ".environment" }), "APP_ENV=development");
 });
+
+test("isCredentialPath and trimEnd stay fast on a long run of whitespace that doesn't reach the end", () => {
+  const { isCredentialPath, trimEnd } = require("../ai/tool-policy");
+  const started = Date.now();
+  assert.equal(isCredentialPath(`a${"\t".repeat(100000)}b`), false);
+  assert.equal(isCredentialPath(".env \t."), true);
+  assert.equal(trimEnd("name. . ", (c) => c === "." || c === " "), "name");
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+});

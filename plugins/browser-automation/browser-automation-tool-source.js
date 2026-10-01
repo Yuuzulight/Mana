@@ -6,6 +6,8 @@
 const { createBrowserActivityLog } = require("./browser-automation-activity");
 const { wrapUntrusted } = require("../../node-bot/ai/untrusted-content");
 const { blockedNote } = require("./browser-automation");
+const { createBrowserDownloads } = require("./browser-downloads");
+const trayNotifier = require("../../node-bot/tray-notifier");
 
 const BROWSER_TOOL_PREFIX = "browser_automation__";
 // Gates the *first* tool-calling use, not every individual call -- once a
@@ -20,7 +22,7 @@ const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
 // asked (allow once / for the session / always / deny / never), per site.
 // Reading, scrolling and going back never ask.
 const SITE_ACTION_TYPE = "browser-site";
-const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag"]);
+const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag", "upload"]);
 
 // "shop.example.com" from a page URL (www. dropped), or null off the web.
 function siteOf(url) {
@@ -72,6 +74,11 @@ const TOOL_SCHEMAS = [
     to: { type: "string", description: "The ref of where to drop it." },
   }, ["from", "to"]),
   tool("back", "Go back to the previous page."),
+  // #1158
+  tool("upload", "Put a file into a page's upload field or button, by its ref. Only a file the user pointed you to: its full path from their message, or one they gave you in the Browser panel.", {
+    ref: REF_PARAM,
+    file: { type: "string", description: "The file's full path, as the user gave it." },
+  }, ["ref", "file"]),
   // #1159
   tool("tab", "Work with tabs (a few at most, e.g. to compare pages): open one at a URL, switch to one, or close one. With more than one open, every answer lists them.", {
     do: { type: "string", enum: ["open", "switch", "close"] },
@@ -147,6 +154,19 @@ function createBrowserAutomationToolSource(options = {}) {
   const activityLog = options.activityLog || createBrowserActivityLog();
   // #1139: flags "she needs you" in the Browser panel (plugin index.js).
   const requestHandOver = options.requestHandOver || (() => {});
+  // #1158: each download waits for my OK; the chat shows where it went.
+  const downloads = createBrowserDownloads({
+    approvalGate,
+    dir: options.downloadDir,
+    pendingDir: options.pendingDownloadDir,
+    notify: options.notifyTray || trayNotifier.notifyTray,
+  });
+  function onDownload(download) {
+    return downloads.handle(download).then(
+      ({ name }) => activityLog.recordActivity({ action: "download", args: { name }, status: "ok" }),
+      (err) => activityLog.recordActivity({ action: "download", args: {}, status: "error", error: err.message }),
+    );
+  }
 
   if (!approvalGate) {
     throw new Error("an approvalGate is required");
@@ -217,7 +237,7 @@ function createBrowserAutomationToolSource(options = {}) {
       return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
     }
     // #1137: her page loads images only while the Browser panel watches.
-    const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched });
+    const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched, onDownload });
     if (action === "batch") return runBatch(session, args?.steps);
     const result = await act(session, action, args);
     await recordScreenshot(session);
@@ -264,6 +284,7 @@ function createBrowserAutomationToolSource(options = {}) {
       else if (action === "press") result = await session.press(args?.key, args?.ref);
       else if (action === "drag") result = await session.drag(args?.from, args?.to);
       else if (action === "tab") result = await session.tab(args);
+      else if (action === "upload") result = await session.upload(args?.ref, args?.file);
       else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step

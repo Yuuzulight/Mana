@@ -19,6 +19,8 @@ function describeBrowserAction(action, args) {
   if (action === "select") return `Choosing "${args?.value ?? ""}" in element ${args?.ref ?? "?"}`;
   if (action === "scroll") return `Scrolling ${args?.direction || "down"}`;
   if (action === "back") return "Going back";
+  if (action === "upload") return `Uploading ${args?.file || "a file"} into element ${args?.ref ?? "?"}`;
+  if (action === "download") return `A download waits for your OK: ${args?.name || "a file"}`;
   if (action === "tab") {
     if (args?.do === "open") return `Opening a tab at ${args?.url || "an unknown URL"}`;
     return `${args?.do === "close" ? "Closing" : "Switching to"} tab ${args?.number ?? "?"}`;

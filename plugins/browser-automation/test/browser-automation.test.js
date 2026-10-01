@@ -58,6 +58,8 @@ function createFakePage(overrides = {}) {
         hover: async () => state.calls.push(["hover", selector]),
         press: async (key) => state.calls.push(["press", selector, key]),
         dragTo: async (target) => state.calls.push(["drag", selector, target.selector]),
+        evaluate: async (fn) => fn({ tagName: state.fileInputs?.includes(selector) ? "INPUT" : "BUTTON", type: "file" }),
+        setInputFiles: async (file) => state.calls.push(["setInputFiles", selector, file]),
         selector,
       };
     },
@@ -67,6 +69,10 @@ function createFakePage(overrides = {}) {
       wheel: async (x, y) => state.calls.push(["wheel", x, y]),
     },
     viewportSize: () => ({ width: 1000, height: 500 }),
+    async waitForEvent(event) {
+      state.calls.push(["wait", event]);
+      return { setFiles: async (file) => state.calls.push(["chooser", file]) };
+    },
     async goBack() {
       state.calls.push(["back"]);
       state.url = "https://example.com/previous";
@@ -398,4 +404,59 @@ test("#1156: find looks at the whole page, beyond the snapshot's cap", async () 
   assert.deepEqual(result.matches, ['button "Checkout" [ref=e999]']);
   assert.equal(result.description, "the checkout button");
   await assert.rejects(() => createBrowserSession({ page }).find("  "), /say what to look for/);
+});
+
+test("#1158: upload fills a file input directly, or answers the chooser a button opens", async () => {
+  const page = createFakePage();
+  page.state.fileInputs = ["aria-ref=e4"];
+  const session = createBrowserSession({ page });
+  await session.upload("e4", "C:\\cv.pdf");
+  await session.upload("e5", "C:\\cv.pdf");
+  assert.deepEqual(actions(page), [
+    ["setInputFiles", "aria-ref=e4", "C:\\cv.pdf"],
+    ["wait", "filechooser"],
+    ["click", "aria-ref=e5", { timeout: 5000 }],
+    ["chooser", "C:\\cv.pdf"],
+  ]);
+  page.state.sensitive = "payment details";
+  await assert.rejects(() => session.upload("e4", "C:\\cv.pdf"), /asks for payment details/);
+});
+
+test("#1158: downloads wait for my OK every time, then land in the folder, never overwriting, with the chat told", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { createApprovalGate } = require("../../../node-bot/approval-gate");
+  const { createBrowserDownloads, safeName } = require("../browser-downloads");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mana-downloads-"));
+  const gate = createApprovalGate({ dataDir: path.join(tmp, "gate") });
+  const notes = [];
+  const downloads = createBrowserDownloads({ approvalGate: gate, dir: path.join(tmp, "Downloads"), pendingDir: path.join(tmp, "pending"), notify: async (n) => notes.push(n) });
+  const fakeDownload = (name) => ({
+    suggestedFilename: () => name,
+    url: () => "https://files.test/get?id=1",
+    saveAs: async (to) => fs.writeFileSync(to, "the bytes"),
+  });
+
+  assert.deepEqual(await downloads.handle(fakeDownload("..\\..\\report.pdf")), { name: "report.pdf", status: "pending" });
+  assert.equal(fs.existsSync(path.join(tmp, "Downloads")), false); // nothing delivered before I say so
+  const [first] = gate.listPending();
+  assert.equal(first.summary, `Save "report.pdf" from files.test to ${path.join(tmp, "Downloads")}`);
+  assert.equal(first.forceReview, true);
+  await gate.decide(first.id, "always-allow"); // still asks next time
+  assert.equal(fs.readFileSync(path.join(tmp, "Downloads", "report.pdf"), "utf8"), "the bytes");
+  assert.match(notes[0].text, /^Saved "report\.pdf" from files\.test to .*It came from a web page, so open it with care\.$/);
+  assert.equal(notes[0].type, "browser-download");
+
+  await downloads.handle(fakeDownload("report.pdf"));
+  assert.equal(gate.listPending().length, 1);
+  await gate.decide(gate.listPending()[0].id, "allow-once");
+  assert.equal(fs.existsSync(path.join(tmp, "Downloads", "report (2).pdf")), true);
+  assert.deepEqual(fs.readdirSync(path.join(tmp, "pending")), []);
+
+  assert.equal(safeName('a<b>:c"d|e?.exe'), "a_b__c_d_e_.exe");
+  assert.equal(safeName(" .. "), "download");
+  const started = Date.now();
+  assert.equal(safeName(`a${" ".repeat(100000)}b`).length, 150); // fast on a long run of spaces
+  assert.ok(Date.now() - started < 1000);
 });

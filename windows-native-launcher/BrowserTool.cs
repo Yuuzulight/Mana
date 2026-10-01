@@ -35,6 +35,8 @@ internal sealed class BrowserTool : Panel
     private readonly Button openInMyBrowserButton = new() { Text = "Open in my browser", Dock = DockStyle.Right, Width = 130, AccessibleName = "Open this page in my own browser" };
     private readonly Label pagesLabel = new() { Dock = DockStyle.Top, Height = 22, Text = "Pages she read this turn (open one to read it here)", ForeColor = DarkTheme.Muted, Padding = new Padding(0, 6, 0, 0) };
     private readonly ListView pagesList = new() { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HeaderStyle = ColumnHeaderStyle.None, AccessibleName = "Pages she read this turn (outside content)" };
+    // #1158: the only files she may upload come from me.
+    private readonly Button giveFileButton = new() { Text = "Give her a file", Dock = DockStyle.Left, Width = 110, AccessibleName = "Give her a file to upload" };
     private readonly Button stopButton = new() { Text = "Stop", Dock = DockStyle.Right, Width = 64, AccessibleName = "Stop: end her browser session" };
     private readonly Button takeOverButton = new() { Text = "Take over", Dock = DockStyle.Left, Width = 84, AccessibleName = TakeOverName };
     private readonly Font titleFont;
@@ -49,6 +51,13 @@ internal sealed class BrowserTool : Panel
     private bool polling;
 
     // Tests swap this out so nothing opens a real browser.
+    // Tests swap this out so no dialog opens.
+    internal Func<string[]?> PickFiles { get; set; } = () =>
+    {
+        using var dialog = new OpenFileDialog { Multiselect = true, Title = "Give Mana a file to upload" };
+        return dialog.ShowDialog() == DialogResult.OK ? dialog.FileNames : null;
+    };
+
     internal Action<string> OpenUrl { get; set; } = url => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
 
     internal ReaderView Reader => reader; // tests
@@ -76,6 +85,8 @@ internal sealed class BrowserTool : Panel
 
         DarkTheme.ApplyButton(stopButton);
         DarkTheme.ApplyButton(takeOverButton);
+        DarkTheme.ApplyButton(giveFileButton);
+        giveFileButton.Click += async (_, _) => await GiveFilesAsync();
         stopButton.Click += async (_, _) => await StopAsync();
         takeOverButton.Click += async (_, _) => await TakeOverOrHandBackAsync();
         DarkTheme.ApplyButton(openInMyBrowserButton);
@@ -83,6 +94,7 @@ internal sealed class BrowserTool : Panel
         blockedRow.Controls.Add(blockedLabel);
         blockedRow.Controls.Add(openInMyBrowserButton);
         var buttonRow = new Panel { Dock = DockStyle.Bottom, Height = 32, Padding = new Padding(0, 4, 0, 0) };
+        buttonRow.Controls.Add(giveFileButton);
         buttonRow.Controls.Add(takeOverButton);
         buttonRow.Controls.Add(stopButton);
 
@@ -156,6 +168,28 @@ internal sealed class BrowserTool : Panel
         {
             Render();
             stopButton.Enabled = true;
+        }
+    }
+
+    private async Task GiveFilesAsync()
+    {
+        var files = PickFiles();
+        if (files is not { Length: > 0 })
+        {
+            return;
+        }
+        try
+        {
+            var offered = await client.OfferBrowserFilesAsync(files);
+            note = offered.Count == 0 ? "Those files couldn't be found." : $"She may upload: {string.Join(", ", offered.Select(p => System.IO.Path.GetFileName(p)))}";
+        }
+        catch (Exception ex)
+        {
+            note = $"Couldn't give her the file: {ex.Message}";
+        }
+        if (!IsDisposed)
+        {
+            Render();
         }
     }
 

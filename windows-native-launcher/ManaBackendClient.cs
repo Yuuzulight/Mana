@@ -2223,6 +2223,20 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1158: files I give her to upload (the Browser tool's picker); the
+    // backend answers with the ones that exist.
+    public async Task<IReadOnlyList<string>> OfferBrowserFilesAsync(IReadOnlyList<string> paths)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { paths }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/browser/offer-files", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("offered", out var offered) && offered.ValueKind == JsonValueKind.Array
+            ? offered.EnumerateArray().Select(e => e.GetString() ?? "").Where(p => p.Length > 0).ToList()
+            : [];
+    }
+
     public async Task HandBackBrowserAsync()
     {
         using var content = new StringContent("{}", Encoding.UTF8, "application/json");

@@ -5019,6 +5019,9 @@ function registerRoutes(app, upload, deps = {}) {
           // is actually enabled (Settings > Plugins) -- same gate every
           // other browser-automation entry point (its own HTTP routes,
           // GET /plugins) already respects.
+          // #1158: files whose full path I write in my own chat message are
+          // the ones her browser may upload (never ones she picks herself).
+          if (userChat) browserAutomationPlugin.offerFilesFromMessage(transcript);
           let mergedToolPolicy = await buildToolPolicy(activeToolPolicy, [
             activeMcpClientRegistry,
             createMemoryToolSource({
