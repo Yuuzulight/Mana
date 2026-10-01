@@ -537,3 +537,11 @@ test("#1158: only files I point her to can be uploaded: the panel's picker or fu
   await assert.rejects(() => again.upload("e1", notes.toUpperCase()), (e) => !/only upload/.test(e.message));
   await browserAutomationPlugin.closeSession();
 });
+
+test("pathsIn stays fast on a long run of punctuation after a path", () => {
+  const started = Date.now();
+  const bang = "!".repeat(100000);
+  assert.deepEqual(browserAutomationPlugin.pathsIn(`see C:\\a\\b.pdf${bang}x`), [`C:\\a\\b.pdf${bang}x`]);
+  assert.deepEqual(browserAutomationPlugin.pathsIn("see C:\\a\\b.pdf!)."), ["C:\\a\\b.pdf"]);
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+});

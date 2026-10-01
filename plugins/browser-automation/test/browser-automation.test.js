@@ -457,6 +457,9 @@ test("#1158: downloads wait for my OK every time, then land in the folder, never
 
   assert.equal(safeName('a<b>:c"d|e?.exe'), "a_b__c_d_e_.exe");
   assert.equal(safeName(" .. "), "download");
+  const started = Date.now();
+  assert.equal(safeName(`a${" ".repeat(100000)}b`).length, 150); // fast on a long run of spaces
+  assert.ok(Date.now() - started < 1000);
 });
 
 test("#1157: lookAndClick shows the vision model the screen and clicks where it says", async () => {

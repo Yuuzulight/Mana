@@ -61,11 +61,20 @@ const ENV_EXEMPT_RE = /^\.env\.(sample|example|template)$/i;
 const CREDENTIAL_BASENAME_RE =
   /\.env(?:\.|$)|^\.envrc$|^(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$|\.(pem|pfx|p12)$|^credentials(\.json)?$|^secrets\.(ya?ml|json)$/i;
 
+// text without the run of characters at its end that `trimmed` matches.
+// A plain loop: a /[...]+$/ regex retries from every position in a long
+// run that doesn't reach the end, which is quadratic (CodeQL's ReDoS).
+function trimEnd(text, trimmed) {
+  let end = text.length;
+  while (end > 0 && trimmed(text[end - 1])) end -= 1;
+  return text.slice(0, end);
+}
+
 function isCredentialPath(basenameRaw) {
   // Windows silently drops trailing dots/spaces when it resolves a path, so
   // ".env " / ".env." IS the real .env on disk even though the string
   // itself doesn't match -- test the name the OS will actually open.
-  const basename = String(basenameRaw).replace(/[.\s]+$/, "");
+  const basename = trimEnd(String(basenameRaw), (c) => c === "." || /\s/.test(c));
   if (ENV_EXEMPT_RE.test(basename)) return false;
   return CREDENTIAL_BASENAME_RE.test(basename);
 }
@@ -146,4 +155,5 @@ module.exports = {
   createToolPolicy,
   resolveWithinRoot,
   isCredentialPath,
+  trimEnd,
 };
