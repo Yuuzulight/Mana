@@ -6402,7 +6402,7 @@ async function startServer() {
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
       const trayNotifier = require("./tray-notifier");
-      trayNotifier.setBroadcaster(trayServer.broadcastTrayNotification);
+      trayNotifier.setBroadcaster(trayServer.broadcastTrayNotification, trayServer.hasTrayClients);
     } catch (e) {
       // ignore if notifier cannot be wired
     }
