@@ -22,6 +22,12 @@ on:
 permissions:
   contents: read
 
+# #1206: a new push to a PR cancels the run for the old commit. Pushes (main
+# included) get a group of their own, so they never cancel or replace a run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     name: Build and test windows-native-launcher
@@ -34,6 +40,15 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+
+      # #1206: restored before Pack Folio so Folio's own restore hits it too.
+      # The Folio pin lives in the csproj, so a new pin is a new key.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('windows-native-launcher/**/*.csproj', 'windows-native-launcher/nuget.config') }}
+          restore-keys: nuget-${{ runner.os }}-
 
       # #937: Folio comes from a local package folder (nuget.config). Build
       # it from the commit the launcher pins; both repos are public.

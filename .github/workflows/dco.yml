@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# #1206: a new push to a PR cancels the run for the old commit. Pushes (main
+# included) get a group of their own, so they never cancel or replace a run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dco:
     runs-on: ubuntu-latest

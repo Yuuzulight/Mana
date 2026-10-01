@@ -1,0 +1,19 @@
+{
+  "id": "1089-model-recommendation-subtract",
+  "pr": 1089,
+  "issue": 1086,
+  "base": "9f5625c06f290bf3362d5db88455a6f720a8f955",
+  "fix": "d8a1d401483444495a438270149cd32fc46e6453",
+  "title": "Model recommendation: subtract TTS + Whisper VRAM before choosing a profile",
+  "body": "Part of #625 (non-NVIDIA support). Builds on #1076.\n\n`recommendModelProfile` (`node-bot/model-management.js`) picks fast/default/quality from total VRAM alone. Its own comments admit Whisper and TTS VRAM are ignored, and the tiers just hope to leave \"headroom for TTS and Whisper\". An 8 GB card running Fish (~5 GB) has room for the 1.5B model at most, not the 4B one.\n\nWhat I want:\n- A small VRAM table for the voice stack: Fish, Qwen3-TTS, and Whisper by model size (Kokoro runs on CPU, so 0).\n- Subtract what the active TTS provider and Whisper model hold before choosing the profile, and say so in the reason text.\n- Tiers based on the VRAM left for the LLM. At 8 GB with Fish on, it picks \"fast\".\n- Doctor and `/models/status` should show the same recommendation.\n",
+  "fixFiles": [
+    "node-bot/model-management.js",
+    "node-bot/server.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/model-management.test.js"
+  ],
+  "testCommand": "node --test test/model-management.test.js",
+  "interface": "`recommendModelProfile({ vramMb, ramMb, voiceMb })`: `voiceMb` is the VRAM TTS and Whisper hold; the reason says e.g. `~5.3GB of it held by TTS and Whisper, leaving ~2.7GB for the LLM`. `createModelManagement` takes `ttsProvider` and `whisperModel` (a model file path) to work that out.",
+  "why": "Arithmetic in model-management.js (subtract TTS and Whisper VRAM before picking a tier). The real fix also touched server.js; the hidden test is pure."
+}

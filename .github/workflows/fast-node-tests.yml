@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# #1206: a new push to a PR cancels the run for the old commit. Pushes (main
+# included) get a group of their own, so they never cancel or replace a run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   node-tests:
     name: Node tests (full suite)
@@ -19,11 +25,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The PR merge commit and its base, for the plugins/ check below.
+          fetch-depth: 2
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: node-bot/package-lock.json
 
       - name: Install node-bot deps
         working-directory: ./node-bot
@@ -32,3 +43,16 @@ jobs:
       - name: Run node tests
         working-directory: ./node-bot
         run: npm test
+
+      # #1206: plugin tests used to run only on main or with run/full-ci, so
+      # #1181's Linux-only failures reached main. On a PR, HEAD^1 is the base,
+      # so this diff is the whole PR. Same command as heavy-ci.yml.
+      - name: Run plugin tests (when plugins/ changed)
+        env:
+          NODE_ENV: test
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- plugins/; then
+            echo "Nothing under plugins/ changed; skipping."
+            exit 0
+          fi
+          node --test plugins/*/test/*.test.js

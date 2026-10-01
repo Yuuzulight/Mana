@@ -12,6 +12,72 @@ let scheduler = null;
 let heartbeat = null;
 
 const LATE_REMINDER_MS = 5 * 60 * 1000;
+const REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_REPLAYED = 3;
+// ponytail: check-ins' fixed 1am-9am quiet window (check-ins.js); read
+// #697's quiet-hours setting here once it exists.
+const QUIET_FROM_HOUR = 1;
+const QUIET_UNTIL_HOUR = 9;
+
+// The missed reminders of one catch-up (one runDueJobs pass), while it runs.
+let replay = null;
+// Reminders that came up in quiet time: shown silently then, said after it.
+let saidLater = [];
+
+function inQuietTime(ms) {
+  const hour = new Date(ms).getHours();
+  return hour >= QUIET_FROM_HOUR && hour < QUIET_UNTIL_HOUR;
+}
+
+// In quiet time a reminder is a silent toast, and she says it once quiet
+// time is over (sayHeldReminders), once however often a repeating one fired.
+// ponytail: held in memory, so a backend restart in quiet time loses the
+// spoken line (the toast was already shown).
+function offerReminder(payload, nowMs) {
+  if (inQuietTime(nowMs) && payload.speak) {
+    const { speak, ...silent } = payload;
+    if (!saidLater.some((p) => p.text === silent.text)) saidLater.push({ ...silent, speak, kind: "reminder-late" });
+    payload = silent;
+  }
+  proactive.offer({ reason: "reminder", explicit: true, payload });
+}
+
+function sayHeldReminders(nowMs) {
+  if (!saidLater.length || inQuietTime(nowMs)) return;
+  const held = saidLater;
+  saidLater = [];
+  for (const payload of held) proactive.offer({ reason: "reminder", explicit: true, payload });
+}
+
+// True for the first MAX_REPLAYED missed reminders of a catch-up; the rest
+// are gathered into one "and N more" once the pass is over (its reminders
+// all run before the next macrotask).
+function replayOne(text, nowMs) {
+  if (!replay) {
+    const batch = (replay = { count: 0, rest: [] });
+    setImmediate(() => {
+      const { rest } = batch;
+      if (replay === batch) replay = null;
+      if (!rest.length) return;
+      const list = rest.join("; ");
+      offerReminder(
+        {
+          type: "cron",
+          title: "Reminders",
+          text: `And ${rest.length} more: ${list.length > 200 ? `${list.slice(0, 200)}...` : list}`,
+          speak: `And ${rest.length} more reminder${rest.length === 1 ? "" : "s"} I missed; they're in the notification.`,
+          kind: "reminder-late",
+          at: new Date(nowMs).toISOString(),
+        },
+        nowMs,
+      );
+    });
+  }
+  replay.count += 1;
+  if (replay.count <= MAX_REPLAYED) return true;
+  replay.rest.push(text);
+  return false;
+}
 
 function getScheduler(deps = {}) {
   if (!scheduler) {
@@ -48,15 +114,18 @@ function getScheduler(deps = {}) {
         // engine as explicit, so it gets through even mid-game, and the
         // launcher says it out loud too ("Yuuzu, raid in 10 minutes!").
         if (job.jobType === "reminder") {
+          const nowMs = (deps.now || Date.now)();
+          const lateMs = nowMs - job.nextRunAt;
           payload.speak = `${reminderName(deps.acpMemoryStore)}${assistantText.replace(/[\s.!?]+$/, "")}!`;
           // #1024: picks how the launcher says it. Late: it fired well after
           // its time (the PC was asleep or Mana was off).
-          payload.kind = error
-            ? "failed"
-            : (deps.now || Date.now)() - job.nextRunAt > LATE_REMINDER_MS
-              ? "reminder-late"
-              : "reminder";
-          proactive.offer({ reason: "reminder", explicit: true, payload });
+          payload.kind = error ? "failed" : lateMs > LATE_REMINDER_MS ? "reminder-late" : "reminder";
+          // Tier 3 #2: after downtime only the last day's missed reminders
+          // come back, MAX_REPLAYED of them one by one and the rest as one
+          // "and N more". Older ones stay in the chat log below.
+          if (payload.kind !== "reminder-late" || (lateMs <= REPLAY_WINDOW_MS && replayOne(assistantText, nowMs))) {
+            offerReminder(payload, nowMs);
+          }
         }
         // Issue #423: a scheduled job's result should reach the user even
         // if they never reopen that job's chat session -- fire-and-forget,
@@ -97,6 +166,7 @@ function getScheduler(deps = {}) {
       scheduler.start(Number(process.env.MANA_CRON_CHECK_INTERVAL_MS) || 30000);
       setInterval(() => {
         heartbeat.runDue().catch((e) => console.warn("heartbeat: runDue failed:", e?.message || e));
+        sayHeldReminders(Date.now());
       }, 60 * 1000).unref();
     }
   }
@@ -165,7 +235,10 @@ module.exports = {
     if (scheduler) scheduler.stop();
     scheduler = null;
     heartbeat = null;
+    replay = null;
+    saidLater = [];
   },
+  _sayHeldRemindersForTests: sayHeldReminders,
   // Test-only escape hatch: registerRoutes doesn't expose runDueJobs (the
   // route surface is deliberately just CRUD), but the onResult -> notifyTray
   // wiring above only runs through that method, so tests need direct access
