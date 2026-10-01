@@ -568,8 +568,9 @@ function createSelfWork(options = {}) {
       if (!r.commentIds.has(String(id))) throw new Error(`${id} isn't one of PR #${r.pr}'s review comments`);
       const result = await gitTools.executeTool(
         "github__write",
-        { repo: r.worktree, action: "review_reply", number: r.pr, comment_id: String(id), body },
-        { tainted: true },
+        // Her loop has no risk gate around it: the reply's own prompt says
+        // what she read, and asks whatever the setting says.
+        { repo: r.worktree, action: "review_reply", number: r.pr, comment_id: String(id), body, untrusted_sources: ["GitHub review comments"] },
       );
       log(r, `Asked to reply to review comment ${id}.`);
       return result;
