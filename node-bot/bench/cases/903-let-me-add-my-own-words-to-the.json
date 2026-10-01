@@ -1,0 +1,21 @@
+{
+  "id": "903-let-me-add-my-own-words-to-the",
+  "pr": 903,
+  "issue": 901,
+  "base": "299e4ff1fd7241011f1da04e6d466d2bd3dca2e9",
+  "fix": "8aa6a476d166ff9b577a133458c4392e6e8bd532",
+  "title": "Let me add my own words to the whisper prompt (Imouto, Gigi Murin, VTuber...)",
+  "body": "In a live chat today whisper misheard a few of my own terms: \"Imouto\" came out as \"Immortal\", \"Gigi Murin\" (the Hololive VTuber) as \"GG Moon\" / \"GGMorin\", and \"VTuber\" as \"virtual youth table\".\n\nThe whisper prompt (#667, `whisper-prompt.js`) already biases the decoder toward my name and the names and terms memory picks up. But I have no direct way to add words it should know. The only option is `WHISPER_PROMPT`, which replaces the whole prompt, wake words and name included.\n\n## What I want\n- A short list of my own words, e.g. `WHISPER_VOCABULARY=Imouto, Onesan, Gigi Murin, Hololive, VTuber` in `.env`, merged into the built prompt.\n- Order: my name first, then my vocabulary, then what memory suggests.\n- Stays inside the existing prompt cap (whisper's prompt budget is small), cleaned the same way memory terms are.\n- Documented, with those five words as the example.\n\n## Watch out for\nCapitalised words in the prompt pull transcription toward them. That's why the \"yuzu\" in my name-spelling fact is lowercase: \"Yuzu\" in the prompt made whisper write my name wrong. A vocabulary word that sounds like everyday speech (say \"Imouto\" and \"I'm out to\") could start showing up where it shouldn't. Keep the list short and drop a word if that happens.\n",
+  "fixFiles": [
+    "docs/quick_start_windows.md",
+    "node-bot/.env.sample",
+    "node-bot/server.js",
+    "node-bot/whisper-prompt.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/whisper-prompt.test.js"
+  ],
+  "testCommand": "node --test test/whisper-prompt.test.js",
+  "interface": "`buildWhisperPrompt({ facts, userTexts, vocabulary })` takes the vocabulary as an array; `createWhisperPromptProvider({ ..., vocabulary })` takes the raw comma-separated `WHISPER_VOCABULARY` string. The terms go in the existing `Names and terms: ...` part of the prompt.",
+  "why": "A new env var (WHISPER_VOCABULARY) threaded into whisper-prompt.js. A small feature rather than a bug fix."
+}

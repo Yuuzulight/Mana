@@ -1,0 +1,19 @@
+{
+  "id": "897-doctor-warns-about-llama-serve",
+  "pr": 897,
+  "issue": 896,
+  "base": "d7f49849df68b6c3f2bfa024af9f4a871e0ed4c4",
+  "fix": "0830cea52f275a356aba642db4bee1e255e5673e",
+  "title": "Doctor warns about LLAMA_SERVER_BIN even when llama-server is auto-detected",
+  "body": "Doctor's \"Llama server binary\" check only looks at `LLAMA_SERVER_BIN`, so it warns on every start (and #829's tray alert fires) even though the runtime finds the bundled llama-server.exe by itself and the chat model runs fine. The check should use the runtime's own lookup and only warn when no server can be found.",
+  "fixFiles": [
+    "node-bot/doctor.js",
+    "node-bot/server.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/doctor.test.js"
+  ],
+  "testCommand": "node --test test/doctor.test.js",
+  "interface": "`runDoctorChecks({ ..., findLlamaServerBin })` takes the runtime's lookup (returns a path or throws). The check with id `\"llama-server-binary\"` passes with a message containing `auto-detected` and `details.path`, and warns with a message containing `auto-detection found none`.",
+  "why": "Doctor should use the runtime lookup instead of one env var. Tests finding and reusing an existing function across files."
+}
