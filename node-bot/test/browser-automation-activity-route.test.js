@@ -60,3 +60,14 @@ test("GET /browser-automation/activity returns an empty log and null screenshot 
     assert.deepEqual(body.takeOver, { active: false, needsYou: null });
   });
 });
+
+test("#1161: GET /browser-automation/site-test serves the latest report in the reader's shape, 404 before one", async () => {
+  const activityLog = createBrowserActivityLog();
+  const app = createApp({ browserAutomationToolSource: makeFakeToolSource(activityLog) });
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await fetch(`${baseUrl}/browser-automation/site-test`)).status, 404);
+    activityLog.recordSiteTest({ title: "Site test: a.test", text: "# Site test: a.test", images: { "shot-1": "data:image/jpeg;base64,AAA" } });
+    const body = await (await fetch(`${baseUrl}/browser-automation/site-test`)).json();
+    assert.deepEqual(body, { url: "", title: "Site test: a.test", text: "# Site test: a.test", images: { "shot-1": "data:image/jpeg;base64,AAA" }, truncated: false, needsBrowser: null });
+  });
+});

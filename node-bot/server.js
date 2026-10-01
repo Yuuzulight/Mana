@@ -2830,6 +2830,14 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json({ ...activeBrowserAutomationToolSource.activityLog.getActivity(), takeOver: browserAutomationPlugin.takeOverStatus() });
   });
 
+  // #1161: the latest "Test this site" report, in /web/read's shape so the
+  // Browser panel's reader draws it with Folio.
+  app.get("/browser-automation/site-test", (req, res) => {
+    const report = activeBrowserAutomationToolSource.activityLog.getSiteTest();
+    if (!report) return res.status(404).json({ error: "no site test yet" });
+    return res.json({ url: "", title: report.title, text: report.text, images: report.images, truncated: false, needsBrowser: null });
+  });
+
   // #646: the chat tool loop's live runs (current tool, elapsed), polled
   // by the launcher's activity panel -- read-only, no auth, same as above.
   app.get("/agent/activity", (req, res) => {

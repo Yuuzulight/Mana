@@ -2199,6 +2199,7 @@ internal sealed class ManaBackendClient
             TurnPages = turnPages,
             TakenOver = takeOver is { } o && o.TryGetProperty("active", out var active) && active.ValueKind == JsonValueKind.True,
             NeedsYou = takeOver is { } n ? Text(n, "needsYou") : null,
+            SiteTestTitle = root.TryGetProperty("siteTest", out var siteTest) && siteTest.ValueKind == JsonValueKind.Object ? Text(siteTest, "title") : null,
             BlockedUrl = blocked is { } b ? Text(b, "url") : null,
             BlockedCount = blocked is { } c && c.TryGetProperty("count", out var count) && count.TryGetInt32(out var n2) ? n2 : 0,
         };
@@ -2251,6 +2252,18 @@ internal sealed class ManaBackendClient
     {
         using var content = new StringContent(JsonSerializer.Serialize(new { url, reader = true }), Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/web/read", content);
+        return await ParseReaderPageAsync(response, url);
+    }
+
+    // #1161: her latest "Test this site" report, in the reader's shape.
+    public async Task<ManaReaderPage> GetSiteTestReportAsync()
+    {
+        using var response = await http.GetAsync("/browser-automation/site-test");
+        return await ParseReaderPageAsync(response, "");
+    }
+
+    private static async Task<ManaReaderPage> ParseReaderPageAsync(HttpResponseMessage response, string url)
+    {
         var body = await response.Content.ReadAsStringAsync();
         JsonElement root = default;
         try
@@ -3077,6 +3090,8 @@ internal sealed class ManaBrowserAutomationActivity
     public IReadOnlyList<ManaWebPageRef> TurnPages { get; init; } = Array.Empty<ManaWebPageRef>();
     public bool TakenOver { get; init; }
     public string? NeedsYou { get; init; }
+    // #1161: the latest site test's title, when there is one.
+    public string? SiteTestTitle { get; init; }
     public string? BlockedUrl { get; init; }
     public int BlockedCount { get; init; }
 }

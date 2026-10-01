@@ -7,6 +7,9 @@ const { createBrowserActivityLog } = require("./browser-automation-activity");
 const { wrapUntrusted } = require("../../node-bot/ai/untrusted-content");
 const { blockedNote } = require("./browser-automation");
 const { createBrowserDownloads } = require("./browser-downloads");
+const { reportMarkdown, reportSummary } = require("./site-test");
+const SITE_TEST_SIZES = ["phone", "tablet", "desktop"];
+const MAX_SITE_TEST_PAGES = 5;
 const trayNotifier = require("../../node-bot/tray-notifier");
 
 const BROWSER_TOOL_PREFIX = "browser_automation__";
@@ -84,6 +87,10 @@ const TOOL_SCHEMAS = [
     scheme: { type: "string", enum: ["light", "dark"] },
     question: { type: "string", description: "For look: what to look at or check." },
   }, ["do"]),
+  tool("test_site", "Test web pages (the user's site, or one they name): each page at phone, tablet and desktop size, for console errors, failed requests, broken links, layout that breaks out of the window, and basic accessibility (alt text, labels, contrast), with screenshots. You get the counts; the user gets the full report in the Browser panel.", {
+    urls: { type: "array", items: { type: "string" }, maxItems: MAX_SITE_TEST_PAGES, description: "The pages to test, http(s)." },
+    sizes: { type: "array", items: { type: "string", enum: SITE_TEST_SIZES }, description: "Optional: only these sizes." },
+  }, ["urls"]),
   // #1157
   tool("look_and_click", "Last resort when find and the snapshot can't see what you need (a canvas app, unlabeled buttons): look at the page with your eyes and click where it is. Slower; not while the user is gaming.", {
     description: { type: "string", description: "What to click, as it looks on screen, like \"the green Play button\"." },
@@ -139,7 +146,9 @@ function parsePoint(answer, width, height) {
 // frame.
 function describeForModel(result) {
   const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ...(result.tabs ? ["Tabs:", ...result.tabs] : []), ""];
-  if (result.devtools) {
+  if (result.siteTest) {
+    lines.push("Site test (the full report, with screenshots, is in the user's Browser panel):", result.siteTest);
+  } else if (result.devtools) {
     lines.push(`${result.what}:`, ...(result.devtools.length ? result.devtools : ["(nothing)"]));
   } else if (result.matches) {
     lines.push(result.matches.length ? `Best matches for "${result.description}":` : `Nothing on the page matches "${result.description}".`, ...result.matches);
@@ -190,6 +199,24 @@ function createBrowserAutomationToolSource(options = {}) {
     return runVisionReply(`This is a screenshot of a web page. ${question}`, [image], 400);
   }
 
+  // #1161: "Test this site". Every site in it needs her permission (#1154),
+  // like the rest of her dev tools.
+  async function testSite(session, args = {}) {
+    const urls = [].concat(args.urls || []).map(String);
+    if (urls.length < 1 || urls.length > MAX_SITE_TEST_PAGES) throw new Error(`name 1 to ${MAX_SITE_TEST_PAGES} pages to test`);
+    const sizes = Array.isArray(args.sizes) && args.sizes.length ? args.sizes : SITE_TEST_SIZES;
+    for (const url of urls) {
+      if (!siteOf(url)) throw new Error(`"${url}" isn't a web page`);
+      await requireSitePermission(url);
+    }
+    const pages = [];
+    for (const url of urls) pages.push(await session.testPage(url, sizes));
+    const report = { site: siteOf(urls[0]), when: new Date().toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }), pages };
+    activityLog.recordSiteTest(reportMarkdown(report));
+    const last = pages[pages.length - 1];
+    return { url: last.url, title: last.title, siteTest: reportSummary(report) };
+  }
+
   async function lookAndClick(session, description) {
     const what = String(description || "").trim();
     if (!what) throw new Error("say what to click, like \"the green Play button\"");
@@ -234,8 +261,8 @@ function createBrowserAutomationToolSource(options = {}) {
   // three-denials stop are all per site. js: running JavaScript there
   // (#1161's run_js), asked for on its own -- allowing a site for clicks
   // doesn't allow scripts.
-  async function requireSitePermission(session, js = false) {
-    const site = siteOf(await session.url());
+  async function requireSitePermission(pageUrl, js = false) {
+    const site = siteOf(pageUrl);
     if (!site) throw new Error("open a web page first");
     const actionType = `${js ? JS_ACTION_TYPE : SITE_ACTION_TYPE}:${site}`;
     const doing = js ? "running JavaScript" : "clicking or typing";
@@ -330,8 +357,8 @@ function createBrowserAutomationToolSource(options = {}) {
   async function act(session, action, args) {
     let result;
     try {
-      if (ACTS_ON_SITE.has(action)) await requireSitePermission(session);
-      if (action === "devtools" && args?.do === "run_js") await requireSitePermission(session, true);
+      if (ACTS_ON_SITE.has(action)) await requireSitePermission(await session.url());
+      if (action === "devtools" && args?.do === "run_js") await requireSitePermission(await session.url(), true);
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
       else if (action === "find") result = await session.find(args?.description);
@@ -346,6 +373,7 @@ function createBrowserAutomationToolSource(options = {}) {
       else if (action === "upload") result = await session.upload(args?.ref, args?.file);
       else if (action === "look_and_click") result = await lookAndClick(session, args?.description);
       else if (action === "devtools") result = await session.devtools(args, lookAt);
+      else if (action === "test_site") result = await testSite(session, args);
       else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step
