@@ -288,3 +288,9 @@ test("removing a worktree unlinks its node_modules link first and never deletes 
   assert.equal(fs.readFileSync(path.join(live, "dep", "index.js"), "utf8"), "// live\n");
   assert.match(parsed(await call("git__change", { repo, action: "worktree_remove", name: "wt1" })).error, /isn't one of/);
 });
+
+test("runCommand fails, not cuts short, when the output passes its cap", async () => {
+  const r = await runCommand(process.execPath, ["-e", "process.stdout.write(\"x\".repeat(17 * 1024 * 1024))"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /passed 16 MB/);
+});
