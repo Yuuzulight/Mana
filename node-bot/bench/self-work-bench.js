@@ -118,13 +118,15 @@ function blocker({ isGaming, ramPercent }) {
 }
 
 // One case. deps: repoRoot, worktreesDir, runLoop, and optionally
-// reviewEdit, isGaming, ramPercent, runTests, tokens (a {prompt, completion}
+// reviewEdit, isGaming, ramPercent, runTests, tokens (a {prompt, completion,
+// peak, textCalls}
 // counter the model's fetch adds to).
 async function runCase(c, deps) {
   const { repoRoot, worktreesDir } = deps;
   const wt = path.join(worktreesDir, `bench-${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
-  const tokens = deps.tokens || { prompt: 0, completion: 0 };
+  const tokens = deps.tokens || { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
+  tokens.peak = 0;
   const before = { ...tokens };
   try {
     // Counted here, so a loop that throws still reports what it did.
@@ -169,7 +171,14 @@ async function runCase(c, deps) {
       // Calls that threw: a bad path, an edit whose old_text didn't match.
       toolErrors: calls.errors,
       wallMs,
-      tokens: { prompt: tokens.prompt - before.prompt, completion: tokens.completion - before.completion },
+      tokens: {
+        prompt: tokens.prompt - before.prompt,
+        completion: tokens.completion - before.completion,
+        // The biggest single prompt: how close she came to the context.
+        peak: tokens.peak,
+        // Replies with a tool call written into the text instead of tool_calls.
+        textCalls: tokens.textCalls - before.textCalls,
+      },
       diff: { files: diff.files, added: diff.added, removed: diff.removed },
       outside: diff.files.filter((f) => !allowed.has(f)),
       // How her loop ended: finished, or why not.
@@ -210,17 +219,17 @@ function writeReport(results, outDir, meta = {}) {
   const rows = results.map(({ patch, ...r }) => r);
   const passed = rows.filter((r) => r.passed).length;
   fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ ...meta, passed, total: rows.length, results: rows }, null, 2));
-  const tok = (t) => (t.prompt || t.completion ? `${t.prompt} / ${t.completion}` : "n/a");
+  const tok = (t) => (t.prompt || t.completion ? `${t.prompt} / ${t.completion} / ${t.peak}` : "n/a");
   const md = [
     `# Self-work benchmark${meta.label ? `: ${meta.label}` : ""}`,
     "",
     `${passed}/${rows.length} hidden tests passing.${meta.model ? ` Model: ${meta.model}.` : ""}`,
     "",
-    "| Case | Hidden test | Ended | Rounds | Tool calls (errors) | Wall | Tokens (prompt / out) | Diff (+/-, files) | Outside the fix's files |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Case | Hidden test | Ended | Rounds | Tool calls (errors) | Wall | Tokens (prompt / out / peak) | Calls in text | Diff (+/-, files) | Outside the fix's files |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map(
       (r) =>
-        `| ${r.id} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s | ${tok(r.tokens)} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
+        `| ${r.id} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s | ${tok(r.tokens)} | ${r.tokens.textCalls ?? 0} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
     ),
     "",
   ].join("\n");
@@ -229,7 +238,8 @@ function writeReport(results, outDir, meta = {}) {
 }
 
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
-// Tokens come from each reply's usage.
+// Tokens come from each reply's usage; a reply whose tool call stayed in
+// its text (no tool_calls) is counted too.
 function realModel(repoRoot, tokens) {
   const { parseEnv } = require("node:util");
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
@@ -245,9 +255,15 @@ function realModel(repoRoot, tokens) {
   const fetch = async (url, init) => {
     const resp = await globalThis.fetch(url, init);
     if (resp.ok && /\/v1\/chat\/completions$/.test(url)) {
-      const usage = (await resp.clone().json().catch(() => null))?.usage;
-      tokens.prompt += Number(usage?.prompt_tokens) || 0;
-      tokens.completion += Number(usage?.completion_tokens) || 0;
+      const json = await resp.clone().json().catch(() => null);
+      const prompt = Number(json?.usage?.prompt_tokens) || 0;
+      tokens.prompt += prompt;
+      tokens.completion += Number(json?.usage?.completion_tokens) || 0;
+      tokens.peak = Math.max(tokens.peak, prompt);
+      const message = json?.choices?.[0]?.message;
+      if (message && !message.tool_calls?.length && /<function=|<tool_call>|"arguments"\s*:/.test(message.content || "")) {
+        tokens.textCalls += 1;
+      }
     }
     return resp;
   };
@@ -284,7 +300,7 @@ async function main(argv) {
     return;
   }
 
-  const tokens = { prompt: 0, completion: 0 };
+  const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   const model = realModel(repoRoot, tokens);
   const results = [];
   try {

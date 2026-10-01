@@ -67,6 +67,7 @@ function fakeModel(calls, tokens) {
       toolCalls.push({ name, args, ok: true });
       tokens.prompt += 100;
       tokens.completion += 10;
+      tokens.peak = Math.max(tokens.peak, 100 * toolCalls.length);
     }
     return { content: "Fixed add().", toolCalls, rounds: toolCalls.length };
   };
@@ -76,7 +77,7 @@ const edit = (p, oldText, newText) => ["coding__propose_edit", { path: p, old_te
 const finish = ["session_goal__finish", { reason: "fixed" }];
 
 function deps(r, calls) {
-  const tokens = { prompt: 0, completion: 0 };
+  const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   return { repoRoot: r.repo, worktreesDir: r.worktrees, runLoop: fakeModel(calls, tokens), tokens, ramPercent: () => 50, onEvent: () => {} };
 }
 
@@ -89,7 +90,7 @@ test("a case that fixes the bug passes its hidden test, and the worktree is gone
   assert.equal(result.rounds, 2);
   assert.equal(result.toolCalls, 2);
   assert.equal(result.toolErrors, 0);
-  assert.deepEqual(result.tokens, { prompt: 200, completion: 20 });
+  assert.deepEqual(result.tokens, { prompt: 200, completion: 20, peak: 200, textCalls: 0 });
   assert.deepEqual(result.diff, { files: ["node-bot/util.js"], added: 1, removed: 1 });
   assert.deepEqual(result.outside, []);
   assert.match(result.patch, /\+  return a \+ b;/);
@@ -146,7 +147,7 @@ test("the report has a row per case and each case's diff", async () => {
   const md = writeReport([result], out, { model: "fake.gguf" });
 
   assert.match(md, /1\/1 hidden tests passing\. Model: fake\.gguf\./);
-  assert.match(md, /\| 1-add-subtracts \| pass \| finished \| 2 \| 2 \(0\) \|/);
+  assert.match(md, /\| 1-add-subtracts \| pass \| finished \| 2 \| 2 \(0\) \| \d+s \| 200 \/ 20 \/ 200 \| 0 \|/);
   const json = JSON.parse(fs.readFileSync(path.join(out, "report.json"), "utf8"));
   assert.equal(json.results[0].patch, undefined);
   assert.match(fs.readFileSync(path.join(out, "1-add-subtracts.diff"), "utf8"), /a \+ b/);
