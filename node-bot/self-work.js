@@ -511,7 +511,12 @@ function createSelfWork(options = {}) {
     await git(["add", "-A"], r.worktree);
     const changed = await namesSince(r);
     if (!changed.length) return end(r, "no-change", `I didn't end up changing anything for #${r.issue}.${summary ? ` ${summary}` : ""}`);
-    // #1247: none of several attempts passed; the closest goes up as a draft.
+    // #1247: none of several attempts passed. The closest that finished
+    // and ran its tests goes up as a draft; with none, no PR.
+    if (best.none) {
+      const tried = r.attempts.map((a) => `attempt ${a.attempt} ${a.finished ? "finished" : "didn't finish"}, ${a.passed ? "tests passing" : `${a.failures} failing`}`).join("; ");
+      return end(r, "not-done", `None of my ${r.attempts.length} attempts at #${r.issue} finished with its tests run and passing, so no PR (${tried}).`);
+    }
     const closest = best.failing !== undefined;
     if (!closest && (!r.finished || /^Not done yet/i.test(summary))) {
       return end(r, "not-done", `I couldn't finish #${r.issue}. ${summary}`.trim());
@@ -530,7 +535,7 @@ function createSelfWork(options = {}) {
       : "";
     const title = touched.length ? `[Guardrail] ${r.title}` : r.title;
     const testing = closest
-      ? `None of my ${r.attempts.length} attempts passed its tests. This is attempt ${best.kept}, the closest, and it's a draft until it does. Still failing:\n${best.failing.map((f) => `- ${f}`).join("\n") || "- (no test names in the output)"}`
+      ? `None of my ${r.attempts.length} attempts finished with all its tests passing. Attempt ${best.kept} came closest: it finished, but these still fail, so it's a draft until they pass:\n${best.failing.map((f) => `- ${f}`).join("\n") || "- (no test names in the output)"}`
       : `${r.lastTestCommand}: passed.${r.attempts?.length > 1 ? ` (Attempt ${best.kept} of ${r.attempts.length}.)` : ""}`;
     const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${testing}`;
     let url;
@@ -681,8 +686,10 @@ How to work:
 
   // #1247: up to `attempts` independent runs of her loop, each from a clean
   // worktree, judged by the tests. The first that finishes with them
-  // passing is kept; if none does, the one with the fewest failing tests is
-  // put back, with `failing` naming them. One attempt is today's run, unjudged.
+  // passing is kept. If none does, the closest one that finished (so my
+  // reviewer passed it) after running tests is put back, with `failing`
+  // naming what still fails; with no such attempt, `none` (no PR). One
+  // attempt is today's run, unjudged.
   async function bestOf(r, issue, attempts) {
     if (attempts <= 1) return { reply: await loop(r, issue), kept: 1 };
     const started = Date.now();
@@ -701,50 +708,64 @@ How to work:
       if (r.halt || r.stopRequested || r.refuted) return { reply, kept: i };
       const finished = Boolean(r.finished) && !/^Not done yet/i.test(reply?.content || "");
       const verdict = await judge(r);
+      // RAM stayed high: not judged, and no more attempts (as her tests tool halts).
+      if (!verdict) return { reply, kept: i };
       r.attempts.push({ attempt: i, finished, passed: verdict.passed, failures: verdict.failures });
       log(r, `Attempt ${i} of ${attempts}: ${finished ? "finished" : "not finished"}, ${verdict.passed ? "tests passing" : `${verdict.failures} failing`}.`);
       if (finished && verdict.passed) return { reply, kept: i };
+      if (!finished || !r.lastTestCommand || !verdict.ran) continue;
       const patch = await snapshot(r);
       if (patch && (!closest || verdict.failures < closest.failures)) {
         closest = { kept: i, patch, reply, failures: verdict.failures, failing: verdict.failing, state: Object.fromEntries(ATTEMPT_STATE.map((k) => [k, r[k]])) };
       }
     }
-    if (!closest) return { reply, kept: r.attempts.length };
+    if (!closest) return { reply, kept: r.attempts.length, none: true };
     await resetWorktree(r);
     await applyPatch(r, closest.patch);
     Object.assign(r, closest.state);
-    log(r, `None passed; I kept attempt ${closest.kept}, with the fewest failing tests.`);
+    log(r, `None passed; I kept attempt ${closest.kept}, which finished with the fewest failing tests.`);
     return { reply: closest.reply, kept: closest.kept, failing: closest.failing };
   }
 
   // Back to HEAD: her changes and new files go; ignored files (the
-  // node_modules link) stay.
+  // node_modules link) stay. Only in her worktree's own top folder.
   async function resetWorktree(r) {
+    const norm = (p) => {
+      const real = fs.realpathSync.native(path.resolve(p));
+      return process.platform === "win32" ? real.toLowerCase() : real;
+    };
+    const top = await git(["rev-parse", "--show-toplevel"], r.worktree);
+    if (norm(top) !== norm(r.worktree)) throw new Error(`${r.worktree} isn't a worktree's top folder (that's ${top}), so I didn't reset it`);
     await git(["reset", "-q", "--hard", "HEAD"], r.worktree);
     await git(["clean", "-fdq", "-e", "node_modules"], r.worktree);
   }
 
-  // An attempt's whole change, new files included, as a patch.
+  // An attempt's whole change, new files included, as a patch: git's own
+  // bytes (run() trims, which breaks a patch's last line).
   async function snapshot(r) {
     await git(["add", "-A"], r.worktree);
-    const patch = await git(["diff", "--cached", "--binary", "HEAD"], r.worktree);
+    const diff = await exec("git", ["diff", "--cached", "--binary", "HEAD"], { cwd: r.worktree, env: gitEnv });
     await git(["reset", "-q"], r.worktree);
-    return patch ? `${patch}\n` : "";
+    if (diff.code !== 0) throw new Error(`git diff failed: ${(diff.stderr || diff.stdout).trim().slice(0, 500)}`);
+    return diff.stdout;
   }
 
+  // The patch file stays if it doesn't apply, so the attempt isn't lost.
   async function applyPatch(r, patch) {
     const file = path.join(os.tmpdir(), `mana-self-work-${r.issue}-${process.pid}.patch`);
     fs.writeFileSync(file, patch);
     try {
       await git(["apply", "--whitespace=nowarn", file], r.worktree);
-    } finally {
-      fs.rmSync(file, { force: true });
+    } catch (e) {
+      throw new Error(`${e.message} (the attempt is in ${file})`);
     }
+    fs.rmSync(file, { force: true });
   }
 
   // The tests that judge an attempt: the test files she ran, and the node
   // tests for the files she changed (and test files she wrote). Failures
-  // are counted from node's "# fail N", else 1 per failing command.
+  // are counted from node's "# fail N", else 1 per failing command. null
+  // when RAM stayed high, so it wasn't judged.
   async function judge(r) {
     const commands = new Map(r.judgeCommands || []);
     const nodeBot = path.join(r.worktree, "node-bot");
@@ -752,15 +773,22 @@ How to work:
     const changed = (await git(["-c", "core.quotePath=false", "diff", "--name-only", "HEAD"], r.worktree)).split(/\r?\n/).filter(Boolean);
     for (const f of changed) {
       const own = /^node-bot\/test\/[\w.-]+\.test\.js$/.test(f) ? f : `node-bot/test/${path.posix.basename(f, ".js")}.test.js`;
-      if (/^node-bot\/.*\.js$/.test(f) && fs.existsSync(path.join(r.worktree, own))) {
+      // The run_tests tool's own name check: these go to a shell.
+      if (/^node-bot\/.*\.js$/.test(f) && /^node-bot\/test\/[\w.-]+\.test\.js$/.test(own) && fs.existsSync(path.join(r.worktree, own))) {
         commands.set(`node --test ${own.slice("node-bot/".length)}`, nodeBot);
       }
     }
-    if (!commands.size) return { passed: false, failures: 1, failing: ["no tests to judge it by"] };
+    if (!commands.size) return { passed: false, ran: false, failures: 1, failing: ["no tests to judge it by"] };
     let failures = 0;
     const failing = [];
     for (const [command, cwd] of commands) {
-      for (let waited = 0; ramPercent() > MAX_RAM_PERCENT && waited < RAM_WAIT_MS; waited += 60000) await sleep(60000);
+      for (let waited = 0; ramPercent() > MAX_RAM_PERCENT; waited += 60000) {
+        if (waited >= RAM_WAIT_MS) {
+          r.halt ||= { state: "paused", text: `RAM stayed above ${MAX_RAM_PERCENT}%, so I paused before judging my attempt.` };
+          return null;
+        }
+        await sleep(60000);
+      }
       const result = await runTests(command, cwd, {
         spawnImpl: (c, o) => spawn(c, { ...o, env: testEnv(env) }),
         timeoutMs: TEST_TIMEOUT_MS,
@@ -774,7 +802,7 @@ How to work:
         failing.push(...(names.length ? names : [command]));
       }
     }
-    return { passed: failures === 0, failures, failing: failing.slice(0, 10) };
+    return { passed: failures === 0, ran: true, failures, failing: failing.slice(0, 10) };
   }
 
   // The end of a run that halted, was stopped, or had a write refuted;
