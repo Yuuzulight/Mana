@@ -96,8 +96,9 @@ function scriptedLoop(calls, answer, seen = []) {
 const fix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: "return a + b;", summary: "add adds" }];
 const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
-// #1211: every issue run plans before its first edit.
-const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"] }];
+// #1211: every issue run plans before its first edit. (#1212's test-first
+// gate has its own test; here the scripted test run comes after the fix.)
+const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"], no_test: "the scripted runs only" }];
 
 function selfWork(repos, { calls, planned = true, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
   const ghCalls = [];
@@ -647,5 +648,22 @@ test("#1211: her first edit waits for a plan, and the plan is checked off in her
     { text: "Make add() add", done: true },
     { text: "Test it", done: false },
   ]);
+  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
+});
+
+test("#1212: her code change waits for a test she's seen fail; the test itself can come first", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
+  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, runTests, fix], planned: false, passed: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.match(results[1], /^Test first: write or find a test for the behaviour/);
+  assert.equal(JSON.parse(results[2]).status, "ok");
+  assert.equal(JSON.parse(results[3]).passed, false);
+  assert.equal(JSON.parse(results[4]).status, "ok");
   assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
 });

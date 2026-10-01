@@ -47,6 +47,8 @@ const GUARDRAIL_LABEL = "mana-guardrail";
 // Never hers to write, flagged or not: git's own files, the live packages
 // behind the node_modules link, and CI -- a workflow on her branch would
 // run with the repo's token before I've read it.
+// #1212: a test file, which she may write before she's seen a test fail.
+const TEST_PATH_RE = /(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i;
 const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
 const MAX_ROUNDS = 20;
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
@@ -99,6 +101,7 @@ const TOOL_SCHEMAS = [
         properties: {
           steps: { type: "array", items: { type: "string" }, description: "The steps in order; replaces the plan." },
           done: { type: "array", items: { type: "integer" }, description: "Numbers of the steps you've finished." },
+          no_test: { type: "string", description: "Only when the issue has nothing a test can check: why." },
         },
       },
     },
@@ -683,6 +686,7 @@ ${String(issue.body || "").slice(0, 4000)}
 How to work:
 - Find code with self_work__files and self_work__search, and read it with self_work__read.
 - Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
+- If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail; changes to the code wait until then.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
 ${
@@ -746,7 +750,8 @@ ${
 
     // #1211: her plan, on the run (so status() shows it) and with each edit.
     const planText = () => r.plan.map((s, i) => `${s.done ? "[x]" : "[ ]"} ${i + 1}. ${s.text}`).join("\n");
-    function plan({ steps, done }) {
+    function plan({ steps, done, no_test: noTest }) {
+      if (String(noTest || "").trim()) r.noTestReason = String(noTest).trim();
       if (steps !== undefined) {
         const clean = [].concat(steps).map((s) => String(s).trim()).filter(Boolean);
         if (clean.length < 2 || clean.length > 6) throw new Error("a plan has 2 to 6 steps");
@@ -767,6 +772,12 @@ ${
       if (typeof newText !== "string") throw new Error("new_text is required");
       const full = inside(rel);
       const relPath = posix(full);
+      // #1212: test first -- the code waits for a test she's seen fail.
+      if (r.kind !== "refresh" && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason) {
+        throw new Error(
+          `Test first: write or find a test for the behaviour, run it with ${CODING_TEST_TOOL_NAME} and see it fail, then change the code. If the issue has nothing a test can check, say why in self_work__plan's no_test.`,
+        );
+      }
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to write a credential file");
       if (NEVER_WRITE_RE.test(relPath)) throw new Error(`${relPath} isn't mine to write`);
       const blocked = guard.protectedPathFor(full);
@@ -836,6 +847,7 @@ ${
       });
       const passed = result.exitCode === 0 && !result.timedOut;
       r.lastTestPassed = passed;
+      if (!passed) r.sawFailingTest = true;
       const outcome = `${passed}|${result.output}`;
       if (outcome !== lastTestOutcome) progressed = true;
       lastTestOutcome = outcome;
