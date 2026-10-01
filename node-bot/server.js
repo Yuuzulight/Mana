@@ -6405,7 +6405,7 @@ async function startServer() {
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
       const trayNotifier = require("./tray-notifier");
-      trayNotifier.setBroadcaster(trayServer.broadcastTrayNotification);
+      trayNotifier.setBroadcaster(trayServer.broadcastTrayNotification, trayServer.hasTrayClients);
     } catch (e) {
       // ignore if notifier cannot be wired
     }
@@ -6466,6 +6466,7 @@ function listenOnBindHost(server, port, env = process.env) {
 }
 
 if (require.main === module) {
+  require("./utils/unhandled-rejection").keepRunningOnUnhandledRejection();
   startServer().catch((err) => {
     console.error(
       "[Mana Boot CRITICAL] Startup aborted:",
