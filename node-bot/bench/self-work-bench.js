@@ -316,7 +316,14 @@ async function main(argv) {
         console.log(`Stopping before ${c.id}: ${why}.`);
         break;
       }
-      results.push(await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens }));
+      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens });
+      // No room for the model (the backend's chat model is loaded, say):
+      // not her result, so the run stops here instead of scoring it.
+      if (/refusing to load/.test(result.error || "")) {
+        console.log(`Stopping at ${c.id}: ${result.error}`);
+        break;
+      }
+      results.push(result);
       writeReport(results, outDir, { model: model.model, label: opt("--label")[0] });
     }
   } finally {
