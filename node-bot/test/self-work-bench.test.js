@@ -91,7 +91,7 @@ test("a case that fixes the bug passes its hidden test, and the worktree is gone
   assert.equal(result.toolCalls, 2);
   assert.equal(result.toolErrors, 0);
   assert.deepEqual([result.peakVramMb, result.peakRamPercent, result.failure], [9000, 80, null]);
-  assert.deepEqual(result.tokens, { prompt: 200, completion: 20, peak: 200, textCalls: 0 });
+  assert.deepEqual(result.tokens, { prompt: 200, completion: 20, peak: 200, textCalls: 0, tps: null });
   assert.deepEqual(result.diff, { files: ["node-bot/util.js"], added: 1, removed: 1 });
   assert.deepEqual(result.outside, []);
   assert.match(result.patch, /\+  return a \+ b;/);

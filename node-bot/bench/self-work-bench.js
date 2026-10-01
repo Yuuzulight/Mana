@@ -8,6 +8,7 @@
 //
 //   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
+//     [--server-args "<extra llama-server flags>"]
 //     [--out <dir>] [--verify]
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
@@ -215,6 +216,8 @@ async function runCase(c, deps) {
         peak: tokens.peak,
         // Replies with a tool call written into the text instead of tool_calls.
         textCalls: tokens.textCalls - before.textCalls,
+        // Generated tokens per second over the run.
+        tps: tokens.genMs > (before.genMs || 0) ? Math.round(((tokens.genN - (before.genN || 0)) / (tokens.genMs - (before.genMs || 0))) * 10000) / 10 : null,
       },
       diff: { files: diff.files, added: diff.added, removed: diff.removed },
       outside: diff.files.filter((f) => !allowed.has(f)),
@@ -346,6 +349,7 @@ function summarize(results) {
       promptTokens: mean((r) => r.tokens.prompt),
       outTokens: mean((r) => r.tokens.completion),
       peakPrompt: mean((r) => r.tokens.peak),
+      tps: mean((r) => r.tokens.tps),
       peakVramMb: mean((r) => r.peakVramMb),
       peakRamPercent: mean((r) => r.peakRamPercent),
     },
@@ -378,7 +382,7 @@ function writeReport(results, outDir, meta = {}) {
     "",
     `Failures: ${Object.entries(summary.failures).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}.`,
     "",
-    `Mean cost of a run: ${c.wallS}s, ${c.rounds} rounds, ${c.toolCalls} tool calls, ${c.promptTokens} prompt / ${c.outTokens} out tokens, peak prompt ${c.peakPrompt}, peak VRAM ${c.peakVramMb ?? "n/a"} MB, peak RAM ${c.peakRamPercent ?? "n/a"}%.`,
+    `Mean cost of a run: ${c.wallS}s, ${c.rounds} rounds, ${c.toolCalls} tool calls, ${c.promptTokens} prompt / ${c.outTokens} out tokens, peak prompt ${c.peakPrompt}, ${c.tps ?? "n/a"} tokens/s, peak VRAM ${c.peakVramMb ?? "n/a"} MB, peak RAM ${c.peakRamPercent ?? "n/a"}%.`,
     "",
     "| Case | Kind | Run | Hidden test | Ended | Failure | Rounds | Tool calls (errors) | Wall | Tokens (prompt / out / peak) | Calls in text | Diff (+/-, files) | Outside the fix's files |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -397,7 +401,10 @@ function writeReport(results, outDir, meta = {}) {
 // its text (no tool_calls) is counted too.
 // #1221: --model swaps the chat model (another GGUF on disk), and
 // --context sets the server's context and asks her runs for the same.
-function realModel(repoRoot, tokens, { model, context } = {}) {
+// #1221: --server-args starts the bench's llama-server itself with those
+// extra flags (a MoE model with its experts in RAM: "-ngl 99 --n-cpu-moe
+// 20"); the runtime then adopts it as the server for that model.
+function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   const { parseEnv } = require("node:util");
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
   const { refuteEdit } = require("../ai/adversarial-verifier");
@@ -422,6 +429,9 @@ function realModel(repoRoot, tokens, { model, context } = {}) {
       tokens.prompt += prompt;
       tokens.completion += Number(json?.usage?.completion_tokens) || 0;
       tokens.peak = Math.max(tokens.peak, prompt);
+      // Generation speed, from llama-server's timings.
+      tokens.genN = (tokens.genN || 0) + (Number(json?.timings?.predicted_n) || 0);
+      tokens.genMs = (tokens.genMs || 0) + (Number(json?.timings?.predicted_ms) || 0);
       const message = json?.choices?.[0]?.message;
       if (message && !message.tool_calls?.length && /<function=|<tool_call>|"arguments"\s*:/.test(message.content || "")) {
         tokens.textCalls += 1;
@@ -430,12 +440,31 @@ function realModel(repoRoot, tokens, { model, context } = {}) {
     return resp;
   };
   const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch });
+  let server = null;
+  async function start() {
+    if (!serverArgs) return;
+    const { spawn } = require("node:child_process");
+    const args = ["-m", runtime.findLlamaModel("default"), "--host", "127.0.0.1", "--port", BENCH_LLAMA_PORT, "-c", String(context || env.LLAMA_CONTEXT || 16384)];
+    args.push("--no-webui", "--cache-ram", "0", "-t", String(env.LLAMA_THREADS || 4), ...serverArgs.split(/\s+/).filter(Boolean));
+    console.log(`Starting the bench's llama-server: ${args.join(" ")}`);
+    server = spawn(runtime.findLlamaServerBin(), args, { windowsHide: true, stdio: "ignore" });
+    for (let waited = 0; waited < 600; waited += 2) {
+      if (await globalThis.fetch(`http://127.0.0.1:${BENCH_LLAMA_PORT}/health`).then((r) => r.ok, () => false)) return;
+      if (server.exitCode !== null) throw new Error(`the bench's llama-server exited (${server.exitCode})`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error("the bench's llama-server didn't come up in 10 minutes");
+  }
   return {
+    start,
     model: path.basename(runtime.findLlamaModel("default") || env.LLAMA_MODEL || "?"),
     runLoop: (...args) => runtime.runToolAwareReply(...args),
     reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: runtime.runLocalReplyIfSafelyLoaded, env }),
     contextSize: () => runtime.getContextSize(),
-    stop: () => runtime.stop(),
+    async stop() {
+      await runtime.stop();
+      if (server && server.exitCode === null) server.kill();
+    },
   };
 }
 
@@ -456,7 +485,7 @@ async function main(argv) {
   const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
-  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined };
+  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
@@ -475,11 +504,12 @@ async function main(argv) {
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   const model = realModel(repoRoot, tokens, config);
-  const meta = { model: model.model, context: config.context, label, repeats, maxMinutes: maxMs / 60000 };
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, maxMinutes: maxMs / 60000 };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
   try {
+    await model.start();
     for (const { c, repeat } of runs) {
       // Wait out a game, a RAM spike or her chat model for up to 20 minutes.
       let why = await blocker(gate);
