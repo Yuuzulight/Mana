@@ -1651,8 +1651,6 @@ test("runToolAwareReply respects a wall-clock time budget across rounds", async 
 // OVERFLOW as a turn answers like llama-server does past its context.
 const OVERFLOW = Symbol("overflow");
 const UNPARSED = Symbol("unparsed");
-function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools }) {
-
 function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools, finalOverflow = false }) {
   const loopBodies = [];
   const reviewBodies = [];
