@@ -627,3 +627,25 @@ test("#1194: an idle moment offers, once, to update her live copy to her merged 
   assert.match(offers[0].text, /^My merged PR #30 isn't in my live copy yet\. Say "update to main"/);
   assert.equal(offers[0].notice, true);
 });
+
+test("#1207: she finds files by glob and code by regex, still only in her worktree", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const calls = [
+    ["self_work__files", { contains: "*.JS" }],
+    ["self_work__files", { contains: "node-bot/**/util.*" }],
+    ["self_work__files", { contains: "gate" }],
+    ["self_work__search", { text: "return a [-+] b", regex: true }],
+    ["self_work__search", { text: "return a [-+] b" }],
+  ];
+  const { sw } = selfWork(repos, { calls, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.deepEqual(results[0].split("\n"), ["node-bot/approval-gate.js", "node-bot/util.js"]);
+  assert.equal(results[1], "node-bot/util.js");
+  assert.equal(results[2], "node-bot/approval-gate.js");
+  assert.equal(results[3], "node-bot/util.js:2:  return a - b;");
+  assert.equal(results[4], "No matches.");
+});
