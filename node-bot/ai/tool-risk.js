@@ -92,6 +92,10 @@ const BUILTIN_TIERS = {
   desktop__open_app: "low",
   // #907: no arguments; searches only the topics and games I set in Settings.
   briefing__now: "read",
+  // #1190 (ai/git-tool-source.js): git and GitHub reads in allowed repos
+  // only; GitHub text comes back framed as untrusted.
+  git__read: "read",
+  github__read: "read",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",
