@@ -49,6 +49,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // whether the tray's Update now is already running.
     private readonly IDisposable updateRequests;
     private readonly IDisposable updateNowRequests;
+    private readonly IDisposable quitRequests;
     private bool swapPending;
     private readonly Rectangle? restoreChat;
     private bool updateRunning;
@@ -294,6 +295,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));
         updateNowRequests = SingleInstance.ListenForUpdate(true, () => RunOnUi(() => ApplyUpdate(now: true)));
+        quitRequests = SingleInstance.ListenForQuit(() => RunOnUi(() => _ = ShutdownAsync()));
         // #681: answers the model's mid-reply screenshot requests, and
         // #911's desktop actions (media keys, volume, apps, audio output, file moves).
         visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, saveCameraSnapshot: SaveCameraSnapshotAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, ManaSettingsStore.Load().DesktopActionFolders));
@@ -1355,6 +1357,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         showRequests.Dispose();
         updateRequests.Dispose();
         updateNowRequests.Dispose();
+        quitRequests.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
         chatBubbles.Close();
