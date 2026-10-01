@@ -6463,6 +6463,7 @@ function listenOnBindHost(server, port, env = process.env) {
 }
 
 if (require.main === module) {
+  require("./utils/unhandled-rejection").keepRunningOnUnhandledRejection();
   startServer().catch((err) => {
     console.error(
       "[Mana Boot CRITICAL] Startup aborted:",
