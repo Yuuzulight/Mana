@@ -194,6 +194,7 @@ test("each failed run gets one failure kind", () => {
   assert.equal(kind({ editErrors: 2 }), "no valid edit: bad arguments");
   assert.equal(kind({ tokens: { peak: 5000, textCalls: 1 } }), "no valid edit: parse failure");
   assert.equal(kind({ rounds: 20 }), "out of rounds");
+  assert.equal(kind({ rounds: 20, tokens: { peak: 5000, textCalls: 1 } }), "out of rounds", "a call in the forced final answer");
   assert.equal(kind({}), "no valid edit");
   assert.equal(kind({ diff: { files: ["node-bot/other.js"] }, outside: ["node-bot/other.js"] }), "wrong file");
   assert.equal(kind({ diff: { files: ["node-bot/util.js", "node-bot/x.js"] }, outside: ["node-bot/x.js"] }), "scope creep");

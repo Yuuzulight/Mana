@@ -12,7 +12,7 @@ Model: Qwen3.5-9B-heretic-v2-Q4_K_M.gguf. 10 cases x 2 repeat(s).
 
 Failures: context overflow 13, no valid edit: reviewer refusal 2, no valid edit: bad arguments 1.
 
-Mean cost of a run: 32s, 10 rounds, 10 tool calls, 77857 prompt / 1606 out tokens, peak prompt 12542, peak VRAM 7513 MB, peak RAM 76%.
+Mean cost of a run: 32s, 10 rounds, 10 tool calls, 77857 prompt / 1606 out tokens, peak prompt 12542, n/a tokens/s, peak VRAM 7513 MB, peak RAM 76%.
 
 | Case | Kind | Run | Hidden test | Ended | Failure | Rounds | Tool calls (errors) | Wall | Tokens (prompt / out / peak) | Calls in text | Diff (+/-, files) | Outside the fix's files |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

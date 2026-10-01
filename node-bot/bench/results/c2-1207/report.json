@@ -59,6 +59,7 @@
       "promptTokens": 77668,
       "outTokens": 1768,
       "peakPrompt": 12850,
+      "tps": null,
       "peakVramMb": 7417,
       "peakRamPercent": 75
     }

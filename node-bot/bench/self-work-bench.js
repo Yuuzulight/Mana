@@ -251,8 +251,10 @@ function failureKind(r, c) {
   if (r.ended === "error") return "error";
   if (!r.diff.files.length) {
     if (r.editErrors) return "no valid edit: bad arguments";
-    if (r.tokens.textCalls) return "no valid edit: parse failure";
+    // The forced final answer after the last round often holds one more
+    // call in its text; that's running out of rounds, not a parse failure.
     if (r.maxRounds && r.rounds >= r.maxRounds) return "out of rounds";
+    if (r.tokens.textCalls) return "no valid edit: parse failure";
     return "no valid edit";
   }
   const code = c.fixFiles.filter((f) => /\.(js|cs|ts|ps1|py)$/.test(f));
