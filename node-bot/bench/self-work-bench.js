@@ -14,13 +14,16 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
-const { createSelfWork, testEnv, systemRamPercent, MAX_RAM_PERCENT } = require("../self-work");
+const { createSelfWork, testEnv, systemRamPercent } = require("../self-work");
 
 const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_TEST_TIMEOUT_MS = 10 * 60 * 1000;
 // Not the backend's 8090, so the two never share a server.
 const BENCH_LLAMA_PORT = "8097";
 const BACKEND_LLAMA_PORT = 8090;
+// The bench's own limit for starting a case (self-work's 85% inside her
+// run is unchanged).
+const BENCH_MAX_RAM_PERCENT = 90;
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -116,7 +119,7 @@ function isGamingNow(repoRoot) {
 async function blocker({ isGaming, ramPercent, backendModelUp }) {
   if (isGaming()) return "a game is running";
   const ram = ramPercent();
-  if (ram > MAX_RAM_PERCENT) return `RAM is at ${ram}%`;
+  if (ram > BENCH_MAX_RAM_PERCENT) return `RAM is at ${ram}%`;
   if (await backendModelUp()) return "the backend's chat model is loaded";
   return null;
 }
