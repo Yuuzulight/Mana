@@ -5,7 +5,7 @@ const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
 const trayNotifier = require("../../node-bot/tray-notifier");
-const { isCredentialPath } = require("../../node-bot/ai/tool-policy");
+const { isCredentialPath, trimEnd } = require("../../node-bot/ai/tool-policy");
 
 // Windows ships Edge (Chromium-based) on every install -- since Mana
 // targets Windows, this is the "already available" browser rather than
@@ -302,7 +302,7 @@ function isOffered(file, now = Date.now()) {
 // C:\no\spaces.pdf without.
 function pathsIn(text) {
   const quoted = [...String(text || "").matchAll(/"([a-zA-Z]:\\[^"\n]+)"/g)].map((m) => m[1]);
-  const bare = [...String(text || "").matchAll(/(?:^|\s)([a-zA-Z]:\\[^\s"'<>|?*]+)/g)].map((m) => m[1].replace(/[.,;:!)]+$/, ""));
+  const bare = [...String(text || "").matchAll(/(?:^|\s)([a-zA-Z]:\\[^\s"'<>|?*]+)/g)].map((m) => trimEnd(m[1], (c) => ".,;:!)".includes(c)));
   return [...quoted, ...bare];
 }
 

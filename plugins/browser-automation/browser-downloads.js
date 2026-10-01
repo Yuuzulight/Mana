@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { trimEnd } = require("../../node-bot/ai/tool-policy");
 
 const ACTION_TYPE = "browser-download";
 // Denied downloads (the gate never tells us) and ones from before a
@@ -16,7 +17,9 @@ const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // A plain file name: no folders, no characters Windows refuses.
 function safeName(name) {
-  const base = path.basename(String(name || "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/^[.\s]+|[.\s]+$/g, "");
+  const cleaned = path.basename(String(name || "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
+  // The end trimmed by hand: a /[.\s]+$/ regex is quadratic on long runs.
+  const base = trimEnd(cleaned, (c) => c === "." || /\s/.test(c)).replace(/^[.\s]+/, "");
   return base.slice(0, 150) || "download";
 }
 
