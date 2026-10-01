@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -8,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 
 namespace Mana.NativeLauncher;
 
@@ -15,6 +17,8 @@ internal sealed class ManaProcessManager : IDisposable
 {
     private readonly HttpClient http;
     private Process? backendProcess;
+    // Kills node-bot's tree when this launcher exits or crashes (StartBackend).
+    private SafeFileHandle? backendJob;
     private Process? fishSpeechProcess;
     private Process? embedderProcess;
     private Process? searxngProcess;
@@ -629,6 +633,22 @@ internal sealed class ManaProcessManager : IDisposable
         var process = Process.Start(startInfo) ??
                throw new InvalidOperationException("Failed to start Mana backend.");
 
+        // node-bot, and the llama-server/whisper it starts later, die with
+        // this launcher even when it crashes: an orphan would hold port 5005
+        // and the VRAM, and the next launch would take it for an external
+        // backend it can't restart or stop. Best effort.
+        // ponytail: assigned just after start, so a child node spawned in its
+        // first milliseconds would escape; it spawns nothing that early.
+        try
+        {
+            backendJob ??= KillOnCloseJob.Create();
+            KillOnCloseJob.Assign(backendJob, process.Handle);
+        }
+        catch (Win32Exception ex)
+        {
+            Console.WriteLine($"ManaProcessManager: node-bot isn't tied to the launcher's lifetime. {ex.Message}");
+        }
+
         // The same lines as Settings > Logs, also on disk; the last run's as
         // backend.prev.log. Under node-bot\data (never the launcher's own
         // folder, which an update renames). Once node has started, so a
@@ -895,6 +915,7 @@ internal sealed class ManaProcessManager : IDisposable
         StopProcess(retrieverProcess);
         StopProcess(gptSovitsProcess);
         StopProcess(qwen3TtsProcess);
+        backendJob?.Dispose();
     }
 
     private static void StopProcess(Process? process)

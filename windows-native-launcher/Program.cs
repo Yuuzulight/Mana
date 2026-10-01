@@ -32,9 +32,18 @@ internal static class Program
             return;
         }
 
+        var root = ManaApplicationContext.FindRootDirectory();
+        // An exception on the UI thread is logged and Mana carries on,
+        // rather than WinForms' Continue/Quit dialog waiting for a click.
+        // One on another thread still ends the launcher (node-bot goes with
+        // it, KillOnCloseJob), logged first.
+        var errorLog = Path.Combine(root, "node-bot", "data", "logs", "launcher-errors.log");
+        Application.ThreadException += (_, e) => LogError(errorLog, e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => LogError(errorLog, e.ExceptionObject);
+
         // node-bot/.env first, before anything reads its environment --
         // every env-driven setting below, and every child process, sees it.
-        DotEnvFile.Load(Path.Combine(ManaApplicationContext.FindRootDirectory(), "node-bot", ".env"));
+        DotEnvFile.Load(Path.Combine(root, "node-bot", ".env"));
 
         // #576: must run before anything else touches DarkTheme -- the
         // class's own static fields (and the SolidBrush instances built
@@ -53,6 +62,19 @@ internal static class Program
             Application.Idle += WriteStartedMarker;
         }
         Application.Run(context);
+    }
+
+    internal static void LogError(string path, object error)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {error}{Environment.NewLine}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Nowhere left to say it.
+        }
     }
 
     private static void WriteStartedMarker(object? sender, EventArgs e)
