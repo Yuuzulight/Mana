@@ -476,3 +476,54 @@ test("runCommand fails, not cuts short, when the output passes its cap", async (
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /passed 16 MB/);
 });
+
+test("after outside content, a git change raises exactly one prompt: what she'll do and what she just read", async () => {
+  const { wrapWithRiskGate } = require("../ai/tool-risk");
+  const { repo, gate, source } = setup();
+  gate.setGitApprovalMode("local", "off");
+  const policy = { tools: [], isKnownTool: () => true, executeTool: (name, args) => source.executeTool(name, args) };
+  const tainted = wrapWithRiskGate(policy, gate, { mode: "ask", untrustedSources: ["web page"] });
+  const out = parsed(await tainted.executeTool("git__change", { repo, action: "switch", branch: "x", create: true }));
+  assert.equal(out.status, "pending");
+  const pending = gate.listPending();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].actionType, `git-local:${idOf(repo)}`);
+  assert.match(pending[0].summary, /^Switch .* \(on main\) to a new branch x -- she just read outside text this turn \(from: web page\)/);
+  assert.equal(pending[0].forceReview, true);
+  await gate.decide(pending[0].id, "allow-once");
+  assert.equal(gate.listPending().length, 0, "allowing it doesn't raise a second prompt");
+  assert.equal(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), "x");
+
+  // A clean turn: she can't claim outside content herself; the setting applies.
+  const clean = wrapWithRiskGate(policy, gate, { mode: "ask" });
+  assert.match(await clean.executeTool("git__change", { repo, action: "switch", branch: "main", untrusted_sources: ["made up"] }), /Switched/);
+  assert.equal(gate.listPending().length, 0);
+});
+
+test("after outside content, a GitHub write raises exactly one prompt too", async () => {
+  const { wrapWithRiskGate } = require("../ai/tool-risk");
+  const { repo, gate, source, ghCalls } = setup({ "issue view": "Bug\n" });
+  const policy = { tools: [], isKnownTool: () => true, executeTool: (name, args) => source.executeTool(name, args) };
+  const tainted = wrapWithRiskGate(policy, gate, { mode: "smart", untrustedSources: ["GitHub"] });
+  assert.equal(parsed(await tainted.executeTool("github__write", { repo, action: "issue_comment", number: 3, body: "hi" })).status, "pending");
+  const [req, ...more] = gate.listPending();
+  assert.equal(more.length, 0);
+  assert.match(req.summary, /^Comment on issue #3 \("Bug"\) in .*: "hi" -- she just read outside text this turn \(from: GitHub\)/);
+  await gate.decide(req.id, "allow-once");
+  assert.equal(gate.listPending().length, 0);
+  assert.deepEqual(ghCalls.at(-1).args, ["issue", "comment", "3", "--body=hi"]);
+});
+
+test("after outside content, merging a PR raises exactly one prompt", async () => {
+  const { wrapWithRiskGate } = require("../ai/tool-risk");
+  const pr = { title: "Add x", state: "OPEN", isDraft: false, headRefName: "feat/x", baseRefName: "main", headRefOid: "abc123", commits: [{}] };
+  const { repo, gate, source } = setup({ "pr view": JSON.stringify(pr), "pr checks": JSON.stringify([]) });
+  const policy = { tools: [], isKnownTool: () => true, executeTool: (name, args) => source.executeTool(name, args) };
+  const tainted = wrapWithRiskGate(policy, gate, { mode: "ask", untrustedSources: ["CI log"] });
+  assert.equal(parsed(await tainted.executeTool("github__write", { repo, action: "pr_merge", number: 7 })).status, "pending");
+  const pending = gate.listPending();
+  assert.equal(pending.length, 1);
+  assert.match(pending[0].summary, /^Merge PR #7 "Add x" .* -- she just read outside text this turn \(from: CI log\)/);
+  await gate.decide(pending[0].id, "allow-once");
+  assert.equal(gate.listPending().length, 0);
+});

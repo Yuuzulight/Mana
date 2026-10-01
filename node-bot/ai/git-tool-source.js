@@ -400,14 +400,21 @@ function createGitToolSource(options = {}) {
   // (unless I said never), logged in the approvals audit; otherwise the
   // gate asks -- "ask" as forceReview, so "always" never sticks -- and runs
   // it once I allow it. payload: plain JSON of the checked change.
-  async function gated(tier, repo, summary, payload) {
+  // untrusted: where outside text this turn came from (ai/tool-risk.js
+  // passes it as untrusted_sources); then it asks whatever the setting
+  // says, in one prompt that says so.
+  async function gated(tier, repo, summary, payload, untrusted = []) {
     if (isGaming()) throw new Error(GAMING);
     if (!approvalGate) throw new Error("changes need the approval gate");
     const mode = resolveGitApprovalModes(approvalGate.getGitApprovalModes())[tier];
     const actionType = `git-${tier}:${repo.id}`;
     approvalGate.registerExecutor(actionType, perform);
     const never = approvalGate.listRemembered().some((r) => r.key === actionType && r.answer === "never");
-    if (mode === "off" && !never) {
+    const tainted = Array.isArray(untrusted) && untrusted.length > 0;
+    if (tainted) {
+      summary += ` -- she just read outside text this turn (from: ${untrusted.map((u) => String(u).slice(0, 40)).join(", ")}), so this asks whatever the setting says`;
+    }
+    if (mode === "off" && !never && !tainted) {
       const entry = { name: actionType, args: payload, decision: "no approval (setting)", summary };
       try {
         const result = await perform(payload);
@@ -418,7 +425,7 @@ function createGitToolSource(options = {}) {
         throw e;
       }
     }
-    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" });
+    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" || tainted });
     if (outcome.status === "approved") return outcome.result;
     if (outcome.status === "pending") {
       return JSON.stringify({
@@ -602,7 +609,7 @@ function createGitToolSource(options = {}) {
       if (!lease) throw new Error(`origin has no ${branch} that I know of (fetch first)`);
       return gated("danger", repo, `Delete the branch ${branch} on origin, from ${repo.main} (at ${lease.slice(0, 8)}; ${await count(`origin/${main}..${lease}`)} commit(s) on it aren't on ${main})`, {
         action: "delete_remote", top, branch, lease,
-      });
+      }, args.untrusted_sources);
     }
     await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], top);
     const onDefault = isDefault ? `, the default branch,` : "";
@@ -610,20 +617,20 @@ function createGitToolSource(options = {}) {
       const dropped = await count(`${branch}..${lease}`);
       return gated("danger", repo, `Force-push ${branch}${onDefault} to origin from ${repo.main}, with lease: drops ${dropped} commit(s) now on origin and pushes ${await count(`${lease}..${branch}`)}`, {
         action: "push", top, branch, base: lease, lease,
-      });
+      }, args.untrusted_sources);
     }
     // Against its own remote branch, else the default branch it starts from.
     const base = lease || (await git(["merge-base", `origin/${main}`, branch], top)).trim();
     const commits = `${await count(`${base}..${branch}`)} commit(s)${lease ? "" : ", a new branch"}`;
-    if (isDefault) return gated("danger", repo, `Push ${commits} to ${branch}${onDefault} on origin, from ${repo.main}`, { action: "push", top, branch, base });
-    return gated("github", repo, `Push ${branch} (${commits}) to origin from ${repo.main}`, { action: "push", top, branch, base });
+    if (isDefault) return gated("danger", repo, `Push ${commits} to ${branch}${onDefault} on origin, from ${repo.main}`, { action: "push", top, branch, base }, args.untrusted_sources);
+    return gated("github", repo, `Push ${branch} (${commits}) to origin from ${repo.main}`, { action: "push", top, branch, base }, args.untrusted_sources);
   }
 
   async function githubWrite(args) {
     const repo = await openRepo(args.repo);
     const { top } = repo;
     const where = `in ${repo.main}`;
-    const github = (summary, payload) => gated("github", repo, summary, { top, ...payload });
+    const github = (summary, payload) => gated("github", repo, summary, { top, ...payload }, args.untrusted_sources);
     const title = () => {
       const t = outgoing(args.title, MAX_TITLE).split(/\r?\n/)[0].trim();
       if (!t) throw new Error("title is required");
@@ -681,7 +688,7 @@ function createGitToolSource(options = {}) {
             ? `checks NOT green: ${notGreen.map((c) => `${c.name} (${c.bucket})`).join(", ")}`
             : "checks green";
         const summary = `Merge PR #${number} "${p.title}" in ${repo.main} (${method}): ${p.headRefName} -> ${p.baseRefName}, ${(p.commits || []).length} commit(s); ${checkText}${p.isDraft ? "; it's a draft" : ""}`;
-        return gated("danger", repo, summary, { top, action: "pr_merge", number, method, sha: p.headRefOid });
+        return gated("danger", repo, summary, { top, action: "pr_merge", number, method, sha: p.headRefOid }, args.untrusted_sources);
       }
       case "pr_comment":
       case "issue_comment": {
@@ -719,7 +726,7 @@ function createGitToolSource(options = {}) {
     const { top } = repo;
     const on = (await git(["rev-parse", "--abbrev-ref", "HEAD"], top)).trim();
     const where = `${top} (on ${on})`;
-    const local = (summary, payload) => gated("local", repo, summary, { top, ...payload });
+    const local = (summary, payload) => gated("local", repo, summary, { top, ...payload }, args.untrusted_sources);
     const branchArgs = () => {
       const branch = checkBranch(args.branch);
       const start = args.create && args.start ? checkRef(args.start) : undefined;
@@ -794,7 +801,7 @@ function createGitToolSource(options = {}) {
           args.action === "reset"
             ? `Reset ${where} to ${ref} (${mode}${mode === "hard" ? ", throwing away uncommitted changes" : ""}): takes ${rewrites} off the branch`
             : `Rebase ${where} onto ${ref}: rewrites ${rewrites}`;
-        return gated(tier, repo, summary, { top, action: args.action, ref, mode });
+        return gated(tier, repo, summary, { top, action: args.action, ref, mode }, args.untrusted_sources);
       }
       default:
         throw new Error(`unknown action: ${args.action}`);

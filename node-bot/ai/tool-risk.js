@@ -168,10 +168,14 @@ const ASK_AFTER_UNTRUSTED = new Set([
   "coding__propose_edit",
   "speech__add_word",
   "speech__remove_word",
-  // #1191: a git change, whatever its own approval setting says (a PR
-  // comment or someone's commit message may be what's asking for it).
-  "git__change",
 ]);
+
+// #1191: tools that ask through their own approval prompt after outside
+// content, whatever their own setting says (a PR comment or someone's
+// commit message may be what's asking for it). The gate here hands them where it came from
+// (untrusted_sources) instead of asking first, so I get one prompt that
+// says what she'll do and what she just read, not two.
+const ASK_THEMSELVES_AFTER_UNTRUSTED = new Set(["git__change", "git__push", "github__write"]);
 
 // sources: where the turn's outside content came from. Game wiki results
 // alone (mid-game "where do I unlock X", whose prompt says to look at my
@@ -619,6 +623,13 @@ function wrapWithRiskGate(policy, approvalGate, options = {}) {
     isKnownTool: policy.isKnownTool,
     executeTool: async (name, args) => {
       const risk = classifyToolCall(name, args);
+      if (ASK_THEMSELVES_AFTER_UNTRUSTED.has(name)) {
+        // Only this gate says what the turn took in; the model can't.
+        const { untrusted_sources: _ignored, ...own } = args || {};
+        const result = await policy.executeTool(name, tookInUntrusted.size ? { ...own, untrusted_sources: [...tookInUntrusted] } : own);
+        for (const source of untrustedSourcesFrom(name, result)) tookInUntrusted.add(source);
+        return result;
+      }
       if (tookInUntrusted.size && asksAfterUntrusted(name, risk, tookInUntrusted)) {
         return ask(name, args, risk, true);
       }
