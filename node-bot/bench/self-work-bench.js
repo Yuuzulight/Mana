@@ -443,10 +443,26 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     }
     return resp;
   };
-  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch });
+  // With --server-args the bench owns the server: the runtime may only
+  // adopt it, never start one of its own (the model with default flags).
+  const refuse = () => {
+    throw new Error("the bench's own llama-server isn't running");
+  };
+  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs ? { spawn: refuse } : {}) });
   let server = null;
+  // A server the bench starts itself (a model whose experts sit in RAM)
+  // is killed the moment RAM passes the bench's limit; the run then stops.
+  const watch = { aborted: null, timer: null };
   async function start() {
     if (!serverArgs) return;
+    watch.timer = setInterval(() => {
+      const ram = systemRamPercent();
+      if (ram > BENCH_MAX_RAM_PERCENT && server && server.exitCode === null) {
+        watch.aborted = `RAM reached ${ram}%, so the bench stopped its llama-server`;
+        console.log(watch.aborted);
+        server.kill();
+      }
+    }, 250);
     const { spawn } = require("node:child_process");
     const args = ["-m", runtime.findLlamaModel("default"), "--host", "127.0.0.1", "--port", BENCH_LLAMA_PORT, "-c", String(context || env.LLAMA_CONTEXT || 16384)];
     args.push("--no-webui", "--cache-ram", "0", "-t", String(env.LLAMA_THREADS || 4), ...serverArgs.split(/\s+/).filter(Boolean));
@@ -465,7 +481,9 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     runLoop: (...args) => runtime.runToolAwareReply(...args),
     reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: runtime.runLocalReplyIfSafelyLoaded, env }),
     contextSize: () => runtime.getContextSize(),
+    aborted: () => watch.aborted,
     async stop() {
+      clearInterval(watch.timer);
       await runtime.stop();
       if (server && server.exitCode === null) server.kill();
     },
@@ -529,6 +547,10 @@ async function main(argv) {
         break;
       }
       const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts });
+      if (model.aborted()) {
+        console.log(`Stopping at ${c.id}: ${model.aborted()}.`);
+        break;
+      }
       // No room for the model (the backend's chat model is loaded, say):
       // not her result, so the run stops here instead of scoring it.
       if (/refusing to load/.test(result.error || "")) {
