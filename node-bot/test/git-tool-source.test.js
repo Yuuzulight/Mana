@@ -359,3 +359,9 @@ test("GitHub writes are refused while a game runs", async () => {
   assert.match(parsed(await call("github__write", { repo, action: "issue_comment", number: 3, body: "hi" })).error, /game is running/);
   assert.ok(!ghCalls.some((c) => c.args[1] === "comment"));
 });
+
+test("runCommand fails, not cuts short, when the output passes its cap", async () => {
+  const r = await runCommand(process.execPath, ["-e", "process.stdout.write(\"x\".repeat(17 * 1024 * 1024))"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /passed 16 MB/);
+});
