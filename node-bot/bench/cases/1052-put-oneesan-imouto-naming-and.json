@@ -1,0 +1,18 @@
+{
+  "id": "1052-put-oneesan-imouto-naming-and",
+  "pr": 1052,
+  "issue": 1041,
+  "base": "9091e2b3dfd22946be0ccb56294f4be35c24ae50",
+  "fix": "b537b01dc370fe5ad67577cd1e34040d7ff6db01",
+  "title": "Put Oneesan/Imouto naming and the Otsumana~ sign-off in Mana's persona",
+  "body": "The Oneesan/Imouto naming only lives in a remembered fact (data/acp-memory/facts.json), not in `node-bot/persona.js`, and saved sessions show Mana writing \"Onesan\" and \"Imoto\".\n\nIt belongs in Mana's persona: she is Mana, my Imouto (little sister); she calls me Oneesan; spelled exactly \"Oneesan\" and \"Imouto\"; her sign-off is \"Otsumana~\". Keep it short.\n\nIt should apply to Mana herself only. Other characters from #914 (Evil Mana, anything in data/characters.json) bring their own persona and shouldn't pick it up.\n\nTest: the persona includes the exact spellings.\n",
+  "fixFiles": [
+    "node-bot/persona.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/persona.test.js"
+  ],
+  "testCommand": "node --test test/persona.test.js",
+  "interface": "`MANA_PERSONA` contains the three words with their double quotes: `\"Oneesan\"`, `\"Imouto\"` and `\"Otsumana~\"`. Evil Mana's persona (characters.js) contains neither name.",
+  "why": "A two-line persona text change with an exact-spelling test. The smallest case: reading, one precise edit."
+}

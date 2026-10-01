@@ -1,0 +1,18 @@
+{
+  "id": "1069-alt-tabbing-to-discord-or-obs",
+  "pr": 1069,
+  "issue": 1058,
+  "base": "b5da5baabdc83988331700b0096384e7d72d0aaa",
+  "fix": "0fe15c07950220757f834039d2dd1706ad102d6d",
+  "title": "Alt-tabbing to Discord or OBS mid-game counts as a break",
+  "body": "While I play, held proactive remarks (and the briefing, which goes through the same engine) wait for a natural break: alt-tabbing away from the game (`foreground.js` `isAwayFromGame`, read by `proactive.js`'s `flush`). Any other app in front counts, including Discord and OBS, so switching to Discord mid-call to talk to people makes Mana speak a held remark right then.\n\nWhat I want:\n- Discord (stable/PTB/Canary) and OBS in front don't count as leaving the game.\n- The list is configurable: `MANA_GAME_COMPANION_APPS` (comma-separated process names) replaces the default.\n",
+  "fixFiles": [
+    "node-bot/.env.sample",
+    "node-bot/foreground.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/foreground.test.js"
+  ],
+  "testCommand": "node --test test/foreground.test.js",
+  "why": "A small behaviour change in foreground.js (an allow-list of apps that do not count as a break), with a unit test against a pure function."
+}

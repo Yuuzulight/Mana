@@ -628,24 +628,19 @@ test("#1194: an idle moment offers, once, to update her live copy to her merged 
   assert.equal(offers[0].notice, true);
 });
 
-test("#1207: she finds files by glob and code by regex, still only in her worktree", async () => {
+test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
   const repos = makeRepos();
-  const seen = [];
-  const calls = [
-    ["self_work__files", { contains: "*.JS" }],
-    ["self_work__files", { contains: "node-bot/**/util.*" }],
-    ["self_work__files", { contains: "gate" }],
-    ["self_work__search", { text: "return a [-+] b", regex: true }],
-    ["self_work__search", { text: "return a [-+] b" }],
-  ];
-  const { sw } = selfWork(repos, { calls, seen });
-  await sw.start(7);
-  await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const worktree = path.join(repos.base, "bench-wt");
+  git(repos.live, "worktree", "add", "-q", "--detach", worktree, "HEAD");
+  const { sw, ghCalls } = selfWork(repos, { calls: [fix, runTests, finish] });
+  const { reply, run } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, worktree);
 
-  assert.deepEqual(results[0].split("\n"), ["node-bot/approval-gate.js", "node-bot/util.js"]);
-  assert.equal(results[1], "node-bot/util.js");
-  assert.equal(results[2], "node-bot/approval-gate.js");
-  assert.equal(results[3], "node-bot/util.js:2:  return a - b;");
-  assert.equal(results[4], "No matches.");
+  assert.equal(run.finished, true);
+  assert.equal(run.lastTestPassed, true);
+  assert.match(reply.content, /made add\(\) add/);
+  assert.match(fs.readFileSync(path.join(worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
+  assert.deepEqual(ghCalls, []);
+  assert.equal(git(worktree, "status", "--porcelain"), "M node-bot/util.js");
+  assert.equal(git(repos.origin, "branch", "--list"), "* main");
+  assert.equal(sw.status().state, "idle");
 });

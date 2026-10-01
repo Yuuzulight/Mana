@@ -487,19 +487,7 @@ function createSelfWork(options = {}) {
 
     log(r, "Working on it in my worktree.");
     await owner();
-    const tools = worktreeTools(r);
-    const reply = await runLoop(buildPrompt(r, issue), tools, {
-      goal: `Implement issue #${r.issue}: ${r.title}`,
-      maxRounds: MAX_ROUNDS,
-      // #1124: how far into the round cap she is, for the Background tasks panel.
-      onRound: (round) => {
-        r.round = round;
-      },
-      maxMs: Infinity,
-      maxTokens: 2048,
-      overrideSystemPrompt:
-        "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
-    });
+    const reply = await loop(r, issue);
     const summary = stripAttribution(reply?.content);
 
     if (haltedEnd(r)) return;
@@ -537,6 +525,35 @@ function createSelfWork(options = {}) {
     }
     r.prUrl = url.split(/\s+/).pop();
     end(r, "pr-open", `My PR for #${r.issue} is ready: ${r.prUrl}`);
+  }
+
+  // Goal mode over her worktree tools, for a real run and a bench run alike.
+  function loop(r, issue) {
+    return runLoop(buildPrompt(r, issue), worktreeTools(r), {
+      goal: `Implement issue #${r.issue}: ${r.title}`,
+      maxRounds: MAX_ROUNDS,
+      // #1124: how far into the round cap she is, for the Background tasks panel.
+      onRound: (round) => {
+        r.round = round;
+      },
+      maxMs: Infinity,
+      maxTokens: 2048,
+      overrideSystemPrompt:
+        "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
+    });
+  }
+
+  // #1203: the benchmark's way in. Her loop on an issue's text, in a
+  // worktree the caller made: no fetch, no labels, no commit, no push, no
+  // PR. A loop that throws (where a real run would end "failed") comes
+  // back as error, with the run as far as it got.
+  async function bench(issue, worktree) {
+    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench" });
+    try {
+      return { reply: await loop(r, issue), run: r };
+    } catch (e) {
+      return { reply: null, run: r, error: e.message };
+    }
   }
 
   // Her worktree on r.branch (a new branch starts at start), with
@@ -888,7 +905,7 @@ ${
     };
   }
 
-  return { start, startIdle, refresh, stop, status, chatToolSource, _current: () => current };
+  return { start, startIdle, refresh, stop, status, chatToolSource, bench, _current: () => current };
 }
 
 module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
