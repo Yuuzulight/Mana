@@ -8,7 +8,7 @@
 //
 //   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
-//     [--server-args "<extra llama-server flags>"]
+//     [--server-args "<extra llama-server flags>"] [--attempts N]
 //     [--out <dir>] [--verify]
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
@@ -186,7 +186,8 @@ async function runCase(c, deps) {
     // the issue leaves it open, so a sound fix isn't failed on naming.
     const body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
     const started = Date.now();
-    const { reply, run, error } = await selfWork.bench({ number: c.issue, title: c.title, body }, wt);
+    // #1247: --attempts N is her best-of-N (where self-work has it).
+    const { reply, run, error } = await selfWork.bench({ number: c.issue, title: c.title, body }, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
     const peak = await peaks.stop();
     const contextSize = deps.contextSize ? await deps.contextSize() : null;
@@ -201,6 +202,7 @@ async function runCase(c, deps) {
       passed: hidden.passed,
       rounds: run.round,
       maxRounds: run.maxRounds,
+      attempts: run.attempts?.length || 1,
       toolCalls: calls.total,
       // Calls that threw: a bad path, an edit whose old_text didn't match.
       toolErrors: calls.errors,
@@ -374,7 +376,7 @@ function writeReport(results, outDir, meta = {}) {
   const md = [
     `# Self-work benchmark${meta.label ? `: ${meta.label}` : ""}`,
     "",
-    `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
+    `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${meta.attempts > 1 ? `Best of ${meta.attempts} attempts. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
     "",
     `**pass@1 ${pct(o.pass1)}, pass@${summary.repeats} ${pct(o.passK)}**, passes per repeat ${o.spread[0]}-${o.spread[1]} of ${o.cases}. ${passed}/${rows.length} runs passed.`,
     "",
@@ -486,6 +488,8 @@ async function main(argv) {
   const label = opt("--label")[0] || new Date().toISOString().replace(/[:.]/g, "-");
   const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
+  const attempts = Math.max(1, Number(opt("--attempts")[0]) || 1);
+  // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
   const gate = {
@@ -506,7 +510,7 @@ async function main(argv) {
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   const model = realModel(repoRoot, tokens, config);
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, maxMinutes: maxMs / 60000 };
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000 };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
@@ -524,7 +528,7 @@ async function main(argv) {
         console.log(`Stopping before ${c.id}: ${why}.`);
         break;
       }
-      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs });
+      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts });
       // No room for the model (the backend's chat model is loaded, say):
       // not her result, so the run stops here instead of scoring it.
       if (/refusing to load/.test(result.error || "")) {
