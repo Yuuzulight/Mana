@@ -538,6 +538,39 @@ test("#1158: only files I point her to can be uploaded: the panel's picker or fu
   await browserAutomationPlugin.closeSession();
 });
 
+test("#1161: each tab keeps its console and network for dev tools, without the requests we blocked ourselves", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, page } = createFakeChromium();
+  const session = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium, ramPercent: () => 50 });
+  page._url = "https://site.test/";
+  const request = (url, extra = {}) => ({
+    url: () => url,
+    method: () => "GET",
+    resourceType: () => extra.type || "script",
+    timing: () => ({ responseEnd: extra.ms ?? 10 }),
+    response: async () => ({ status: () => extra.status ?? 200 }),
+    failure: () => ({ errorText: "net::ERR_FAILED" }),
+  });
+  const ad = request("https://doubleclick.net/ad.js");
+  await page.routeHandler({ request: () => ad, abort: async () => {}, continue: async () => {} });
+  page.listeners.requestfailed(ad); // our own block: not the site's failure
+  page.listeners.requestfailed(request("https://site.test/missing.js"));
+  await page.listeners.requestfinished(request("https://site.test/api", { status: 503, ms: 80 }));
+  page.listeners.console({ type: () => "error", text: () => "boom" });
+  page.listeners.pageerror(new Error("Uncaught ReferenceError"));
+
+  const network = await session.devtools({ do: "network" });
+  assert.deepEqual(network.devtools.filter((l) => l.startsWith("failed")), [
+    "failed: GET https://site.test/missing.js -- net::ERR_FAILED",
+    "failed: GET https://site.test/api -- HTTP 503",
+  ]);
+  assert.deepEqual((await session.devtools({ do: "console" })).devtools, ["error: boom", "error: Uncaught ReferenceError"]);
+
+  page.listeners.framenavigated("main"); // a new page starts clean
+  assert.deepEqual((await session.devtools({ do: "console" })).devtools, []);
+  await browserAutomationPlugin.closeSession();
+});
+
 test("pathsIn stays fast on a long run of punctuation after a path", () => {
   const started = Date.now();
   const bang = "!".repeat(100000);

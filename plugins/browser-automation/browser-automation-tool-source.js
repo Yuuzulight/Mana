@@ -22,7 +22,9 @@ const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
 // asked (allow once / for the session / always / deny / never), per site.
 // Reading, scrolling and going back never ask.
 const SITE_ACTION_TYPE = "browser-site";
-const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag", "upload", "look_and_click"]);
+const JS_ACTION_TYPE = "browser-js";
+// #1161: her dev tools too, on any site she's allowed to act on.
+const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag", "upload", "look_and_click", "devtools"]);
 
 // "shop.example.com" from a page URL (www. dropped), or null off the web.
 function siteOf(url) {
@@ -74,6 +76,14 @@ const TOOL_SCHEMAS = [
     to: { type: "string", description: "The ref of where to drop it." },
   }, ["from", "to"]),
   tool("back", "Go back to the previous page."),
+  // #1161
+  tool("devtools", "Developer tools on the current page: read its console (errors first) or network (failed and slow requests), run a JavaScript expression, switch to a phone/tablet/desktop size or light/dark mode, or look at it with your eyes and describe it.", {
+    do: { type: "string", enum: ["console", "network", "run_js", "viewport", "color_scheme", "look"] },
+    code: { type: "string", description: "For run_js: one JavaScript expression; its value comes back as JSON." },
+    size: { type: "string", enum: ["phone", "tablet", "desktop"] },
+    scheme: { type: "string", enum: ["light", "dark"] },
+    question: { type: "string", description: "For look: what to look at or check." },
+  }, ["do"]),
   // #1157
   tool("look_and_click", "Last resort when find and the snapshot can't see what you need (a canvas app, unlabeled buttons): look at the page with your eyes and click where it is. Slower; not while the user is gaming.", {
     description: { type: "string", description: "What to click, as it looks on screen, like \"the green Play button\"." },
@@ -129,7 +139,9 @@ function parsePoint(answer, width, height) {
 // frame.
 function describeForModel(result) {
   const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ...(result.tabs ? ["Tabs:", ...result.tabs] : []), ""];
-  if (result.matches) {
+  if (result.devtools) {
+    lines.push(`${result.what}:`, ...(result.devtools.length ? result.devtools : ["(nothing)"]));
+  } else if (result.matches) {
     lines.push(result.matches.length ? `Best matches for "${result.description}":` : `Nothing on the page matches "${result.description}".`, ...result.matches);
   } else if (result.elements) {
     lines.push("Interactive elements:", ...result.elements);
@@ -171,6 +183,13 @@ function createBrowserAutomationToolSource(options = {}) {
   // #1157: her own vision model, (prompt, images, maxTokens) => text.
   const runVisionReply = options.runVisionReply || null;
 
+  // #1161: her vision model describing a screenshot -- off while gaming.
+  async function lookAt(image, question) {
+    if (sessionDeps.isGaming?.()) throw new Error("looking at the page is off while the user is gaming");
+    if (!runVisionReply) throw new Error("no vision model is set up for looking at pages");
+    return runVisionReply(`This is a screenshot of a web page. ${question}`, [image], 400);
+  }
+
   async function lookAndClick(session, description) {
     const what = String(description || "").trim();
     if (!what) throw new Error("say what to click, like \"the green Play button\"");
@@ -208,34 +227,37 @@ function createBrowserAutomationToolSource(options = {}) {
     throw new Error("an approvalGate is required");
   }
   approvalGate.registerExecutor(APPROVAL_ACTION_TYPE, async () => ({ approved: true }));
-  // "Allow once" lets her next action on that site through.
+  // "Allow once" lets her next action of that kind on that site through.
   const allowedOnce = new Set();
 
   // One action type per site, so the gate's grants, "never" and its
-  // three-denials stop are all per site.
-  async function requireSitePermission(session) {
+  // three-denials stop are all per site. js: running JavaScript there
+  // (#1161's run_js), asked for on its own -- allowing a site for clicks
+  // doesn't allow scripts.
+  async function requireSitePermission(session, js = false) {
     const site = siteOf(await session.url());
     if (!site) throw new Error("open a web page first");
-    const actionType = `${SITE_ACTION_TYPE}:${site}`;
-    if (approvalGate.isGranted(actionType) || allowedOnce.delete(site)) return;
+    const actionType = `${js ? JS_ACTION_TYPE : SITE_ACTION_TYPE}:${site}`;
+    const doing = js ? "running JavaScript" : "clicking or typing";
+    if (approvalGate.isGranted(actionType) || allowedOnce.delete(actionType)) return;
     approvalGate.registerExecutor(actionType, async () => {
-      allowedOnce.add(site);
+      allowedOnce.add(actionType);
       return { approved: true };
     });
     const result = await approvalGate.requestApproval(actionType, {
-      summary: `Let Mana click and type on ${site}`,
+      summary: js ? `Let Mana run JavaScript on ${site}` : `Let Mana click and type on ${site}`,
       payload: { site },
     });
     if (result.status === "approved") {
-      allowedOnce.delete(site);
+      allowedOnce.delete(actionType);
       return;
     }
     throw new Error(
       result.status === "pending"
-        ? `clicking or typing on ${site} needs the user's OK first (request ${result.requestId}); tell them, and try again once they allow it. Reading pages there doesn't need it.`
+        ? `${doing} on ${site} needs the user's OK first (request ${result.requestId}); tell them, and try again once they allow it. Reading pages there doesn't need it.`
         : result.never
-          ? `the user said never for clicking or typing on ${site}; don't act there`
-          : `clicking or typing on ${site} isn't allowed: ${result.reason || "denied"}`,
+          ? `the user said never for ${doing} on ${site}; don't do it there`
+          : `${doing} on ${site} isn't allowed: ${result.reason || "denied"}`,
     );
   }
 
@@ -309,6 +331,7 @@ function createBrowserAutomationToolSource(options = {}) {
     let result;
     try {
       if (ACTS_ON_SITE.has(action)) await requireSitePermission(session);
+      if (action === "devtools" && args?.do === "run_js") await requireSitePermission(session, true);
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
       else if (action === "find") result = await session.find(args?.description);
@@ -322,6 +345,7 @@ function createBrowserAutomationToolSource(options = {}) {
       else if (action === "tab") result = await session.tab(args);
       else if (action === "upload") result = await session.upload(args?.ref, args?.file);
       else if (action === "look_and_click") result = await lookAndClick(session, args?.description);
+      else if (action === "devtools") result = await session.devtools(args, lookAt);
       else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step
