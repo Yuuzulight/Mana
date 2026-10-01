@@ -685,7 +685,7 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   const { sw } = selfWork(repos, { calls, seen });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
 
   assert.equal(seen[0].opts.contextSize, 32768);
   assert.equal(seen[0].opts.maxRounds, 12);
