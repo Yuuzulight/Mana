@@ -318,6 +318,19 @@ function createBrowserSession(options = {}) {
     return afterAction();
   }
 
+  // #1157: for pages with no useful accessibility info (canvas apps,
+  // unlabeled custom UIs). locate(imageDataUrl, width, height) is her
+  // vision model's answer: { x, y } in the screenshot, or null.
+  async function lookAndClick(description, locate) {
+    await refuseIfSensitive();
+    const { width, height } = page.viewportSize?.() || { width: 1280, height: 720 };
+    const shot = await page.screenshot({ type: "jpeg", quality: 70 });
+    const point = await locate(`data:image/jpeg;base64,${shot.toString("base64")}`, width, height);
+    if (!point) throw new Error(`she couldn't see "${description}" on the page`);
+    await acting(() => page.mouse.click(point.x, point.y));
+    return { ...(await afterAction()), clickedAt: point };
+  }
+
   async function back() {
     await page.goBack();
     return snapshot();
@@ -330,7 +343,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, hover, press, drag, upload, back, find, snapshot, screenshot, url: () => page.url() };
+  return { navigate, click, type, select, scroll, hover, press, drag, upload, lookAndClick, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {

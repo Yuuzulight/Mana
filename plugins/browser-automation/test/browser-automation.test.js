@@ -65,6 +65,7 @@ function createFakePage(overrides = {}) {
     },
     keyboard: { press: async (key) => state.calls.push(["key", key]) },
     mouse: {
+      click: async (x, y) => state.calls.push(["mouseClick", x, y]),
       move: async (x, y) => state.calls.push(["move", x, y]),
       wheel: async (x, y) => state.calls.push(["wheel", x, y]),
     },
@@ -459,4 +460,22 @@ test("#1158: downloads wait for my OK every time, then land in the folder, never
   const started = Date.now();
   assert.equal(safeName(`a${" ".repeat(100000)}b`).length, 150); // fast on a long run of spaces
   assert.ok(Date.now() - started < 1000);
+});
+
+test("#1157: lookAndClick shows the vision model the screen and clicks where it says", async () => {
+  const page = createFakePage();
+  const session = createBrowserSession({ page });
+  let seen = null;
+  const result = await session.lookAndClick("the Play button", async (image, width, height) => {
+    seen = { image, width, height };
+    return { x: 640, y: 400 };
+  });
+  assert.match(seen.image, /^data:image\/jpeg;base64,/);
+  assert.deepEqual([seen.width, seen.height], [1000, 500]);
+  assert.deepEqual(actions(page).slice(-1), [["mouseClick", 640, 400]]);
+  assert.deepEqual(result.clickedAt, { x: 640, y: 400 });
+
+  await assert.rejects(() => session.lookAndClick("a unicorn", async () => null), /couldn't see "a unicorn"/);
+  page.state.sensitive = "a password";
+  await assert.rejects(() => session.lookAndClick("Sign in", async () => ({ x: 1, y: 1 })), /asks for a password/);
 });

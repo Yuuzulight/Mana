@@ -1165,6 +1165,8 @@ const browserAutomationToolSource = createBrowserAutomationToolSource({
   sessionDeps: { isGaming: () => gamingWatch.isGaming() },
   // #1139: "she needs you" in the Browser panel.
   requestHandOver: browserAutomationPlugin.requestHandOver,
+  // #1157: look-and-click uses her own vision model (paused while gaming there too).
+  runVisionReply: (prompt, images, maxTokens) => llamaServerRuntime.runVisionReply(prompt, images, maxTokens),
 });
 
 // Background memory block that can be refreshed periodically from ACP session files.

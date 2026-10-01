@@ -22,7 +22,7 @@ const APPROVAL_ACTION_TYPE = "browser-automation-tool-use";
 // asked (allow once / for the session / always / deny / never), per site.
 // Reading, scrolling and going back never ask.
 const SITE_ACTION_TYPE = "browser-site";
-const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag", "upload"]);
+const ACTS_ON_SITE = new Set(["click", "type", "select", "press", "drag", "upload", "look_and_click"]);
 
 // "shop.example.com" from a page URL (www. dropped), or null off the web.
 function siteOf(url) {
@@ -74,6 +74,10 @@ const TOOL_SCHEMAS = [
     to: { type: "string", description: "The ref of where to drop it." },
   }, ["from", "to"]),
   tool("back", "Go back to the previous page."),
+  // #1157
+  tool("look_and_click", "Last resort when find and the snapshot can't see what you need (a canvas app, unlabeled buttons): look at the page with your eyes and click where it is. Slower; not while the user is gaming.", {
+    description: { type: "string", description: "What to click, as it looks on screen, like \"the green Play button\"." },
+  }, ["description"]),
   // #1158
   tool("upload", "Put a file into a page's upload field or button, by its ref. Only a file the user pointed you to: its full path from their message, or one they gave you in the Browser panel.", {
     ref: REF_PARAM,
@@ -110,6 +114,16 @@ TOOL_SCHEMAS.push(
     },
   }, ["steps"]),
 );
+
+// #1157: the vision model's "x,y" (or NONE) inside the screenshot, or null.
+// Its answer is a few tokens; the cap keeps the regex short whatever comes.
+function parsePoint(answer, width, height) {
+  const text = String(answer || "").slice(0, 200);
+  const match = /(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/.exec(text);
+  if (!match || /\bnone\b/i.test(text)) return null;
+  const [x, y] = [Number(match[1]), Number(match[2])];
+  return x >= 0 && y >= 0 && x < width && y < height ? { x: Math.round(x), y: Math.round(y) } : null;
+}
 
 // What the model reads: everything from the page sits inside one untrusted
 // frame.
@@ -154,6 +168,28 @@ function createBrowserAutomationToolSource(options = {}) {
   const activityLog = options.activityLog || createBrowserActivityLog();
   // #1139: flags "she needs you" in the Browser panel (plugin index.js).
   const requestHandOver = options.requestHandOver || (() => {});
+  // #1157: her own vision model, (prompt, images, maxTokens) => text.
+  const runVisionReply = options.runVisionReply || null;
+
+  async function lookAndClick(session, description) {
+    const what = String(description || "").trim();
+    if (!what) throw new Error("say what to click, like \"the green Play button\"");
+    if (sessionDeps.isGaming?.()) throw new Error("looking at the page is off while the user is gaming; use find and click");
+    if (!runVisionReply) throw new Error("no vision model is set up for looking at pages");
+    // Only a fallback: if the snapshot can see it, a ref is cheaper and surer.
+    const found = await session.find(what);
+    if (found.matches.length) {
+      throw new Error(`the page's elements already match that; click one by its ref instead: ${found.matches.join("; ")}`);
+    }
+    return session.lookAndClick(what, async (image, width, height) => {
+      const answer = await runVisionReply(
+        `This is a ${width}x${height} screenshot of a web page. Where is this: "${what}"? Answer with only the pixel coordinates of its center as x,y (like 412,230), or NONE if it isn't there.`,
+        [image],
+        32,
+      );
+      return parsePoint(answer, width, height);
+    });
+  }
   // #1158: each download waits for my OK; the chat shows where it went.
   const downloads = createBrowserDownloads({
     approvalGate,
@@ -285,6 +321,7 @@ function createBrowserAutomationToolSource(options = {}) {
       else if (action === "drag") result = await session.drag(args?.from, args?.to);
       else if (action === "tab") result = await session.tab(args);
       else if (action === "upload") result = await session.upload(args?.ref, args?.file);
+      else if (action === "look_and_click") result = await lookAndClick(session, args?.description);
       else result = await session.back();
     } catch (err) {
       // Issue #418: the launcher's activity feed should show a failed step
@@ -348,6 +385,7 @@ module.exports = {
   SITE_ACTION_TYPE,
   TOOL_SCHEMAS,
   describeForModel,
+  parsePoint,
   isBrowserAutomationToolName,
   createBrowserAutomationToolSource,
   buildToolPolicyWithBrowserAutomation,
