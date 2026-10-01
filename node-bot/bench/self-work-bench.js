@@ -69,14 +69,16 @@ function removeWorktree(repoRoot, wt) {
 }
 
 // #1231: a generated case is a bug patched into the base (its `mutation`),
-// with the tests that catch it taken out until she's done. Returns what her
-// diff is taken against: the broken tree, or the base for a real case.
+// with the tests that catch it taken out until she's done, committed in the
+// throwaway worktree so a reset to HEAD (her best-of-N) keeps both. Returns
+// what her diff is taken against: that commit, or the base for a real case.
 function applyMutation(wt, c) {
   if (!c.mutation) return c.base;
   execFileSync("git", ["apply", "--whitespace=nowarn"], { cwd: wt, input: c.mutation, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   for (const rel of c.hiddenTests) fs.rmSync(path.join(wt, rel), { force: true });
   git(wt, "add", "-A");
-  return git(wt, "write-tree");
+  git(wt, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-q", "--no-verify", "-m", `bench: ${c.id}`);
+  return git(wt, "rev-parse", "HEAD");
 }
 
 function copyHiddenTests(repoRoot, wt, c) {
@@ -144,11 +146,11 @@ async function runCase(c, deps) {
   const { repoRoot, worktreesDir } = deps;
   const wt = path.join(worktreesDir, `bench-${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
-  const start = applyMutation(wt, c);
   const tokens = deps.tokens || { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   tokens.peak = 0;
   const before = { ...tokens };
   try {
+    const start = applyMutation(wt, c);
     // Counted here, so a loop that throws still reports what it did.
     const calls = { total: 0, errors: 0 };
     const counted = (policy) => ({

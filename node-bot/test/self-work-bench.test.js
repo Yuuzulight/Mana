@@ -180,3 +180,28 @@ test("a generated case: the bug is patched in, its test hidden, and her diff is 
   assert.match(result.patch, /-  return a - b;\n\+  return a \+ b;/);
   assert.deepEqual(verifyCase(c, { repoRoot: r.repo, worktreesDir: r.worktrees }), { id: c.id, ok: true, failsAtBase: true, passesWithFix: true, tail: "" });
 });
+
+test("a generated case's bug is committed: a reset to HEAD keeps it, and its test stays hidden", async () => {
+  const r = makeRepo();
+  const c = generatedCase(r);
+  const wt = path.join(r.worktrees, `bench-${c.id}`);
+  const d = deps(r, []);
+  d.runLoop = async () => {
+    git(wt, "reset", "-q", "--hard", "HEAD");
+    git(wt, "clean", "-fdq", "-e", "node_modules");
+    assert.match(fs.readFileSync(path.join(wt, "node-bot", "util.js"), "utf8"), /a - b/);
+    assert.equal(fs.existsSync(path.join(wt, "node-bot", "test", "util.test.js")), false);
+    return { content: "Not done yet." };
+  };
+  const result = await runCase(c, d);
+  assert.deepEqual(result.diff.files, []);
+  assert.equal(result.passed, false);
+});
+
+test("a mutation that doesn't apply leaves no worktree behind", async () => {
+  const r = makeRepo();
+  const c = { ...generatedCase(r), mutation: "not a patch\n" };
+  await assert.rejects(runCase(c, deps(r, [])));
+  assert.equal(fs.existsSync(path.join(r.worktrees, `bench-${c.id}`)), false);
+  assert.doesNotMatch(git(r.repo, "worktree", "list"), /bench-gen-add/);
+});
