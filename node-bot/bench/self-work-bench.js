@@ -7,7 +7,7 @@
 // chat model in a llama-server of the bench's own (never the backend's).
 //
 //   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
-//     [--repeat N] [--model <gguf>] [--context N] [--label <name>]
+//     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
 //     [--out <dir>] [--verify]
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
@@ -172,7 +172,9 @@ async function runCase(c, deps) {
     const selfWork = createSelfWork({
       repoRoot,
       worktreesDir,
-      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), opts),
+      // A wall-clock cap per run (goal mode ends gracefully at it), so one
+      // run of full-suite test runs can't hold the batch for an hour.
+      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), deps.maxMs ? { ...opts, maxMs: deps.maxMs } : opts),
       reviewEdit: deps.reviewEdit,
       isGaming: deps.isGaming,
       ramPercent: deps.ramPercent,
@@ -453,6 +455,7 @@ async function main(argv) {
   const label = opt("--label")[0] || new Date().toISOString().replace(/[:.]/g, "-");
   const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
+  const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined };
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
@@ -472,7 +475,7 @@ async function main(argv) {
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   const model = realModel(repoRoot, tokens, config);
-  const meta = { model: model.model, context: config.context, label, repeats };
+  const meta = { model: model.model, context: config.context, label, repeats, maxMinutes: maxMs / 60000 };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
@@ -489,7 +492,7 @@ async function main(argv) {
         console.log(`Stopping before ${c.id}: ${why}.`);
         break;
       }
-      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine });
+      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs });
       // No room for the model (the backend's chat model is loaded, say):
       // not her result, so the run stops here instead of scoring it.
       if (/refusing to load/.test(result.error || "")) {
