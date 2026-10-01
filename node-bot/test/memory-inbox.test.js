@@ -129,3 +129,13 @@ test("ignores an event for a file that's already gone (renamed/deleted before ha
 
   assert.equal(appendCalls.length, 0);
 });
+
+test("its own processed/ folder changing is ignored, not ingested", async () => {
+  const { processedDir, appendCalls, trigger } = setupWatcher();
+  fs.writeFileSync(path.join(processedDir, "note.txt"), "already in memory");
+
+  await trigger("processed"); // onError throws here if it tries to move the folder
+
+  assert.equal(appendCalls.length, 0);
+  assert.ok(fs.existsSync(path.join(processedDir, "note.txt")));
+});

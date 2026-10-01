@@ -46,6 +46,11 @@ const MEMORY_SAVE_CLAIM_RE = new RegExp(
 // #1214: how many of the latest tool results goal mode keeps whole once
 // the prompt passes 60% of the context.
 const KEEP_RECENT_TOOL_RESULTS = 4;
+// #1214: how long her context switch waits for replies in flight to end.
+const CONTEXT_SWITCH_WAIT_MS = 2 * 60 * 1000;
+// #1209: what she's told when llama-server couldn't parse her tool call.
+const TOOL_CALL_UNPARSED_NOTE =
+  "Your last tool call couldn't be parsed: its arguments were cut off or weren't valid JSON. Make the call again with shorter arguments (for a code change, replace only the lines that change).";
 
 // "saved" when a memory__remember call wrote (or was approved), "pending"
 // when one is waiting on approval, else "none".
@@ -168,6 +173,7 @@ function createLlamaServerRuntime(options = {}) {
     // context size (her self-work runs) while that reply runs.
     ctx: null,
     contextOverride: null,
+    contextRestorePending: false,
     // #872: an image turn sets visionWanted (the chat server then keeps
     // its mmproj); visionTimer clears it after MANA_VISION_IDLE_MS. busy
     // counts replies in flight -- an unload waits for it to reach 0.
@@ -1133,6 +1139,11 @@ function createLlamaServerRuntime(options = {}) {
         state.busy -= 1;
         if (state.busy === 0 && state.gamingSwapPending !== null) setGaming(state.gamingSwapPending);
         if (state.busy === 0 && state.visionUnloadPending) unloadVision();
+        // #1214: her context ended while chat replies were in flight.
+        if (state.busy === 0 && state.contextRestorePending) {
+          state.contextOverride = null;
+          state.contextRestorePending = false;
+        }
       }
     };
   }
@@ -1518,25 +1529,42 @@ function createLlamaServerRuntime(options = {}) {
     const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```|<tool_call>([\s\S]*?)<\/tool_call>/g)].map(
       (m) => m[1] ?? m[2],
     );
-    const calls = [];
+    const found = [];
     for (const raw of blocks.length ? blocks : [text]) {
-      let parsed;
       try {
-        parsed = JSON.parse(raw.trim());
-      } catch (e) {
-        continue;
+        found.push(...[].concat(JSON.parse(raw.trim())));
+      } catch (e) {}
+    }
+    // #1209: Qwen3.5's own form, <function=NAME><parameter=KEY>VALUE
+    // </parameter></function>, left in the text when llama-server's parser
+    // didn't take it (measured: 6 of 10 benchmark runs ended on one).
+    // Values are text; a non-string schema type gets them parsed as JSON.
+    if (!found.length) {
+      for (const [, name, body] of text.matchAll(/<function=([\w.-]+)>([\s\S]*?)(?:<\/function>|$)/g)) {
+        const props = params.get(name)?.properties || {};
+        const args = {};
+        for (const [, key, value] of body.matchAll(/<parameter=([\w.-]+)>\r?\n?([\s\S]*?)\r?\n?<\/parameter>/g)) {
+          args[key] = value;
+          if (props[key]?.type && props[key].type !== "string") {
+            try {
+              args[key] = JSON.parse(value.trim());
+            } catch (e) {}
+          }
+        }
+        found.push({ name, arguments: args });
       }
-      for (const call of [].concat(parsed)) {
-        const schema = call && params.get(call.name);
-        const args = call && call.arguments;
-        if (!schema || !args || typeof args !== "object" || Array.isArray(args)) continue;
-        if (!(schema.required || []).every((key) => key in args)) continue;
-        calls.push({
-          id: `text_${Date.now()}_${calls.length}`,
-          type: "function",
-          function: { name: call.name, arguments: JSON.stringify(args) },
-        });
-      }
+    }
+    const calls = [];
+    for (const call of found) {
+      const schema = call && params.get(call.name);
+      const args = call && call.arguments;
+      if (!schema || !args || typeof args !== "object" || Array.isArray(args)) continue;
+      if (!(schema.required || []).every((key) => key in args)) continue;
+      calls.push({
+        id: `text_${Date.now()}_${calls.length}`,
+        type: "function",
+        function: { name: call.name, arguments: JSON.stringify(args) },
+      });
     }
     return calls;
   }
@@ -1758,17 +1786,49 @@ function createLlamaServerRuntime(options = {}) {
   // else the answer opens with "Not done yet: ...".
   // #1214: a reply with its own contextSize (her self-work runs) gets a
   // server with that context while it runs; chat keeps LLAMA_CONTEXT, so
-  // the next reply without one restarts the server back to it.
+  // the next reply without one restarts the server back to it. The switch
+  // waits (bounded) until no other reply is in flight, so it never restarts
+  // the server under a chat turn, and needs VRAM for the larger KV cache;
+  // otherwise this reply runs at the default context. Chat turns that start
+  // meanwhile run on her context; the default comes back once the last
+  // reply in flight ends (inTurn).
   function withContextSize(fn) {
     return async (prompt, toolPolicy, options = {}) => {
-      if (!options?.contextSize) return fn(prompt, toolPolicy, options);
-      state.contextOverride = Number(options.contextSize);
+      const ctx = Number(options?.contextSize) || 0;
+      if (ctx <= configuredContext()) return fn(prompt, toolPolicy, options);
+      for (let waited = 0; state.busy > 0 && waited < CONTEXT_SWITCH_WAIT_MS; waited += 1000) await sleep(1000);
+      if (state.busy > 0 || !contextFits(ctx)) {
+        console.warn(`llama-server: staying at ${configuredContext()} context, not ${ctx} (${state.busy > 0 ? "a reply is still in flight" : "not enough VRAM for its KV cache"})`);
+        return fn(prompt, toolPolicy, options);
+      }
+      state.contextOverride = ctx;
+      state.contextRestorePending = false;
       try {
         return await fn(prompt, toolPolicy, options);
       } finally {
-        state.contextOverride = null;
+        if (state.busy === 0) state.contextOverride = null;
+        else state.contextRestorePending = true;
       }
     };
+  }
+
+  // KV cache MB for ctx tokens. ponytail: a per-token constant (an 8B GQA
+  // model at f16, halved for a q4/q8 LLAMA_KV_COMPRESS), tunable with
+  // LLAMA_KV_MB_PER_1K_TOKENS; the upgrade is reading it from the GGUF
+  // (layers x KV heads x head size).
+  function kvCacheMb(ctx) {
+    const per1k = Number(env.LLAMA_KV_MB_PER_1K_TOKENS) || (/^q[4-8]/i.test(env.LLAMA_KV_COMPRESS || "") ? 64 : 128);
+    return (ctx / 1024) * per1k;
+  }
+
+  // Restarting at ctx frees the running server's own KV cache and needs
+  // the larger one, with assertVramForSwap's 20% margin.
+  function contextFits(ctx) {
+    if (!vramGuardEnabled) return true;
+    const usage = detectGpuVramUsage();
+    if (!usage || !Number.isFinite(usage.freeMb)) return true;
+    const held = state.port ? kvCacheMb(state.ctx || configuredContext()) : 0;
+    return usage.freeMb >= (kvCacheMb(ctx) - held) * 1.2;
   }
 
   async function runToolAwareReply(
@@ -1972,11 +2032,19 @@ function createLlamaServerRuntime(options = {}) {
       try {
         json = await complete(true);
       } catch (e) {
+        // #1209: a call llama-server couldn't parse (arguments cut off at the
+        // token limit, or badly escaped) goes back as a tool error to make
+        // again, shorter -- up to the consecutive-error cap.
+        const unparsed = /Failed to parse tool call arguments/i.test(e.message);
+        if (unparsed && ++consecutiveToolErrors < MAX_CONSECUTIVE_TOOL_ERRORS) {
+          messages.push({ role: "user", content: TOOL_CALL_UNPARSED_NOTE });
+          continue;
+        }
         // #787: one round's tool results (file contents, test output) can
         // jump past the 80% guard below and the whole context. Keep the run's
         // work and say why it stopped, rather than failing the reply.
-        if (!goalMode || !/exceeds the available context/i.test(e.message)) throw e;
-        notDone = "the conversation outgrew the model's context";
+        if (!goalMode || !(unparsed || /exceeds the available context/i.test(e.message))) throw e;
+        notDone = unparsed ? "the tool calls kept failing to parse" : "the conversation outgrew the model's context";
         break;
       }
       promptTokens = (Number(json?.timings?.cache_n) || 0) + (Number(json?.timings?.prompt_n) || 0);
@@ -2372,7 +2440,7 @@ function createLlamaServerRuntime(options = {}) {
     runBestOfNReply: inTurn(runBestOfNReply),
     waitForServer: inTurn(waitForServer),
     runLocalAssistantReply: inTurn(runLocalAssistantReply),
-    runToolAwareReply: inTurn(withContextSize(runToolAwareReply)),
+    runToolAwareReply: withContextSize(inTurn(runToolAwareReply)),
     runVisionReply: inTurn(runVisionReply),
     getStatus,
     getLastPromptUsage,

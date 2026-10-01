@@ -86,6 +86,15 @@ function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
 }
 
+// A glob as a whole-path, case-insensitive regex: * and ? stay within one
+// folder, ** crosses folders.
+function globRe(glob) {
+  const body = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*\/?|\*|\?/g, (m) => ({ "?": "[^/]", "*": "[^/]*", "**/": "(?:.*/)?" })[m] || ".*");
+  return new RegExp(`^${body}$`, "i");
+}
+
 function slugify(title) {
   return (
     String(title || "")
@@ -111,7 +120,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__files",
-      description: "List files in your worktree whose path contains the given text (case-insensitive).",
+      description: `List files in your worktree whose path contains the given text, or matches it as a glob (*, **, ?; without a / it matches the file name). Case-insensitive, at most ${MAX_LIST}.`,
       parameters: { type: "object", properties: { contains: { type: "string" } }, required: ["contains"] },
     },
   },
@@ -119,11 +128,12 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__search",
-      description: "Search the worktree's tracked files for an exact text. Returns path:line: text matches.",
+      description: "Search the worktree's tracked files for an exact text, or a regular expression with regex: true. Returns path:line: text matches (at most 60).",
       parameters: {
         type: "object",
         properties: {
           text: { type: "string" },
+          regex: { type: "boolean", description: "Treat text as an extended regular expression." },
           path: { type: "string", description: "Optional file or folder to search in." },
         },
         required: ["text"],
@@ -743,14 +753,17 @@ ${
 
     async function files({ contains }) {
       const needle = String(contains || "").toLowerCase();
+      // A glob without a folder matches the file name, like .gitignore.
+      const glob = /[*?]/.test(needle) && globRe(needle);
+      const name = (f) => (needle.includes("/") ? f : path.posix.basename(f));
       const all = (await git(["ls-files"], root)).split(/\r?\n/);
-      const hits = all.filter((f) => f.toLowerCase().includes(needle));
+      const hits = all.filter((f) => (glob ? glob.test(name(f)) : f.toLowerCase().includes(needle)));
       return hits.slice(0, MAX_LIST).join("\n") + (hits.length > MAX_LIST ? `\n...and ${hits.length - MAX_LIST} more` : "");
     }
 
-    async function search({ text, path: where }) {
+    async function search({ text, path: where, regex }) {
       if (!text) throw new Error("text is required");
-      const args = ["grep", "-n", "-I", "-F", "-e", String(text)];
+      const args = ["grep", "-n", "-I", regex === true ? "-E" : "-F", "-e", String(text)];
       if (where) args.push("--", posix(inside(where)));
       const r2 = await exec("git", args, { cwd: root, env: gitEnv });
       if (r2.code === 1) return "No matches.";
