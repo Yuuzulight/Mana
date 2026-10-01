@@ -44,7 +44,8 @@ internal sealed class BackendLogBuffer
             {
                 try
                 {
-                    File.AppendAllText(path, line + Environment.NewLine);
+                    // Timestamped on disk only: node-bot's own lines carry no time.
+                    File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {line}{Environment.NewLine}");
                 }
                 catch
                 {

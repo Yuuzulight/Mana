@@ -43,12 +43,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly SynchronizationContext uiContext;
     // #991: the backend restart in progress, if any; a second request joins it.
     private Task? backendRestart;
+    // When node-bot crashed or a restart failed, within BackendCrashWindow.
+    private readonly Queue<DateTime> backendCrashes = new();
     private readonly IDisposable showRequests;
     // #995: update-mana.ps1's signals, a launcher build waiting for a quiet
     // moment, the chat window to reopen where it was after an update, and
     // whether the tray's Update now is already running.
     private readonly IDisposable updateRequests;
     private readonly IDisposable updateNowRequests;
+    private readonly IDisposable quitRequests;
     private bool swapPending;
     private readonly Rectangle? restoreChat;
     private bool updateRunning;
@@ -294,6 +297,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));
         updateNowRequests = SingleInstance.ListenForUpdate(true, () => RunOnUi(() => ApplyUpdate(now: true)));
+        quitRequests = SingleInstance.ListenForQuit(() => RunOnUi(() => _ = ShutdownAsync()));
         // #681: answers the model's mid-reply screenshot requests, and
         // #911's desktop actions (media keys, volume, apps, audio output, file moves).
         visionCaptureClient = new VisionCaptureClient(backendClient, backendBaseUrl: settings.BackendBaseUrl, captureCamera: CaptureCameraAsync, saveCameraSnapshot: SaveCameraSnapshotAsync, desktopAction: (action, args) => DesktopActions.Run(action, args, ManaSettingsStore.Load().DesktopActionFolders));
@@ -335,6 +339,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         visionCaptureClient.Start();
         // #991: node-bot's own /restart.
         processManager.BackendRestartRequested += () => RunOnUi(() => _ = RestartBackendAsync());
+        processManager.BackendCrashed += exitCode => RunOnUi(() => OnBackendCrashed(exitCode));
 
         // Quick rundown: start the existing local services, but keep this host native and small.
         _ = StartServicesAsync();
@@ -528,7 +533,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         if (processManager.IsBackendLocal)
         {
-            menu.Items.Add("Restart backend", null, (_, _) => _ = RestartBackendAsync()); // #991
+            menu.Items.Add("Restart backend", null, (_, _) =>
+            {
+                backendCrashes.Clear(); // asked for: try again even after giving up
+                _ = RestartBackendAsync(); // #991
+            });
         }
         if (processManager.IsBackendLocal && processManager.UsesFishSpeech)
         {
@@ -1119,7 +1128,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // #991: node-bot restarts under a running launcher -- windows, avatar,
     // voice loop, session and LauncherKey all stay. If the new one doesn't
     // come up it says so once and keeps trying every 30 s until it does (or
-    // Mana exits); rolling the code back would mean git surgery on the live
+    // Mana exits, or it has failed BackendCrashLimit times inside
+    // BackendCrashWindow); rolling the code back would mean git surgery on the live
     // checkout, so it doesn't. UI thread only.
     private Task RestartBackendAsync() =>
         backendRestart is { IsCompleted: false } ? backendRestart : backendRestart = RunBackendRestartAsync();
@@ -1158,6 +1168,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
                     await RefreshTrayStatusAsync();
                     return;
                 }
+                if (!CountBackendCrash())
+                {
+                    return;
+                }
                 if (!reported)
                 {
                     reported = true;
@@ -1174,6 +1188,54 @@ internal sealed class ManaApplicationContext : ApplicationContext
         }
     }
 
+    internal const int BackendCrashLimit = 3;
+    internal static readonly TimeSpan BackendCrashWindow = TimeSpan.FromMinutes(5);
+
+    // node-bot exited without being asked to: start it again, the same way
+    // as #991's restart, until it has crashed BackendCrashLimit times inside
+    // BackendCrashWindow. A restart in progress sees its own node-bot fail,
+    // and one this launcher didn't start isn't its to restart.
+    private void OnBackendCrashed(int exitCode)
+    {
+        Console.WriteLine($"ManaApplicationContext: node-bot exited unexpectedly (code {exitCode}).");
+        if (isShuttingDown || backendRestart is { IsCompleted: false } || !processManager.CanRestartBackend)
+        {
+            return;
+        }
+        if (CountBackendCrash())
+        {
+            _ = RestartBackendAsync();
+        }
+    }
+
+    // False once node-bot has failed too often to keep restarting it, and
+    // says so the first time.
+    private bool CountBackendCrash()
+    {
+        if (RecordCrash(backendCrashes, DateTime.UtcNow))
+        {
+            return true;
+        }
+        if (backendCrashes.Count == BackendCrashLimit)
+        {
+            ShowBalloon("Mana's backend keeps crashing", $"It stopped {BackendCrashLimit} times in {BackendCrashWindow.TotalMinutes:0} minutes, so I've stopped restarting it. Restart backend in the tray tries again.", ToolTipIcon.Error);
+            chatLog.AppendManaMessage("My backend keeps crashing, so I've stopped restarting it. Restart backend in the tray menu tries again; the backend log has the details.");
+        }
+        return false;
+    }
+
+    // Adds a crash at now and forgets the ones older than the window; false
+    // once BackendCrashLimit of them fall inside it.
+    internal static bool RecordCrash(Queue<DateTime> crashes, DateTime now)
+    {
+        while (crashes.Count > 0 && now - crashes.Peek() >= BackendCrashWindow)
+        {
+            crashes.Dequeue();
+        }
+        crashes.Enqueue(now);
+        return crashes.Count < BackendCrashLimit;
+    }
+
     private void ShowBalloon(string title, string text, ToolTipIcon icon)
     {
         balloonClicked = null;
@@ -1184,6 +1246,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // restarts the backend with it); with none, only the backend restarts.
     private void ApplyUpdate(bool now)
     {
+        backendCrashes.Clear(); // new code may well have fixed the crash
         if (!LauncherUpdate.IsStaged(LauncherUpdate.LiveDir))
         {
             _ = RestartBackendAsync();
@@ -1355,6 +1418,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         showRequests.Dispose();
         updateRequests.Dispose();
         updateNowRequests.Dispose();
+        quitRequests.Dispose();
         visionCaptureClient.Dispose();
         captionOverlay.Close();
         chatBubbles.Close();
