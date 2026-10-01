@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# #1206: as in the other workflows, but the label is part of a PR's group:
+# this only runs on `labeled`, and adding some other label must not cancel a
+# run/full-ci run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('{0}-{1}', github.ref, github.event.label.name) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   heavy-node-tests:
     name: Heavy Node tests
@@ -24,6 +31,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: node-bot/package-lock.json
 
       - name: Install node-bot deps
         working-directory: ./node-bot
@@ -58,6 +67,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop-client/package-lock.json
 
       - name: Prepare node-bin (optional)
         shell: pwsh
