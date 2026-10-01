@@ -1,0 +1,17 @@
+{
+  "id": "921-whisper-keeps-writing-my-wake",
+  "pr": 921,
+  "issue": 920,
+  "base": "beff03e3e6f03deff050d9ef8e0af02a70799770",
+  "fix": "905b3565b3c8873e05ee6d01fd866787b0cf4f23",
+  "title": "Whisper keeps writing my wake word as \"Manah\"",
+  "body": "In my voice transcripts, whisper wrote \"Manah\" six times when I said \"Mana\". The base whisper prompt in `node-bot/whisper-prompt.js` lists the wake-word misspellings (\"Mana, Manah, Manna, Mannah, Myna, My Na\"), and whisper copies spellings it sees in the prompt, so it's teaching whisper to misspell her name. `WakeWordMatcher` already accepts those variants on its own, so the prompt only needs to say \"Mana\".",
+  "fixFiles": [
+    "node-bot/whisper-prompt.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/whisper-prompt.test.js"
+  ],
+  "testCommand": "node --test test/whisper-prompt.test.js",
+  "why": "A one-line prompt-string fix in whisper-prompt.js where the issue names the file and the behaviour. Checks she edits the string the issue points at and nothing else."
+}

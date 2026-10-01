@@ -1,0 +1,18 @@
+{
+  "id": "1085-memory-vault-mana-only-writes",
+  "pr": 1085,
+  "issue": 1084,
+  "base": "1a4379bba5469e1f9883f72d831c53c4c6cb9af9",
+  "fix": "098fd9b2b770dbfb64f8746a2c25918566fcd756",
+  "title": "Memory vault: Mana only writes to Views/ and Journal/ files she created",
+  "body": "Part of #935.\n\nMana writes `Views/*.md` and `Journal/<day>.md` by name. If I (or a daily-notes plugin) already have a `Journal/2026-09-30.md`, she appends her diary into my note, and a `Views/Summary.md` of mine gets overwritten.\n\nI want her to keep track of the files she created and only ever write to or remove those:\n- Journal: when today's file isn't hers, use `<day> (Mana).md`; if that's taken too, skip.\n- Views: a file of mine at a view's path is left alone (logged once).\n- No `Mana/` subfolder nesting (already decided).",
+  "fixFiles": [
+    "node-bot/memory-vault.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/memory-vault.test.js"
+  ],
+  "testCommand": "node --test test/memory-vault.test.js",
+  "interface": "A view path that holds my file is skipped with one log line, e.g. `left \"views/summary.md\" alone: Mana didn't create it.`. What she created is recorded in the vault's existing `memory/vault-sync.json`. `writeJournal()` returns false when it skips.",
+  "why": "The largest case (about 65 lines in memory-vault.js): track which files she created and only write those. Needs reading a bigger module and keeping state."
+}

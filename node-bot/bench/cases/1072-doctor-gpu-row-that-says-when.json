@@ -1,0 +1,18 @@
+{
+  "id": "1072-doctor-gpu-row-that-says-when",
+  "pr": 1072,
+  "issue": 1065,
+  "base": "2e3667714a03ada09438e266cd9dd98461ef7fd4",
+  "fix": "00e49a90a84fb74a4af3f986b80e789fc4ed5918",
+  "title": "Doctor: GPU row that says when voice and chat run on CPU",
+  "body": "Part of #625 (non-NVIDIA support). Builds on #1056.\n\nDoctor doesn't say anything about the GPU today, so on an AMD/Intel machine (or an NVIDIA one with a broken driver) there's no hint why everything is slow. I want a GPU row in `node-bot/doctor.js` based on `detectGpu()`:\n- NVIDIA with CUDA: pass, name + VRAM.\n- Anything else: warn, e.g. \"No NVIDIA GPU: voice and chat run on CPU.\", naming the card that was found (and whether it's integrated/shared memory), or pointing at the driver when an NVIDIA card is there but `nvidia-smi` doesn't answer.\n",
+  "fixFiles": [
+    "node-bot/doctor.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/doctor.test.js"
+  ],
+  "testCommand": "node --test test/doctor.test.js",
+  "interface": "`runDoctorChecks({ ..., gpu })` takes `detectGpu()`'s result (or null) as `gpu` and adds a check with id `\"gpu\"`. Messages: CUDA card: `\"<name> (<GB, 1 decimal> GB VRAM): CUDA available\"`; null: exactly `\"No NVIDIA GPU: voice and chat run on CPU.\"`; another card: `\"... found <name>, <GB> GB VRAM ... run on CPU\"` (with `integrated, shared memory` for a shared-memory GPU); an NVIDIA card without CUDA mentions `nvidia-smi isn't answering`.",
+  "why": "A new Doctor row built on an existing helper (detectGpu). Tests reusing what is there and matching the surrounding check format."
+}
