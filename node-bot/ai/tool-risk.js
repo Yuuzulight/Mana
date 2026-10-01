@@ -101,6 +101,8 @@ const BUILTIN_TIERS = {
   // #1192: the same, and network: they ask after outside content, too.
   git__push: "network",
   github__write: "network",
+  // #1194: asks me every time itself (ai/try-pr-tool-source.js).
+  mana_update__pull_main: "write",
   memory__remember: "write",
   skill__create: "write",
   skill__run: "write",
@@ -156,6 +158,7 @@ const SELF_GATED = new Set([
   "git__change",
   "git__push",
   "github__write",
+  "mana_update__pull_main",
 ]);
 
 // Once a turn has taken in outside content (a web page, search or wiki

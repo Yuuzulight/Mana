@@ -7,12 +7,18 @@
 // the built-in risk tiers, so the approval gate asks me first.
 // #1011: "revert #N" opens the revert issue and PR (revert-pr.js), then
 // rolls the running build back with -Previous.
+// #1194: "update to main" pulls merged main into her live copy and restarts
+// onto it (update-mana.ps1 -Now, the tray's Update now). It asks me every
+// time ("always" never sticks) and never runs while a game does.
 const path = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 
 const TRY_PR_TOOL = "mana_update__try_pr";
 const BACK_TO_MAIN_TOOL = "mana_update__back_to_main";
 const REVERT_TOOL = "mana_update__revert";
+const PULL_MAIN_TOOL = "mana_update__pull_main";
+const PULL_MAIN_ACTION = "mana-update-pull-main";
+const GAMING = "A game is running, so I'm not updating myself now.";
 
 const TOOL_SCHEMAS = [
   {
@@ -51,6 +57,15 @@ const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: PULL_MAIN_TOOL,
+      description:
+        "Pull merged main into your live copy and restart onto it (like the tray's Update now), e.g. once your PR is merged. Only when Yuuzulight asks; it asks them first, every time.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
 ];
 
 function ghJson(args, cwd) {
@@ -70,8 +85,17 @@ function runScript(script, args) {
   }).unref();
 }
 
-function createTryPrToolSource({ userMessage, repoRoot = path.join(__dirname, "..", ".."), gh = ghJson, run = runScript, revert } = {}) {
+function createTryPrToolSource({
+  userMessage,
+  repoRoot = path.join(__dirname, "..", ".."),
+  gh = ghJson,
+  run = runScript,
+  revert,
+  approvalGate = null,
+  isGaming = () => false,
+} = {}) {
   const script = path.join(repoRoot, "windows-native-launcher", "try-pr.ps1");
+  const updateScript = path.join(repoRoot, "windows-native-launcher", "update-mana.ps1");
   const asked = new Set(
     [...String(userMessage || "").matchAll(/(?:#|\bPR\s*#?)(\d+)/gi)].map((m) => Number(m[1])),
   );
@@ -83,6 +107,21 @@ function createTryPrToolSource({ userMessage, repoRoot = path.join(__dirname, ".
   }
 
   async function executeTool(name, args) {
+    if (name === PULL_MAIN_TOOL) {
+      if (isGaming()) return JSON.stringify({ status: "error", error: GAMING });
+      if (!approvalGate) return JSON.stringify({ status: "error", error: "updating needs the approval gate" });
+      approvalGate.registerExecutor(PULL_MAIN_ACTION, () => {
+        if (isGaming()) throw new Error(GAMING);
+        run(updateScript, ["-Now"]);
+        return "Pulling main and restarting onto it.";
+      });
+      const outcome = await approvalGate.requestApproval(PULL_MAIN_ACTION, {
+        summary: `Pull merged main into Mana's live copy (${repoRoot}) and restart onto it`,
+        payload: {},
+        forceReview: true,
+      });
+      return JSON.stringify(outcome.status === "approved" ? { status: "ok", note: outcome.result } : outcome);
+    }
     if (name === BACK_TO_MAIN_TOOL) {
       run(script, ["-Main"]);
       return JSON.stringify({ status: "ok", note: "Switching back to main; I restart once it's applied." });
@@ -123,9 +162,9 @@ function createTryPrToolSource({ userMessage, repoRoot = path.join(__dirname, ".
 
   return {
     listToolSchemas: () => TOOL_SCHEMAS,
-    isKnownToolName: (name) => [TRY_PR_TOOL, BACK_TO_MAIN_TOOL, REVERT_TOOL].includes(name),
+    isKnownToolName: (name) => [TRY_PR_TOOL, BACK_TO_MAIN_TOOL, REVERT_TOOL, PULL_MAIN_TOOL].includes(name),
     executeTool,
   };
 }
 
-module.exports = { createTryPrToolSource, TRY_PR_TOOL, BACK_TO_MAIN_TOOL, REVERT_TOOL };
+module.exports = { createTryPrToolSource, TRY_PR_TOOL, BACK_TO_MAIN_TOOL, REVERT_TOOL, PULL_MAIN_TOOL };
