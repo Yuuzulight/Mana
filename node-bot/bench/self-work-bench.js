@@ -20,6 +20,7 @@ const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_TEST_TIMEOUT_MS = 10 * 60 * 1000;
 // Not the backend's 8090, so the two never share a server.
 const BENCH_LLAMA_PORT = "8097";
+const BACKEND_LLAMA_PORT = 8090;
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -109,11 +110,14 @@ function isGamingNow(repoRoot) {
   return names.some((n) => running.includes(`"${n}"`));
 }
 
-// Why a case shouldn't start now, or null.
-function blocker({ isGaming, ramPercent }) {
+// Why a case shouldn't start now, or null. The backend's own chat model
+// being up means she's in use: the bench's model would take the VRAM her
+// next reply needs.
+async function blocker({ isGaming, ramPercent, backendModelUp }) {
   if (isGaming()) return "a game is running";
   const ram = ramPercent();
   if (ram > MAX_RAM_PERCENT) return `RAM is at ${ram}%`;
+  if (await backendModelUp()) return "the backend's chat model is loaded";
   return null;
 }
 
@@ -289,11 +293,16 @@ async function main(argv) {
   const cases = loadCases().filter((c) => !wanted.length || wanted.includes(c.id));
   if (!cases.length) throw new Error("no such case");
   const outDir = opt("--out")[0] || path.join(os.tmpdir(), "mana-self-work-bench", new Date().toISOString().replace(/[:.]/g, "-"));
-  const gate = { isGaming: () => isGamingNow(repoRoot), ramPercent: systemRamPercent };
+  const gate = {
+    isGaming: () => isGamingNow(repoRoot),
+    ramPercent: systemRamPercent,
+    backendModelUp: () =>
+      fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
+  };
 
   if (argv.includes("--verify")) {
     for (const c of cases) {
-      const why = blocker(gate);
+      const why = await blocker(gate);
       if (why) throw new Error(`not verifying ${c.id}: ${why}`);
       console.log(JSON.stringify(verifyCase(c, { repoRoot, worktreesDir })));
     }
@@ -305,12 +314,12 @@ async function main(argv) {
   const results = [];
   try {
     for (const c of cases) {
-      // Wait out a game or a RAM spike for up to 20 minutes, like self-work does.
-      let why = blocker(gate);
+      // Wait out a game, a RAM spike or her chat model for up to 20 minutes.
+      let why = await blocker(gate);
       for (let waited = 0; why && waited < 20; waited += 1) {
         console.log(`Waiting before ${c.id}: ${why}.`);
         await new Promise((resolve) => setTimeout(resolve, 60000));
-        why = blocker(gate);
+        why = await blocker(gate);
       }
       if (why) {
         console.log(`Stopping before ${c.id}: ${why}.`);
