@@ -17,7 +17,9 @@ const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // A plain file name: no folders, no characters Windows refuses.
 function safeName(name) {
-  const cleaned = path.basename(String(name || "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
+  // #1204: win32's basename splits on both \ and /, on any platform -- a
+  // site's suggested name is never a folder of ours.
+  const cleaned = path.win32.basename(String(name || "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
   // The end trimmed by hand: a /[.\s]+$/ regex is quadratic on long runs.
   const base = trimEnd(cleaned, (c) => c === "." || /\s/.test(c)).replace(/^[.\s]+/, "");
   return base.slice(0, 150) || "download";

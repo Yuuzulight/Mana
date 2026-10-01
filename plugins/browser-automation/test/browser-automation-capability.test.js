@@ -578,3 +578,11 @@ test("pathsIn stays fast on a long run of punctuation after a path", () => {
   assert.deepEqual(browserAutomationPlugin.pathsIn("see C:\\a\\b.pdf!)."), ["C:\\a\\b.pdf"]);
   assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
 });
+
+test("#1204: pathsIn finds POSIX paths too, quoted or not, on any platform", () => {
+  assert.deepEqual(browserAutomationPlugin.pathsIn('upload "/srv/my files/cv.pdf" and /home/me/notes.txt, thanks'), [
+    "/srv/my files/cv.pdf",
+    "/home/me/notes.txt",
+  ]);
+  assert.deepEqual(browserAutomationPlugin.pathsIn("and/or https://a.test/x"), []);
+});
