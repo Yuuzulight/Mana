@@ -170,7 +170,7 @@ test("a generated case: the bug is patched in, its test hidden, and her diff is 
   const r = makeRepo();
   const c = generatedCase(r);
   const d = deps(r, []);
-  const fixIt = fakeModel([edit("node-bot/util.js", "a - b", "a + b"), finish], d.tokens);
+  const fixIt = fakeModel([plan, edit("node-bot/util.js", "a - b", "a + b"), finish], d.tokens);
   d.runLoop = async (prompt, policy, opts) => {
     await assert.rejects(policy.executeTool("self_work__read", { path: "node-bot/test/util.test.js" }));
     return fixIt(prompt, policy, opts);
