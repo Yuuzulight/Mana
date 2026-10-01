@@ -75,8 +75,8 @@ function fakeModel(calls, tokens) {
 
 const edit = (p, oldText, newText) => ["coding__propose_edit", { path: p, old_text: oldText, new_text: newText, summary: "fix" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
-// #1211: she writes a short plan before her first edit.
-const plan = ["self_work__plan", { steps: ["fix add()", "finish"] }];
+// #1211/#1212: she writes a short plan before her first edit; these cases test the runner, not test-first, so the plan says why.
+const plan = ["self_work__plan", { steps: ["fix add()", "finish"], no_test: "the bench case has its own hidden test" }];
 
 function deps(r, calls) {
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
