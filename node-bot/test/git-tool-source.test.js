@@ -311,6 +311,10 @@ test("after outside content, a git change raises exactly one prompt: what she'll
   await gate.decide(pending[0].id, "allow-once");
   assert.equal(gate.listPending().length, 0, "allowing it doesn't raise a second prompt");
   assert.equal(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), "x");
+  // Only the git tools hand it off: a browser click still gets the gate's own prompt.
+  assert.equal(parsed(await tainted.executeTool("browser_automation__click", { ref: "e1" })).status, "pending");
+  assert.match(gate.listPending()[0].summary, /^after reading outside content this turn: browser_automation__click/);
+  await gate.decide(gate.listPending()[0].id, "deny");
 
   // A clean turn: she can't claim outside content herself; the setting applies.
   const clean = wrapWithRiskGate(policy, gate, { mode: "ask" });

@@ -1166,6 +1166,8 @@ const browserAutomationToolSource = createBrowserAutomationToolSource({
   sessionDeps: { isGaming: () => gamingWatch.isGaming() },
   // #1139: "she needs you" in the Browser panel.
   requestHandOver: browserAutomationPlugin.requestHandOver,
+  // #1157: look-and-click uses her own vision model (paused while gaming there too).
+  runVisionReply: (prompt, images, maxTokens) => llamaServerRuntime.runVisionReply(prompt, images, maxTokens),
 });
 
 // Background memory block that can be refreshed periodically from ACP session files.
@@ -2827,6 +2829,14 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/browser-automation/activity", (req, res) => {
     // #1139: plus whether I've taken over, or she's asking me to.
     return res.json({ ...activeBrowserAutomationToolSource.activityLog.getActivity(), takeOver: browserAutomationPlugin.takeOverStatus() });
+  });
+
+  // #1161: the latest "Test this site" report, in /web/read's shape so the
+  // Browser panel's reader draws it with Folio.
+  app.get("/browser-automation/site-test", (req, res) => {
+    const report = activeBrowserAutomationToolSource.activityLog.getSiteTest();
+    if (!report) return res.status(404).json({ error: "no site test yet" });
+    return res.json({ url: "", title: report.title, text: report.text, images: report.images, truncated: false, needsBrowser: null });
   });
 
   // #646: the chat tool loop's live runs (current tool, elapsed), polled
@@ -4976,6 +4986,8 @@ function registerRoutes(app, upload, deps = {}) {
         reply = await replyMaybeWithToolsUnmetered(promptText);
       } finally {
         agentActivity.finish(activityRun);
+        // #1159: her task is over; only the tab she's on stays open.
+        browserAutomationPlugin.closeExtraTabs().catch(() => {});
       }
       const usageAfter = activeLlamaServerRuntime.getLastPromptUsage?.();
       turnPromptUsage = usageAfter && usageAfter !== usageBefore ? usageAfter : null;
@@ -5023,6 +5035,9 @@ function registerRoutes(app, upload, deps = {}) {
           // is actually enabled (Settings > Plugins) -- same gate every
           // other browser-automation entry point (its own HTTP routes,
           // GET /plugins) already respects.
+          // #1158: files whose full path I write in my own chat message are
+          // the ones her browser may upload (never ones she picks herself).
+          if (userChat) browserAutomationPlugin.offerFilesFromMessage(transcript);
           let mergedToolPolicy = await buildToolPolicy(activeToolPolicy, [
             activeMcpClientRegistry,
             createMemoryToolSource({

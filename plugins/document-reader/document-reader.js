@@ -9,6 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const retrieverIndex = require("../../node-bot/tools/retriever-index");
+const { extractPdfText } = require("./pdf-text");
 
 const DOCS_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "documents");
 const MAX_PDF_BYTES = 25 * 1024 * 1024; // 25MB local-file ceiling
@@ -69,7 +70,7 @@ async function ingestText({ title, sourceType, sourceLabel, text }) {
   };
 }
 
-async function ingestPdf(filePath, { pdfParse } = {}) {
+async function ingestPdf(filePath) {
   const resolved = String(filePath || "").trim();
   if (!resolved.toLowerCase().endsWith(".pdf")) {
     throw new Error("filePath must point to a .pdf file");
@@ -88,14 +89,12 @@ async function ingestPdf(filePath, { pdfParse } = {}) {
       }MB)`,
     );
   }
-  const parse = pdfParse || require("pdf-parse");
   const buffer = await fs.promises.readFile(resolved);
-  const parsed = await parse(buffer);
   return ingestText({
     title: path.basename(resolved, ".pdf"),
     sourceType: "pdf",
     sourceLabel: resolved,
-    text: parsed.text,
+    text: extractPdfText(buffer).text,
   });
 }
 
