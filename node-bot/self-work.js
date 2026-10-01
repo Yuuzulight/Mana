@@ -63,6 +63,13 @@ function roundBudget(body) {
 // #1214: her coding runs' own llama-server context (chat keeps
 // LLAMA_CONTEXT); MANA_SELF_WORK_LLAMA_CONTEXT=0 leaves chat's.
 const DEFAULT_SELF_WORK_CONTEXT = 32768;
+// #1247: independent attempts per issue (MANA_SELF_WORK_ATTEMPTS), judged by
+// the tests, within a total time cap (MANA_SELF_WORK_MAX_MINUTES).
+const DEFAULT_ATTEMPTS = 4;
+const MAX_ATTEMPTS = 8;
+const DEFAULT_MAX_MINUTES = 120;
+// What an attempt starts without: the last one's outcome and plan.
+const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands"];
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
@@ -496,18 +503,20 @@ function createSelfWork(options = {}) {
 
     log(r, "Working on it in my worktree.");
     await owner();
-    const reply = await loop(r, issue);
-    const summary = stripAttribution(reply?.content);
+    const best = await bestOf(r, issue, attemptCount());
+    const summary = stripAttribution(best.reply?.content);
 
     if (haltedEnd(r)) return;
     // Everything in the worktree, whoever wrote it (her tests run code too).
     await git(["add", "-A"], r.worktree);
     const changed = await namesSince(r);
     if (!changed.length) return end(r, "no-change", `I didn't end up changing anything for #${r.issue}.${summary ? ` ${summary}` : ""}`);
-    if (!r.finished || /^Not done yet/i.test(summary)) {
+    // #1247: none of several attempts passed; the closest goes up as a draft.
+    const closest = best.failing !== undefined;
+    if (!closest && (!r.finished || /^Not done yet/i.test(summary))) {
       return end(r, "not-done", `I couldn't finish #${r.issue}. ${summary}`.trim());
     }
-    if (!r.lastTestPassed) return end(r, "tests-failing", `My tests aren't passing after my last change for #${r.issue}, so no PR.`);
+    if (!closest && !r.lastTestPassed) return end(r, "tests-failing", `My tests aren't passing after my last change for #${r.issue}, so no PR.`);
     const vetted = await vet(r);
     if (vetted.error) return end(r, "needs-you", vetted.error);
     const { touched } = vetted;
@@ -520,10 +529,13 @@ function createSelfWork(options = {}) {
       ? `\n\n## Guardrail changes\nYou flagged this run to allow changes to my guardrails. It changes:\n${touched.map((f) => `- \`${f}\``).join("\n")}\n\nIt's a draft until you've read these and marked it ready.`
       : "";
     const title = touched.length ? `[Guardrail] ${r.title}` : r.title;
-    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${r.lastTestCommand}: passed.`;
+    const testing = closest
+      ? `None of my ${r.attempts.length} attempts passed its tests. This is attempt ${best.kept}, the closest, and it's a draft until it does. Still failing:\n${best.failing.map((f) => `- ${f}`).join("\n") || "- (no test names in the output)"}`
+      : `${r.lastTestCommand}: passed.${r.attempts?.length > 1 ? ` (Attempt ${best.kept} of ${r.attempts.length}.)` : ""}`;
+    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${testing}`;
     let url;
     try {
-      url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", title, "--body", body, ...(touched.length ? ["--draft"] : [])], r.worktree);
+      url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", title, "--body", body, ...(touched.length || closest ? ["--draft"] : [])], r.worktree);
     } catch (e) {
       // A PR from an earlier run of this issue: the push updated it.
       url = JSON.parse(await gh(["pr", "view", r.branch, "--json", "url"], r.worktree)).url;
@@ -557,10 +569,10 @@ function createSelfWork(options = {}) {
   // worktree the caller made: no fetch, no labels, no commit, no push, no
   // PR. A loop that throws (where a real run would end "failed") comes
   // back as error, with the run as far as it got.
-  async function bench(issue, worktree) {
+  async function bench(issue, worktree, { attempts = 1 } = {}) {
     const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: roundBudget(issue.body) });
     try {
-      return { reply: await loop(r, issue), run: r };
+      return { reply: (await bestOf(r, issue, attempts)).reply, run: r };
     } catch (e) {
       return { reply: null, run: r, error: e.message };
     }
@@ -661,6 +673,108 @@ How to work:
 - Run the tests with ${CODING_TEST_TOOL_NAME} and fix what fails.
 - ${r.flagged ? "This PR changes your guardrails, as flagged when it was made; change only what's needed there." : "Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."}
 - When the tests pass, call ${SESSION_GOAL_FINISH_TOOL_NAME}, then reply with a short first-person summary of what you changed.`;
+  }
+
+  function attemptCount() {
+    return Math.min(MAX_ATTEMPTS, Math.max(1, Math.floor(Number(env.MANA_SELF_WORK_ATTEMPTS ?? DEFAULT_ATTEMPTS)) || 1));
+  }
+
+  // #1247: up to `attempts` independent runs of her loop, each from a clean
+  // worktree, judged by the tests. The first that finishes with them
+  // passing is kept; if none does, the one with the fewest failing tests is
+  // put back, with `failing` naming them. One attempt is today's run, unjudged.
+  async function bestOf(r, issue, attempts) {
+    if (attempts <= 1) return { reply: await loop(r, issue), kept: 1 };
+    const started = Date.now();
+    const maxMs = (Number(env.MANA_SELF_WORK_MAX_MINUTES) || DEFAULT_MAX_MINUTES) * 60 * 1000;
+    r.attempts = [];
+    let closest = null;
+    let reply = null;
+    for (let i = 1; i <= attempts; i += 1) {
+      if (i > 1) {
+        if (isGaming() || Date.now() - started > maxMs) break;
+        await resetWorktree(r);
+        for (const key of ATTEMPT_STATE) delete r[key];
+        r.round = 0;
+      }
+      reply = await loop(r, issue);
+      if (r.halt || r.stopRequested || r.refuted) return { reply, kept: i };
+      const finished = Boolean(r.finished) && !/^Not done yet/i.test(reply?.content || "");
+      const verdict = await judge(r);
+      r.attempts.push({ attempt: i, finished, passed: verdict.passed, failures: verdict.failures });
+      log(r, `Attempt ${i} of ${attempts}: ${finished ? "finished" : "not finished"}, ${verdict.passed ? "tests passing" : `${verdict.failures} failing`}.`);
+      if (finished && verdict.passed) return { reply, kept: i };
+      const patch = await snapshot(r);
+      if (patch && (!closest || verdict.failures < closest.failures)) {
+        closest = { kept: i, patch, reply, failures: verdict.failures, failing: verdict.failing, state: Object.fromEntries(ATTEMPT_STATE.map((k) => [k, r[k]])) };
+      }
+    }
+    if (!closest) return { reply, kept: r.attempts.length };
+    await resetWorktree(r);
+    await applyPatch(r, closest.patch);
+    Object.assign(r, closest.state);
+    log(r, `None passed; I kept attempt ${closest.kept}, with the fewest failing tests.`);
+    return { reply: closest.reply, kept: closest.kept, failing: closest.failing };
+  }
+
+  // Back to HEAD: her changes and new files go; ignored files (the
+  // node_modules link) stay.
+  async function resetWorktree(r) {
+    await git(["reset", "-q", "--hard", "HEAD"], r.worktree);
+    await git(["clean", "-fdq", "-e", "node_modules"], r.worktree);
+  }
+
+  // An attempt's whole change, new files included, as a patch.
+  async function snapshot(r) {
+    await git(["add", "-A"], r.worktree);
+    const patch = await git(["diff", "--cached", "--binary", "HEAD"], r.worktree);
+    await git(["reset", "-q"], r.worktree);
+    return patch ? `${patch}\n` : "";
+  }
+
+  async function applyPatch(r, patch) {
+    const file = path.join(os.tmpdir(), `mana-self-work-${r.issue}-${process.pid}.patch`);
+    fs.writeFileSync(file, patch);
+    try {
+      await git(["apply", "--whitespace=nowarn", file], r.worktree);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  }
+
+  // The tests that judge an attempt: the test files she ran, and the node
+  // tests for the files she changed (and test files she wrote). Failures
+  // are counted from node's "# fail N", else 1 per failing command.
+  async function judge(r) {
+    const commands = new Map(r.judgeCommands || []);
+    const nodeBot = path.join(r.worktree, "node-bot");
+    await git(["add", "-A", "-N"], r.worktree);
+    const changed = (await git(["-c", "core.quotePath=false", "diff", "--name-only", "HEAD"], r.worktree)).split(/\r?\n/).filter(Boolean);
+    for (const f of changed) {
+      const own = /^node-bot\/test\/[\w.-]+\.test\.js$/.test(f) ? f : `node-bot/test/${path.posix.basename(f, ".js")}.test.js`;
+      if (/^node-bot\/.*\.js$/.test(f) && fs.existsSync(path.join(r.worktree, own))) {
+        commands.set(`node --test ${own.slice("node-bot/".length)}`, nodeBot);
+      }
+    }
+    if (!commands.size) return { passed: false, failures: 1, failing: ["no tests to judge it by"] };
+    let failures = 0;
+    const failing = [];
+    for (const [command, cwd] of commands) {
+      for (let waited = 0; ramPercent() > MAX_RAM_PERCENT && waited < RAM_WAIT_MS; waited += 60000) await sleep(60000);
+      const result = await runTests(command, cwd, {
+        spawnImpl: (c, o) => spawn(c, { ...o, env: testEnv(env) }),
+        timeoutMs: TEST_TIMEOUT_MS,
+        terminal: { source: "self-work", stop },
+      });
+      const passed = result.exitCode === 0 && !result.timedOut;
+      const counted = Number(/# fail (\d+)/.exec(result.output || "")?.[1]);
+      failures += passed ? 0 : Number.isFinite(counted) ? Math.max(1, counted) : 1;
+      if (!passed) {
+        const names = [...String(result.output).matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1].trim()).filter((n) => !/\.test\.js$/.test(n));
+        failing.push(...(names.length ? names : [command]));
+      }
+    }
+    return { passed: failures === 0, failures, failing: failing.slice(0, 10) };
   }
 
   // The end of a run that halted, was stopped, or had a write refuted;
@@ -857,6 +971,8 @@ ${
       if (outcome !== lastTestOutcome) progressed = true;
       lastTestOutcome = outcome;
       r.lastTestCommand = command;
+      // #1247: a test file she ran judges her attempt.
+      if (target) (r.judgeCommands ||= new Map()).set(command, cwd);
       log(r, `${command}: ${passed ? "passed" : "failed"}`);
       return JSON.stringify({ status: "ok", command, passed, ...result });
     }

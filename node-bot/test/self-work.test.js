@@ -104,7 +104,8 @@ function selfWork(repos, { calls, answer = "I made add() add and tested it.\nCo-
     repoRoot: repos.live,
     worktreesDir: repos.worktrees,
     exec: fakeExec(ghCalls, { labels, prs, issues, author, login }),
-    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
+    // One attempt unless a test asks for more (#1247).
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value", MANA_SELF_WORK_ATTEMPTS: "1" },
     protectedPaths: guard,
     reviewEdit: async () => review,
     runLoop: scriptedLoop(calls, answer, seen),
@@ -700,4 +701,71 @@ test("#1245: 600 lines of reading before her first edit, then only search and ed
   assert.match(results[3], /^You've read 600 lines without changing anything/);
   assert.match(results[4], /long\.js:650:/, "search stays open");
   assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/, "open again after her first edit");
+});
+
+// #1247: attempts that write add() differently; the fake tests count how
+// far util.js is from adding (a + b: 0 failing, a * b: 1, a / b: 3).
+function attemptsWork(repos, writes, { ghCalls = [], events = [] } = {}) {
+  let n = 0;
+  const runLoop = async (prompt, policy) => {
+    const op = writes[Math.min(n++, writes.length - 1)];
+    await policy.executeTool("coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: `return a ${op} b;` });
+    await policy.executeTool("coding__run_tests", { path: "node-bot/test/util.test.js" });
+    await policy.executeTool("session_goal__finish", { reason: "done" });
+    return { content: `I made add() use ${op}.` };
+  };
+  const failing = { "+": 0, "*": 1, "/": 3 };
+  const runTests = async (command, cwd) => {
+    const body = fs.readFileSync(path.join(cwd, "util.js"), "utf8");
+    const f = failing[/return a (.) b;/.exec(body)?.[1]] ?? 5;
+    const names = Array.from({ length: f }, (_, i) => `not ok ${i + 1} - add case ${i + 1}`).join("\n");
+    return { exitCode: f ? 1 : 0, timedOut: false, output: `${names}\n# fail ${f}` };
+  };
+  const sw = createSelfWork({
+    repoRoot: repos.live,
+    worktreesDir: repos.worktrees,
+    exec: fakeExec(ghCalls),
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_ATTEMPTS: "4" },
+    protectedPaths: guard,
+    runLoop,
+    runTests,
+    onEvent: (run, text) => events.push(text),
+    ramPercent: () => 50,
+  });
+  return { sw, attempts: () => n };
+}
+
+test("#1247: attempts run from a clean worktree until one passes its tests, and that one is kept", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const events = [];
+  const { sw, attempts } = attemptsWork(repos, ["*", "+", "/"], { ghCalls, events });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 2, "stops at the first passing attempt");
+  assert.equal(sw.status().state, "pr-open");
+  assert.ok(events.includes("Attempt 1 of 4: finished, 1 failing."));
+  assert.ok(events.includes("Attempt 2 of 4: finished, tests passing."));
+  const create = ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
+  assert.ok(!create.includes("--draft"));
+  assert.match(create[create.indexOf("--body") + 1], /\(Attempt 2 of 2\.\)/);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \+ b/);
+});
+
+test("#1247: when no attempt passes, the one with the fewest failing tests goes up as a draft listing them", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const { sw, attempts } = attemptsWork(repos, ["/", "*", "/", "/"], { ghCalls });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 4);
+  assert.equal(sw.status().state, "pr-open");
+  const create = ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
+  assert.ok(create.includes("--draft"));
+  const body = create[create.indexOf("--body") + 1];
+  assert.match(body, /None of my 4 attempts passed its tests\. This is attempt 2, the closest/);
+  assert.match(body, /- add case 1/);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \* b/);
 });
