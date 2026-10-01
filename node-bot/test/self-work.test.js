@@ -679,3 +679,25 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   await off.sw._current().done;
   assert.equal(offSeen[0].opts.contextSize, undefined);
 });
+
+test("#1245: 600 lines of reading before her first edit, then only search and edit until she changes something", async () => {
+  const repos = makeRepos();
+  fs.writeFileSync(path.join(repos.live, "node-bot", "long.js"), Array.from({ length: 700 }, (_, i) => `// line ${i + 1}`).join("\n"));
+  git(repos.live, "add", "-A");
+  git(repos.live, "commit", "-q", "-m", "long");
+  git(repos.live, "push", "-q", "origin", "main");
+  const seen = [];
+  const read = (start, end) => ["self_work__read", { path: "node-bot/long.js", start_line: start, end_line: end }];
+  const calls = [read(1, 250), read(251, 500), read(501, 700), read(601, 700), ["self_work__search", { text: "line 650" }], fix, read(601, 700)];
+  const { sw } = selfWork(repos, { calls, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.doesNotMatch(results[0], /lines of reading left/);
+  assert.match(results[1], /\[100 of 600 lines of reading left before your first edit\. Plan your change now\.\]$/);
+  assert.match(results[2], /^node-bot\/long\.js lines 501-600 of 700\n/, "cut to what's left");
+  assert.match(results[3], /^You've read 600 lines without changing anything/);
+  assert.match(results[4], /long\.js:650:/, "search stays open");
+  assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/, "open again after her first edit");
+});
