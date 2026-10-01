@@ -1,8 +1,21 @@
 // Simple internal tray notification helper used by server modules
 let _broadcaster = null;
+let _hasListeners = () => true;
 
-function setBroadcaster(fn) {
-  if (typeof fn === "function") _broadcaster = fn;
+// hasListeners: whether anyone would receive a broadcast now (a launcher
+// connected to /ws/tray); unknown means yes.
+function setBroadcaster(fn, hasListeners = () => true) {
+  if (typeof fn === "function") {
+    _broadcaster = fn;
+    _hasListeners = hasListeners;
+  }
+}
+
+// False while a notification would go nowhere: proactive holds its
+// remarks and reminders until a launcher is back (between a backend start
+// and the launcher's reconnect, every 15 s).
+function hasListeners() {
+  return typeof _broadcaster === "function" && Boolean(_hasListeners());
 }
 
 async function notifyTray(payload) {
@@ -112,6 +125,7 @@ async function sendImmediateAuditTray(entry) {
 
 module.exports = {
   setBroadcaster,
+  hasListeners,
   notifyTray,
   isAvailable,
   sendAuditTray,
