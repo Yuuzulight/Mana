@@ -265,7 +265,10 @@ const TOOL_SCHEMAS = [
           repo: REPO_PARAM,
           action: {
             type: "string",
-            enum: ["pr_create", "pr_edit", "pr_comment", "pr_merge", "issue_create", "issue_edit", "issue_comment", "issue_close", "rerun_failed"],
+            enum: [
+              "pr_create", "pr_edit", "pr_comment", "pr_merge", "review_reply",
+              "issue_create", "issue_edit", "issue_comment", "issue_close", "rerun_failed",
+            ],
           },
           number: { type: "integer", description: "The PR or issue number (edit, comment, close)." },
           title: { type: "string", description: "pr_create/issue_create, or a new title with an edit." },
@@ -278,6 +281,7 @@ const TOOL_SCHEMAS = [
           reason: { type: "string", enum: ["completed", "not_planned"], description: "issue_close. Default completed." },
           run_id: { type: "string", description: "rerun_failed: the CI run's id." },
           method: { type: "string", enum: ["merge", "squash", "rebase"], description: "pr_merge. Default merge." },
+          comment_id: { type: "string", description: "review_reply: the review comment's id (from github__read review_comments)." },
         },
         required: ["action"],
       },
@@ -400,14 +404,16 @@ function createGitToolSource(options = {}) {
   // (unless I said never), logged in the approvals audit; otherwise the
   // gate asks -- "ask" as forceReview, so "always" never sticks -- and runs
   // it once I allow it. payload: plain JSON of the checked change.
-  async function gated(tier, repo, summary, payload) {
+  // tainted (#1194): her self-work run read outside text (review comments)
+  // with no risk gate around it, so it asks whatever the setting says.
+  async function gated(tier, repo, summary, payload, tainted = false) {
     if (isGaming()) throw new Error(GAMING);
     if (!approvalGate) throw new Error("changes need the approval gate");
     const mode = resolveGitApprovalModes(approvalGate.getGitApprovalModes())[tier];
     const actionType = `git-${tier}:${repo.id}`;
     approvalGate.registerExecutor(actionType, perform);
     const never = approvalGate.listRemembered().some((r) => r.key === actionType && r.answer === "never");
-    if (mode === "off" && !never) {
+    if (mode === "off" && !never && !tainted) {
       const entry = { name: actionType, args: payload, decision: "no approval (setting)", summary };
       try {
         const result = await perform(payload);
@@ -418,7 +424,7 @@ function createGitToolSource(options = {}) {
         throw e;
       }
     }
-    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" });
+    const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" || tainted });
     if (outcome.status === "approved") return outcome.result;
     if (outcome.status === "pending") {
       return JSON.stringify({
@@ -541,6 +547,11 @@ function createGitToolSource(options = {}) {
       await gh([kind, "edit", number, ...(title ? [`--title=${title}`] : []), ...(body ? [`--body=${body}`] : []), ...labels], top);
       return `Edited ${kind} #${number}.`;
     },
+    async review_reply({ top, number, commentId, body }) {
+      const path = `repos/{owner}/{repo}/pulls/${number}/comments/${commentId}/replies`;
+      await gh(["api", "--method=POST", path, `--raw-field=body=${body}`, "--jq", ".html_url"], top);
+      return `Replied to review comment ${commentId} on PR #${number}.`;
+    },
     async comment({ top, kind, number, body }) {
       return `Commented: ${(await gh([kind, "comment", number, `--body=${body}`], top)).trim()}`;
     },
@@ -619,11 +630,11 @@ function createGitToolSource(options = {}) {
     return gated("github", repo, `Push ${branch} (${commits}) to origin from ${repo.main}`, { action: "push", top, branch, base });
   }
 
-  async function githubWrite(args) {
+  async function githubWrite(args, { tainted = false } = {}) {
     const repo = await openRepo(args.repo);
     const { top } = repo;
     const where = `in ${repo.main}`;
-    const github = (summary, payload) => gated("github", repo, summary, { top, ...payload });
+    const github = (summary, payload) => gated("github", repo, summary, { top, ...payload }, tainted);
     const title = () => {
       const t = outgoing(args.title, MAX_TITLE).split(/\r?\n/)[0].trim();
       if (!t) throw new Error("title is required");
@@ -634,7 +645,7 @@ function createGitToolSource(options = {}) {
       if (required && !b) throw new Error("body is required");
       return b;
     };
-    const kind = /^pr_/.test(args.action) ? "pr" : "issue";
+    const kind = /^(pr_|review_)/.test(args.action) ? "pr" : "issue";
     const named = async () => {
       const number = positiveInt(args.number, "number");
       const current = (await gh([kind, "view", number, "--json", "title", "--jq", ".title"], top)).trim();
@@ -682,6 +693,14 @@ function createGitToolSource(options = {}) {
             : "checks green";
         const summary = `Merge PR #${number} "${p.title}" in ${repo.main} (${method}): ${p.headRefName} -> ${p.baseRefName}, ${(p.commits || []).length} commit(s); ${checkText}${p.isDraft ? "; it's a draft" : ""}`;
         return gated("danger", repo, summary, { top, action: "pr_merge", number, method, sha: p.headRefOid });
+      }
+      case "review_reply": {
+        const { number, label } = await named();
+        if (!/^\d{1,20}$/.test(String(args.comment_id || ""))) throw new Error("comment_id must be a review comment's id");
+        const b = body(true);
+        return github(`Reply to review comment ${args.comment_id} on ${label} ${where}${preview(b)}`, {
+          action: "review_reply", number, commentId: String(args.comment_id), body: b,
+        });
       }
       case "pr_comment":
       case "issue_comment": {
@@ -894,10 +913,11 @@ function createGitToolSource(options = {}) {
   return {
     listToolSchemas: () => TOOL_SCHEMAS,
     isKnownToolName: (name) => TOOL_NAMES.has(name),
-    async executeTool(name, args) {
+    // opts.tainted: see gated(); only self-work's own code passes it.
+    async executeTool(name, args, opts) {
       if (!TOOL_NAMES.has(name)) throw new Error(`unknown git tool: ${name}`);
       try {
-        return await executors[name](args || {});
+        return await executors[name](args || {}, opts || {});
       } catch (e) {
         return JSON.stringify({ status: "error", error: e.message || String(e) });
       }

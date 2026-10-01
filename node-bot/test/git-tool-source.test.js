@@ -476,3 +476,16 @@ test("runCommand fails, not cuts short, when the output passes its cap", async (
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /passed 16 MB/);
 });
+
+// #1194
+test("a review reply goes to the comment's thread; self-work's tainted calls ask even with no approval set", async () => {
+  const { repo, gate, ghCalls, source, call } = setup({ "pr view": "My PR\n" });
+  gate.setGitApprovalMode("github", "off");
+  assert.match(await call("github__write", { repo, action: "review_reply", number: 8, comment_id: "55", body: "Renamed it." }), /Replied to review comment 55/);
+  assert.deepEqual(ghCalls.at(-1).args, ["api", "--method=POST", "repos/{owner}/{repo}/pulls/8/comments/55/replies", "--raw-field=body=Renamed it.", "--jq", ".html_url"]);
+  assert.match(parsed(await call("github__write", { repo, action: "review_reply", number: 8, comment_id: "x", body: "hi" })).error, /comment_id/);
+
+  const tainted = parsed(await source.executeTool("github__write", { repo, action: "review_reply", number: 8, comment_id: "56", body: "ok" }, { tainted: true }));
+  assert.equal(tainted.status, "pending");
+  assert.ok(gate.listPending()[0].forceReview);
+});

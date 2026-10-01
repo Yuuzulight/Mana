@@ -67,3 +67,26 @@ test("revert: a merged PR from my message gets a revert PR, then the build rolls
   assert.equal((await failed.call(REVERT_TOOL, { pr: 1018 })).error, "no");
   assert.equal(failed.runs.length, 0, "no rollback without a revert PR");
 });
+
+test("#1194: \"update to main\" asks every time, runs Update now on allow, and never while a game runs", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const { createApprovalGate } = require("../approval-gate");
+  const { PULL_MAIN_TOOL } = require("../ai/try-pr-tool-source");
+  const gate = createApprovalGate({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-pull-main-")) });
+  const runs = [];
+  let gaming = false;
+  const tools = createTryPrToolSource({ repoRoot: root, run: (s, a) => runs.push({ s, a }), approvalGate: gate, isGaming: () => gaming });
+  const call = () => tools.executeTool(PULL_MAIN_TOOL, {}).then(JSON.parse);
+
+  assert.equal((await call()).status, "pending");
+  assert.equal(runs.length, 0, "nothing runs before I allow it");
+  await gate.decide(gate.listPending()[0].id, "always-allow");
+  assert.deepEqual(runs, [{ s: path.join(root, "windows-native-launcher", "update-mana.ps1"), a: ["-Now"] }]);
+  assert.equal((await call()).status, "pending", "always didn't stick");
+
+  gaming = true;
+  assert.match((await call()).error, /game is running/);
+  await assert.rejects(gate.decide(gate.listPending()[0].id, "allow-once"), /game is running/);
+  assert.equal(runs.length, 1);
+});

@@ -2849,12 +2849,18 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json(await reverter.revert(req.body?.pr, req.body?.reason));
   });
 
+  // #1182: git and GitHub in my chat and her self-work. One instance, so a
+  // repo I "allow once" stays allowed until restart.
+  const gitTools =
+    deps.gitTools ||
+    createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =
     deps.selfWork ||
     createSelfWork({
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
+      gitTools,
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
@@ -2862,11 +2868,6 @@ function registerRoutes(app, upload, deps = {}) {
         if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
       },
     });
-  // #1182: git and GitHub in my chat. One instance, so a repo I "allow
-  // once" stays allowed until restart.
-  const gitTools =
-    deps.gitTools ||
-    createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
   app.get("/self-work", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json(selfWork.status());
@@ -2875,6 +2876,11 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     // #1009: "Allow guardrail changes" is only ever this route's, with my admin key.
     return res.json(await selfWork.start(req.body?.issue, { allowGuardrails: req.body?.allowGuardrails === true }));
+  });
+  // #1194: bring one of her own open PRs up to date with main.
+  app.post("/self-work/refresh", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(await selfWork.refresh(req.body?.pr));
   });
   app.post("/self-work/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
@@ -5098,8 +5104,17 @@ function registerRoutes(app, upload, deps = {}) {
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
             // #1010: "let me try your PR" / "back to main" -- a PR number
-            // only from my own message.
-            ...(userChat ? [createTryPrToolSource({ userMessage: transcript, revert: reverter.revert })] : []),
+            // only from my own message. #1194: "update to main" asks me first.
+            ...(userChat
+              ? [
+                  createTryPrToolSource({
+                    userMessage: transcript,
+                    revert: reverter.revert,
+                    approvalGate: activeApprovalGate,
+                    isGaming: deps.isGaming || gamingWatch.isGaming,
+                  }),
+                ]
+              : []),
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
             // #1182: git and GitHub, only in my own chat.
