@@ -1,0 +1,734 @@
+{
+  "model": "Qwen3.5-9B-heretic-v2-Q4_K_M.gguf",
+  "label": "(c) +#1211",
+  "repeats": 3,
+  "maxMinutes": 10,
+  "passed": 4,
+  "total": 20,
+  "summary": {
+    "repeats": 2,
+    "cases": 10,
+    "runs": 20,
+    "overall": {
+      "cases": 10,
+      "pass1": 0.2,
+      "passK": 0.3,
+      "spread": [
+        1,
+        3
+      ]
+    },
+    "byKind": {
+      "multi-file": {
+        "cases": 1,
+        "pass1": 0,
+        "passK": 0,
+        "spread": [
+          0,
+          0
+        ]
+      },
+      "node-bug": {
+        "cases": 5,
+        "pass1": 0.4,
+        "passK": 0.6,
+        "spread": [
+          1,
+          3
+        ]
+      },
+      "node-feature": {
+        "cases": 4,
+        "pass1": 0,
+        "passK": 0,
+        "spread": [
+          0,
+          0
+        ]
+      }
+    },
+    "failures": {
+      "context overflow": 13,
+      "no valid edit: reviewer refusal": 2,
+      "no valid edit: bad arguments": 1
+    },
+    "cost": {
+      "wallS": 32,
+      "rounds": 10,
+      "toolCalls": 10,
+      "promptTokens": 77857,
+      "outTokens": 1606,
+      "peakPrompt": 12542,
+      "peakVramMb": 7513,
+      "peakRamPercent": 76
+    }
+  },
+  "results": [
+    {
+      "id": "1013-acp-mana-test-run-runs-tests-i",
+      "kind": "node-bug",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 11,
+      "maxRounds": 20,
+      "toolCalls": 11,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 21293,
+      "peakVramMb": 7415,
+      "peakRamPercent": 75,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 88891,
+        "completion": 903,
+        "peak": 13581,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: no edit was made yet (coding__propose_edit never succeeded)\n\nNow let me implement the cwd validation. I'll add a helper function near the top of `mana-acp-agent.js` and integrate it into the `mana/test/run` handler. First, let me check what the session's cwd looks like:\n\n<tool_call>\n<function=self_work__read>\n<parameter=path>\nnode-bot/mana-acp-agent.js\n</parameter>\n<parameter=start_line>\n280\n</parameter>\n<parameter=end_line>\n360\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": " README context for README prompts\n  ---\n  duration_ms: 0.3801\n  type: 'test'\n  ...\n# Subtest: createManaAcpAgent summarizes README prompts locally without model call\nok 16 - createManaAcpAgent summarizes README prompts locally without model call\n  ---\n  duration_ms: 0.7973\n  type: 'test'\n  ...\n# Subtest: createManaAcpAgent falls back to proposal-only text when no reply bridge is connected\nok 17 - createManaAcpAgent falls back to proposal-only text when no reply bridge is connected\n  ---\n  duration_ms: 0.771\n  type: 'test'\n  ...\n# Subtest: createDefaultManaAcpAgent sends prompts to the local backend reply endpoint\nok 18 - createDefaultManaAcpAgent sends prompts to the local backend reply endpoint\n  ---\n  duration_ms: 0.4424\n  type: 'test'\n  ...\n# Subtest: createDefaultManaAcpAgent degrades gracefully when local backend is unavailable\nok 19 - createDefaultManaAcpAgent degrades gracefully when local backend is unavailable\n  ---\n  duration_ms: 0.2942\n  type: 'test'\n  ...\n# Subtest: stdio ACP server replies with line-delimited JSON for line-delimited input\nok 20 - stdio ACP server replies with line-delimited JSON for line-delimited input\n  ---\n  duration_ms: 0.683\n  type: 'test'\n  ...\n# Subtest: stdio ACP server writes opt-in debug log entries outside stdout\nok 21 - stdio ACP server writes opt-in debug log entries outside stdout\n  ---\n  duration_ms: 1.209\n  type: 'test'\n  ...\n1..21\n# tests 21\n# suites 0\n# pass 20\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 191.0136\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1052-put-oneesan-imouto-naming-and",
+      "kind": "node-bug",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 13,
+      "maxRounds": 20,
+      "toolCalls": 13,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 33579,
+      "peakVramMb": 7441,
+      "peakRamPercent": 75.5,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 122134,
+        "completion": 2354,
+        "peak": 13913,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [
+          "node-bot/persona.js",
+          "node-bot/test/persona.test.js"
+        ],
+        "added": 7,
+        "removed": 1
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Hmm, I need to re-read the issue more carefully. It says: \"the tests for this will use: `MANA_PERSONA` contains the three words with their double quotes: `\"Oneesan\"`, `\"Imouto\"` and `\"Otsumana~\"`.\"\n\nLooking at the test output, the persona text is plain text without quotes. So maybe the test needs to match the words without quotes, or I need to add the words with quotes in the persona text. Let me look at the test again - it's using `/\\\"Oneesan\\\"/` which expects literal quotes in the string.\n\nLet me update the persona to include the words with double quotes as the issue specifies:\n\n<tool_call>\n",
+      "hiddenTail": "st: setPersonaOverride rejects an empty sessionId or override\nok 6 - setPersonaOverride rejects an empty sessionId or override\n  ---\n  duration_ms: 0.1522\n  type: 'test'\n  ...\n# Subtest: getPersonaOverride returns the raw override text, or null\nok 7 - getPersonaOverride returns the raw override text, or null\n  ---\n  duration_ms: 0.5372\n  type: 'test'\n  ...\n# Subtest: MANA_PERSONA spells Oneesan, Imouto and the Otsumana~ sign-off exactly; Evil Mana's persona doesn't\nnot ok 8 - MANA_PERSONA spells Oneesan, Imouto and the Otsumana~ sign-off exactly; Evil Mana's persona doesn't\n  ---\n  duration_ms: 0.4312\n  type: 'test'\n  location: 'D:\\\\Mana-worktrees\\\\bench-1052-put-oneesan-imouto-naming-and\\\\node-bot\\\\test\\\\persona.test.js:60:1'\n  failureType: 'testCodeFailure'\n  error: '\"Oneesan\"'\n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: true\n  actual: false\n  operator: '=='\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-1052-put-oneesan-imouto-naming-and\\node-bot\\test\\persona.test.js:61:71)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n1..8\n# tests 8\n# suites 0\n# pass 7\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 78.9441\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1069-alt-tabbing-to-discord-or-obs",
+      "kind": "node-feature",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 11,
+      "maxRounds": 20,
+      "toolCalls": 11,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 25050,
+      "peakVramMb": 7408,
+      "peakRamPercent": 75.8,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 52402,
+        "completion": 1836,
+        "peak": 6978,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "refuted",
+      "lastTestPassed": false,
+      "summary": "Not done yet: no edit was made yet (coding__propose_edit never succeeded)\n\nThe review pointed out a logic issue. Let me think about this more carefully:\n\n- If `companionAppNames` is provided, we want to check if the current app is in the companion list\n- If it IS in the companion list, it should NOT count as being away (treat it like the game itself)\n\nSo the logic should be:\n- If no companion apps configured: use the original logic (away if not in game list)\n- If companion apps configured: away if NOT in game list AND NOT in companion list\n\nLet me fix this:\n\n<tool_call>\n<function=coding__propo",
+      "hiddenTail": "kept, and alt-tabbing out of a game counts as a break (\\#697)\nok 1 - the launcher's foreground report is kept, and alt-tabbing out of a game counts as a break (\\#697)\n  ---\n  duration_ms: 56.3269\n  type: 'test'\n  ...\n# Subtest: Discord or OBS in front mid-game isn't a break; MANA_GAME_COMPANION_APPS replaces the list\nnot ok 2 - Discord or OBS in front mid-game isn't a break; MANA_GAME_COMPANION_APPS replaces the list\n  ---\n  duration_ms: 0.8856\n  type: 'test'\n  location: 'D:\\\\Mana-worktrees\\\\bench-1069-alt-tabbing-to-discord-or-obs\\\\node-bot\\\\test\\\\foreground.test.js:34:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    true !== false\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: false\n  actual: true\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-1069-alt-tabbing-to-discord-or-obs\\node-bot\\test\\foreground.test.js:39:12)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n1..2\n# tests 2\n# suites 0\n# pass 1\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 724.4529\n",
+      "failure": "no valid edit: reviewer refusal"
+    },
+    {
+      "id": "1072-doctor-gpu-row-that-says-when",
+      "kind": "node-feature",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 18,
+      "maxRounds": 20,
+      "toolCalls": 18,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 37335,
+      "peakVramMb": 7407,
+      "peakRamPercent": 75.4,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 156733,
+        "completion": 2431,
+        "peak": 13408,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [
+          "node-bot/doctor.js"
+        ],
+        "added": 34,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "<tool_call>\n<function=self_work__read>\n<parameter=path>\nnode-bot/doctor.js\n</parameter>\n<parameter=start_line>\n865\n</parameter>\n<parameter=end_line>\n920\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "ation_ms: 63.0366\n  type: 'test'\n  ...\n# Subtest: createApp exposes doctor checks without leaking secrets\nok 23 - createApp exposes doctor checks without leaking secrets\n  ---\n  duration_ms: 9.4606\n  type: 'test'\n  ...\n# Subtest: async doctor probes Qwen3-TTS's /health when it's the provider\nok 24 - async doctor probes Qwen3-TTS's /health when it's the provider\n  ---\n  duration_ms: 249.6325\n  type: 'test'\n  ...\n# Subtest: async doctor probes configured TTS health URLs\nok 25 - async doctor probes configured TTS health URLs\n  ---\n  duration_ms: 236.9323\n  type: 'test'\n  ...\n# Subtest: async doctor checks GPT-SoVITS only when it is the selected provider\nok 26 - async doctor checks GPT-SoVITS only when it is the selected provider\n  ---\n  duration_ms: 486.0977\n  type: 'test'\n  ...\n# Subtest: async doctor reports availability of a caller-supplied port\nok 27 - async doctor reports availability of a caller-supplied port\n  ---\n  duration_ms: 233.3975\n  type: 'test'\n  ...\n# Subtest: async doctor reports Zed external agent backend health\nok 28 - async doctor reports Zed external agent backend health\n  ---\n  duration_ms: 235.7617\n  type: 'test'\n  ...\n# Subtest: Doctor warns when a non-English speech language meets an English-only Whisper model\nok 29 - Doctor warns when a non-English speech language meets an English-only Whisper model\n  ---\n  duration_ms: 119.029\n  type: 'test'\n  ...\n1..29\n# tests 29\n# suites 0\n# pass 27\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 4178.1655\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1085-memory-vault-mana-only-writes",
+      "kind": "node-feature",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 6,
+      "maxRounds": 20,
+      "toolCalls": 5,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 7311,
+      "peakVramMb": 7407,
+      "peakRamPercent": 75.5,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 33138,
+        "completion": 272,
+        "peak": 13069,
+        "textCalls": 0
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: the conversation outgrew the model's context\n\nNow let me look at the test file for memory-vault to understand what the tests expect:",
+      "hiddenTail": "/test_runner/test:744:7)\n  ...\n# Subtest: the journal never writes into a day file Mana didn't create\nnot ok 25 - the journal never writes into a day file Mana didn't create\n  ---\n  duration_ms: 8.1727\n  type: 'test'\n  location: 'D:\\\\Mana-worktrees\\\\bench-1085-memory-vault-mana-only-writes\\\\node-bot\\\\test\\\\memory-vault.test.js:520:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    false !== true\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: true\n  actual: false\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-1085-memory-vault-mana-only-writes\\node-bot\\test\\memory-vault.test.js:528:10)\n    async Test.run (node:internal/test_runner/test:1054:7)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: the journal appends a short entry linking the facts it touched\nok 26 - the journal appends a short entry linking the facts it touched\n  ---\n  duration_ms: 25.8783\n  type: 'test'\n  ...\n# Subtest: the journal skips while gaming or when no model is loaded\nok 27 - the journal skips while gaming or when no model is loaded\n  ---\n  duration_ms: 6.6845\n  type: 'test'\n  ...\n# Subtest: views and the journal never create a missing vault\nok 28 - views and the journal never create a missing vault\n  ---\n  duration_ms: 2.5312\n  type: 'test'\n  ...\n1..28\n# tests 28\n# suites 0\n# pass 26\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3508.4642\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1089-model-recommendation-subtract",
+      "kind": "multi-file",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 6,
+      "maxRounds": 20,
+      "toolCalls": 6,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 12368,
+      "peakVramMb": 7407,
+      "peakRamPercent": 75.3,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 47490,
+        "completion": 570,
+        "peak": 13336,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: no edit was made yet (coding__propose_edit never succeeded)\n\nNow I have a good understanding. Let me update my plan and start implementing:\n\n<tool_call>\n<function=self_work__plan>\n<parameter=steps>\n[\"Read the current `recommendModelProfile` function and the VRAM constant for Fish (5120 MB)\", \"Create a VRAM lookup table for Fish, Qwen3-TTS, and Whisper by model size\", \"Modify `recommendModelProfile` to accept `voiceMb` and subtract it before choosing profile\", \"Update the reason text to show how much VRAM is held by TTS/Whisper\", \"Add/update tests to verify behavior with `voiceMb`",
+      "hiddenTail": ".gguf file and reports it in getModelStatus\n  ---\n  duration_ms: 117.7781\n  type: 'test'\n  ...\n# Subtest: setModelPath rejects non-gguf paths and missing files\nok 31 - setModelPath rejects non-gguf paths and missing files\n  ---\n  duration_ms: 0.3677\n  type: 'test'\n  ...\n# Subtest: setModelPath rejects a .gguf-named file that isn't actually a GGUF\nok 32 - setModelPath rejects a .gguf-named file that isn't actually a GGUF\n  ---\n  duration_ms: 2.4775\n  type: 'test'\n  ...\n# Subtest: scanForModels finds .gguf files under the given roots and skips unreadable directories\nok 33 - scanForModels finds .gguf files under the given roots and skips unreadable directories\n  ---\n  duration_ms: 60.7322\n  type: 'test'\n  ...\n# Subtest: estimateModelFit labels a model against VRAM, then VRAM + half of RAM\nok 34 - estimateModelFit labels a model against VRAM, then VRAM + half of RAM\n  ---\n  duration_ms: 0.1504\n  type: 'test'\n  ...\n# Subtest: scanForModels attaches a fit label per file from the detected hardware\nok 35 - scanForModels attaches a fit label per file from the detected hardware\n  ---\n  duration_ms: 5.3267\n  type: 'test'\n  ...\n# Subtest: loadIntoVram: on by default in /models/status, saved via setLoadIntoVram, non-booleans rejected\nok 36 - loadIntoVram: on by default in /models/status, saved via setLoadIntoVram, non-booleans rejected\n  ---\n  duration_ms: 0.3386\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 33\n# fail 3\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1297.6181\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1170-discord-bot-can-t-find-discord",
+      "kind": "node-bug",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 8,
+      "maxRounds": 20,
+      "toolCalls": 6,
+      "toolErrors": 1,
+      "editErrors": 1,
+      "wallMs": 25216,
+      "peakVramMb": 7407,
+      "peakRamPercent": 74.9,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 20638,
+        "completion": 2448,
+        "peak": 6614,
+        "textCalls": 0
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: the tool calls kept failing to parse\n\nI see! In the browser-automation plugin, line 43 shows the pattern: `deps.chromium || require(\"playwright-core\").chromium`. This is the same pattern that #1162 established.\n\nSo for discord-bot, I need to update the three bare requires to follow this same pattern:\n1. Line 44: `whisperDiscovery` - but this is already a bare require from `../../node-bot/whisper-discovery`, so it should become `deps.whisperDiscovery || require(\"../../node-bot/whisper-discovery\")`\n2. Line 51: `voice` - should become `deps.voice || require(\"@discordjs/voice\")`\n3. L",
+      "hiddenTail": "TAP version 13\n# Subtest: every package a plugin requires resolves from the plugin's folder\nnot ok 1 - every package a plugin requires resolves from the plugin's folder\n  ---\n  duration_ms: 9.9675\n  type: 'test'\n  location: 'D:\\\\Mana-worktrees\\\\bench-1170-discord-bot-can-t-find-discord\\\\node-bot\\\\test\\\\plugin-requires.test.js:35:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    point these at ../../node-bot/node_modules/<package>\n    + actual - expected\n    \n    + [\n    +   'discord-bot/index.js @discordjs/voice',\n    +   'discord-bot/index.js prism-media',\n    +   'discord-bot/index.js discord.js'\n    + ]\n    - []\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected:\n  actual:\n    0: 'discord-bot/index.js @discordjs/voice'\n    1: 'discord-bot/index.js prism-media'\n    2: 'discord-bot/index.js discord.js'\n  operator: 'deepStrictEqual'\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-1170-discord-bot-can-t-find-discord\\node-bot\\test\\plugin-requires.test.js:50:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.start (node:internal/test_runner/test:944:17)\n    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)\n  ...\n# Subtest: the discord bot's packages resolve\nok 2 - the discord bot's packages resolve\n  ---\n  duration_ms: 2.9467\n  type: 'test'\n  ...\n1..2\n# tests 2\n# suites 0\n# pass 1\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 90.3312\n",
+      "failure": "no valid edit: bad arguments"
+    },
+    {
+      "id": "897-doctor-warns-about-llama-serve",
+      "kind": "node-bug",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 15,
+      "maxRounds": 20,
+      "toolCalls": 15,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 25480,
+      "peakVramMb": 7407,
+      "peakRamPercent": 75.2,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 102810,
+        "completion": 1421,
+        "peak": 13653,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: no edit was made yet (coding__propose_edit never succeeded)\n\nNow I understand the pattern. The `llamaServerRuntime.findLlamaServerBin` is a function that returns a path or throws. The doctor check should use this function instead of just checking `env.LLAMA_SERVER_BIN`.\n\nLet me look at the `runDoctorChecks` function signature to see what options it accepts.\n\n<tool_call>\n<function=self_work__read>\n<parameter=path>\nnode-bot/doctor.js\n</parameter>\n<parameter=start_line>\n750\n</parameter>\n<parameter=end_line>\n815\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "or reports Mana external agent entry point availability\n  ---\n  duration_ms: 62.8969\n  type: 'test'\n  ...\n# Subtest: doctor reports configured Zed editor availability\nok 21 - doctor reports configured Zed editor availability\n  ---\n  duration_ms: 62.3149\n  type: 'test'\n  ...\n# Subtest: createApp exposes doctor checks without leaking secrets\nok 22 - createApp exposes doctor checks without leaking secrets\n  ---\n  duration_ms: 12.1284\n  type: 'test'\n  ...\n# Subtest: async doctor probes Qwen3-TTS's /health when it's the provider\nok 23 - async doctor probes Qwen3-TTS's /health when it's the provider\n  ---\n  duration_ms: 256.5595\n  type: 'test'\n  ...\n# Subtest: async doctor probes configured TTS health URLs\nok 24 - async doctor probes configured TTS health URLs\n  ---\n  duration_ms: 232.9396\n  type: 'test'\n  ...\n# Subtest: async doctor checks GPT-SoVITS only when it is the selected provider\nok 25 - async doctor checks GPT-SoVITS only when it is the selected provider\n  ---\n  duration_ms: 484.2676\n  type: 'test'\n  ...\n# Subtest: async doctor reports availability of a caller-supplied port\nok 26 - async doctor reports availability of a caller-supplied port\n  ---\n  duration_ms: 232.8728\n  type: 'test'\n  ...\n# Subtest: async doctor reports Zed external agent backend health\nok 27 - async doctor reports Zed external agent backend health\n  ---\n  duration_ms: 231.1132\n  type: 'test'\n  ...\n1..27\n# tests 27\n# suites 0\n# pass 26\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3890.5454\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "903-let-me-add-my-own-words-to-the",
+      "kind": "node-feature",
+      "repeat": 1,
+      "passed": false,
+      "rounds": 6,
+      "maxRounds": 20,
+      "toolCalls": 6,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 34494,
+      "peakVramMb": 7408,
+      "peakRamPercent": 75.6,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 45305,
+        "completion": 3186,
+        "peak": 9185,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [
+          "node-bot/whisper-prompt.js"
+        ],
+        "added": 9,
+        "removed": 1
+      },
+      "outside": [],
+      "ended": "refuted",
+      "lastTestPassed": false,
+      "summary": "The reviewer wants me to handle the vocabulary input better. Let me also update the `createWhisperPromptProvider` to parse the raw comma-separated string from the environment variable and handle it properly:\n\n<tool_call>\n<function=coding__propose_edit>\n<parameter=path>\nnode-bot/whisper-prompt.js\n</parameter>\n<parameter=new_text>\n// Returns getPrompt(): the WHISPER_PROMPT override when set, otherwise the\n// built prompt, rebuilt at most every refreshMs (reading memory on every\n// utterance would put file I/O on the STT hot path). Falls back to the\n// base prompt if memory can't be read.\nfunctio",
+      "hiddenTail": " include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.'\n    - 'Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up. Names and terms: Imouto, Gigi Murin.'\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 'Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up. Names and terms: Imouto, Gigi Murin.'\n  actual: 'Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.'\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-903-let-me-add-my-own-words-to-the\\node-bot\\test\\whisper-prompt.test.js:138:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: a term already in the base prompt is not repeated, even at a sentence end\nok 14 - a term already in the base prompt is not repeated, even at a sentence end\n  ---\n  duration_ms: 0.1149\n  type: 'test'\n  ...\n1..14\n# tests 14\n# suites 0\n# pass 12\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 96.6941\n",
+      "failure": "no valid edit: reviewer refusal"
+    },
+    {
+      "id": "921-whisper-keeps-writing-my-wake",
+      "kind": "node-bug",
+      "repeat": 1,
+      "passed": true,
+      "rounds": 8,
+      "maxRounds": 20,
+      "toolCalls": 8,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 16838,
+      "peakVramMb": 7408,
+      "peakRamPercent": 75.7,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 62029,
+        "completion": 968,
+        "peak": 9689,
+        "textCalls": 0
+      },
+      "diff": {
+        "files": [
+          "node-bot/whisper-prompt.js"
+        ],
+        "added": 1,
+        "removed": 1
+      },
+      "outside": [],
+      "ended": "finished",
+      "lastTestPassed": true,
+      "summary": "I've resolved issue #920 by simplifying the `BASE_WHISPER_PROMPT` wake-word variants from six misspellings (\"Mana, Manah, Manna, Mannah, Myna, My Na\") to just \"Mana\", and verified all 14 whisper-prompt tests pass.",
+      "hiddenTail": "",
+      "failure": null
+    },
+    {
+      "id": "1013-acp-mana-test-run-runs-tests-i",
+      "kind": "node-bug",
+      "repeat": 2,
+      "passed": false,
+      "rounds": 9,
+      "maxRounds": 20,
+      "toolCalls": 9,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 16988,
+      "peakVramMb": 7408,
+      "peakRamPercent": 75.3,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 75074,
+        "completion": 760,
+        "peak": 13504,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: no edit was made yet (coding__propose_edit never succeeded)\n\nLet me look at the `dir-scanner-capability.js` to see how it handles path resolution:\n\n<tool_call>\n<function=self_work__read>\n<parameter=path>\nnode-bot/capabilities/dir-scanner-capability.js\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "ADME context for README prompts\n  ---\n  duration_ms: 0.4164\n  type: 'test'\n  ...\n# Subtest: createManaAcpAgent summarizes README prompts locally without model call\nok 16 - createManaAcpAgent summarizes README prompts locally without model call\n  ---\n  duration_ms: 0.8262\n  type: 'test'\n  ...\n# Subtest: createManaAcpAgent falls back to proposal-only text when no reply bridge is connected\nok 17 - createManaAcpAgent falls back to proposal-only text when no reply bridge is connected\n  ---\n  duration_ms: 0.1411\n  type: 'test'\n  ...\n# Subtest: createDefaultManaAcpAgent sends prompts to the local backend reply endpoint\nok 18 - createDefaultManaAcpAgent sends prompts to the local backend reply endpoint\n  ---\n  duration_ms: 1.2192\n  type: 'test'\n  ...\n# Subtest: createDefaultManaAcpAgent degrades gracefully when local backend is unavailable\nok 19 - createDefaultManaAcpAgent degrades gracefully when local backend is unavailable\n  ---\n  duration_ms: 0.3228\n  type: 'test'\n  ...\n# Subtest: stdio ACP server replies with line-delimited JSON for line-delimited input\nok 20 - stdio ACP server replies with line-delimited JSON for line-delimited input\n  ---\n  duration_ms: 0.7337\n  type: 'test'\n  ...\n# Subtest: stdio ACP server writes opt-in debug log entries outside stdout\nok 21 - stdio ACP server writes opt-in debug log entries outside stdout\n  ---\n  duration_ms: 1.2987\n  type: 'test'\n  ...\n1..21\n# tests 21\n# suites 0\n# pass 20\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 195.7921\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1052-put-oneesan-imouto-naming-and",
+      "kind": "node-bug",
+      "repeat": 2,
+      "passed": true,
+      "rounds": 17,
+      "maxRounds": 20,
+      "toolCalls": 17,
+      "toolErrors": 1,
+      "editErrors": 0,
+      "wallMs": 39813,
+      "peakVramMb": 7408,
+      "peakRamPercent": 75.4,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 149442,
+        "completion": 2870,
+        "peak": 13888,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [
+          "node-bot/persona.js",
+          "node-bot/test/persona.test.js"
+        ],
+        "added": 7,
+        "removed": 1
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": true,
+      "summary": "All 8 tests pass! Now let me also run the characters test to make sure Evil Mana's persona is still intact:\n\n<tool_call>\n<function=coding__run_tests>\n<parameter=path>\nnode-bot/test/characters.test.js\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "",
+      "failure": null
+    },
+    {
+      "id": "1069-alt-tabbing-to-discord-or-obs",
+      "kind": "node-feature",
+      "repeat": 2,
+      "passed": false,
+      "rounds": 17,
+      "maxRounds": 20,
+      "toolCalls": 17,
+      "toolErrors": 1,
+      "editErrors": 1,
+      "wallMs": 60812,
+      "peakVramMb": 7407,
+      "peakRamPercent": 75.9,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 99214,
+        "completion": 5589,
+        "peak": 13986,
+        "textCalls": 0
+      },
+      "diff": {
+        "files": [
+          "node-bot/server.js",
+          "node-bot/test/foreground.test.js"
+        ],
+        "added": 57,
+        "removed": 1
+      },
+      "outside": [
+        "node-bot/server.js"
+      ],
+      "ended": "error",
+      "lastTestPassed": false,
+      "error": "llama-server reply failed (500): {\"error\":{\"code\":500,\"message\":\"Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] parse error at line 1, column 6006: syntax error while parsing value - invalid string: missing closing quote; last read: '\\\"const assert = require(\\\\\\\"node:a",
+      "summary": "",
+      "hiddenTail": " kept, and alt-tabbing out of a game counts as a break (\\#697)\nok 1 - the launcher's foreground report is kept, and alt-tabbing out of a game counts as a break (\\#697)\n  ---\n  duration_ms: 62.2929\n  type: 'test'\n  ...\n# Subtest: Discord or OBS in front mid-game isn't a break; MANA_GAME_COMPANION_APPS replaces the list\nnot ok 2 - Discord or OBS in front mid-game isn't a break; MANA_GAME_COMPANION_APPS replaces the list\n  ---\n  duration_ms: 0.792\n  type: 'test'\n  location: 'D:\\\\Mana-worktrees\\\\bench-1069-alt-tabbing-to-discord-or-obs\\\\node-bot\\\\test\\\\foreground.test.js:34:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    true !== false\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: false\n  actual: true\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-1069-alt-tabbing-to-discord-or-obs\\node-bot\\test\\foreground.test.js:39:12)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n1..2\n# tests 2\n# suites 0\n# pass 1\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 722.0226\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1072-doctor-gpu-row-that-says-when",
+      "kind": "node-feature",
+      "repeat": 2,
+      "passed": false,
+      "rounds": 9,
+      "maxRounds": 20,
+      "toolCalls": 9,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 16185,
+      "peakVramMb": 7407,
+      "peakRamPercent": 75.1,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 81953,
+        "completion": 722,
+        "peak": 13989,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: no edit was made yet (coding__propose_edit never succeeded)\n\nLet me continue reading to find where the main `runDoctorChecks` function is and how it combines all the checks.\n\n<tool_call>\n<function=self_work__read>\n<parameter=path>\nnode-bot/doctor.js\n</parameter>\n<parameter=start_line>\n750\n</parameter>\n<parameter=end_line>\n850\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "ion_ms: 77.9229\n  type: 'test'\n  ...\n# Subtest: createApp exposes doctor checks without leaking secrets\nok 23 - createApp exposes doctor checks without leaking secrets\n  ---\n  duration_ms: 10.1365\n  type: 'test'\n  ...\n# Subtest: async doctor probes Qwen3-TTS's /health when it's the provider\nok 24 - async doctor probes Qwen3-TTS's /health when it's the provider\n  ---\n  duration_ms: 248.0996\n  type: 'test'\n  ...\n# Subtest: async doctor probes configured TTS health URLs\nok 25 - async doctor probes configured TTS health URLs\n  ---\n  duration_ms: 242.1129\n  type: 'test'\n  ...\n# Subtest: async doctor checks GPT-SoVITS only when it is the selected provider\nok 26 - async doctor checks GPT-SoVITS only when it is the selected provider\n  ---\n  duration_ms: 473.9421\n  type: 'test'\n  ...\n# Subtest: async doctor reports availability of a caller-supplied port\nok 27 - async doctor reports availability of a caller-supplied port\n  ---\n  duration_ms: 242.7497\n  type: 'test'\n  ...\n# Subtest: async doctor reports Zed external agent backend health\nok 28 - async doctor reports Zed external agent backend health\n  ---\n  duration_ms: 242.3466\n  type: 'test'\n  ...\n# Subtest: Doctor warns when a non-English speech language meets an English-only Whisper model\nok 29 - Doctor warns when a non-English speech language meets an English-only Whisper model\n  ---\n  duration_ms: 125.9115\n  type: 'test'\n  ...\n1..29\n# tests 29\n# suites 0\n# pass 27\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 4143.3192\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1085-memory-vault-mana-only-writes",
+      "kind": "node-feature",
+      "repeat": 2,
+      "passed": false,
+      "rounds": 8,
+      "maxRounds": 20,
+      "toolCalls": 8,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 10538,
+      "peakVramMb": 7416,
+      "peakRamPercent": 75.5,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 41003,
+        "completion": 342,
+        "peak": 13493,
+        "textCalls": 0
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "error",
+      "lastTestPassed": false,
+      "error": "llama-server reply failed (400): {\"error\":{\"code\":400,\"message\":\"request (17250 tokens) exceeds the available context size (16384 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":17250,\"n_ctx\":16384}}",
+      "summary": "",
+      "hiddenTail": "/test_runner/test:744:7)\n  ...\n# Subtest: the journal never writes into a day file Mana didn't create\nnot ok 25 - the journal never writes into a day file Mana didn't create\n  ---\n  duration_ms: 7.6006\n  type: 'test'\n  location: 'D:\\\\Mana-worktrees\\\\bench-1085-memory-vault-mana-only-writes\\\\node-bot\\\\test\\\\memory-vault.test.js:520:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    false !== true\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: true\n  actual: false\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-1085-memory-vault-mana-only-writes\\node-bot\\test\\memory-vault.test.js:528:10)\n    async Test.run (node:internal/test_runner/test:1054:7)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: the journal appends a short entry linking the facts it touched\nok 26 - the journal appends a short entry linking the facts it touched\n  ---\n  duration_ms: 25.8383\n  type: 'test'\n  ...\n# Subtest: the journal skips while gaming or when no model is loaded\nok 27 - the journal skips while gaming or when no model is loaded\n  ---\n  duration_ms: 6.3352\n  type: 'test'\n  ...\n# Subtest: views and the journal never create a missing vault\nok 28 - views and the journal never create a missing vault\n  ---\n  duration_ms: 2.6382\n  type: 'test'\n  ...\n1..28\n# tests 28\n# suites 0\n# pass 26\n# fail 2\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3545.9088\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1089-model-recommendation-subtract",
+      "kind": "multi-file",
+      "repeat": 2,
+      "passed": false,
+      "rounds": 6,
+      "maxRounds": 20,
+      "toolCalls": 5,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 7325,
+      "peakVramMb": 7406,
+      "peakRamPercent": 75.5,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 31555,
+        "completion": 279,
+        "peak": 13048,
+        "textCalls": 0
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Not done yet: the conversation outgrew the model's context\n\nLet me continue reading the test file to see if there are tests for `recommendModelProfile` with `voiceMb`:",
+      "hiddenTail": "gguf file and reports it in getModelStatus\n  ---\n  duration_ms: 115.1429\n  type: 'test'\n  ...\n# Subtest: setModelPath rejects non-gguf paths and missing files\nok 31 - setModelPath rejects non-gguf paths and missing files\n  ---\n  duration_ms: 0.3747\n  type: 'test'\n  ...\n# Subtest: setModelPath rejects a .gguf-named file that isn't actually a GGUF\nok 32 - setModelPath rejects a .gguf-named file that isn't actually a GGUF\n  ---\n  duration_ms: 2.6129\n  type: 'test'\n  ...\n# Subtest: scanForModels finds .gguf files under the given roots and skips unreadable directories\nok 33 - scanForModels finds .gguf files under the given roots and skips unreadable directories\n  ---\n  duration_ms: 59.6306\n  type: 'test'\n  ...\n# Subtest: estimateModelFit labels a model against VRAM, then VRAM + half of RAM\nok 34 - estimateModelFit labels a model against VRAM, then VRAM + half of RAM\n  ---\n  duration_ms: 0.1626\n  type: 'test'\n  ...\n# Subtest: scanForModels attaches a fit label per file from the detected hardware\nok 35 - scanForModels attaches a fit label per file from the detected hardware\n  ---\n  duration_ms: 15.0612\n  type: 'test'\n  ...\n# Subtest: loadIntoVram: on by default in /models/status, saved via setLoadIntoVram, non-booleans rejected\nok 36 - loadIntoVram: on by default in /models/status, saved via setLoadIntoVram, non-booleans rejected\n  ---\n  duration_ms: 0.3765\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 33\n# fail 3\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1291.5612\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "1170-discord-bot-can-t-find-discord",
+      "kind": "node-bug",
+      "repeat": 2,
+      "passed": true,
+      "rounds": 13,
+      "maxRounds": 20,
+      "toolCalls": 13,
+      "toolErrors": 1,
+      "editErrors": 0,
+      "wallMs": 31037,
+      "peakVramMb": 7406,
+      "peakRamPercent": 75.6,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 106553,
+        "completion": 2066,
+        "peak": 14057,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [
+          "plugins/discord-bot/index.js"
+        ],
+        "added": 3,
+        "removed": 3
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Good! I see the pattern. Now I need to create a test that validates bare requires resolve correctly. Let me look at how browser-automation might have been tested or if there's a pattern I can follow. Let me search for existing tests that check module resolution:\n\n<tool_call>\n<function=self_work__search>\n<parameter=text>\nbare require\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "",
+      "failure": null
+    },
+    {
+      "id": "897-doctor-warns-about-llama-serve",
+      "kind": "node-bug",
+      "repeat": 2,
+      "passed": false,
+      "rounds": 7,
+      "maxRounds": 20,
+      "toolCalls": 8,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 10673,
+      "peakVramMb": 7406,
+      "peakRamPercent": 75.6,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 57407,
+        "completion": 399,
+        "peak": 15588,
+        "textCalls": 0
+      },
+      "diff": {
+        "files": [],
+        "added": 0,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "error",
+      "lastTestPassed": false,
+      "error": "llama-server reply failed (400): {\"error\":{\"code\":400,\"message\":\"request (17780 tokens) exceeds the available context size (16384 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":17780,\"n_ctx\":16384}}",
+      "summary": "",
+      "hiddenTail": "ctor reports Mana external agent entry point availability\n  ---\n  duration_ms: 62.6569\n  type: 'test'\n  ...\n# Subtest: doctor reports configured Zed editor availability\nok 21 - doctor reports configured Zed editor availability\n  ---\n  duration_ms: 63.6303\n  type: 'test'\n  ...\n# Subtest: createApp exposes doctor checks without leaking secrets\nok 22 - createApp exposes doctor checks without leaking secrets\n  ---\n  duration_ms: 12.5731\n  type: 'test'\n  ...\n# Subtest: async doctor probes Qwen3-TTS's /health when it's the provider\nok 23 - async doctor probes Qwen3-TTS's /health when it's the provider\n  ---\n  duration_ms: 238.879\n  type: 'test'\n  ...\n# Subtest: async doctor probes configured TTS health URLs\nok 24 - async doctor probes configured TTS health URLs\n  ---\n  duration_ms: 252.4936\n  type: 'test'\n  ...\n# Subtest: async doctor checks GPT-SoVITS only when it is the selected provider\nok 25 - async doctor checks GPT-SoVITS only when it is the selected provider\n  ---\n  duration_ms: 464.3208\n  type: 'test'\n  ...\n# Subtest: async doctor reports availability of a caller-supplied port\nok 26 - async doctor reports availability of a caller-supplied port\n  ---\n  duration_ms: 233.1369\n  type: 'test'\n  ...\n# Subtest: async doctor reports Zed external agent backend health\nok 27 - async doctor reports Zed external agent backend health\n  ---\n  duration_ms: 255.7231\n  type: 'test'\n  ...\n1..27\n# tests 27\n# suites 0\n# pass 26\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3864.357\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "903-let-me-add-my-own-words-to-the",
+      "kind": "node-feature",
+      "repeat": 2,
+      "passed": false,
+      "rounds": 9,
+      "maxRounds": 20,
+      "toolCalls": 9,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 18746,
+      "peakVramMb": 7406,
+      "peakRamPercent": 75.5,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 84331,
+        "completion": 1021,
+        "peak": 13468,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [
+          "node-bot/.env.sample"
+        ],
+        "added": 8,
+        "removed": 0
+      },
+      "outside": [],
+      "ended": "not-finished",
+      "lastTestPassed": false,
+      "summary": "Good! Now let me update `buildWhisperPrompt` to accept a `vocabulary` parameter. Looking at the function signature and how it uses `facts` and `userTexts`, I'll add `vocabulary` as an optional array:\n\n<tool_call>\n<function=self_work__plan>\n<parameter=done>\n[\"1. Add WHISPER_VOCABULARY to .env.sample with the five example words\"]\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "s include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.'\n    - 'Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up. Names and terms: Imouto, Gigi Murin.'\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 'Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up. Names and terms: Imouto, Gigi Murin.'\n  actual: 'Singapore English conversation with an AI assistant named Mana. Wake words include Mana, Manah, Manna, Mannah, Myna, My Na, and wake up.'\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (D:\\Mana-worktrees\\bench-903-let-me-add-my-own-words-to-the\\node-bot\\test\\whisper-prompt.test.js:138:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: a term already in the base prompt is not repeated, even at a sentence end\nok 14 - a term already in the base prompt is not repeated, even at a sentence end\n  ---\n  duration_ms: 0.1134\n  type: 'test'\n  ...\n1..14\n# tests 14\n# suites 0\n# pass 11\n# fail 3\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 97.457\n",
+      "failure": "context overflow"
+    },
+    {
+      "id": "921-whisper-keeps-writing-my-wake",
+      "kind": "node-bug",
+      "repeat": 2,
+      "passed": true,
+      "rounds": 12,
+      "maxRounds": 20,
+      "toolCalls": 12,
+      "toolErrors": 0,
+      "editErrors": 0,
+      "wallMs": 183326,
+      "peakVramMb": 9470,
+      "peakRamPercent": 91.5,
+      "contextSize": 16384,
+      "tokens": {
+        "prompt": 99041,
+        "completion": 1676,
+        "peak": 12402,
+        "textCalls": 1
+      },
+      "diff": {
+        "files": [
+          "node-bot/whisper-prompt.js"
+        ],
+        "added": 1,
+        "removed": 1
+      },
+      "outside": [],
+      "ended": "paused",
+      "lastTestPassed": true,
+      "summary": "Let me try the session goal finish again with the summary.\n\n<tool_call>\n<function=session_goal__finish>\n<parameter=reason>\nFixed issue #920 by changing BASE_WHISPER_PROMPT from listing misspelled variants (\"Mana, Manah, Manna, Mannah, Myna, My Na\") to just \"Mana\", and verified with 14 whisper-prompt tests and 60 total node-bot tests all passing.\n</parameter>\n</function>\n</tool_call>",
+      "hiddenTail": "",
+      "failure": null
+    }
+  ]
+}
