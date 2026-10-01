@@ -214,7 +214,7 @@ function purpose(src) {
   let s = m[1]
     .replace(/^\s*(?:\/\/+|\/\*+|\*+\/?)/gm, " ")
     .replace(/\((?:[^()]*?)#\d+[^()]*\)/g, "")
-    .replace(/(?:\b(?:issues?|PRs?)\s*)?#\d+:?/gi, "")
+    .replace(/(?:\b(?:issues?|PRs?)\s*)?#\d+:?|\(Q\d+[a-z]?\):?/gi, "")
     .replace(/[\w./\\-]+\.(?:js|json|ts|py|cs|md)\b/g, "")
     .replace(/\(\s*\)/g, "")
     .replace(/\s+/g, " ")

@@ -132,7 +132,7 @@ test("the issue reads like a bug report: test name, what came back, the area; no
   // Deterministic.
   assert.deepEqual(writeIssue({ id: "gen-x", failing }), writeIssue({ id: "gen-x", failing }));
   assert.equal(purpose("const a = 1;\n"), "");
-  assert.equal(purpose("// Issue #700: Mana's mood, a slow state (server.js) that drifts.\nconst a = 1;\n"), "Mana's mood, a slow state that drifts.");
+  assert.equal(purpose("// Issue #700 (Q12b): Mana's mood, a slow state (server.js) that drifts.\nconst a = 1;\n"), "Mana's mood, a slow state that drifts.");
 });
 
 test("held-out split is by source file alone, about 10%", () => {
