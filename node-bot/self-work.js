@@ -49,8 +49,24 @@ const GUARDRAIL_LABEL = "mana-guardrail";
 // run with the repo's token before I've read it.
 const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
 const MAX_ROUNDS = 20;
+// #1214: an issue run's rounds follow the issue: a floor, more for each
+// thing it asks for (a bullet or numbered line) and each file it names,
+// and a hard ceiling.
+const MIN_ROUNDS = 12;
+const MAX_ROUNDS_CEILING = 40;
+function roundBudget(body) {
+  const text = String(body || "");
+  const asks = (text.match(/^\s*(?:[-*]|\d+\.)\s+/gm) || []).length;
+  const files = new Set(text.match(/[\w./-]+\.(?:js|cs|ts|json|md|ps1|py)\b/g) || []).size;
+  return Math.min(MAX_ROUNDS_CEILING, MIN_ROUNDS + 3 * asks + 2 * files);
+}
+// #1214: her coding runs' own llama-server context (chat keeps
+// LLAMA_CONTEXT); MANA_SELF_WORK_LLAMA_CONTEXT=0 leaves chat's.
+const DEFAULT_SELF_WORK_CONTEXT = 32768;
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
+// #1214: a read without end_line shows this many lines.
+const DEFAULT_READ_LINES = 120;
 const MAX_LIST = 100;
 const MAX_LOG = 30;
 
@@ -115,7 +131,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__read",
-      description: `Read lines of a file in your worktree, with line numbers (at most ${MAX_READ_LINES} lines per call).`,
+      description: `Read lines of a file in your worktree, with line numbers: ${DEFAULT_READ_LINES} lines from start_line unless you give end_line, at most ${MAX_READ_LINES}.`,
       parameters: {
         type: "object",
         properties: {
@@ -369,7 +385,7 @@ function createSelfWork(options = {}) {
     } catch (e) {
       return { ok: false, error: e.message };
     }
-    const r = newRun({ issue: n, title: issue.title, ...place, flagged });
+    const r = newRun({ issue: n, title: issue.title, ...place, flagged, maxRounds: roundBudget(issue.body) });
     current = r;
     r.done = work(r, issue).catch((e) => end(r, "failed", `I hit a problem and stopped: ${e.message}`));
     return { ok: true, status: status() };
@@ -521,7 +537,8 @@ function createSelfWork(options = {}) {
   function loop(r, issue) {
     return runLoop(buildPrompt(r, issue), worktreeTools(r), {
       goal: `Implement issue #${r.issue}: ${r.title}`,
-      maxRounds: MAX_ROUNDS,
+      maxRounds: r.maxRounds,
+      contextSize: Number(env.MANA_SELF_WORK_LLAMA_CONTEXT ?? DEFAULT_SELF_WORK_CONTEXT) || undefined,
       // #1124: how far into the round cap she is, for the Background tasks panel.
       onRound: (round) => {
         r.round = round;
@@ -538,7 +555,7 @@ function createSelfWork(options = {}) {
   // PR. A loop that throws (where a real run would end "failed") comes
   // back as error, with the run as far as it got.
   async function bench(issue, worktree) {
-    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench" });
+    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: roundBudget(issue.body) });
     try {
       return { reply: await loop(r, issue), run: r };
     } catch (e) {
@@ -683,7 +700,7 @@ Issue #${r.issue}: ${r.title}
 ${String(issue.body || "").slice(0, 4000)}
 
 How to work:
-- Find code with self_work__files and self_work__search, and read it with self_work__read.
+- Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
 ${
@@ -740,7 +757,7 @@ ${
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to read a credential file");
       const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
       const from = Math.max(1, Number(start_line) || 1);
-      const to = Math.min(lines.length, Number(end_line) || from + MAX_READ_LINES - 1, from + MAX_READ_LINES - 1);
+      const to = Math.min(lines.length, Number(end_line) || from + DEFAULT_READ_LINES - 1, from + MAX_READ_LINES - 1);
       const shown = lines.slice(from - 1, to).map((l, i) => `${from + i}: ${l}`).join("\n");
       return `${rel} lines ${from}-${to} of ${lines.length}\n${shown}`;
     }
@@ -895,4 +912,4 @@ ${
   return { start, startIdle, refresh, stop, status, chatToolSource, bench, _current: () => current };
 }
 
-module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
+module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };

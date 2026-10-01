@@ -43,6 +43,10 @@ const MEMORY_SAVE_CLAIM_RE = new RegExp(
   "i",
 );
 
+// #1214: how many of the latest tool results goal mode keeps whole once
+// the prompt passes 60% of the context.
+const KEEP_RECENT_TOOL_RESULTS = 4;
+
 // "saved" when a memory__remember call wrote (or was approved), "pending"
 // when one is waiting on approval, else "none".
 function memoryWriteState(calls) {
@@ -160,6 +164,10 @@ function createLlamaServerRuntime(options = {}) {
     lastStartBin: null,
     // #642: prompt size of the latest completion, from its timings.
     lastPromptUsage: null,
+    // #1214: the -c the running server started with, and a reply's own
+    // context size (her self-work runs) while that reply runs.
+    ctx: null,
+    contextOverride: null,
     // #872: an image turn sets visionWanted (the chat server then keeps
     // its mmproj); visionTimer clears it after MANA_VISION_IDLE_MS. busy
     // counts replies in flight -- an unload waits for it to reach 0.
@@ -779,6 +787,7 @@ function createLlamaServerRuntime(options = {}) {
 
   async function startServer(model, mmproj = null, profile = null) {
     state.lastStartBin = null;
+    state.ctx = configuredContext();
     const bin = findLlamaServerBin();
     state.lastStartBin = bin;
     const port = serverPort();
@@ -922,6 +931,7 @@ function createLlamaServerRuntime(options = {}) {
     if (
       state.model === model &&
       (state.mmproj || null) === (mmproj || null) &&
+      state.ctx === configuredContext() &&
       state.port &&
       (await isHealthy(state.port))
     ) {
@@ -1269,6 +1279,7 @@ function createLlamaServerRuntime(options = {}) {
   // else the -c value buildServerArgs would pass. Never starts a server.
   function configuredContext() {
     if (state.gamingModel) return Number(env.MANA_GAMING_LLAMA_CONTEXT || 8192);
+    if (state.contextOverride) return state.contextOverride;
     return Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
   }
 
@@ -1745,6 +1756,21 @@ function createLlamaServerRuntime(options = {}) {
   // review call checks the draft against the request; anything missing
   // goes back in as the next re-check (at most 2 cycles, budget allowing),
   // else the answer opens with "Not done yet: ...".
+  // #1214: a reply with its own contextSize (her self-work runs) gets a
+  // server with that context while it runs; chat keeps LLAMA_CONTEXT, so
+  // the next reply without one restarts the server back to it.
+  function withContextSize(fn) {
+    return async (prompt, toolPolicy, options = {}) => {
+      if (!options?.contextSize) return fn(prompt, toolPolicy, options);
+      state.contextOverride = Number(options.contextSize);
+      try {
+        return await fn(prompt, toolPolicy, options);
+      } finally {
+        state.contextOverride = null;
+      }
+    };
+  }
+
   async function runToolAwareReply(
     prompt,
     toolPolicy,
@@ -1849,6 +1875,17 @@ function createLlamaServerRuntime(options = {}) {
       return json;
     }
 
+    // #1214: all but the last few tool results, cut to their first lines.
+    const trimmed = new WeakSet();
+    function trimOldToolResults() {
+      const results = messages.filter((m) => m.role === "tool");
+      for (const m of results.slice(0, -KEEP_RECENT_TOOL_RESULTS)) {
+        if (trimmed.has(m) || String(m.content).length <= 400) continue;
+        m.content = `${String(m.content).slice(0, 200)}\n...[older result trimmed to save room; call the tool again if you need it]`;
+        trimmed.add(m);
+      }
+    }
+
     const executedToolCalls = [];
     // #787: what each call returned, for the goal review only -- kept out of
     // executedToolCalls, which the caller persists with the turn.
@@ -1928,6 +1965,9 @@ function createLlamaServerRuntime(options = {}) {
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
       onRound?.(round, roundLimit);
+      // #1214: past 60% of the context, older tool results shrink to a
+      // stub she can fetch again, before the 80% guard ends the run.
+      if (goalMode && promptTokens > promptTokenLimit * 0.75) trimOldToolResults();
       let json;
       try {
         json = await complete(true);
@@ -2052,7 +2092,16 @@ function createLlamaServerRuntime(options = {}) {
         // Force a real answer from whatever's been learned so far instead
         // of looping again (or returning nothing) -- tool_choice: "none"
         // means the model cannot request yet another tool call here.
-        const finalJson = await complete(false);
+        let finalJson;
+        try {
+          finalJson = await complete(false);
+        } catch (e) {
+          // #1214: the forced answer can pass the context too; keep the work.
+          if (!goalMode || !/exceeds the available context/i.test(e.message)) throw e;
+          notDone = "the conversation outgrew the model's context";
+          message = {};
+          break;
+        }
         message = (finalJson && finalJson.choices && finalJson.choices[0] && finalJson.choices[0].message) || {};
         if (recheckMemoryClaim()) message = (await complete(false))?.choices?.[0]?.message || {};
         if (await reviewAndResume()) continue;
@@ -2323,7 +2372,7 @@ function createLlamaServerRuntime(options = {}) {
     runBestOfNReply: inTurn(runBestOfNReply),
     waitForServer: inTurn(waitForServer),
     runLocalAssistantReply: inTurn(runLocalAssistantReply),
-    runToolAwareReply: inTurn(runToolAwareReply),
+    runToolAwareReply: inTurn(withContextSize(runToolAwareReply)),
     runVisionReply: inTurn(runVisionReply),
     getStatus,
     getLastPromptUsage,
