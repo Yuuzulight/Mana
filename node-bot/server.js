@@ -552,7 +552,10 @@ function logPerf(label, startedAt) {
     maxMs: Math.max(previous.maxMs || 0, durationMs),
     updatedAt: new Date().toISOString(),
   };
-  console.log(`Mana perf: ${label} ${durationMs}ms`);
+  // whisper-server runs for every partial transcript, hundreds a session:
+  // its lines buried everything else in backend.log and Settings > Logs.
+  // Its numbers are still in /perf/status.
+  if (label !== "whisper-server") console.log(`Mana perf: ${label} ${durationMs}ms`);
 }
 
 configureFfxivMarketTools({ nowMs, logPerf });
@@ -6402,7 +6405,7 @@ async function startServer() {
     app.locals.broadcastTrayNotification = trayServer.broadcastTrayNotification;
     try {
       const trayNotifier = require("./tray-notifier");
-      trayNotifier.setBroadcaster(trayServer.broadcastTrayNotification);
+      trayNotifier.setBroadcaster(trayServer.broadcastTrayNotification, trayServer.hasTrayClients);
     } catch (e) {
       // ignore if notifier cannot be wired
     }
@@ -6463,6 +6466,7 @@ function listenOnBindHost(server, port, env = process.env) {
 }
 
 if (require.main === module) {
+  require("./utils/unhandled-rejection").keepRunningOnUnhandledRejection();
   startServer().catch((err) => {
     console.error(
       "[Mana Boot CRITICAL] Startup aborted:",

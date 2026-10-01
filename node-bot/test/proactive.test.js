@@ -16,6 +16,7 @@ function setup() {
     deliver: (payload) => state.sent.push(payload.text),
     isGaming: () => state.gaming,
     inBreak: () => state.inBreak,
+    canDeliver: () => !state.noLauncher,
     now: () => state.t,
   });
   const say = (text, extra = {}) => p.offer({ reason: "test", payload: { text }, ...extra });
@@ -157,4 +158,26 @@ test("#1124 held remarks are listed for the Background tasks panel", () => {
   assert.deepEqual(p.listHeld(), [
     { reason: "test", title: undefined, text: "build finished", urgent: false, expiresAt: state.t + 60 * MINUTE },
   ]);
+});
+
+test("a reminder waits while no launcher is listening, then goes out", async () => {
+  const { state, say, later } = setup();
+  state.noLauncher = true; // backend just started, launcher not reconnected yet
+  assert.equal(say("raid in 10 minutes", { explicit: true }), "held");
+  assert.equal(later(), null);
+  state.noLauncher = false;
+  assert.equal(later(), "raid in 10 minutes");
+  await tick();
+  assert.deepEqual(state.sent, ["raid in 10 minutes"]);
+});
+
+test("tray-notifier has listeners only while its broadcaster says someone is connected", () => {
+  const trayNotifier = require("../tray-notifier");
+  let connected = false;
+  trayNotifier.setBroadcaster(() => {}, () => connected);
+  assert.equal(trayNotifier.hasListeners(), false);
+  connected = true;
+  assert.equal(trayNotifier.hasListeners(), true);
+  trayNotifier.setBroadcaster(() => {}); // no check given: assume someone is
+  assert.equal(trayNotifier.hasListeners(), true);
 });

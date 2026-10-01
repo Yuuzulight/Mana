@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using Mana.NativeLauncher;
 using Xunit;
@@ -34,6 +36,35 @@ public class TrayShellTests
             signal.Set();
         }
         Assert.True(quit.Wait(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public void QuitScript_ReturnsOnlyOnceTheLauncherHasLetGoOfItsLock()
+    {
+        var name = $"Mana.Tests.{Guid.NewGuid():N}";
+        var mutex = SingleInstance.Claim(name)!;
+        using var released = new ManualResetEventSlim();
+        // As the launcher does: shut down for a moment after the signal, then exit.
+        using var listener = SingleInstance.ListenForQuit(() =>
+        {
+            Thread.Sleep(700);
+            released.Set();
+            mutex.Dispose();
+        }, name);
+        var script = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "quit-mana.ps1");
+
+        using var ps = Process.Start(new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -Name {name}")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+        })!;
+        var output = ps.StandardOutput.ReadToEnd();
+        Assert.True(ps.WaitForExit(TimeSpan.FromSeconds(60)));
+
+        Assert.True(released.IsSet, $"quit-mana.ps1 returned while Mana was still closing: {output}");
+        Assert.Equal(0, ps.ExitCode);
+        Assert.Contains("Mana has closed.", output);
     }
 
     [Fact]
