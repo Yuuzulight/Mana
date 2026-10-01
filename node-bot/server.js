@@ -552,7 +552,10 @@ function logPerf(label, startedAt) {
     maxMs: Math.max(previous.maxMs || 0, durationMs),
     updatedAt: new Date().toISOString(),
   };
-  console.log(`Mana perf: ${label} ${durationMs}ms`);
+  // whisper-server runs for every partial transcript, hundreds a session:
+  // its lines buried everything else in backend.log and Settings > Logs.
+  // Its numbers are still in /perf/status.
+  if (label !== "whisper-server") console.log(`Mana perf: ${label} ${durationMs}ms`);
 }
 
 configureFfxivMarketTools({ nowMs, logPerf });
