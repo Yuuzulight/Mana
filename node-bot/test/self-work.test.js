@@ -693,3 +693,24 @@ test("#1213: she finishes only after three passes over her diff since her last e
   assert.deepEqual(reviewed.map((p) => p.relativePath).sort(), ["node-bot/test/util.test.js", "node-bot/util.js"]);
   assert.match(reviewed.find((p) => p.relativePath === "node-bot/util.js").diff, /-  return a - b;\n\+  return a \+ b;/);
 });
+
+test("#1213: no PR unless the diff is the one her reviewer passed when she finished", async () => {
+  const repos = makeRepos();
+  const reviewed = [];
+  const worktree = path.join(repos.worktrees, "mana-7");
+  // A file her tests wrote before she finished is reviewed too; one that
+  // lands after she finished means the reviewed diff isn't the final one.
+  const wrote = (name) => () => fs.writeFileSync(path.join(worktree, "node-bot", name), "module.exports = 1;\n");
+  const { sw, ghCalls } = selfWork(repos, {
+    calls: [fix, runTests, wrote("generated.js"), finish, wrote("late.js")],
+    reviewEdit: async (p) => (reviewed.push(p.relativePath), { verdict: "holds" }),
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const status = sw.status();
+  assert.equal(status.state, "needs-you", status.step);
+  assert.match(status.step, /isn't the one my reviewer passed/);
+  assert.deepEqual(reviewed.sort(), ["node-bot/generated.js", "node-bot/util.js"]);
+  assert.equal(status.reviewedDiff, undefined, "the diff stays out of status");
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
+});

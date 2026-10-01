@@ -269,6 +269,12 @@ function createSelfWork(options = {}) {
   const git = (args, cwd = repoRoot) => run("git", args, cwd);
   const gh = (args, cwd = repoRoot) => run("gh", args, cwd);
 
+  // A worktree's diff against HEAD, new files included.
+  async function worktreeDiff(worktree, ...paths) {
+    await git(["add", "-A", "-N"], worktree);
+    return git(["-c", "core.quotePath=false", "diff", "HEAD", "--", ...paths], worktree);
+  }
+
   // Whose repo this is, for her prompts and the chat-start check:
   // MANA_SELF_WORK_OWNER, else the gh login, else the origin remote's
   // owner. Looked up once (a run awaits it before her loop starts).
@@ -299,7 +305,7 @@ function createSelfWork(options = {}) {
 
   function status() {
     if (!current) return { state: "idle" };
-    const { done, stopRequested, lastTestPassed, halt, ...shown } = current;
+    const { done, stopRequested, lastTestPassed, halt, reviewedDiff, ...shown } = current;
     return { ...shown, log: [...current.log] };
   }
 
@@ -540,6 +546,10 @@ function createSelfWork(options = {}) {
       return end(r, "not-done", `I couldn't finish #${r.issue}. ${summary}`.trim());
     }
     if (!r.lastTestPassed) return end(r, "tests-failing", `My tests aren't passing after my last change for #${r.issue}, so no PR.`);
+    // #1213: a PR only with the diff my reviewer passed when I finished.
+    if (r.reviewedDiff !== (await worktreeDiff(r.worktree))) {
+      return end(r, "needs-you", `My diff for #${r.issue} isn't the one my reviewer passed when I finished, so no PR. It's in ${r.worktree}.`);
+    }
     const vetted = await vet(r);
     if (vetted.error) return end(r, "needs-you", vetted.error);
     const { touched } = vetted;
@@ -844,11 +854,7 @@ ${
       });
     }
 
-    // Her diff since the run started, new files included.
-    async function diffNow(...paths) {
-      await git(["add", "-A", "-N"], root);
-      return git(["-c", "core.quotePath=false", "diff", "HEAD", "--", ...paths], root);
-    }
+    const diffNow = (...paths) => worktreeDiff(root, ...paths);
 
     async function review({ pass }) {
       if (!REVIEW_PASSES[pass]) throw new Error(`pass is one of: ${Object.keys(REVIEW_PASSES).join(", ")}`);
@@ -862,23 +868,28 @@ ${
 
     // #1213: finishing takes her three passes since her last edit, then the
     // adversarial reviewer on each changed source file; a refutation stops
-    // the run and asks me.
+    // the run and asks me. An issue run's reviewer reads every file in her
+    // final diff (files her tests wrote too), and that diff is what a PR
+    // may open with; a refresh's, only her own edits (not main's changes).
     async function finish(args) {
       if (edited.size) {
         const left = Object.keys(REVIEW_PASSES).filter((p) => !reviewed.has(p));
         if (left.length) {
           throw new Error(`Before you finish, review your diff with self_work__review: ${left.join(", then ")}. Fix what you find.`);
         }
-        for (const relPath of reviewEdit ? [...edited] : []) {
-          const diff = await diffNow(relPath);
-          const verdict = diff ? await reviewEdit({ relativePath: relPath, diff, summary: `my change to ${relPath} for #${r.issue}` }) : null;
-          if (verdict?.verdict === "refuted") {
-            r.refuted = { path: relPath, failingCase: verdict.failingCase };
-            log(r, `My reviewer refuted my change to ${relPath}: ${verdict.failingCase}`);
-            return JSON.stringify({ status: "blocked", error: `refuted by review: ${verdict.failingCase}` });
-          }
+      }
+      const whole = await diffNow();
+      const changed = r.kind === "refresh" ? [...edited] : (await git(["-c", "core.quotePath=false", "diff", "--name-only", "HEAD"], root)).split(/\r?\n/).filter(Boolean);
+      for (const relPath of reviewEdit ? changed : []) {
+        const diff = await diffNow(relPath);
+        const verdict = diff ? await reviewEdit({ relativePath: relPath, diff, summary: `my change to ${relPath} for #${r.issue}` }) : null;
+        if (verdict?.verdict === "refuted") {
+          r.refuted = { path: relPath, failingCase: verdict.failingCase };
+          log(r, `My reviewer refuted my change to ${relPath}: ${verdict.failingCase}`);
+          return JSON.stringify({ status: "blocked", error: `refuted by review: ${verdict.failingCase}` });
         }
       }
+      r.reviewedDiff = whole;
       r.finished = true;
       return goal.executeTool(SESSION_GOAL_FINISH_TOOL_NAME, args);
     }
