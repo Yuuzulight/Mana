@@ -627,3 +627,20 @@ test("#1194: an idle moment offers, once, to update her live copy to her merged 
   assert.match(offers[0].text, /^My merged PR #30 isn't in my live copy yet\. Say "update to main"/);
   assert.equal(offers[0].notice, true);
 });
+
+test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
+  const repos = makeRepos();
+  const worktree = path.join(repos.base, "bench-wt");
+  git(repos.live, "worktree", "add", "-q", "--detach", worktree, "HEAD");
+  const { sw, ghCalls } = selfWork(repos, { calls: [fix, runTests, finish] });
+  const { reply, run } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, worktree);
+
+  assert.equal(run.finished, true);
+  assert.equal(run.lastTestPassed, true);
+  assert.match(reply.content, /made add\(\) add/);
+  assert.match(fs.readFileSync(path.join(worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
+  assert.deepEqual(ghCalls, []);
+  assert.equal(git(worktree, "status", "--porcelain"), "M node-bot/util.js");
+  assert.equal(git(repos.origin, "branch", "--list"), "* main");
+  assert.equal(sw.status().state, "idle");
+});

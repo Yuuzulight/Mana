@@ -1,0 +1,18 @@
+{
+  "id": "1013-acp-mana-test-run-runs-tests-i",
+  "pr": 1013,
+  "issue": 1003,
+  "base": "d1c5333acd27e21822be772f018815d9e1e29c90",
+  "fix": "0f036752a94c85627dc59f8a5beb6c80a4545d6f",
+  "title": "ACP mana/test/run runs tests in any client-supplied cwd",
+  "body": "Found while working on #976.\n\n\\`mana/test/run\\` in \\`node-bot/mana-acp-agent.js\\` passes \\`params.cwd\\` straight to the test runner without checking it, so an allowed command like \\`npm test\\` or \\`node --test\\` can run in any folder on the machine.\n\nWhat I want:\n- Restrict \\`cwd\\` to the session's repo root or a git worktree of it, and refuse anything else.\n- Compare real paths the way #1001 does (links, 8.3 names, trailing dots, case), so a junction or a short name can't get around it.\n- Tests.",
+  "fixFiles": [
+    "node-bot/mana-acp-agent.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/mana-acp-agent.test.js"
+  ],
+  "testCommand": "node --test test/mana-acp-agent.test.js",
+  "interface": "`mana/test/run` refuses a cwd outside the session repo or its worktrees with an error whose message contains \"inside the session's repo\", and never calls the test runner for it. A relative cwd is resolved against the session's cwd; no cwd means the session's cwd.",
+  "why": "A security fix: restrict a client-supplied cwd to the repo or its worktrees. Edge cases matter, which is what the adversarial reviewer should catch."
+}
