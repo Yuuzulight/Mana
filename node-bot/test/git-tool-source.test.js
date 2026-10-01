@@ -470,3 +470,9 @@ test("a rebase that conflicts lists the files, and rebase_abort undoes it", asyn
   assert.match(await call("git__change", { repo, action: "rebase_abort" }), /Aborted the rebase/);
   assert.equal(git(repo, "log", "-1", "--format=%s"), "side");
 });
+
+test("runCommand fails, not cuts short, when the output passes its cap", async () => {
+  const r = await runCommand(process.execPath, ["-e", "process.stdout.write(\"x\".repeat(17 * 1024 * 1024))"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /passed 16 MB/);
+});
