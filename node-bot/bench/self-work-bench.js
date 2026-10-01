@@ -448,6 +448,8 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   const refuse = () => {
     throw new Error("the bench's own llama-server isn't running");
   };
+  // Its VRAM check would only see the bench's own server holding the card.
+  if (serverArgs) env.LLAMA_SERVER_VRAM_GUARD = "0";
   const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs ? { spawn: refuse } : {}) });
   let server = null;
   // A server the bench starts itself (a model whose experts sit in RAM)
