@@ -301,6 +301,23 @@ function createBrowserSession(options = {}) {
     return afterAction();
   }
 
+  // #1158: a file I pointed her to (index.js checks that) into a file
+  // input, or through the file chooser a button opens.
+  async function upload(ref, file) {
+    await refuseIfSensitive();
+    const target = page.locator(refSelector(ref));
+    await acting(async () => {
+      const isFileInput = await target.evaluate((el) => el.tagName === "INPUT" && el.type === "file", undefined, { timeout: ACTION_TIMEOUT_MS });
+      if (isFileInput) {
+        await target.setInputFiles(file, { timeout: ACTION_TIMEOUT_MS });
+      } else {
+        const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: ACTION_TIMEOUT_MS }), target.click({ timeout: ACTION_TIMEOUT_MS })]);
+        await chooser.setFiles(file);
+      }
+    });
+    return afterAction();
+  }
+
   async function back() {
     await page.goBack();
     return snapshot();
@@ -313,7 +330,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, hover, press, drag, back, find, snapshot, screenshot, url: () => page.url() };
+  return { navigate, click, type, select, scroll, hover, press, drag, upload, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {

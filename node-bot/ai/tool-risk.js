@@ -107,6 +107,7 @@ const BUILTIN_TIERS = {
   browser_automation__press: "network",
   browser_automation__drag: "network",
   browser_automation__tab: "network", // #1159: open loads a page
+  browser_automation__upload: "network", // #1158: sends a file I pointed her to
   browser_automation__batch: "network", // #1160: each step still asks for its site
 };
 
@@ -136,6 +137,7 @@ const SELF_GATED = new Set([
   "browser_automation__drag",
   "browser_automation__batch",
   "browser_automation__tab",
+  "browser_automation__upload",
 ]);
 
 // Once a turn has taken in outside content (a web page, search or wiki

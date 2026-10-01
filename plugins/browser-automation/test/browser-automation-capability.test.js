@@ -500,3 +500,48 @@ test("#1159: a tab that fails to open closes again, and MANA_BROWSER_MAX_TABS se
   await assert.rejects(() => session.tab({ do: "open", url: "https://c.test/" }), /2 tabs are open/);
   await browserAutomationPlugin.closeSession();
 });
+
+test("#1158: only files I point her to can be uploaded: the panel's picker or full paths in my message", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  browserAutomationPlugin._resetForTests();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-offer-"));
+  const cv = path.join(dir, "my cv.pdf");
+  const notes = path.join(dir, "notes.txt");
+  fs.writeFileSync(cv, "cv");
+  fs.writeFileSync(notes, "n");
+
+  assert.deepEqual(browserAutomationPlugin.pathsIn(`upload "${cv}" and ${notes}, thanks`), [cv, notes]);
+  assert.deepEqual(browserAutomationPlugin.offerFilesFromMessage(`upload "${cv}" and C:\\nope\\missing.pdf`), [cv]);
+  const secret = path.join(dir, ".env");
+  fs.writeFileSync(secret, "TOKEN=x");
+  assert.deepEqual(browserAutomationPlugin.offerFiles([secret]), []); // never a secret
+
+  const { chromium } = createFakeTabs();
+  const session = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium, ramPercent: () => 50 });
+  await assert.rejects(() => session.upload("e1", notes), /only upload a file the user pointed her to/);
+  await assert.rejects(() => session.upload("e1", "C:\\Windows\\win.ini"), /only upload a file the user pointed her to/);
+
+  // The Browser panel's picker, through its route (admin only).
+  let admin = false;
+  const app = buildApp({ isLocalRestartRequest: () => true, checkAdminAuth: (req, res) => admin || (res.status(401).json({}), false) });
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await postJson(`${baseUrl}/browser/offer-files`, { paths: [notes] })).response.status, 401);
+    admin = true;
+    const { payload } = await postJson(`${baseUrl}/browser/offer-files`, { paths: [notes, path.join(dir, "gone.txt")] });
+    assert.deepEqual(payload, { offered: [notes] });
+  });
+  // Offered through the panel, it passes the check (Windows paths ignore case).
+  const again = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium: createFakeTabs().chromium, ramPercent: () => 50 });
+  await assert.rejects(() => again.upload("e1", notes.toUpperCase()), (e) => !/only upload/.test(e.message));
+  await browserAutomationPlugin.closeSession();
+});
+
+test("pathsIn stays fast on a long run of punctuation after a path", () => {
+  const started = Date.now();
+  const bang = "!".repeat(100000);
+  assert.deepEqual(browserAutomationPlugin.pathsIn(`see C:\\a\\b.pdf${bang}x`), [`C:\\a\\b.pdf${bang}x`]);
+  assert.deepEqual(browserAutomationPlugin.pathsIn("see C:\\a\\b.pdf!)."), ["C:\\a\\b.pdf"]);
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+});

@@ -91,6 +91,7 @@ test("listToolSchemas exposes navigate/snapshot/click/type as OpenAI-shaped tool
       "browser_automation__snapshot",
       "browser_automation__tab",
       "browser_automation__type",
+      "browser_automation__upload",
     ],
   );
   assert.equal(schemas.length, TOOL_SCHEMAS.length);

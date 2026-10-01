@@ -27,6 +27,7 @@ internal sealed class TrayNotificationClient : IDisposable
     private readonly Action<TrayNotificationPayload>? onSpeak;
     private readonly Action<TrayNotificationPayload>? onCharacter;
     private readonly Action<TrayNotificationPayload>? onSelfWork;
+    private readonly Action<TrayNotificationPayload>? onBrowserDownload;
     private readonly bool proactiveToasts;
     private readonly CancellationTokenSource cts = new();
 
@@ -43,8 +44,9 @@ internal sealed class TrayNotificationClient : IDisposable
     // thread-pool thread.
     // #1008: onSelfWork gets the starts and ends of Mana's work on her own
     // code, on a thread-pool thread.
-    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<TrayNotificationPayload>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null, ManaBackendClient? backendClient = null)
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<TrayNotificationPayload>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null, ManaBackendClient? backendClient = null, Action<TrayNotificationPayload>? onBrowserDownload = null)
     {
+        this.onBrowserDownload = onBrowserDownload;
         this.backendClient = backendClient;
         this.onSelfWork = onSelfWork;
         this.openChat = openChat;
@@ -149,6 +151,12 @@ internal sealed class TrayNotificationClient : IDisposable
         if (payload?.Type == "self-work")
         {
             onSelfWork?.Invoke(payload);
+            return;
+        }
+        // #1158: a download I approved, shown in the chat.
+        if (payload?.Type == "browser-download")
+        {
+            onBrowserDownload?.Invoke(payload);
             return;
         }
         // #1169: she asks me to take over her browser. node-bot doesn't

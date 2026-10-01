@@ -49,6 +49,7 @@ public class BrowserToolTests
                 "/browser-automation/activity" => activity(),
                 "/browser/close" => """{"ok":true}""",
                 "/browser/take-over" or "/browser/hand-back" => NotTakenOver,
+                "/browser/offer-files" => """{"offered":["C:\\files\\cv.pdf"]}""",
                 "/web/read" => readerPage,
                 _ => null,
             };
@@ -197,6 +198,29 @@ public class BrowserToolTests
             blocked = "null";
             Pump(tool.RefreshAsync());
             Assert.Equal("", Note().Text);
+        });
+    }
+
+    // #1158: the files she may upload come from my picker; nothing is sent
+    // when I cancel it.
+    [Fact]
+    public void Tool_GivesHerOnlyTheFilesIPick()
+    {
+        RunSta(() =>
+        {
+            var requests = new List<string>();
+            using var tool = new BrowserTool(Backend(requests, () => Activity("t1")));
+            string[]? picked = null;
+            tool.PickFiles = () => picked;
+            var give = tool.Controls.OfType<Panel>().SelectMany(p => p.Controls.OfType<Button>()).Single(b => b.Text == "Give her a file");
+
+            Click(give);
+            Assert.DoesNotContain(requests, r => r.Contains("offer-files"));
+
+            picked = [@"C:\files\cv.pdf"];
+            Click(give);
+            Pump(() => tool.Controls.OfType<Label>().Last().Text == "She may upload: cv.pdf");
+            Assert.Contains("""POST /browser/offer-files {"paths":["C:\\files\\cv.pdf"]}""", requests);
         });
     }
 
