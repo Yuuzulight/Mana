@@ -115,16 +115,18 @@ TOOL_SCHEMAS.push(
   }, ["steps"]),
 );
 
-// What the model reads: everything from the page sits inside one untrusted
-// frame.
 // #1157: the vision model's "x,y" (or NONE) inside the screenshot, or null.
+// Its answer is a few tokens; the cap keeps the regex short whatever comes.
 function parsePoint(answer, width, height) {
-  const match = /(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/.exec(String(answer || ""));
-  if (!match || /\bnone\b/i.test(answer)) return null;
+  const text = String(answer || "").slice(0, 200);
+  const match = /(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/.exec(text);
+  if (!match || /\bnone\b/i.test(text)) return null;
   const [x, y] = [Number(match[1]), Number(match[2])];
   return x >= 0 && y >= 0 && x < width && y < height ? { x: Math.round(x), y: Math.round(y) } : null;
 }
 
+// What the model reads: everything from the page sits inside one untrusted
+// frame.
 function describeForModel(result) {
   const lines = [`URL: ${result.url}`, `Title: ${result.title}`, ...(result.tabs ? ["Tabs:", ...result.tabs] : []), ""];
   if (result.matches) {
