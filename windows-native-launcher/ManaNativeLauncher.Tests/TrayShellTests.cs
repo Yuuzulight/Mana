@@ -22,6 +22,21 @@ public class TrayShellTests
     }
 
     [Fact]
+    public void QuitSignal_ReachesTheRunningLauncher()
+    {
+        var name = $"Mana.Tests.{Guid.NewGuid():N}";
+        using var quit = new ManualResetEventSlim();
+        using var listener = SingleInstance.ListenForQuit(quit.Set, name);
+
+        Assert.True(EventWaitHandle.TryOpenExisting($@"Local\{name}.Quit", out var signal));
+        using (signal)
+        {
+            signal.Set();
+        }
+        Assert.True(quit.Wait(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
     public void TrayTooltip_AddsTheDoctorAlertAndStaysWithinTheLimit()
     {
         Assert.Equal("Mana", ManaApplicationContext.TrayTooltip("Mana", null));
