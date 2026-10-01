@@ -1,5 +1,6 @@
 {
   "id": "921-whisper-keeps-writing-my-wake",
+  "kind": "node-bug",
   "pr": 921,
   "issue": 920,
   "base": "beff03e3e6f03deff050d9ef8e0af02a70799770",

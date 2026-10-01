@@ -1,5 +1,6 @@
 {
   "id": "903-let-me-add-my-own-words-to-the",
+  "kind": "node-feature",
   "pr": 903,
   "issue": 901,
   "base": "299e4ff1fd7241011f1da04e6d466d2bd3dca2e9",

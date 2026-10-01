@@ -6,10 +6,21 @@
 // says how she did. One case at a time, at below-normal priority, on her
 // chat model in a llama-server of the bench's own (never the backend's).
 //
-//   node bench/self-work-bench.js [--case <id>]... [--verify] [--out <dir>]
+//   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
+//     [--repeat N] [--model <gguf>] [--context N] [--label <name>]
+//     [--out <dir>] [--verify]
+//
+// #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
+// live); each runs --repeat times (model output varies); --model and
+// --context pick the configuration. The report (bench/results/<label> by
+// default) has pass@1, pass@k and the spread per configuration and kind, a
+// failure kind for each failed run, and its cost (wall, rounds, calls,
+// tokens, peak VRAM and RAM).
 //
 // --verify checks the cases themselves instead: the hidden tests fail at
-// the base commit and pass with the fix's files.
+// the base commit and pass with the fix's files. A live case (no merged
+// fix yet, fix: null) keeps its hidden tests in bench/hidden/<id>/ and
+// only has to fail at the base.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -17,6 +28,8 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const { createSelfWork, testEnv, systemRamPercent } = require("../self-work");
 
 const CASES_DIR = path.join(__dirname, "cases");
+const HIDDEN_DIR = path.join(__dirname, "hidden");
+const RESULTS_DIR = path.join(__dirname, "results");
 const HIDDEN_TEST_TIMEOUT_MS = 10 * 60 * 1000;
 // Not the backend's 8090, so the two never share a server.
 const BENCH_LLAMA_PORT = "8097";
@@ -34,7 +47,9 @@ function loadCases(dir = CASES_DIR) {
     .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
     .sort()
-    .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")));
+    .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")))
+    // A live case's hidden tests live in the bench folder.
+    .map((c) => (c.fix ? c : { hiddenFrom: path.join(HIDDEN_DIR, c.id), ...c }));
 }
 
 // A detached worktree at the base commit, with node-bot's packages linked in.
@@ -67,11 +82,13 @@ function removeWorktree(repoRoot, wt) {
   }
 }
 
+// From the fix's commit, or for a live case from its hiddenFrom folder.
 function copyHiddenTests(repoRoot, wt, c) {
   for (const rel of c.hiddenTests) {
     const full = path.join(wt, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, git(repoRoot, "show", `${c.fix}:${rel}`) + "\n");
+    const text = c.fix ? git(repoRoot, "show", `${c.fix}:${rel}`) + "\n" : fs.readFileSync(path.join(c.hiddenFrom, rel), "utf8");
+    fs.writeFileSync(full, text);
   }
 }
 
@@ -137,7 +154,7 @@ async function runCase(c, deps) {
   const before = { ...tokens };
   try {
     // Counted here, so a loop that throws still reports what it did.
-    const calls = { total: 0, errors: 0 };
+    const calls = { total: 0, errors: 0, editErrors: 0 };
     const counted = (policy) => ({
       ...policy,
       async executeTool(name, args) {
@@ -146,10 +163,12 @@ async function runCase(c, deps) {
           return await policy.executeTool(name, args);
         } catch (e) {
           calls.errors += 1;
+          if (name === "coding__propose_edit") calls.editErrors += 1;
           throw e;
         }
       },
     });
+    const peaks = watchPeaks(deps.sample);
     const selfWork = createSelfWork({
       repoRoot,
       worktreesDir,
@@ -166,18 +185,27 @@ async function runCase(c, deps) {
     const started = Date.now();
     const { reply, run, error } = await selfWork.bench({ number: c.issue, title: c.title, body }, wt);
     const wallMs = Date.now() - started;
+    const peak = await peaks.stop();
+    const contextSize = deps.contextSize ? await deps.contextSize() : null;
     const diff = diffAgainst(wt, c.base);
     const allowed = new Set([...c.fixFiles, ...c.hiddenTests]);
     copyHiddenTests(repoRoot, wt, c);
     const hidden = runHiddenTests(wt, c);
-    return {
+    const result = {
       id: c.id,
+      kind: c.kind || "",
+      repeat: deps.repeat || 1,
       passed: hidden.passed,
       rounds: run.round,
+      maxRounds: run.maxRounds,
       toolCalls: calls.total,
       // Calls that threw: a bad path, an edit whose old_text didn't match.
       toolErrors: calls.errors,
+      editErrors: calls.editErrors,
       wallMs,
+      peakVramMb: peak.vramMb,
+      peakRamPercent: peak.ramPercent,
+      contextSize,
       tokens: {
         prompt: tokens.prompt - before.prompt,
         completion: tokens.completion - before.completion,
@@ -199,9 +227,66 @@ async function runCase(c, deps) {
       patch: diff.patch,
       hiddenTail: hidden.passed ? "" : hidden.tail,
     };
+    result.failure = failureKind(result, c);
+    return result;
   } finally {
     removeWorktree(repoRoot, wt);
   }
+}
+
+// #1221: why a run failed, first match wins. Scope creep is a failed run
+// that touched files the real fix didn't (a passing one only notes it).
+function failureKind(r, c) {
+  if (r.passed) return null;
+  const overflow = /outgrew the model's context|exceeds the available context/i.test(`${r.summary} ${r.error || ""}`);
+  if (overflow || (r.contextSize && r.tokens.peak >= 0.78 * r.contextSize)) return "context overflow";
+  if (r.ended === "stuck") return "stuck";
+  if (r.ended === "refuted") return "no valid edit: reviewer refusal";
+  if (/parse tool call/i.test(r.error || "")) return "no valid edit: parse failure";
+  if (r.ended === "error") return "error";
+  if (!r.diff.files.length) {
+    if (r.editErrors) return "no valid edit: bad arguments";
+    if (r.tokens.textCalls) return "no valid edit: parse failure";
+    if (r.maxRounds && r.rounds >= r.maxRounds) return "out of rounds";
+    return "no valid edit";
+  }
+  const code = c.fixFiles.filter((f) => /\.(js|cs|ts|ps1|py)$/.test(f));
+  if (code.length && !r.diff.files.some((f) => code.includes(f))) return "wrong file";
+  if (r.maxRounds && r.rounds >= r.maxRounds && r.ended !== "finished") return "out of rounds";
+  if (r.outside.length) return "scope creep";
+  return "tests fail";
+}
+
+// Peak VRAM (MB used, from nvidia-smi) and system RAM while a case runs.
+// sample: async () => ({ vramMb, ramPercent }), every 5 seconds.
+function watchPeaks(sample) {
+  const peak = { vramMb: null, ramPercent: null };
+  if (!sample) return { stop: async () => peak };
+  const take = async () => {
+    const s = await sample().catch(() => null);
+    if (!s) return;
+    if (s.vramMb != null) peak.vramMb = Math.max(peak.vramMb ?? 0, s.vramMb);
+    if (s.ramPercent != null) peak.ramPercent = Math.max(peak.ramPercent ?? 0, s.ramPercent);
+  };
+  const first = take();
+  const timer = setInterval(take, 5000);
+  return {
+    async stop() {
+      clearInterval(timer);
+      await first;
+      await take();
+      return peak;
+    },
+  };
+}
+
+function sampleMachine() {
+  const { execFile } = require("node:child_process");
+  return new Promise((resolve) => {
+    execFile("nvidia-smi", ["--query-gpu=memory.used", "--format=csv,noheader,nounits"], { windowsHide: true }, (err, out) => {
+      resolve({ vramMb: err ? null : Number(String(out).trim().split(/\r?\n/)[0]) || null, ramPercent: systemRamPercent() });
+    });
+  });
 }
 
 // The case itself is sound: its hidden tests fail at the base and pass
@@ -212,6 +297,7 @@ function verifyCase(c, { repoRoot, worktreesDir }) {
   try {
     copyHiddenTests(repoRoot, wt, c);
     const atBase = runHiddenTests(wt, c);
+    if (!c.fix) return { id: c.id, ok: !atBase.passed, failsAtBase: !atBase.passed, passesWithFix: null, tail: atBase.tail };
     git(wt, "checkout", c.fix, "--", ...c.fixFiles);
     const withFix = runHiddenTests(wt, c);
     return { id: c.id, ok: !atBase.passed && withFix.passed, failsAtBase: !atBase.passed, passesWithFix: withFix.passed, tail: withFix.passed ? "" : withFix.tail };
@@ -220,23 +306,83 @@ function verifyCase(c, { repoRoot, worktreesDir }) {
   }
 }
 
+// #1221: pass@1 (the mean over repeats), pass@k (passed in any repeat)
+// and the spread (fewest and most passes in one repeat), overall and by
+// kind; failure kinds; and the mean cost of a run.
+function summarize(results) {
+  const repeats = [...new Set(results.map((r) => r.repeat || 1))];
+  const ids = [...new Set(results.map((r) => r.id))];
+  const of = (rows) => {
+    const cases = [...new Set(rows.map((r) => r.id))];
+    const perRepeat = repeats.map((k) => rows.filter((r) => (r.repeat || 1) === k && r.passed).length);
+    const anyPass = cases.filter((id) => rows.some((r) => r.id === id && r.passed)).length;
+    return {
+      cases: cases.length,
+      pass1: cases.length ? perRepeat.reduce((a, b) => a + b, 0) / repeats.length / cases.length : 0,
+      passK: cases.length ? anyPass / cases.length : 0,
+      spread: [Math.min(...perRepeat), Math.max(...perRepeat)],
+    };
+  };
+  const kinds = [...new Set(results.map((r) => r.kind || ""))].sort();
+  const failures = {};
+  for (const r of results) if (r.failure) failures[r.failure] = (failures[r.failure] || 0) + 1;
+  const mean = (f) => {
+    const v = results.map(f).filter((x) => typeof x === "number");
+    return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null;
+  };
+  return {
+    repeats: repeats.length,
+    cases: ids.length,
+    runs: results.length,
+    overall: of(results),
+    byKind: Object.fromEntries(kinds.map((k) => [k, of(results.filter((r) => (r.kind || "") === k))])),
+    failures,
+    cost: {
+      wallS: mean((r) => r.wallMs / 1000),
+      rounds: mean((r) => r.rounds),
+      toolCalls: mean((r) => r.toolCalls),
+      promptTokens: mean((r) => r.tokens.prompt),
+      outTokens: mean((r) => r.tokens.completion),
+      peakPrompt: mean((r) => r.tokens.peak),
+      peakVramMb: mean((r) => r.peakVramMb),
+      peakRamPercent: mean((r) => r.peakRamPercent),
+    },
+  };
+}
+
+const pct = (x) => `${Math.round(x * 100)}%`;
+
 function writeReport(results, outDir, meta = {}) {
   fs.mkdirSync(outDir, { recursive: true });
-  for (const r of results) if (r.patch) fs.writeFileSync(path.join(outDir, `${r.id}.diff`), r.patch + "\n");
+  const name = (r) => (meta.repeats > 1 ? `${r.id}-r${r.repeat}` : r.id);
+  for (const r of results) if (r.patch) fs.writeFileSync(path.join(outDir, `${name(r)}.diff`), r.patch + "\n");
   const rows = results.map(({ patch, ...r }) => r);
+  const summary = summarize(rows);
   const passed = rows.filter((r) => r.passed).length;
-  fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ ...meta, passed, total: rows.length, results: rows }, null, 2));
+  fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ ...meta, passed, total: rows.length, summary, results: rows }, null, 2));
   const tok = (t) => (t.prompt || t.completion ? `${t.prompt} / ${t.completion} / ${t.peak}` : "n/a");
+  const o = summary.overall;
+  const c = summary.cost;
   const md = [
     `# Self-work benchmark${meta.label ? `: ${meta.label}` : ""}`,
     "",
-    `${passed}/${rows.length} hidden tests passing.${meta.model ? ` Model: ${meta.model}.` : ""}`,
+    `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
     "",
-    "| Case | Hidden test | Ended | Rounds | Tool calls (errors) | Wall | Tokens (prompt / out / peak) | Calls in text | Diff (+/-, files) | Outside the fix's files |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    `**pass@1 ${pct(o.pass1)}, pass@${summary.repeats} ${pct(o.passK)}**, passes per repeat ${o.spread[0]}-${o.spread[1]} of ${o.cases}. ${passed}/${rows.length} runs passed.`,
+    "",
+    "| Kind | Cases | pass@1 | pass@k | Spread |",
+    "| --- | --- | --- | --- | --- |",
+    ...Object.entries(summary.byKind).map(([k, v]) => `| ${k || "-"} | ${v.cases} | ${pct(v.pass1)} | ${pct(v.passK)} | ${v.spread[0]}-${v.spread[1]} |`),
+    "",
+    `Failures: ${Object.entries(summary.failures).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}.`,
+    "",
+    `Mean cost of a run: ${c.wallS}s, ${c.rounds} rounds, ${c.toolCalls} tool calls, ${c.promptTokens} prompt / ${c.outTokens} out tokens, peak prompt ${c.peakPrompt}, peak VRAM ${c.peakVramMb ?? "n/a"} MB, peak RAM ${c.peakRamPercent ?? "n/a"}%.`,
+    "",
+    "| Case | Kind | Run | Hidden test | Ended | Failure | Rounds | Tool calls (errors) | Wall | Tokens (prompt / out / peak) | Calls in text | Diff (+/-, files) | Outside the fix's files |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map(
       (r) =>
-        `| ${r.id} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s | ${tok(r.tokens)} | ${r.tokens.textCalls ?? 0} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
+        `| ${r.id} | ${r.kind || "-"} | ${r.repeat || 1} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.failure || "-"} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s | ${tok(r.tokens)} | ${r.tokens.textCalls ?? 0} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
     ),
     "",
   ].join("\n");
@@ -247,7 +393,9 @@ function writeReport(results, outDir, meta = {}) {
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
 // Tokens come from each reply's usage; a reply whose tool call stayed in
 // its text (no tool_calls) is counted too.
-function realModel(repoRoot, tokens) {
+// #1221: --model swaps the chat model (another GGUF on disk), and
+// --context sets the server's context and asks her runs for the same.
+function realModel(repoRoot, tokens, { model, context } = {}) {
   const { parseEnv } = require("node:util");
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
   const { refuteEdit } = require("../ai/adversarial-verifier");
@@ -259,6 +407,11 @@ function realModel(repoRoot, tokens) {
   delete env.LLAMA_VISION_MODEL;
   delete env.LLAMA_VISION_MMPROJ;
   env.LLAMA_CACHE_RAM = "0";
+  if (model) env.LLAMA_MODEL = model;
+  if (context) {
+    env.LLAMA_CONTEXT = String(context);
+    process.env.MANA_SELF_WORK_LLAMA_CONTEXT = String(context);
+  }
   const fetch = async (url, init) => {
     const resp = await globalThis.fetch(url, init);
     if (resp.ok && /\/v1\/chat\/completions$/.test(url)) {
@@ -279,6 +432,7 @@ function realModel(repoRoot, tokens) {
     model: path.basename(runtime.findLlamaModel("default") || env.LLAMA_MODEL || "?"),
     runLoop: (...args) => runtime.runToolAwareReply(...args),
     reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: runtime.runLocalReplyIfSafelyLoaded, env }),
+    contextSize: () => runtime.getContextSize(),
     stop: () => runtime.stop(),
   };
 }
@@ -293,9 +447,13 @@ async function main(argv) {
   const repoRoot = path.dirname(git(__dirname, "rev-parse", "--path-format=absolute", "--git-common-dir"));
   const worktreesDir = path.join(path.dirname(repoRoot), "Mana-worktrees");
   const wanted = opt("--case");
-  const cases = loadCases().filter((c) => !wanted.length || wanted.includes(c.id));
+  const kinds = opt("--kind");
+  const cases = loadCases().filter((c) => (!wanted.length || wanted.includes(c.id)) && (!kinds.length || kinds.includes(c.kind)));
   if (!cases.length) throw new Error("no such case");
-  const outDir = opt("--out")[0] || path.join(os.tmpdir(), "mana-self-work-bench", new Date().toISOString().replace(/[:.]/g, "-"));
+  const label = opt("--label")[0] || new Date().toISOString().replace(/[:.]/g, "-");
+  const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));
+  const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
+  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined };
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
@@ -313,10 +471,13 @@ async function main(argv) {
   }
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  const model = realModel(repoRoot, tokens);
+  const model = realModel(repoRoot, tokens, config);
+  const meta = { model: model.model, context: config.context, label, repeats };
   const results = [];
+  const runs = [];
+  for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
   try {
-    for (const c of cases) {
+    for (const { c, repeat } of runs) {
       // Wait out a game, a RAM spike or her chat model for up to 20 minutes.
       let why = await blocker(gate);
       for (let waited = 0; why && waited < 20; waited += 1) {
@@ -328,7 +489,7 @@ async function main(argv) {
         console.log(`Stopping before ${c.id}: ${why}.`);
         break;
       }
-      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens });
+      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine });
       // No room for the model (the backend's chat model is loaded, say):
       // not her result, so the run stops here instead of scoring it.
       if (/refusing to load/.test(result.error || "")) {
@@ -336,12 +497,12 @@ async function main(argv) {
         break;
       }
       results.push(result);
-      writeReport(results, outDir, { model: model.model, label: opt("--label")[0] });
+      writeReport(results, outDir, meta);
     }
   } finally {
     await model.stop();
   }
-  console.log(writeReport(results, outDir, { model: model.model, label: opt("--label")[0] }));
+  console.log(writeReport(results, outDir, meta).split("\n").slice(0, 14).join("\n"));
   console.log(`Report: ${outDir}`);
 }
 
@@ -352,4 +513,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, makeWorktree, removeWorktree };
+module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree };
