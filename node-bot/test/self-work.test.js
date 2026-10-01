@@ -667,3 +667,20 @@ test("#1212: her code change waits for a test she's seen fail; the test itself c
   assert.equal(JSON.parse(results[4]).status, "ok");
   assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
 });
+
+test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
+  const repos = makeRepos();
+  const worktree = path.join(repos.base, "bench-wt");
+  git(repos.live, "worktree", "add", "-q", "--detach", worktree, "HEAD");
+  const { sw, ghCalls } = selfWork(repos, { calls: [fix, runTests, finish] });
+  const { reply, run } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, worktree);
+
+  assert.equal(run.finished, true);
+  assert.equal(run.lastTestPassed, true);
+  assert.match(reply.content, /made add\(\) add/);
+  assert.match(fs.readFileSync(path.join(worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
+  assert.deepEqual(ghCalls, []);
+  assert.equal(git(worktree, "status", "--porcelain"), "M node-bot/util.js");
+  assert.equal(git(repos.origin, "branch", "--list"), "* main");
+  assert.equal(sw.status().state, "idle");
+});

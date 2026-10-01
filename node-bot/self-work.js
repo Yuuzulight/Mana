@@ -69,6 +69,15 @@ function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
 }
 
+// A glob as a whole-path, case-insensitive regex: * and ? stay within one
+// folder, ** crosses folders.
+function globRe(glob) {
+  const body = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*\/?|\*|\?/g, (m) => ({ "?": "[^/]", "*": "[^/]*", "**/": "(?:.*/)?" })[m] || ".*");
+  return new RegExp(`^${body}$`, "i");
+}
+
 function slugify(title) {
   return (
     String(title || "")
@@ -110,7 +119,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__files",
-      description: "List files in your worktree whose path contains the given text (case-insensitive).",
+      description: `List files in your worktree whose path contains the given text, or matches it as a glob (*, **, ?; without a / it matches the file name). Case-insensitive, at most ${MAX_LIST}.`,
       parameters: { type: "object", properties: { contains: { type: "string" } }, required: ["contains"] },
     },
   },
@@ -118,11 +127,12 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__search",
-      description: "Search the worktree's tracked files for an exact text. Returns path:line: text matches.",
+      description: "Search the worktree's tracked files for an exact text, or a regular expression with regex: true. Returns path:line: text matches (at most 60).",
       parameters: {
         type: "object",
         properties: {
           text: { type: "string" },
+          regex: { type: "boolean", description: "Treat text as an extended regular expression." },
           path: { type: "string", description: "Optional file or folder to search in." },
         },
         required: ["text"],
@@ -495,19 +505,7 @@ function createSelfWork(options = {}) {
 
     log(r, "Working on it in my worktree.");
     await owner();
-    const tools = worktreeTools(r);
-    const reply = await runLoop(buildPrompt(r, issue), tools, {
-      goal: `Implement issue #${r.issue}: ${r.title}`,
-      maxRounds: MAX_ROUNDS,
-      // #1124: how far into the round cap she is, for the Background tasks panel.
-      onRound: (round) => {
-        r.round = round;
-      },
-      maxMs: Infinity,
-      maxTokens: 2048,
-      overrideSystemPrompt:
-        "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
-    });
+    const reply = await loop(r, issue);
     const summary = stripAttribution(reply?.content);
 
     if (haltedEnd(r)) return;
@@ -545,6 +543,35 @@ function createSelfWork(options = {}) {
     }
     r.prUrl = url.split(/\s+/).pop();
     end(r, "pr-open", `My PR for #${r.issue} is ready: ${r.prUrl}`);
+  }
+
+  // Goal mode over her worktree tools, for a real run and a bench run alike.
+  function loop(r, issue) {
+    return runLoop(buildPrompt(r, issue), worktreeTools(r), {
+      goal: `Implement issue #${r.issue}: ${r.title}`,
+      maxRounds: MAX_ROUNDS,
+      // #1124: how far into the round cap she is, for the Background tasks panel.
+      onRound: (round) => {
+        r.round = round;
+      },
+      maxMs: Infinity,
+      maxTokens: 2048,
+      overrideSystemPrompt:
+        "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
+    });
+  }
+
+  // #1203: the benchmark's way in. Her loop on an issue's text, in a
+  // worktree the caller made: no fetch, no labels, no commit, no push, no
+  // PR. A loop that throws (where a real run would end "failed") comes
+  // back as error, with the run as far as it got.
+  async function bench(issue, worktree) {
+    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench" });
+    try {
+      return { reply: await loop(r, issue), run: r };
+    } catch (e) {
+      return { reply: null, run: r, error: e.message };
+    }
   }
 
   // Her worktree on r.branch (a new branch starts at start), with
@@ -722,14 +749,17 @@ ${
 
     async function files({ contains }) {
       const needle = String(contains || "").toLowerCase();
+      // A glob without a folder matches the file name, like .gitignore.
+      const glob = /[*?]/.test(needle) && globRe(needle);
+      const name = (f) => (needle.includes("/") ? f : path.posix.basename(f));
       const all = (await git(["ls-files"], root)).split(/\r?\n/);
-      const hits = all.filter((f) => f.toLowerCase().includes(needle));
+      const hits = all.filter((f) => (glob ? glob.test(name(f)) : f.toLowerCase().includes(needle)));
       return hits.slice(0, MAX_LIST).join("\n") + (hits.length > MAX_LIST ? `\n...and ${hits.length - MAX_LIST} more` : "");
     }
 
-    async function search({ text, path: where }) {
+    async function search({ text, path: where, regex }) {
       if (!text) throw new Error("text is required");
-      const args = ["grep", "-n", "-I", "-F", "-e", String(text)];
+      const args = ["grep", "-n", "-I", regex === true ? "-E" : "-F", "-e", String(text)];
       if (where) args.push("--", posix(inside(where)));
       const r2 = await exec("git", args, { cwd: root, env: gitEnv });
       if (r2.code === 1) return "No matches.";
@@ -929,7 +959,7 @@ ${
     };
   }
 
-  return { start, startIdle, refresh, stop, status, chatToolSource, _current: () => current };
+  return { start, startIdle, refresh, stop, status, chatToolSource, bench, _current: () => current };
 }
 
 module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };

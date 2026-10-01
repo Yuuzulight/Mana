@@ -166,14 +166,15 @@ test("#905 a reminder is a Reminder toast and a spoken line through the proactiv
   const proactive = require("../../../node-bot/proactive");
   proactive.watchGaming(() => true);
   try {
-    let now = 1000;
+    const noon = new Date(2026, 9, 2, 12, 0).getTime(); // outside quiet time
+    let now = noon;
     const scheduler = cronPlugin._getSchedulerForTests({
       dataDir: createTempDir(),
       now: () => now,
       acpMemoryStore: { listFacts: () => [{ key: "name", text: "Yuuzu", status: "active" }] },
     });
-    scheduler.addJob({ name: "raid in 10 minutes.", jobType: "reminder", schedule: { type: "once", at: 1500 } });
-    now = 1600;
+    scheduler.addJob({ name: "raid in 10 minutes.", jobType: "reminder", schedule: { type: "once", at: noon + 500 } });
+    now = noon + 600;
     await scheduler.runDueJobs();
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(
@@ -211,4 +212,68 @@ test("plugin metadata matches the shape other Mana plugins use", () => {
   assert.equal(typeof cronPlugin.registerRoutes, "function");
   const health = cronPlugin.getHealth({ dataDir: createTempDir() });
   assert.equal(health.status, "available");
+});
+
+// Tier 3 #2: catching up after Mana was off.
+async function catchUp(names, { dueAt, now }) {
+  cronPlugin._resetForTests();
+  const proactive = require("../../../node-bot/proactive");
+  const realOffer = proactive.offer;
+  const offered = [];
+  proactive.offer = (candidate) => (offered.push(candidate.payload), "held");
+  try {
+    let clock = dueAt - 1000;
+    const scheduler = cronPlugin._getSchedulerForTests({ dataDir: createTempDir(), now: () => clock });
+    for (const name of names) scheduler.addJob({ name, jobType: "reminder", schedule: { type: "once", at: dueAt } });
+    clock = now;
+    await scheduler.runDueJobs();
+    await new Promise((resolve) => setImmediate(resolve));
+    return { offered, scheduler };
+  } finally {
+    proactive.offer = realOffer;
+  }
+}
+
+test("missed reminders: the first 3 come back one by one, the rest as one 'and N more'", async () => {
+  const noon = new Date(2026, 9, 2, 12, 0).getTime();
+  const { offered, scheduler } = await catchUp(["a", "b", "c", "d", "e"], { dueAt: noon - 3 * 60 * 60 * 1000, now: noon });
+  assert.deepEqual(
+    offered.map((p) => [p.title, p.text, p.kind]),
+    [
+      ["Reminder", "a", "reminder-late"],
+      ["Reminder", "b", "reminder-late"],
+      ["Reminder", "c", "reminder-late"],
+      ["Reminders", "And 2 more: d; e", "reminder-late"],
+    ],
+  );
+  assert.match(offered[3].speak, /^And 2 more reminders I missed/);
+  assert.deepEqual(scheduler.listJobs(), []);
+});
+
+test("missed reminders older than a day aren't brought up", async () => {
+  const noon = new Date(2026, 9, 2, 12, 0).getTime();
+  const { offered, scheduler } = await catchUp(["old"], { dueAt: noon - 25 * 60 * 60 * 1000, now: noon });
+  assert.deepEqual(offered, []);
+  assert.deepEqual(scheduler.listJobs(), []);
+});
+
+test("in quiet time (1am-9am) a reminder is a silent toast, said once quiet time is over", async () => {
+  const threeAm = new Date(2026, 9, 2, 3, 0).getTime();
+  const { offered } = await catchUp(["water the plants."], { dueAt: threeAm, now: threeAm });
+  assert.equal(offered.length, 1);
+  assert.equal(offered[0].text, "water the plants.");
+  assert.equal(offered[0].speak, undefined);
+
+  const proactive = require("../../../node-bot/proactive");
+  const realOffer = proactive.offer;
+  const later = [];
+  proactive.offer = (candidate) => (later.push(candidate.payload), "held");
+  try {
+    cronPlugin._sayHeldRemindersForTests(new Date(2026, 9, 2, 8, 59).getTime());
+    assert.deepEqual(later, []);
+    cronPlugin._sayHeldRemindersForTests(new Date(2026, 9, 2, 9, 0).getTime());
+    assert.deepEqual(later.map((p) => [p.text, p.speak, p.kind]), [["water the plants.", "water the plants!", "reminder-late"]]);
+  } finally {
+    proactive.offer = realOffer;
+  }
 });

@@ -1,0 +1,17 @@
+{
+  "id": "1170-discord-bot-can-t-find-discord",
+  "pr": 1170,
+  "issue": 1167,
+  "base": "7aad18704dd1ea745fcf5477fe3b1cb67b146325",
+  "fix": "a528d84cc8062cd11e7aca2e0022564dc6862bc7",
+  "title": "Discord bot can't find discord.js from the plugins folder",
+  "body": "The Discord bot plugin loads `discord.js`, `@discordjs/voice` and `prism-media` with bare requires from `plugins/discord-bot/index.js`. Those packages live in `node-bot/node_modules`, and Node never looks there from `plugins/`, so starting the bot throws MODULE_NOT_FOUND. It has never been able to connect. The browser automation plugin had the same problem with `playwright-core`, which #1162 fixes.\n\nI want the three requires pointed at node-bot's packages, the same way #1162 does it, plus a node-bot test that fails if any plugin gains a bare package require that doesn't resolve.\n\nOut of scope: `plugins/document-reader` requires `pdf-parse`, which isn't in node-bot's dependencies at all, so PDF reading is broken too. Fixing that means adding a package, which I'll decide separately.",
+  "fixFiles": [
+    "plugins/discord-bot/index.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/plugin-requires.test.js"
+  ],
+  "testCommand": "node --test test/plugin-requires.test.js",
+  "why": "Plugin code outside node-bot/: the fix is three require paths in plugins/discord-bot/index.js. Tests whether she can find code from a symptom (MODULE_NOT_FOUND) and stay small."
+}
