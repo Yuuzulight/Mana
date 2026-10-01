@@ -115,6 +115,11 @@ const BUILTIN_TIERS = {
   browser_automation__back: "network",
   browser_automation__press: "network",
   browser_automation__drag: "network",
+  browser_automation__tab: "network", // #1159: open loads a page
+  browser_automation__upload: "network", // #1158: sends a file I pointed her to
+  browser_automation__look_and_click: "network", // #1157: a click, found by eye
+  browser_automation__devtools: "network", // #1161: can run JavaScript on the page
+  browser_automation__test_site: "network", // #1161: loads and checks pages
   browser_automation__batch: "network", // #1160: each step still asks for its site
 };
 
@@ -143,6 +148,11 @@ const SELF_GATED = new Set([
   "browser_automation__press",
   "browser_automation__drag",
   "browser_automation__batch",
+  "browser_automation__tab",
+  "browser_automation__upload",
+  "browser_automation__look_and_click",
+  "browser_automation__devtools",
+  "browser_automation__test_site",
   "git__change",
   "git__push",
   "github__write",

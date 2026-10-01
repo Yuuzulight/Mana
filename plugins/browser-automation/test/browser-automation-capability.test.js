@@ -383,9 +383,7 @@ test("#1168: ad and tracker domains are always blocked and counted per page, whi
   assert.equal(await outcome("https://www.googletagmanager.com/gtm.js"), "abort");
   assert.equal(await outcome("https://site.test/app.js"), "continue");
   assert.equal(await outcome("https://site.test/logo.png", "image"), "continue"); // watched
-  page.listeners.pageerror(new Error("adsbygoogle is not defined"));
-
-  // The page is empty and threw: the session flags what was blocked.
+  // The page is empty: the session flags what was blocked.
   page.ariaSnapshot = async () => "";
   page.evaluate = async (fn) => (fn.name === "extractTextInPage" ? "" : null);
   page._url = "https://site.test/";
@@ -420,4 +418,163 @@ test("#1169: a new hand-over request pops one toast, never while gaming, and nev
   browserAutomationPlugin.requestHandOver("Something else", deps);
   assert.equal(toasts.length, 1);
   await browserAutomationPlugin.handBack();
+});
+
+// A fake context that opens as many pages as asked, each a small fake page.
+function createFakeTabs() {
+  const pages = [];
+  function makePage(n) {
+    return {
+      n,
+      closed: false,
+      _url: "about:blank",
+      on() {},
+      mainFrame() {},
+      async route() {},
+      async goto(url) { this._url = url; },
+      async ariaSnapshot() { return `- button "Go ${n}" [ref=e1]`; },
+      async evaluate(fn) { return fn.name === "extractTextInPage" ? `page ${n}` : null; },
+      async title() { return `Page ${n}`; },
+      async url() { return this._url; },
+      async close() { this.closed = true; },
+    };
+  }
+  const context = {
+    pages: () => pages.slice(0, 1),
+    async newPage() {
+      const page = makePage(pages.length + 1);
+      pages.push(page);
+      return page;
+    },
+    on() {},
+    async close() {},
+  };
+  return { chromium: { launchPersistentContext: async () => context }, pages };
+}
+
+test("#1159: she opens, lists, switches and closes up to three tabs, and extra ones close when her task ends", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, pages } = createFakeTabs();
+  let ram = 50;
+  const session = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium, ramPercent: () => ram });
+  await session.navigate("https://a.test/");
+  assert.equal((await session.snapshot()).tabs, undefined); // one tab: no list
+
+  const second = await session.tab({ do: "open", url: "https://b.test/" });
+  assert.equal(second.url, "https://b.test/");
+  assert.deepEqual(second.tabs, ["1. Page 1 -- https://a.test/", "2. Page 2 -- https://b.test/ (current)"]);
+  await session.tab({ do: "open", url: "https://c.test/" });
+  await assert.rejects(() => session.tab({ do: "open", url: "https://d.test/" }), /3 tabs are open, the most she may have/);
+
+  const switched = await session.tab({ do: "switch", number: 1 });
+  assert.equal(switched.url, "https://a.test/");
+  assert.match(switched.tabs[0], /\(current\)$/);
+  assert.equal(await session.url(), "https://a.test/");
+  await assert.rejects(() => session.tab({ do: "switch", number: 4 }), /there's no tab 4; she has 3/);
+
+  const closed = await session.tab({ do: "close", number: 2 });
+  assert.equal(pages[1].closed, true);
+  assert.deepEqual(closed.tabs, ["1. Page 1 -- https://a.test/ (current)", "2. Page 3 -- https://c.test/"]);
+
+  // RAM gate: no new tab above the limit.
+  ram = 86;
+  await assert.rejects(() => session.tab({ do: "open", url: "https://e.test/" }), /no new tab while RAM is at 86%/);
+  ram = 50;
+
+  await session.tab({ do: "switch", number: 2 });
+  await browserAutomationPlugin.closeExtraTabs();
+  assert.equal(pages[0].closed, true);
+  assert.equal(pages[2].closed, false);
+  assert.equal(await session.url(), "https://c.test/");
+  await assert.rejects(() => session.tab({ do: "close", number: 1 }), /her only tab/);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#1159: a tab that fails to open closes again, and MANA_BROWSER_MAX_TABS sets the limit", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, pages } = createFakeTabs();
+  const session = await browserAutomationPlugin.getSession({ env: { ...FAKE_ENV, MANA_BROWSER_MAX_TABS: "2" }, chromium, ramPercent: () => 50 });
+  await assert.rejects(() => session.tab({ do: "open", url: "file:///C:/x" }), /only http\/https/);
+  assert.equal(pages[1].closed, true);
+  await session.tab({ do: "open", url: "https://b.test/" });
+  await assert.rejects(() => session.tab({ do: "open", url: "https://c.test/" }), /2 tabs are open/);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#1158: only files I point her to can be uploaded: the panel's picker or full paths in my message", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  browserAutomationPlugin._resetForTests();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-offer-"));
+  const cv = path.join(dir, "my cv.pdf");
+  const notes = path.join(dir, "notes.txt");
+  fs.writeFileSync(cv, "cv");
+  fs.writeFileSync(notes, "n");
+
+  assert.deepEqual(browserAutomationPlugin.pathsIn(`upload "${cv}" and ${notes}, thanks`), [cv, notes]);
+  assert.deepEqual(browserAutomationPlugin.offerFilesFromMessage(`upload "${cv}" and C:\\nope\\missing.pdf`), [cv]);
+  const secret = path.join(dir, ".env");
+  fs.writeFileSync(secret, "TOKEN=x");
+  assert.deepEqual(browserAutomationPlugin.offerFiles([secret]), []); // never a secret
+
+  const { chromium } = createFakeTabs();
+  const session = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium, ramPercent: () => 50 });
+  await assert.rejects(() => session.upload("e1", notes), /only upload a file the user pointed her to/);
+  await assert.rejects(() => session.upload("e1", "C:\\Windows\\win.ini"), /only upload a file the user pointed her to/);
+
+  // The Browser panel's picker, through its route (admin only).
+  let admin = false;
+  const app = buildApp({ isLocalRestartRequest: () => true, checkAdminAuth: (req, res) => admin || (res.status(401).json({}), false) });
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await postJson(`${baseUrl}/browser/offer-files`, { paths: [notes] })).response.status, 401);
+    admin = true;
+    const { payload } = await postJson(`${baseUrl}/browser/offer-files`, { paths: [notes, path.join(dir, "gone.txt")] });
+    assert.deepEqual(payload, { offered: [notes] });
+  });
+  // Offered through the panel, it passes the check (Windows paths ignore case).
+  const again = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium: createFakeTabs().chromium, ramPercent: () => 50 });
+  await assert.rejects(() => again.upload("e1", notes.toUpperCase()), (e) => !/only upload/.test(e.message));
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#1161: each tab keeps its console and network for dev tools, without the requests we blocked ourselves", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, page } = createFakeChromium();
+  const session = await browserAutomationPlugin.getSession({ env: FAKE_ENV, chromium, ramPercent: () => 50 });
+  page._url = "https://site.test/";
+  const request = (url, extra = {}) => ({
+    url: () => url,
+    method: () => "GET",
+    resourceType: () => extra.type || "script",
+    timing: () => ({ responseEnd: extra.ms ?? 10 }),
+    response: async () => ({ status: () => extra.status ?? 200 }),
+    failure: () => ({ errorText: "net::ERR_FAILED" }),
+  });
+  const ad = request("https://doubleclick.net/ad.js");
+  await page.routeHandler({ request: () => ad, abort: async () => {}, continue: async () => {} });
+  page.listeners.requestfailed(ad); // our own block: not the site's failure
+  page.listeners.requestfailed(request("https://site.test/missing.js"));
+  await page.listeners.requestfinished(request("https://site.test/api", { status: 503, ms: 80 }));
+  page.listeners.console({ type: () => "error", text: () => "boom" });
+  page.listeners.pageerror(new Error("Uncaught ReferenceError"));
+
+  const network = await session.devtools({ do: "network" });
+  assert.deepEqual(network.devtools.filter((l) => l.startsWith("failed")), [
+    "failed: GET https://site.test/missing.js -- net::ERR_FAILED",
+    "failed: GET https://site.test/api -- HTTP 503",
+  ]);
+  assert.deepEqual((await session.devtools({ do: "console" })).devtools, ["error: boom", "error: Uncaught ReferenceError"]);
+
+  page.listeners.framenavigated("main"); // a new page starts clean
+  assert.deepEqual((await session.devtools({ do: "console" })).devtools, []);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("pathsIn stays fast on a long run of punctuation after a path", () => {
+  const started = Date.now();
+  const bang = "!".repeat(100000);
+  assert.deepEqual(browserAutomationPlugin.pathsIn(`see C:\\a\\b.pdf${bang}x`), [`C:\\a\\b.pdf${bang}x`]);
+  assert.deepEqual(browserAutomationPlugin.pathsIn("see C:\\a\\b.pdf!)."), ["C:\\a\\b.pdf"]);
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
 });

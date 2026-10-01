@@ -287,7 +287,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 }
             }),
             onSelfWork: payload => RunOnUi(() => ShowSelfWorkNotice(chatLog, payload)),
-            backendClient: backendClient);
+            backendClient: backendClient,
+            // #1158: where a download I approved went.
+            onBrowserDownload: payload => RunOnUi(() => chatLog.AppendManaMessage(payload.Text)));
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));

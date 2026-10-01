@@ -19,6 +19,10 @@ const INTERACTIVE_ROLES = new Set([
   "switch", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
 const REF_RE = /^(?:f\d+)?e\d+$/;
+// #1161: the sizes she tests a page at.
+const VIEWPORTS = { phone: { width: 390, height: 844 }, tablet: { width: 820, height: 1180 }, desktop: { width: 1280, height: 720 } };
+const MAX_JS_RESULT_CHARS = 2000;
+const { inspectInPage, MAX_LINKS } = require("./site-test");
 // #1155: keys she may press -- the page's own keys, never a shortcut that
 // acts outside it (closing or opening tabs, printing, saving, devtools).
 const NAMED_KEYS = new Map(
@@ -146,17 +150,19 @@ function createBrowserSession(options = {}) {
     throw new Error("a page-like object ({goto, ariaSnapshot, locator, evaluate, title, url, screenshot}) is required");
   }
   const maxTextChars = Math.max(200, Number(options.maxTextChars) || MAX_PAGE_TEXT_CHARS);
-  // #1168: { blockedAds, pageErrors } for the current page (index.js).
-  const pageHealth = options.pageHealth || (() => ({ blockedAds: 0, pageErrors: 0 }));
+  // #1168: { blockedAds } for the current page (index.js).
+  const pageHealth = options.pageHealth || (() => ({ blockedAds: 0 }));
   let last = null;
 
-  // Ads or trackers were blocked and the page looks broken (script errors,
-  // or next to nothing to read or use): the count, else 0. She doesn't
-  // retry without blocking; I can open it in my own browser.
+  // Ads or trackers were blocked and the page looks broken (next to
+  // nothing to read or use): the count, else 0. #1179: script errors alone
+  // don't count -- ad-heavy pages throw them once their ads are gone and
+  // still work. A timeout counts too (acting, below). She doesn't retry
+  // without blocking; I can open it in my own browser.
   function blockedMayBreak(elements, text) {
-    const { blockedAds, pageErrors } = pageHealth();
-    const empty = elements.length < 3 && String(text || "").length < 200;
-    return blockedAds > 0 && (pageErrors > 0 || empty) ? blockedAds : 0;
+    const { blockedAds } = pageHealth();
+    const thin = elements.length < 3 && String(text || "").length < 200;
+    return blockedAds > 0 && thin ? blockedAds : 0;
   }
 
   // An action that timed out on a page with blocked ads says so too.
@@ -299,6 +305,142 @@ function createBrowserSession(options = {}) {
     return afterAction();
   }
 
+  // #1158: a file I pointed her to (index.js checks that) into a file
+  // input, or through the file chooser a button opens.
+  async function upload(ref, file) {
+    await refuseIfSensitive();
+    const target = page.locator(refSelector(ref));
+    await acting(async () => {
+      const isFileInput = await target.evaluate((el) => el.tagName === "INPUT" && el.type === "file", undefined, { timeout: ACTION_TIMEOUT_MS });
+      if (isFileInput) {
+        await target.setInputFiles(file, { timeout: ACTION_TIMEOUT_MS });
+      } else {
+        const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: ACTION_TIMEOUT_MS }), target.click({ timeout: ACTION_TIMEOUT_MS })]);
+        await chooser.setFiles(file);
+      }
+    });
+    return afterAction();
+  }
+
+  // #1161: her dev tools, on the current page. options.pageLog is the
+  // page's { console, network } (index.js). look(image) is her vision
+  // model's description of a screenshot.
+  const pageLog = options.pageLog || (() => ({ console: [], network: [] }));
+  async function devtools(args = {}, look = null) {
+    const { url, title } = { url: await page.url(), title: await page.title() };
+    if (args.do === "console") {
+      const messages = pageLog().console;
+      const rank = (m) => (m.type === "error" ? 0 : m.type === "warning" ? 1 : 2);
+      return { url, title, devtools: [...messages].sort((a, b) => rank(a) - rank(b)).slice(0, 30).map((m) => `${m.type}: ${m.text}`), what: `Console (${messages.length} messages, errors first)` };
+    }
+    if (args.do === "network") {
+      const requests = pageLog().network;
+      const failed = requests.filter((r) => r.failure || r.status >= 400);
+      const slowest = requests.filter((r) => r.ms >= 0).sort((a, b) => b.ms - a.ms).slice(0, 5);
+      return {
+        url,
+        title,
+        what: `Network (${requests.length} requests, ${failed.length} failed)`,
+        devtools: [
+          ...failed.slice(0, 20).map((r) => `failed: ${r.method} ${r.url} -- ${r.failure || `HTTP ${r.status}`}`),
+          ...slowest.map((r) => `slow: ${r.ms} ms ${r.method} ${r.url}`),
+        ],
+      };
+    }
+    if (args.do === "run_js") {
+      await refuseIfSensitive();
+      const code = String(args.code || "").trim();
+      if (!code) throw new Error("code is required: a JavaScript expression to run on the page");
+      const value = await acting(() => page.evaluate(code));
+      let shown;
+      try {
+        shown = JSON.stringify(value) ?? "undefined";
+      } catch (e) {
+        shown = String(value);
+      }
+      return { url, title, what: "Result", devtools: [shown.slice(0, MAX_JS_RESULT_CHARS)] };
+    }
+    if (args.do === "viewport") {
+      const size = VIEWPORTS[args.size];
+      if (!size) throw new Error('size must be "phone", "tablet" or "desktop"');
+      await page.setViewportSize(size);
+      return snapshot();
+    }
+    if (args.do === "color_scheme") {
+      if (args.scheme !== "light" && args.scheme !== "dark") throw new Error('scheme must be "light" or "dark"');
+      await page.emulateMedia({ colorScheme: args.scheme });
+      return snapshot();
+    }
+    if (args.do === "look") {
+      await refuseIfSensitive();
+      if (!look) throw new Error("looking at the page isn't available right now");
+      const shot = await page.screenshot({ type: "jpeg", quality: 70 });
+      const seen = await look(`data:image/jpeg;base64,${shot.toString("base64")}`, String(args.question || "Describe this page's layout and anything that looks broken."));
+      return { url, title, what: "What she sees", devtools: [String(seen || "")] };
+    }
+    throw new Error('do must be "console", "network", "run_js", "viewport", "color_scheme" or "look"');
+  }
+
+  // #1161: "Test this site" for one page: at each size, what inspectInPage
+  // finds plus the console errors, failed requests and a screenshot; then
+  // its links on the same site (at most MAX_LINKS), checked once, together.
+  // Other sites' links aren't fetched: she has no permission there.
+  async function testPage(url, sizes) {
+    const checks = [];
+    let links = [];
+    try {
+      for (const size of sizes) {
+        const viewport = VIEWPORTS[size];
+        if (!viewport) throw new Error(`"${size}" isn't a size (phone, tablet, desktop)`);
+        await page.setViewportSize(viewport);
+        await navigate(url);
+        const found = await page.evaluate(inspectInPage);
+        const { console: messages, network } = pageLog();
+        const shot = await page.screenshot({ type: "jpeg", quality: 40 });
+        checks.push({
+          size,
+          ...viewport,
+          consoleErrors: messages.filter((m) => m.type === "error").map((m) => m.text),
+          failedRequests: network.filter((r) => r.failure || r.status >= 400).map((r) => `${r.method} ${r.url} -- ${r.failure || `HTTP ${r.status}`}`),
+          layout: found.layout,
+          a11y: found.a11y,
+          screenshot: `data:image/jpeg;base64,${shot.toString("base64")}`,
+        });
+        if (!links.length) links = found.links;
+      }
+    } finally {
+      await page.setViewportSize(VIEWPORTS.desktop).catch(() => {});
+    }
+    const origin = new URL(await page.url()).origin;
+    const toCheck = links.filter((l) => new URL(l).origin === origin).slice(0, MAX_LINKS);
+    const results = await Promise.all(
+      toCheck.map(async (link) => {
+        try {
+          const response = await page.request.head(link, { timeout: ACTION_TIMEOUT_MS, failOnStatusCode: false });
+          // 405: the server just doesn't answer HEAD.
+          return response.status() >= 400 && response.status() !== 405 ? `${link} (HTTP ${response.status()})` : null;
+        } catch (e) {
+          return `${link} (${String(e.message || e).split("\n")[0].slice(0, 80)})`;
+        }
+      }),
+    );
+    const brokenLinks = results.filter(Boolean);
+    return { url, title: await page.title(), sizes: checks, brokenLinks, linksChecked: toCheck.length };
+  }
+
+  // #1157: for pages with no useful accessibility info (canvas apps,
+  // unlabeled custom UIs). locate(imageDataUrl, width, height) is her
+  // vision model's answer: { x, y } in the screenshot, or null.
+  async function lookAndClick(description, locate) {
+    await refuseIfSensitive();
+    const { width, height } = page.viewportSize?.() || { width: 1280, height: 720 };
+    const shot = await page.screenshot({ type: "jpeg", quality: 70 });
+    const point = await locate(`data:image/jpeg;base64,${shot.toString("base64")}`, width, height);
+    if (!point) throw new Error(`she couldn't see "${description}" on the page`);
+    await acting(() => page.mouse.click(point.x, point.y));
+    return { ...(await afterAction()), clickedAt: point };
+  }
+
   async function back() {
     await page.goBack();
     return snapshot();
@@ -311,7 +453,7 @@ function createBrowserSession(options = {}) {
     return buffer.toString("base64");
   }
 
-  return { navigate, click, type, select, scroll, hover, press, drag, back, find, snapshot, screenshot, url: () => page.url() };
+  return { navigate, click, type, select, scroll, hover, press, drag, upload, lookAndClick, devtools, testPage, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
 module.exports = {
@@ -325,4 +467,5 @@ module.exports = {
   refSelector,
   pageKey,
   blockedNote,
+  VIEWPORTS,
 };

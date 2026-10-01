@@ -35,15 +35,6 @@ function registerDocumentReaderRoutes(app, deps) {
   });
 }
 
-function pdfParseAvailable() {
-  try {
-    require.resolve("pdf-parse");
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
 // This is Mana's plugin entry point convention: everything document-reader.js
 // exports, plus the route registration + metadata a plugin needs to show up
 // in GET /plugins and get wired into node-bot's capabilities array. See
@@ -57,14 +48,9 @@ module.exports = {
   description:
     "Ingest local PDFs or a specific web page into Mana's existing memory retriever, so she can recall and cite them in replies.",
   registerRoutes: registerDocumentReaderRoutes,
-  getHealth: () => {
-    const available = pdfParseAvailable();
-    return {
-      status: available ? "configured" : "degraded",
-      configured: available,
-      message: available
-        ? `${documentReader.listDocuments().length} document(s) ingested`
-        : "pdf-parse dependency missing -- PDF ingestion unavailable",
-    };
-  },
+  getHealth: () => ({
+    status: "configured",
+    configured: true,
+    message: `${documentReader.listDocuments().length} document(s) ingested`,
+  }),
 };

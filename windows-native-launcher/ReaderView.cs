@@ -68,7 +68,12 @@ internal sealed class ReaderView : UserControl
     }
 
     // Reads the page and draws it; a newer page replaces a slower one.
-    public async Task ShowAsync(string pageUrl)
+    public Task ShowAsync(string pageUrl) => ShowAsync(pageUrl, () => client.ReadPageAsync(pageUrl));
+
+    // #1161: her latest site test report, drawn the same way.
+    public Task ShowSiteTestAsync() => ShowAsync("", client.GetSiteTestReportAsync);
+
+    private async Task ShowAsync(string pageUrl, Func<Task<ManaReaderPage>> load)
     {
         url = pageUrl;
         titleLabel.Text = "Reading...";
@@ -78,7 +83,7 @@ internal sealed class ReaderView : UserControl
         ManaReaderPage page;
         try
         {
-            page = await client.ReadPageAsync(pageUrl);
+            page = await load();
         }
         catch (Exception ex)
         {
@@ -98,7 +103,7 @@ internal sealed class ReaderView : UserControl
             : page.Truncated ? "A long page: this is the first part of it."
             : null);
         // Relative links resolve against the page; images the backend didn't fetch show their alt text.
-        view.LoadHtml(Html(page), Uri.TryCreate(page.Url, UriKind.Absolute, out var baseUri) ? baseUri : new Uri(pageUrl));
+        view.LoadHtml(Html(page), Uri.TryCreate(page.Url, UriKind.Absolute, out var baseUri) ? baseUri : Uri.TryCreate(pageUrl, UriKind.Absolute, out var given) ? given : null);
     }
 
     // Only data: images reach Folio: anything else could make it fetch.
