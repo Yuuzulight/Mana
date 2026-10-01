@@ -47,4 +47,9 @@ function broadcastTrayNotification(payload) {
   } catch (e) {}
 }
 
-module.exports = { registerTrayServer, broadcastTrayNotification };
+function hasTrayClients() {
+  for (const c of trayClients) if (c.readyState === WebSocket.OPEN) return true;
+  return false;
+}
+
+module.exports = { registerTrayServer, broadcastTrayNotification, hasTrayClients };

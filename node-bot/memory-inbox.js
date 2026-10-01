@@ -31,6 +31,9 @@ function extOf(filePath) {
 async function isSettled(filePath, fsImpl, settleMs, sleep) {
   try {
     const before = fsImpl.statSync(filePath);
+    // A folder (its own processed/, which fs.watch reports as it fills) is
+    // never ingested.
+    if (!before.isFile()) return false;
     await sleep(settleMs);
     const after = fsImpl.statSync(filePath);
     return before.size === after.size && before.mtimeMs === after.mtimeMs;

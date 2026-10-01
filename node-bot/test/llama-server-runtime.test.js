@@ -1498,9 +1498,11 @@ test("runToolAwareReply caps how many tool calls execute in a single round", asy
   });
 
   const executed = [];
+  const executedArgs = [];
   const policy = makeFakePolicy({
-    executeTool: (name) => {
+    executeTool: (name, args) => {
       executed.push(name);
+      executedArgs.push(args);
       return "ok";
     },
   });
@@ -1648,6 +1650,7 @@ test("runToolAwareReply respects a wall-clock time budget across rounds", async 
 // (the last one repeats); `reviews` scripts the completion-review replies.
 // OVERFLOW as a turn answers like llama-server does past its context.
 const OVERFLOW = Symbol("overflow");
+const UNPARSED = Symbol("unparsed");
 function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools }) {
   const loopBodies = [];
   const reviewBodies = [];
@@ -1673,6 +1676,9 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
       if (turn === OVERFLOW) {
         return { ok: false, status: 400, text: async () => "request (17820 tokens) exceeds the available context size (16384 tokens)" };
       }
+      if (turn === UNPARSED) {
+        return { ok: false, status: 500, text: async () => '{"error":{"code":500,"message":"Failed to parse tool call arguments as JSON: missing closing quote"}}' };
+      }
       const reply = Array.isArray(turn) ? makeToolCallResponse(turn) : makeAnswerResponse(turn);
       if (!promptN) return reply;
       const json = await reply.json();
@@ -1692,16 +1698,18 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
     registerExitHandlers: false,
   });
   const executed = [];
+  const executedArgs = [];
   const policy = makeFakePolicy({
-    executeTool: (name) => {
+    executeTool: (name, args) => {
       executed.push(name);
+      executedArgs.push(args);
       return typeof toolResult === "function" ? toolResult(name) : toolResult;
     },
   });
-  if (tools) policy.tools = tools.map((name) => ({ type: "function", function: { name, parameters: {} } }));
+  if (tools) policy.tools = tools.map((t) => (typeof t === "string" ? { type: "function", function: { name: t, parameters: {} } } : t));
   return runtime
     .runToolAwareReply("change A and change B", policy, { goal: "Change A and B", ...options })
-    .then((result) => ({ result, loopBodies, reviewBodies, repairBodies, executed }));
+    .then((result) => ({ result, loopBodies, reviewBodies, repairBodies, executed, executedArgs }));
 }
 
 const lastUserText = (body) => body.messages.filter((m) => m.role === "user").pop().content;
@@ -1945,6 +1953,49 @@ test("#787 a text-form call to a tool that isn't offered still goes to repair", 
 
   assert.deepEqual(executed, []);
   assert.equal(repairBodies.length, 1);
+});
+
+// #1209: Qwen3.5 leaves its own XML form in the text when llama-server's
+// parser doesn't take the call.
+const READ_TOOL = {
+  type: "function",
+  function: {
+    name: "read_file",
+    parameters: { type: "object", properties: { path: { type: "string" }, start_line: { type: "integer" } }, required: ["path"] },
+  },
+};
+const xmlCall = (params) =>
+  `Let me read it.\n<tool_call>\n<function=read_file>\n${params}</function>\n</tool_call>`;
+
+test("#1209 an XML-form call in the text runs, with its arguments typed by the schema", async () => {
+  const text = xmlCall("<parameter=path>\nnode-bot/a.js\n</parameter>\n<parameter=start_line>\n10\n</parameter>\n");
+  const { executed, executedArgs, repairBodies } = await runGoalScript({ tools: [READ_TOOL], turns: [text, "Done."], options: { goal: null } });
+
+  assert.deepEqual(executed, ["read_file"]);
+  assert.deepEqual(executedArgs, [{ path: "node-bot/a.js", start_line: 10 }]);
+  assert.equal(repairBodies.length, 0);
+});
+
+test("#1209 an XML-form call cut off before its required argument closes doesn't run", async () => {
+  const { executed } = await runGoalScript({ tools: [READ_TOOL], turns: ["<tool_call>\n<function=read_file>\n<parameter=path>\nnode-b"], options: { goal: null } });
+
+  assert.deepEqual(executed, []);
+});
+
+test("#1209 a tool call llama-server couldn't parse goes back to her, and the run goes on", async () => {
+  const { result, loopBodies, executed } = await runGoalScript({ turns: [UNPARSED, ["read_file"], ["session_goal__finish"]] });
+
+  assert.match(lastUserText(loopBodies[1]), /^Your last tool call couldn't be parsed/);
+  assert.deepEqual(executed, ["read_file", "session_goal__finish"]);
+  assert.equal(result.content, "final answer");
+});
+
+test("#1209 three unparseable calls in a row stop goal mode with a note; outside it the error surfaces", async () => {
+  const { result, loopBodies } = await runGoalScript({ turns: [UNPARSED] });
+  assert.equal(loopBodies.length, 3);
+  assert.equal(result.content, "Not done yet: the tool calls kept failing to parse");
+
+  await assert.rejects(runGoalScript({ turns: [UNPARSED], options: { goal: null } }), /Failed to parse tool call arguments/);
 });
 
 test("#676 goal mode off: unchanged -- 4 rounds by default, a plain reply ends it, no review", async () => {
