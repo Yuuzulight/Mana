@@ -8,6 +8,9 @@ using Xunit;
 namespace ManaNativeLauncher.Tests;
 
 // #1119: Settings in the chat window's narrow tool panel. STA, never shown.
+// Every class that builds a SettingsPanel shares one collection: built in
+// parallel, WinForms' KeysConverter fills its static key-name table twice.
+[Collection("DarkTheme palette")]
 public class SettingsPanelLayoutTests
 {
     [Fact]
