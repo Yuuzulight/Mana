@@ -258,6 +258,14 @@ internal sealed class ManaProcessManager : IDisposable
     // #991: raised on a thread-pool thread when node-bot exits asking for a restart.
     public event Action? BackendRestartRequested;
 
+    // Raised on a thread-pool thread, with the exit code, when node-bot
+    // exits any other way this launcher didn't ask for (a crash).
+    public event Action<int>? BackendCrashed;
+
+    // The node-bot this launcher is stopping on purpose (restart, exit),
+    // whose exit isn't a crash.
+    private volatile Process? stoppedBackend;
+
     // #991: only a node-bot this launcher started -- a remote one, or one
     // already running at launch, isn't this launcher's to stop.
     public bool CanRestartBackend => isBackendLocal && backendProcess is not null;
@@ -272,6 +280,7 @@ internal sealed class ManaProcessManager : IDisposable
             return false;
         }
         var old = backendProcess!;
+        stoppedBackend = old;
         StopProcess(old);
         using (var exited = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
         {
@@ -672,6 +681,10 @@ internal sealed class ManaProcessManager : IDisposable
             {
                 BackendRestartRequested?.Invoke();
             }
+            else if (!disposed && !ReferenceEquals(process, stoppedBackend))
+            {
+                BackendCrashed?.Invoke(process.ExitCode);
+            }
         };
         process.EnableRaisingEvents = true;
 
@@ -892,6 +905,7 @@ internal sealed class ManaProcessManager : IDisposable
             onServiceStopped?.Invoke(key, process is null || process.HasExited);
         }
 
+        stoppedBackend = backendProcess;
         await Task.WhenAll(
             StopAndReport("backend", backendProcess),
             StopAndReport("fish-speech", fishSpeechProcess),
@@ -907,6 +921,7 @@ internal sealed class ManaProcessManager : IDisposable
     public void Dispose()
     {
         disposed = true;
+        stoppedBackend = backendProcess;
         http.Dispose();
         StopProcess(backendProcess);
         StopProcess(fishSpeechProcess);
