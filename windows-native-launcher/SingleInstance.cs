@@ -40,6 +40,11 @@ internal static class SingleInstance
     public static IDisposable ListenForUpdate(bool now, Action onUpdate, string name = DefaultName) =>
         Listen(now ? $"{name}.UpdateNow" : $"{name}.Update", onUpdate);
 
+    // Setting Local\Mana.NativeLauncher.Quit closes Mana the same way the
+    // tray's "Exit Mana" does (quit-mana.ps1), so scripts can stop her
+    // cleanly instead of killing her processes.
+    public static IDisposable ListenForQuit(Action onQuit, string name = DefaultName) => Listen($"{name}.Quit", onQuit);
+
     private static IDisposable Listen(string eventName, Action onSignal)
     {
         var signal = new EventWaitHandle(false, EventResetMode.AutoReset, $@"Local\{eventName}");
