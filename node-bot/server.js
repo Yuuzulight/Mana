@@ -258,6 +258,7 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
+const { createProactiveToolSource } = require("./ai/proactive-tool-source");
 const { briefingLines: mailCalendarBriefingLines, createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
 const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
 const { checkMail } = require("./imap-client");
@@ -2395,6 +2396,8 @@ function registerRoutes(app, upload, deps = {}) {
     if (idleSeconds < BRIEFING_ACTIVE_SECONDS) briefingOnActive();
     const thresholdSeconds =
       Number(process.env.MANA_IDLE_THRESHOLD_MS || 20 * 60 * 1000) / 1000;
+    // #1282: away past the same threshold holds proactive remarks until I'm back.
+    require("./proactive").setAway(idleSeconds >= thresholdSeconds);
 
     if (idleSeconds < thresholdSeconds) {
       idleConsolidationFiredForCurrentIdlePeriod = false;
@@ -3416,6 +3419,9 @@ function registerRoutes(app, upload, deps = {}) {
       return res.status(400).json({ ok: false, error: e.message });
     }
   });
+
+  // #1282: quiet hours, "not now" and muted remark kinds.
+  require("./proactive").registerRoutes(app);
 
   // { kind }: log in to the saved account and report what went wrong.
   app.post("/mail-calendar/test", async (req, res) => {
@@ -5179,6 +5185,8 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #1282: "not now", "don't bring this up again", quiet hours.
+            ...(userChat ? [createProactiveToolSource({ proactive: require("./proactive") })] : []),
             // #1010: "let me try your PR" / "back to main" -- a PR number
             // only from my own message. #1194: "update to main" asks me first.
             ...(userChat

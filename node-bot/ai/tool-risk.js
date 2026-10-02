@@ -68,6 +68,8 @@ const BUILTIN_TIERS = {
   reminder__set: "read",
   reminder__list: "read",
   reminder__cancel: "read",
+  // #1282: only when Mana herself speaks up unprompted (proactive.js).
+  proactive__settings: "read",
   // #914: only the speaking character's own relationship notes and
   // milestones (relationship-store.js), capped and shown to her alone.
   relationship__note: "read",
@@ -176,6 +178,7 @@ const ASK_AFTER_UNTRUSTED = new Set([
   "calendar__events",
   "reminder__set",
   "reminder__cancel",
+  "proactive__settings",
   "read_file",
   "session_search__query",
   "coding__propose_edit",
