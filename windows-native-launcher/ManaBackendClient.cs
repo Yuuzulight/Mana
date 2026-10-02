@@ -2401,6 +2401,11 @@ internal sealed class ManaBackendClient
             Step = Text("step"),
             PrUrl = Text("prUrl"),
             Log = log,
+            // #1269: her Gemini fallback, on or why not, as one line.
+            Gemini = root.TryGetProperty("gemini", out var gemini) && gemini.ValueKind == JsonValueKind.Object &&
+                gemini.TryGetProperty("text", out var geminiText) && geminiText.ValueKind == JsonValueKind.String
+                    ? geminiText.GetString()
+                    : null,
         };
     }
 
@@ -3187,6 +3192,7 @@ internal sealed class ManaSelfWorkStatus
     public string? Step { get; init; }
     public string? PrUrl { get; init; }
     public IReadOnlyList<string> Log { get; init; } = [];
+    public string? Gemini { get; init; }
 }
 
 // #1125: one entry from GET /background-tasks. Status is running,

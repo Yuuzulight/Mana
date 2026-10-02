@@ -48,6 +48,16 @@ public class SelfWorkFormTests
         var status = await ClientReturning("""{"state":"idle"}""").GetSelfWorkAsync();
         Assert.Null(status.Issue);
         Assert.Equal("I'm not working on my own code right now.", SelfWorkForm.Describe(status));
+        Assert.Null(status.Gemini);
+    }
+
+    // #1269
+    [Fact]
+    public async Task GetSelfWorkAsync_ReadsTheGeminiFallbackLine()
+    {
+        var status = await ClientReturning(
+            """{"state":"idle","gemini":{"enabled":false,"text":"Gemini fallback: unavailable -- Gemini CLI isn't installed."}}""").GetSelfWorkAsync();
+        Assert.Equal("Gemini fallback: unavailable -- Gemini CLI isn't installed.", status.Gemini);
     }
 
     [Fact]

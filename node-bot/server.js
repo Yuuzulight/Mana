@@ -2874,6 +2874,8 @@ function registerRoutes(app, upload, deps = {}) {
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
       gitTools,
+      // #1269: Gemini CLI when every local attempt failed (MANA_SELF_WORK_GEMINI*).
+      gemini: true,
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
