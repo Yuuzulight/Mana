@@ -107,7 +107,9 @@ internal sealed class ScreenContextReader
             GetWindowThreadProcessId(window, out var windowPid);
             // #671: Mana's own UI in front is a self-description, not
             // context -- skip both the tree walk and OCR.
-            if (windowPid == Environment.ProcessId)
+            // #1286: nor a private window (password manager, banking,
+            // InPrivate/Incognito, lock screen, UAC).
+            if (windowPid == Environment.ProcessId || ScreenPrivacyGuard.BlockReasonFor(window, windowPid) is not null)
             {
                 return "";
             }
@@ -271,7 +273,7 @@ internal sealed class ScreenContextReader
     internal static bool IsSlowTreeApp(string processName) =>
         SlowTreeApps.Contains(processName, StringComparer.OrdinalIgnoreCase);
 
-    private static string ProcessNameOf(int pid)
+    internal static string ProcessNameOf(int pid)
     {
         try
         {
