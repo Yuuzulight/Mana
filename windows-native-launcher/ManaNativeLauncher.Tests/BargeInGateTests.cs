@@ -91,6 +91,32 @@ public class BargeInGateTests
         Assert.Equal(double.NegativeInfinity, BargeInGate.DbfsFromSamples(silence));
     }
 
+    // #682: the Electron env overrides, same defaults.
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("1", true)]
+    [InlineData("0", false)]
+    [InlineData(" 0 ", false)]
+    public void VoiceEnabled_OnUnlessZero(string? env, bool expected) =>
+        Assert.Equal(expected, BargeInGate.VoiceEnabled(env));
+
+    [Theory]
+    [InlineData(null, 350)]
+    [InlineData("600", 600)]
+    [InlineData("0", 0)]
+    [InlineData("-5", 350)]
+    [InlineData("soon", 350)]
+    public void ResolveHoldMs_ParsesOrDefaults(string? env, long expected) =>
+        Assert.Equal(expected, BargeInGate.ResolveHoldMs(env));
+
+    [Theory]
+    [InlineData(null, -45.0)]
+    [InlineData("-38.5", -38.5)]
+    [InlineData("loud", -45.0)]
+    [InlineData("NaN", -45.0)]
+    public void ResolveMinDbfs_ParsesOrDefaults(string? env, double expected) =>
+        Assert.Equal(expected, BargeInGate.ResolveMinDbfs(env));
+
     // #665: barge-in modes.
     [Theory]
     [InlineData(null, null, (int)BargeInMode.MinWords)]

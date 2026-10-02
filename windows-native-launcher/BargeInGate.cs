@@ -48,6 +48,18 @@ internal static class BargeInGate
         return (heldMs, triggered);
     }
 
+    // #682: the Electron launcher's env overrides (renderer.js). Voice
+    // barge-in is on unless MANA_BARGE_IN_VOICE is "0" (hotkey-only);
+    // unparseable hold/dBFS values fall back to the defaults.
+    public static bool VoiceEnabled(string? env) => env?.Trim() != "0";
+
+    public static long ResolveHoldMs(string? env) =>
+        long.TryParse(env, out var ms) && ms >= 0 ? ms : DefaultHoldMs;
+
+    public static double ResolveMinDbfs(string? env) =>
+        double.TryParse(env, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dbfs)
+            && double.IsFinite(dbfs) ? dbfs : DefaultMinDbfs;
+
     // Same RMS -> dBFS formula as dbfsFromSamples in voice-endpointing.js.
     public static double DbfsFromSamples(IReadOnlyList<float> samples)
     {
