@@ -313,6 +313,7 @@ function createSelfWork(options = {}) {
 
   // #1249: everything in the worktree, staged, as one tree id.
   async function stagedTree(worktree) {
+    await assertTop(worktree, "stage it");
     await git(["add", "-A"], worktree);
     return git(["write-tree"], worktree);
   }

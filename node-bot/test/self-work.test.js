@@ -1026,6 +1026,6 @@ test("#1249: a snapshot between attempts only runs in a worktree's own top folde
   });
   const { error } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, inner, { attempts: 2 });
 
-  assert.match(error, /isn't a worktree's top folder .*so I didn't take a snapshot of it/);
+  assert.match(error, /isn't a worktree's top folder .*so I didn't (stage|take a snapshot of) it/);
   assert.equal(fs.readFileSync(path.join(inner, "keep.txt"), "utf8"), "mine\n");
 });
