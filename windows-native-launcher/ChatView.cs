@@ -163,7 +163,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         {
             return;
         }
-        if (messages.Count > 0 && !messages[^1].FromUser && (speaker is null || messages[^1].Speaker == speaker))
+        if (messages.Count > 0 && !messages[^1].FromUser && messages[^1].Steps is null && (speaker is null || messages[^1].Speaker == speaker))
         {
             var current = messages[^1];
             if (current.FinalText == text)
@@ -188,6 +188,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
     {
         messages.Clear();
+        stepMessages.Clear(); // #1318: re-added after the history on the next poll
+        stepsRunId = null;
         selected = -1;
         ClearTextSelection();
         foreach (var turn in turns)
@@ -227,7 +229,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         {
             return;
         }
-        var message = messages.Count > 0 && !messages[^1].FromUser && messages[^1].FinalText is null
+        // #1318: a reply split by step lines keeps its streamed segments --
+        // re-parsing the whole text into the last one would repeat the rest.
+        // ponytail: those segments keep the streamed sentences' formatting.
+        var lastUser = messages.FindLastIndex(m => m.FromUser);
+        if (messages.Skip(lastUser + 1).Any(m => m.Steps is not null))
+        {
+            var last = messages.FindLast(m => !m.FromUser && m.Steps is null && m.FinalText is null);
+            if (last is not null && messages.IndexOf(last) > lastUser)
+            {
+                last.FinalText = replyText;
+                if (artifact is { } split)
+                {
+                    last.Actions.Add(ArtifactAction(split, addArtifact!(split)));
+                    last.Invalidate();
+                    Relayout(forceScroll: false);
+                }
+            }
+            return;
+        }
+        var message = messages.Count > 0 && !messages[^1].FromUser && messages[^1].FinalText is null && messages[^1].Steps is null
             ? messages[^1]
             : null;
         if (message is null)
@@ -269,6 +290,80 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             new ChatMenuItem("View source", true, Run(ArtifactOpen.Source)),
             new ChatMenuItem("Save as...", true, Run(ArtifactOpen.SaveAs)),
         });
+    }
+
+    // #1318: the reply's step groups, each placed after the reply text of
+    // its segment: a group not shown yet goes at the end, which is right
+    // after that segment's text while it's streaming in. Groups without a
+    // segment are ChatStepsStrip's. A new run starts a new set.
+    // ponytail: placement trusts the 1s poll to see a segment's first step
+    // before the next segment's text arrives; a tool round shorter than
+    // that lands its line after that text instead.
+    private string? stepsRunId;
+    private readonly Dictionary<int, Message> stepMessages = new();
+
+    public void ShowSteps(AgentSteps activity) => RunOnUiThread(() =>
+    {
+        if (activity.RunId != stepsRunId)
+        {
+            stepsRunId = activity.RunId;
+            stepMessages.Clear();
+        }
+        var now = DateTimeOffset.UtcNow;
+        var changed = false;
+        foreach (var group in ChatStepGroups.Group(activity))
+        {
+            if (group.Segment is not { } segment)
+            {
+                continue;
+            }
+            if (!stepMessages.TryGetValue(segment, out var message))
+            {
+                message = new Message(fromUser: false);
+                stepMessages[segment] = message;
+                messages.Add(message);
+                AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
+            }
+            message.Steps = group;
+            changed |= SetStepBlocks(message, now);
+        }
+        if (changed)
+        {
+            Relayout(forceScroll: false);
+        }
+    });
+
+    private static bool SetStepBlocks(Message message, DateTimeOffset now)
+    {
+        var blocks = ChatStepGroups.Blocks(message.Steps!, message.StepsOpen, now);
+        if (blocks.SequenceEqual(message.Blocks, MarkdownBlockText.Instance))
+        {
+            return false;
+        }
+        message.Blocks.Clear();
+        message.Blocks.AddRange(blocks);
+        message.Invalidate();
+        return true;
+    }
+
+    // Blocks compared by their text (MarkdownBlock's own equality compares
+    // its run lists by reference).
+    private sealed class MarkdownBlockText : IEqualityComparer<MarkdownBlock>
+    {
+        public static readonly MarkdownBlockText Instance = new();
+        public bool Equals(MarkdownBlock a, MarkdownBlock b) => a.Type == b.Type && a.Runs.SequenceEqual(b.Runs);
+        public int GetHashCode(MarkdownBlock block) => block.Type.GetHashCode();
+    }
+
+    // Step-line text: grey, the +added total green, the -removed one red.
+    internal static Color StepColor(string fragment)
+    {
+        var text = fragment.Trim();
+        return text.Length > 1 && text[1..].All(char.IsDigit)
+            ? text.StartsWith(ChatStepGroups.AddedPrefix, StringComparison.Ordinal) ? DarkTheme.Green
+            : text.StartsWith(ChatStepGroups.RemovedPrefix, StringComparison.Ordinal) ? ChatStepsStrip.RemovedColor
+            : DarkTheme.Muted
+            : DarkTheme.Muted;
     }
 
     // #652 part 6: raised when Mana's reply is complete; SessionListForm
@@ -421,9 +516,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             var bubbleWidth = message.ContentWidth + PadX * 2;
             var x = message.FromUser ? ViewportWidth - SideMargin - bubbleWidth : SideMargin;
-            var labelHeight = labelFont.Height;
+            // #1318: a step line has no "Mana" label above it.
+            var labelHeight = message.Steps is null ? labelFont.Height + LabelGap : 0;
             message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, 60, labelHeight);
-            message.Bounds = new Rectangle(x, y + labelHeight + LabelGap, bubbleWidth, message.ContentHeight + PadY * 2);
+            message.Bounds = new Rectangle(x, y + labelHeight, bubbleWidth, message.ContentHeight + PadY * 2);
             y = message.Bounds.Bottom + MessageGap;
         }
         contentHeight = y;
@@ -811,6 +907,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 continue;
             }
+            if (message.Steps is not null)
+            {
+                PaintStepLine(g, message, new Point(bubble.X + PadX, bubble.Y + PadY));
+                continue;
+            }
             var label = message.LabelBounds with { Y = message.LabelBounds.Y - scroll };
             TextRenderer.DrawText(g, message.Speaker, labelFont, label, DarkTheme.Muted,
                 TextFlags | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
@@ -882,6 +983,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
+    // #1318: a step-group line: grey text straight on the chat background,
+    // its command/result blocks on the usual code shading.
+    private void PaintStepLine(Graphics g, Message message, Point origin)
+    {
+        foreach (var line in message.Lines)
+        {
+            if (line.Code)
+            {
+                using var codeBack = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 110 : 60, DarkTheme.IsLight ? Color.White : Color.Black));
+                g.FillRectangle(codeBack, origin.X, origin.Y + line.Y - 1, message.ContentWidth, line.Height);
+            }
+            foreach (var fragment in line.Fragments)
+            {
+                var y = origin.Y + line.Y + (line.Height - fragment.Font.Height) / 2;
+                TextRenderer.DrawText(g, fragment.Text, fragment.Font, new Point(origin.X + fragment.X, y),
+                    fragment.IsCode ? DarkTheme.Text : StepColor(fragment.Text), TextFlags);
+            }
+        }
+    }
+
     // ---- Input ----------------------------------------------------------
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -898,6 +1019,14 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 _ = RunActionAsync(actionMsg, actionIndex);
             }
+            return;
+        }
+        // #1318: clicking a step line opens or closes its steps.
+        if (e.Button == MouseButtons.Left && HitTest(e.Location) is var stepHit and >= 0 && messages[stepHit].Steps is not null)
+        {
+            messages[stepHit].StepsOpen = !messages[stepHit].StepsOpen;
+            SetStepBlocks(messages[stepHit], DateTimeOffset.UtcNow);
+            Relayout(forceScroll: false);
             return;
         }
         if (e.Button == MouseButtons.Left)
@@ -1537,6 +1666,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
         // The full reply text once VoiceLoop reported it; later sentences start a new bubble.
         public string? FinalText { get; set; }
+
+        // #1318: set on a grey step-group line (no bubble, no label) placed
+        // after the reply text of its segment; clicking it toggles StepsOpen.
+        public StepGroup? Steps { get; set; }
+        public bool StepsOpen { get; set; }
 
         public void Invalidate() => LaidOutWidth = -1;
 

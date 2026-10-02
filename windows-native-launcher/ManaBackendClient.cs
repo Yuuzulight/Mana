@@ -2443,6 +2443,47 @@ internal sealed class ManaBackendClient
         return runs;
     }
 
+    // #1318: the same endpoint's steps of the current/last chat reply, for
+    // the chat's step lines. Every field but the step id may be missing.
+    public async Task<AgentSteps> GetAgentStepsAsync()
+    {
+        using var response = await http.GetAsync("/agent/activity");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        static string? Str(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        static int? Int(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
+        static DateTimeOffset? Time(JsonElement e, string name) =>
+            DateTimeOffset.TryParse(Str(e, name), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? t : null;
+        var steps = new List<AgentStep>();
+        if (root.TryGetProperty("steps", out var stepsElement) && stepsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var s in stepsElement.EnumerateArray())
+            {
+                var hasDetail = s.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.Object;
+                steps.Add(new AgentStep(
+                    Str(s, "id") ?? steps.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    Str(s, "kind") ?? "tool",
+                    Str(s, "description"),
+                    Str(s, "status") ?? "",
+                    Time(s, "startedAt"),
+                    Time(s, "endedAt"),
+                    Str(s, "file"),
+                    Int(s, "added"),
+                    Int(s, "removed"),
+                    hasDetail ? Str(detail, "command") : null,
+                    hasDetail ? Str(detail, "resultPreview") : null,
+                    Str(s, "tool"),
+                    Int(s, "segment")));
+            }
+        }
+        var running = root.TryGetProperty("running", out var r) && r.ValueKind == JsonValueKind.True;
+        return new AgentSteps(Str(root, "runId"), running, steps);
+    }
+
     // #646: admin-gated (checkAdminAuth) like the proposal approve route.
     // #1011: node-bot opens an issue and a revert PR for a merged PR
     // (admin-gated). MergeCommit is what the rollback checks against.
