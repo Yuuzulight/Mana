@@ -99,8 +99,11 @@ const finish = ["session_goal__finish", { reason: "fixed" }];
 // #1211: every issue run plans before its first edit. (#1212's test-first
 // gate has its own test; here the scripted test run comes after the fix.)
 const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"], no_test: "the scripted runs only" }];
+// #1213: and reviews its diff in three passes before it finishes.
+const reviews = ["correctness", "edge cases", "scope"].map((pass) => ["self_work__review", { pass }]);
+const planned = (calls) => [plan, ...calls.flatMap((c) => (c === finish ? [...reviews, finish] : [c]))];
 
-function selfWork(repos, { calls, planned = true, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
+function selfWork(repos, { calls, plans = true, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
   const ghCalls = [];
   const testRuns = [];
   const sw = createSelfWork({
@@ -110,7 +113,7 @@ function selfWork(repos, { calls, planned = true, answer = "I made add() add and
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
     protectedPaths: guard,
     reviewEdit: async () => review,
-    runLoop: scriptedLoop(planned ? [plan, ...calls] : calls, answer, seen),
+    runLoop: scriptedLoop(plans ? planned(calls) : calls, answer, seen),
     runTests: async (command, cwd, opts) => {
       testRuns.push({ command, cwd, opts });
       onTest(cwd);
@@ -161,7 +164,7 @@ test("an issue goes from worktree to a pushed branch and a PR, never main", asyn
   assert.ok(fs.lstatSync(path.join(worktree, "node-bot", "node_modules")).isSymbolicLink());
 });
 
-test("a refuted write isn't applied and the run stops to ask me", async () => {
+test("#1213: a change the reviewer refutes at the end isn't pushed; the run stops to ask me", async () => {
   const repos = makeRepos();
   const { sw, ghCalls } = selfWork(repos, {
     calls: [fix, runTests, finish],
@@ -172,7 +175,9 @@ test("a refuted write isn't applied and the run stops to ask me", async () => {
   const status = sw.status();
   assert.equal(status.state, "needs-you");
   assert.match(status.step, /add\(1, 1\) returns 3/);
-  assert.match(fs.readFileSync(path.join(status.worktree, "node-bot", "util.js"), "utf8"), /a - b/);
+  // In her worktree for me to look at, never committed.
+  assert.match(fs.readFileSync(path.join(status.worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
+  assert.equal(git(status.worktree, "log", "-1", "--format=%s"), "init");
   assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
@@ -635,7 +640,7 @@ test("#1211: her first edit waits for a plan, and the plan is checked off in her
   const repos = makeRepos();
   const seen = [];
   const calls = [fix, plan, ["self_work__plan", { done: [1] }], fix];
-  const { sw } = selfWork(repos, { calls, planned: false, seen });
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
   await sw.start(7);
   await sw._current().done;
   const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
@@ -656,7 +661,7 @@ test("#1212: her code change waits for a test she's seen fail; the test itself c
   const seen = [];
   const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
   const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
-  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, runTests, fix], planned: false, passed: false, seen });
+  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, runTests, fix], plans: false, passed: false, seen });
   await sw.start(7);
   await sw._current().done;
   const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
@@ -666,6 +671,48 @@ test("#1212: her code change waits for a test she's seen fail; the test itself c
   assert.equal(JSON.parse(results[3]).passed, false);
   assert.equal(JSON.parse(results[4]).status, "ok");
   assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
+});
+
+test("#1213: she finishes only after three passes over her diff since her last edit", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const reviewed = [];
+  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  const calls = [plan, fix, finish, ...reviews, addTest, finish, ...reviews, finish];
+  const { sw } = selfWork(repos, { calls, plans: false, seen, reviewEdit: async (p) => (reviewed.push(p), { verdict: "holds" }) });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.match(results[2], /^Before you finish, review your diff with self_work__review: correctness, then edge cases, then scope/);
+  assert.match(results[3], /^Pass: correctness\. [\s\S]*Passes left: edge cases, scope\.[\s\S]*\+  return a \+ b;/);
+  assert.match(results[7], /^Before you finish/, "her new test file needs reviewing again");
+  assert.match(results[8], /\+\/\/ add\(2, 3\) is 5/, "a new file is in the diff");
+  assert.equal(JSON.parse(results[11]).finished, true);
+  // The reviewer reads each changed file's whole diff, once, at the end.
+  assert.deepEqual(reviewed.map((p) => p.relativePath).sort(), ["node-bot/test/util.test.js", "node-bot/util.js"]);
+  assert.match(reviewed.find((p) => p.relativePath === "node-bot/util.js").diff, /-  return a - b;\n\+  return a \+ b;/);
+});
+
+test("#1213: no PR unless the diff is the one her reviewer passed when she finished", async () => {
+  const repos = makeRepos();
+  const reviewed = [];
+  const worktree = path.join(repos.worktrees, "mana-7");
+  // A file her tests wrote before she finished is reviewed too; one that
+  // lands after she finished means the reviewed diff isn't the final one.
+  const wrote = (name) => () => fs.writeFileSync(path.join(worktree, "node-bot", name), "module.exports = 1;\n");
+  const { sw, ghCalls } = selfWork(repos, {
+    calls: [fix, runTests, wrote("generated.js"), finish, wrote("late.js")],
+    reviewEdit: async (p) => (reviewed.push(p.relativePath), { verdict: "holds" }),
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const status = sw.status();
+  assert.equal(status.state, "needs-you", status.step);
+  assert.match(status.step, /isn't the one my reviewer passed/);
+  assert.deepEqual(reviewed.sort(), ["node-bot/generated.js", "node-bot/util.js"]);
+  assert.equal(status.reviewedDiff, undefined, "the diff stays out of status");
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
 test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
