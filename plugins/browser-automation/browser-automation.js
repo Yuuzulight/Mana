@@ -139,6 +139,35 @@ function refSelector(ref) {
   return `aria-ref=${id}`;
 }
 
+// #704: her cursor, drawn in the page where she's about to act, so I can
+// see what she's doing (the visible window, the Browser panel's
+// screenshot). Takes no clicks, stays out of her snapshot (aria-hidden, no
+// text), and fades on its own. Runs in the page; box is the element's
+// viewport box, or a point (width/height 0) for a click by sight.
+const CURSOR_ID = "__mana_agent_cursor";
+function drawCursorInPage({ id, x, y, width, height }) {
+  document.getElementById(id)?.remove();
+  const root = document.createElement("div");
+  root.id = id;
+  root.setAttribute("aria-hidden", "true");
+  root.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647;transition:opacity .4s";
+  if (width > 0 && height > 0) {
+    const box = document.createElement("div");
+    box.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:${width}px;height:${height}px;outline:2px solid #ff4fa3;outline-offset:2px;border-radius:4px;box-shadow:0 0 0 6px rgba(255,79,163,.2)`;
+    root.append(box);
+  }
+  const dot = document.createElement("div");
+  dot.style.cssText = `position:fixed;left:${x + width / 2 - 9}px;top:${y + height / 2 - 9}px;width:18px;height:18px;border-radius:50%;background:rgba(255,79,163,.85);border:2px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.5)`;
+  root.append(dot);
+  (document.body || document.documentElement).append(root);
+  setTimeout(() => (root.style.opacity = "0"), 1500);
+  setTimeout(() => root.remove(), 2000);
+}
+
+function clearCursorInPage(id) {
+  document.getElementById(id)?.remove();
+}
+
 function blockedNote(count) {
   return `this site may need the ${count} ad or tracker request${count === 1 ? "" : "s"} that were blocked; the user can open it in their own browser (don't retry without blocking)`;
 }
@@ -153,6 +182,24 @@ function createBrowserSession(options = {}) {
   // #1168: { blockedAds } for the current page (index.js).
   const pageHealth = options.pageHealth || (() => ({ blockedAds: 0 }));
   let last = null;
+  // #704: whether I'm watching (index.js): only then is her cursor drawn.
+  const showCursor = options.cursor || (() => false);
+
+  // Best-effort: a cursor that can't be drawn never stops the action.
+  async function cursorAt(target) {
+    if (!showCursor()) return;
+    try {
+      const box = typeof target.boundingBox === "function" ? await target.boundingBox({ timeout: ACTION_TIMEOUT_MS }) : { ...target, width: 0, height: 0 };
+      if (box) await page.evaluate(drawCursorInPage, { id: CURSOR_ID, x: box.x, y: box.y, width: box.width, height: box.height });
+    } catch (e) {
+      // the page moved on; nothing to point at
+    }
+  }
+
+  // Her vision model sees the page, not her cursor.
+  async function clearCursor() {
+    if (showCursor()) await page.evaluate(clearCursorInPage, CURSOR_ID).catch(() => {});
+  }
 
   // Ads or trackers were blocked and the page looks broken (next to
   // nothing to read or use): the count, else 0. #1179: script errors alone
@@ -250,7 +297,9 @@ function createBrowserSession(options = {}) {
 
   async function click(ref) {
     await refuseIfSensitive();
-    await acting(() => page.locator(refSelector(ref)).click({ timeout: ACTION_TIMEOUT_MS }));
+    const target = page.locator(refSelector(ref));
+    await cursorAt(target);
+    await acting(() => target.click({ timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -258,6 +307,7 @@ function createBrowserSession(options = {}) {
   async function type(ref, text, submit = false) {
     await refuseIfSensitive();
     const field = page.locator(refSelector(ref));
+    await cursorAt(field);
     await acting(async () => {
       await field.fill(String(text ?? ""), { timeout: ACTION_TIMEOUT_MS });
       if (submit) await field.press("Enter", { timeout: ACTION_TIMEOUT_MS });
@@ -268,7 +318,9 @@ function createBrowserSession(options = {}) {
   // An option's label or value.
   async function select(ref, value) {
     await refuseIfSensitive();
-    await acting(() => page.locator(refSelector(ref)).selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS }));
+    const target = page.locator(refSelector(ref));
+    await cursorAt(target);
+    await acting(() => target.selectOption(String(value ?? ""), { timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -284,7 +336,9 @@ function createBrowserSession(options = {}) {
 
   // #1155: menus that open on hover.
   async function hover(ref) {
-    await acting(() => page.locator(refSelector(ref)).hover({ timeout: ACTION_TIMEOUT_MS }));
+    const target = page.locator(refSelector(ref));
+    await cursorAt(target);
+    await acting(() => target.hover({ timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
 
@@ -301,6 +355,7 @@ function createBrowserSession(options = {}) {
     const from = page.locator(refSelector(fromRef));
     const to = page.locator(refSelector(toRef));
     await refuseIfSensitive();
+    await cursorAt(from);
     await acting(() => from.dragTo(to, { timeout: ACTION_TIMEOUT_MS }));
     return afterAction();
   }
@@ -310,6 +365,7 @@ function createBrowserSession(options = {}) {
   async function upload(ref, file) {
     await refuseIfSensitive();
     const target = page.locator(refSelector(ref));
+    await cursorAt(target);
     await acting(async () => {
       const isFileInput = await target.evaluate((el) => el.tagName === "INPUT" && el.type === "file", undefined, { timeout: ACTION_TIMEOUT_MS });
       if (isFileInput) {
@@ -374,6 +430,7 @@ function createBrowserSession(options = {}) {
     if (args.do === "look") {
       await refuseIfSensitive();
       if (!look) throw new Error("looking at the page isn't available right now");
+      await clearCursor();
       const shot = await page.screenshot({ type: "jpeg", quality: 70 });
       const seen = await look(`data:image/jpeg;base64,${shot.toString("base64")}`, String(args.question || "Describe this page's layout and anything that looks broken."));
       return { url, title, what: "What she sees", devtools: [String(seen || "")] };
@@ -434,9 +491,11 @@ function createBrowserSession(options = {}) {
   async function lookAndClick(description, locate) {
     await refuseIfSensitive();
     const { width, height } = page.viewportSize?.() || { width: 1280, height: 720 };
+    await clearCursor();
     const shot = await page.screenshot({ type: "jpeg", quality: 70 });
     const point = await locate(`data:image/jpeg;base64,${shot.toString("base64")}`, width, height);
     if (!point) throw new Error(`she couldn't see "${description}" on the page`);
+    await cursorAt(point);
     await acting(() => page.mouse.click(point.x, point.y));
     return { ...(await afterAction()), clickedAt: point };
   }
@@ -468,4 +527,6 @@ module.exports = {
   pageKey,
   blockedNote,
   VIEWPORTS,
+  drawCursorInPage,
+  clearCursorInPage,
 };

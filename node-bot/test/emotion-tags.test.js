@@ -96,3 +96,36 @@ test("streamed sentences go out untagged, each with its face; an untagged one ke
     delete process.env.MANA_TOOL_CALLING_ENABLED;
   }
 });
+
+// The tool path isn't streamed: before this, its reply went out as one clip
+// with one face.
+test("a tool-path reply goes out sentence by sentence, each with its face", async () => {
+  process.env.MANA_TOOL_CALLING_ENABLED = "1";
+  try {
+    const app = createApp({
+      llamaServerRuntime: { isEnabled: () => true },
+      runToolAwareReply: async () => ({
+        content: "[sad] Oh no, it's raining. [questioning] Did you bring an umbrella? [happy] Stay dry!",
+        toolCalls: [],
+        rounds: 1,
+      }),
+    });
+    const sentences = [];
+    const replyMeta = {};
+
+    const reply = await app.locals.buildAssistantReply(
+      "hi", "", "", "default", null, null, null, replyMeta,
+      (text, emotion) => sentences.push([text, emotion]),
+    );
+
+    assert.deepEqual(sentences, [
+      ["Oh no, it's raining.", "sad"],
+      ["Did you bring an umbrella?", "questioning"],
+      ["Stay dry!", "happy"],
+    ]);
+    assert.equal(reply, "Oh no, it's raining. Did you bring an umbrella? Stay dry!");
+    assert.equal(replyMeta.streamedMatchesFinal, true);
+  } finally {
+    delete process.env.MANA_TOOL_CALLING_ENABLED;
+  }
+});

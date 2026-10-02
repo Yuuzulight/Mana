@@ -2226,7 +2226,8 @@ function createLlamaServerRuntime(options = {}) {
 
     scheduleIdleShutdown();
     logPerf("llama-server-tool-reply", startedAt);
-    return { content, toolCalls: executedToolCalls, rounds };
+    // #1287: and the messages as the model saw them (her self-work traces).
+    return { content, toolCalls: executedToolCalls, rounds, messages };
   }
 
   // Best-of-N self-voting (issue #70): generate N candidates at varied

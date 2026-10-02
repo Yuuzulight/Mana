@@ -165,7 +165,11 @@ async function setUpTab(page) {
     }
     return route.continue();
   });
-  return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }), pageLog: () => log }) };
+  // #704: her cursor shows while I'm watching: the Browser panel, or her
+  // window (MANA_BROWSER_HEADLESS=0). Take over closes this page, so my
+  // window never has it.
+  const cursor = () => Boolean(gateDeps.isWatched?.()) || (gateDeps.env || process.env).MANA_BROWSER_HEADLESS === "0";
+  return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }), pageLog: () => log, cursor }) };
 }
 
 async function startSession(deps) {

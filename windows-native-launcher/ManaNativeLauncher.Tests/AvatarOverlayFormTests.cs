@@ -10,6 +10,16 @@ public class AvatarOverlayFormTests
     private static readonly Size Avatar = new(234, 288);
     private static readonly Rectangle[] Screens = [new(0, 0, 1920, 1040), new(1920, 0, 2560, 1400)];
 
+    // #700: at rest her face takes her mood's tag; speaking, the sentence's;
+    // busy (thinking, working...), neither.
+    [Theory]
+    [InlineData("Idle", "thinking")]
+    [InlineData("Talking", "happy")]
+    [InlineData("Excited", "happy")]
+    [InlineData("Working", null)]
+    public void FaceEmotion_IdleUsesTheMoodsTag(string state, string? expected) =>
+        Assert.Equal(expected, AvatarOverlayForm.FaceEmotion(Enum.Parse<AvatarState>(state), "happy", "thinking"));
+
     [Fact]
     public void SavedLocation_UsesWhereSheWasDragged() =>
         Assert.Equal(new Point(2500, 600), AvatarOverlayForm.SavedLocation(2500, 600, Avatar, Screens));

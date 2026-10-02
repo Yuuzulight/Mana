@@ -1125,6 +1125,19 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("override", out var overrideEl) ? overrideEl.GetString() : null;
     }
 
+    // Part of #700: her mood in words ("tired, chatty") and the emotion tag
+    // it leans toward (null: none). The numbers stay in node-bot.
+    public async Task<(string Summary, string? Emotion)> GetMoodAsync()
+    {
+        using var response = await http.GetAsync("/mood");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        return (root.GetProperty("summary").GetString() ?? "okay",
+            root.TryGetProperty("emotion", out var emotion) && emotion.ValueKind == JsonValueKind.String ? emotion.GetString() : null);
+    }
+
     // #914: node-bot's characters (id, name), the active one's id, and
     // whether group mode is on.
     public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, bool GroupOn)> GetCharactersAsync()
