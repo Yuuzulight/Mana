@@ -1682,6 +1682,8 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
       if (turn === UNPARSED) {
         return { ok: false, status: 500, text: async () => '{"error":{"code":500,"message":"Failed to parse tool call arguments as JSON: missing closing quote"}}' };
       }
+      // A turn may be the server's whole response ({ json }).
+      if (turn?.json) return { ok: true, json: async () => turn.json };
       const reply = Array.isArray(turn) ? makeToolCallResponse(turn) : makeAnswerResponse(turn);
       if (!promptN) return reply;
       const json = await reply.json();
@@ -1983,6 +1985,92 @@ test("#1209 an XML-form call cut off before its required argument closes doesn't
   const { executed } = await runGoalScript({ tools: [READ_TOOL], turns: ["<tool_call>\n<function=read_file>\n<parameter=path>\nnode-b"], options: { goal: null } });
 
   assert.deepEqual(executed, []);
+});
+
+// #1258: Qwen3-Coder's edits, a large multi-line new_text in the XML form.
+const EDIT_TOOL = {
+  type: "function",
+  function: {
+    name: "coding__propose_edit",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" } },
+      required: ["path", "new_text"],
+    },
+  },
+};
+const BIG_CODE = [
+  "// Reads the XML form: <parameter=KEY>VALUE</parameter> inside <function=NAME>.",
+  'const CLOSE = "</parameter>";',
+  "const END = /<\\/function>\\s*$/;",
+  "function render(items) {",
+  ...Array.from({ length: 80 }, (_, i) => `  if (items.length < ${i} && ${i} > 0) html += "<li>" + items[${i}] + "</li>"; // a < b, c > d`),
+  '  return `<ul>${html}</ul>\\n</parameter>`;',
+  "}",
+].join("\n");
+
+test("#1258 a large multi-line XML value with <, >, </ and code comes through whole", async () => {
+  const call = (newText, close = "</parameter>\n") =>
+    `I'll rewrite it.\n<tool_call>\n<function=coding__propose_edit>\n<parameter=path>\nnode-bot/render.js\n</parameter>\n<parameter=old_text>\nfunction render() {}\n</parameter>\n<parameter=new_text>\n${newText}\n${close}</function>\n</tool_call>`;
+  const { executedArgs } = await runGoalScript({ tools: [EDIT_TOOL], turns: [call(BIG_CODE), "Done."], options: { goal: null } });
+  assert.deepEqual(executedArgs, [{ path: "node-bot/render.js", old_text: "function render() {}", new_text: BIG_CODE }]);
+
+  // The last value without its </parameter>, in a call that closes.
+  const open = await runGoalScript({ tools: [EDIT_TOOL], turns: [call(BIG_CODE, ""), "Done."], options: { goal: null } });
+  assert.equal(open.executedArgs[0]?.new_text, BIG_CODE);
+});
+
+test("#1258 calls end at their </function> with prose after or between them; each keeps its own arguments", async () => {
+  const read = (p) => `<function=read_file>\n<parameter=path>\n${p}\n</parameter>\n</function>`;
+  const run = async (text) => (await runGoalScript({ tools: [READ_TOOL], turns: [text, "Done."], options: { goal: null } })).executedArgs;
+
+  assert.deepEqual(await run(`${read("a.js")}\nLet me read it.`), [{ path: "a.js" }]);
+  assert.deepEqual(await run(`${read("a.js")}\nThen the next one.\n${read("b.js")}\nThat's both.`), [{ path: "a.js" }, { path: "b.js" }]);
+  // One written out in her prose before the real call.
+  assert.deepEqual(
+    await run(`Last time I used ${read("quoted.js")} for this. Now:\n<tool_call>\n${read("real.js")}\n</tool_call>`),
+    [{ path: "quoted.js" }, { path: "real.js" }],
+  );
+});
+
+test("#1258 a call cut off before its </function> doesn't run, even after a </parameter> in its value", async () => {
+  const text = '<tool_call>\n<function=coding__propose_edit>\n<parameter=path>\na.js\n</parameter>\n<parameter=new_text>\nconst close = "\n</parameter>';
+  const { executed } = await runGoalScript({ tools: [EDIT_TOOL], turns: [text, "Done."], options: { goal: null } });
+  assert.deepEqual(executed, []);
+});
+
+test("#1258 a value with a long run of whitespace parses quickly", async () => {
+  const spaces = " ".repeat(40000);
+  const text = `<function=coding__propose_edit>\n<parameter=path>\na.js\n</parameter>\n<parameter=new_text>\nx${spaces}y${spaces}\n</function>`;
+  const started = Date.now();
+  const { executedArgs } = await runGoalScript({ tools: [EDIT_TOOL], turns: [text, "Done."], options: { goal: null } });
+  assert.ok(Date.now() - started < 500, `took ${Date.now() - started}ms`);
+  assert.equal(executedArgs[0].new_text, `x${spaces}y`);
+});
+
+test("#1258 a call without a required argument goes back saying which, and that a cut-off reply was cut off", async () => {
+  const response = (finishReason) => ({
+    json: {
+      choices: [
+        {
+          finish_reason: finishReason,
+          message: {
+            content: "",
+            tool_calls: [{ id: "c1", type: "function", function: { name: "coding__propose_edit", arguments: JSON.stringify({ path: "a.js", old_text: "x" }) } }],
+          },
+        },
+      ],
+    },
+  });
+  const toolText = (bodies) => bodies[1].messages.filter((m) => m.role === "tool").pop().content;
+
+  const cut = await runGoalScript({ tools: [EDIT_TOOL], turns: [response("length"), "Done."], options: { goal: null } });
+  assert.deepEqual(cut.executed, []);
+  assert.match(toolText(cut.loopBodies), /^Error: coding__propose_edit needs new_text, which didn't arrive: your reply hit its token limit and the call was cut off\. Make the call again/);
+
+  const lost = await runGoalScript({ tools: [EDIT_TOOL], turns: [response("tool_calls"), "Done."], options: { goal: null } });
+  assert.deepEqual(lost.executed, []);
+  assert.match(toolText(lost.loopBodies), /^Error: coding__propose_edit needs new_text, which didn't arrive\. Make the call again/);
 });
 
 test("#1209 a tool call llama-server couldn't parse goes back to her, and the run goes on", async () => {

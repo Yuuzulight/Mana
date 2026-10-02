@@ -154,11 +154,11 @@ test("an issue goes from worktree to a pushed branch and a PR, never main", asyn
   assert.doesNotMatch(body, /Co-Authored-By/i);
   assert.doesNotMatch(git(worktree, "log", "-1", "--format=%B"), /Co-Authored-By/i);
   assert.ok(!ghCalls.some((a) => a.includes("merge")), "she never merges");
-  // Goal mode, capped at the issue's rounds (#1214: a one-line issue gets 12); tests ran in the worktree, without the backend's keys.
-  assert.equal(seen[0].opts.maxRounds, 12);
+  // Goal mode, capped at the issue's rounds (#1255: a one-line issue that names no file gets 30); tests ran in the worktree, without the backend's keys.
+  assert.equal(seen[0].opts.maxRounds, 30);
   // #1124: the round she's on, for the Background tasks panel.
   assert.equal(status.round, 1);
-  assert.equal(status.maxRounds, 12);
+  assert.equal(status.maxRounds, 30);
   assert.match(seen[0].opts.goal, /^Implement issue #7/);
   assert.equal(testRuns[0].command, "node --test test/util.test.js");
   assert.equal(testRuns[0].cwd, path.join(worktree, "node-bot"));
@@ -779,9 +779,13 @@ test("bench mode runs her loop in the worktree it's given, with no gh, commit or
   assert.equal(sw.status().state, "idle");
 });
 
-test("#1214: rounds follow the issue, up to a ceiling", () => {
-  assert.equal(roundBudget("add() subtracts."), 12);
-  assert.equal(roundBudget("In `node-bot/doctor.js`:\n- a GPU row\n- a warning\n1. a message for `foreground.js`"), 12 + 3 * 3 + 2 * 2);
+test("#1214 / #1255: rounds follow the issue from a floor of 24, a vague one gets more, up to a ceiling", () => {
+  assert.equal(roundBudget("In `node-bot/util.js`, add() subtracts."), 24 + 2);
+  assert.equal(roundBudget("In `node-bot/doctor.js`:\n- a GPU row\n- a warning\n1. a message for `foreground.js`"), 24 + 3 * 3 + 2 * 2);
+  // No file named: finding them takes rounds, so never less than a named one.
+  assert.equal(roundBudget("add() subtracts."), 30);
+  assert.equal(roundBudget(""), 30);
+  assert.ok(roundBudget("add() subtracts.") > roundBudget("In `node-bot/util.js`, add() subtracts."));
   assert.equal(roundBudget(Array(30).fill("- one more thing").join("\n")), 40);
 });
 
@@ -800,8 +804,8 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
 
   assert.equal(seen[0].opts.contextSize, 32768);
-  assert.equal(seen[0].opts.maxRounds, 12);
-  assert.equal(sw.status().maxRounds, 12);
+  assert.equal(seen[0].opts.maxRounds, 30);
+  assert.equal(sw.status().maxRounds, 30);
   assert.match(results[1], /^node-bot\/long\.js lines 1-120 of 300\n/);
   assert.match(results[2], /^node-bot\/long\.js lines 10-259 of 300\n/);
 
@@ -814,7 +818,7 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   assert.equal(offSeen[0].opts.contextSize, undefined);
 });
 
-test("#1245: 600 lines of reading before her first edit, then only search and edit until she changes something", async () => {
+test("#1245 / #1256: past 600 lines of reading before her first edit, reads still work and nudge her to edit", async () => {
   const repos = makeRepos();
   fs.writeFileSync(path.join(repos.live, "node-bot", "long.js"), Array.from({ length: 700 }, (_, i) => `// line ${i + 1}`).join("\n"));
   git(repos.live, "add", "-A");
@@ -830,21 +834,47 @@ test("#1245: 600 lines of reading before her first edit, then only search and ed
 
   assert.doesNotMatch(results[0], /lines of reading left/);
   assert.match(results[1], /\[100 of 600 lines of reading left before your first edit\. Plan your change now\.\]$/);
-  assert.match(results[2], /^node-bot\/long\.js lines 501-600 of 700\n/, "cut to what's left");
-  assert.match(results[3], /^You've read 600 lines without changing anything/);
+  // Past the budget: every line she asked for, and a nudge to edit.
+  assert.match(results[2], /^node-bot\/long\.js lines 501-700 of 700\n/, "not cut");
+  assert.match(results[2], /\n700: \/\/ line 700\n\[You've read 700 lines without changing anything\. Make your first edit now with coding__propose_edit;/);
+  assert.match(results[3], /^node-bot\/long\.js lines 601-700 of 700\n/, "not refused");
+  assert.match(results[3], /\[You've read 800 lines without changing anything/);
   assert.match(results[4], /long\.js:650:/, "search stays open");
-  assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/, "open again after her first edit");
+  assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/);
+  assert.doesNotMatch(results[6], /without changing anything|lines of reading left/, "no nudge after her first edit");
 });
 
 // #1247: attempts that write add() differently; the fake tests count how
 // far util.js is from adding (a + b: 0 failing, a * b: 1, a / b: 3). Each
 // attempt plans, edits, runs the tests, reviews its diff and finishes,
 // unless finishes(i) says no; extra(i) runs before its tests.
-function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4", finishes = () => true, extra = () => {}, ramAfterLoop = 50 } = {}) {
+function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4", finishes = () => true, extra = () => {}, ramAfterLoop = 50, review = null, reviewEdit = null } = {}) {
   let n = 0;
   let inLoop = false;
   const testCommands = [];
-  const runLoop = async (prompt, policy) => {
+  const reviewRounds = [];
+  const runLoop = async (prompt, policy, opts) => {
+    // #1259: the review round on a kept attempt she didn't finish; review
+    // is its calls (by default: her tests, three passes, finish).
+    if (/^Make sure your diff fully resolves issue #7/.test(opts.goal)) {
+      inLoop = true;
+      const results = [];
+      for (const step of review || [["coding__run_tests", { path: "node-bot/test/util.test.js" }], ...reviews, finish]) {
+        if (typeof step === "function") {
+          step();
+          continue;
+        }
+        const [name, args] = step;
+        try {
+          results.push(await policy.executeTool(name, args));
+        } catch (e) {
+          results.push(e.message);
+        }
+      }
+      inLoop = false;
+      reviewRounds.push({ prompt, opts, results });
+      return { content: "I reviewed add() and handed it in." };
+    }
     inLoop = true;
     const i = n++;
     const op = writes[Math.min(i, writes.length - 1)];
@@ -855,7 +885,8 @@ function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4"
     inLoop = false;
     if (!finishes(i)) return { content: `Not done yet: add() uses ${op}.` };
     for (const pass of ["correctness", "edge cases", "scope"]) await policy.executeTool("self_work__review", { pass });
-    await policy.executeTool("session_goal__finish", { reason: "done" });
+    // A refuted finish leaves her attempt unfinished.
+    await policy.executeTool("session_goal__finish", { reason: "done" }).catch(() => {});
     return { content: `I made add() use ${op}.` };
   };
   const failing = { "+": 0, "*": 1, "/": 3 };
@@ -874,12 +905,13 @@ function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4"
     protectedPaths: guard,
     runLoop,
     runTests,
+    reviewEdit,
     onEvent: (run, text) => events.push(text),
     // Before the first attempt (the start check) and inside one: 50%.
     ramPercent: () => (inLoop || n === 0 ? 50 : typeof ramAfterLoop === "function" ? ramAfterLoop(n) : ramAfterLoop),
     sleep: async () => {},
   });
-  return { sw, attempts: () => n, testCommands };
+  return { sw, attempts: () => n, testCommands, reviewRounds };
 }
 
 const prCreate = (ghCalls) => ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
@@ -919,17 +951,93 @@ test("#1247: when no attempt passes, the finished one with the fewest failing te
   assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \* b/);
 });
 
-test("#1247: an attempt that didn't finish is never the draft, even with its tests passing", async () => {
+test("#1247: an attempt that didn't finish is never the draft, even with fewer tests failing", async () => {
   const repos = makeRepos();
   const ghCalls = [];
-  const { sw } = attemptsWork(repos, ["+", "*"], { ghCalls, attempts: "2", finishes: (i) => i === 1 });
+  const { sw } = attemptsWork(repos, ["*", "/"], { ghCalls, attempts: "2", finishes: (i) => i === 1 });
   await sw.start(7);
   await sw._current().done;
 
   const body = prCreate(ghCalls)[prCreate(ghCalls).indexOf("--body") + 1];
   assert.doesNotMatch(body, /passed its tests/);
   assert.match(body, /Attempt 2 came closest: it finished/);
-  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \* b/);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \/ b/);
+});
+
+test("#1259: an attempt whose tests pass but that she didn't finish is kept; she reviews it and finishes, and it opens a PR", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const events = [];
+  const { sw, attempts, reviewRounds } = attemptsWork(repos, ["+", "*"], { ghCalls, events, finishes: () => false });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 1, "stops at the first passing attempt, finished or not");
+  assert.ok(events.includes("Attempt 1 of 4: not finished, tests passing."));
+  assert.equal(reviewRounds.length, 1);
+  assert.match(reviewRounds[0].prompt, /to implement issue #7 .*Your change so far passes its tests, but you didn't finish, so it may not do everything the issue asks yet\./);
+  assert.match(reviewRounds[0].prompt, /Only when the issue is fully done and the tests pass, call session_goal__finish/);
+  assert.equal(reviewRounds[0].opts.goal, "Make sure your diff fully resolves issue #7, then hand it in");
+  assert.ok(reviewRounds[0].opts.maxRounds <= 10);
+  assert.equal(sw.status().state, "pr-open", sw.status().step);
+  const create = prCreate(ghCalls);
+  assert.ok(!create.includes("--draft"));
+  assert.match(create[create.indexOf("--body") + 1], /^Closes #7\.\n\n## What changed\nI reviewed add\(\) and handed it in\./);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \+ b/);
+});
+
+test("#1259: the review round takes her three passes before finish; one she doesn't hand in counts as failed", async () => {
+  // Finish first is refused: no edit in the round, but its diff still needs
+  // her passes. Unfinished, each attempt goes on to the next; none is a PR.
+  const repos = makeRepos();
+  const ghCalls = [];
+  const early = attemptsWork(repos, ["+"], { ghCalls, finishes: () => false, review: [finish] });
+  await early.sw.start(7);
+  await early.sw._current().done;
+  assert.match(early.reviewRounds[0].results[0], /^Before you finish, review your diff with self_work__review: correctness, then edge cases, then scope\./);
+  assert.equal(early.attempts(), 4);
+  assert.equal(early.reviewRounds.length, 4);
+  assert.equal(early.sw.status().state, "not-done");
+  assert.equal(prCreate(ghCalls), undefined);
+
+  // The next attempt, finished with its tests passing, is the PR.
+  const repos3 = makeRepos();
+  const ghCalls3 = [];
+  const next = attemptsWork(repos3, ["+", "+"], { ghCalls: ghCalls3, finishes: (i) => i === 1, review: [finish] });
+  await next.sw.start(7);
+  await next.sw._current().done;
+  assert.equal(next.attempts(), 2);
+  assert.equal(next.reviewRounds.length, 1);
+  assert.equal(next.sw.status().state, "pr-open", next.sw.status().step);
+  assert.match(git(repos3.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \+ b/);
+
+  // A change after her finish isn't the tree her reviewer passed: no PR.
+  const repos2 = makeRepos();
+  const ghCalls2 = [];
+  const util = path.join(repos2.worktrees, "mana-7", "node-bot", "util.js");
+  const sneak = () => fs.appendFileSync(util, "// after the review\n");
+  const late = attemptsWork(repos2, ["+"], { ghCalls: ghCalls2, finishes: () => false, review: [["coding__run_tests", { path: "node-bot/test/util.test.js" }], ...reviews, finish, sneak] });
+  await late.sw.start(7);
+  await late.sw._current().done;
+  assert.equal(late.sw.status().state, "needs-you");
+  assert.match(late.sw.status().step, /isn't the one my reviewer passed when I finished, so no PR/);
+  assert.equal(prCreate(ghCalls2), undefined);
+});
+
+test("#1259: refutations from her attempt count on in its review round", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const refuted = { verdict: "refuted", concrete: true, failingCase: "add(1, 2) is 3, not 4" };
+  // Refuted once in the attempt, then twice more in the review round: three stops the run.
+  const review = [["coding__run_tests", { path: "node-bot/test/util.test.js" }], ...reviews, finish, finish];
+  const { sw, attempts } = attemptsWork(repos, ["+"], { ghCalls, review, reviewEdit: async () => refuted });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 1);
+  assert.equal(sw.status().state, "needs-you", sw.status().step);
+  assert.match(sw.status().step, /My reviewer found a way my change to node-bot\/util\.js breaks: add\(1, 2\) is 3, not 4/);
+  assert.equal(prCreate(ghCalls), undefined);
 });
 
 test("#1247: with no attempt that finished, no PR, and the run says how each went", async () => {
@@ -1038,21 +1146,33 @@ test("#1211: her first edit waits for a plan, and the plan is checked off in her
   assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
 });
 
-test("#1212: her code change waits for a test she's seen fail; the test itself can come first", async () => {
+test("#1212 / #1257: a code change before a test applies with a warning; a test file she wrote or a failing test she ran clears it", async () => {
+  const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
+  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  const again = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a + b;", new_text: "return b + a;" }];
+  const edits = (seen) => seen.filter((s) => s.name === "coding__propose_edit").map((s) => JSON.parse(s.result));
+
+  // Code first: applied, with the warning; after a test file she wrote, no warning.
   const repos = makeRepos();
   const seen = [];
-  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
-  const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
-  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, runTests, fix], plans: false, passed: false, seen });
+  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, again, ...reviews, finish], plans: false, passed: false, seen });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const [first, test, second] = edits(seen);
+  assert.equal(first.status, "ok");
+  assert.match(first.warning, /^Test first: you changed code without a test for it yet\./);
+  assert.equal(test.warning, undefined);
+  assert.equal(second.warning, undefined);
+  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /b \+ a/);
+  // Her tests still have to pass: no PR.
+  assert.equal(sw.status().state, "tests-failing");
 
-  assert.match(results[1], /^Test first: write or find a test for the behaviour/);
-  assert.equal(JSON.parse(results[2]).status, "ok");
-  assert.equal(JSON.parse(results[3]).passed, false);
-  assert.equal(JSON.parse(results[4]).status, "ok");
-  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
+  // A test that was already there, run and seen failing, counts.
+  const ranSeen = [];
+  const ran = selfWork(makeRepos(), { calls: [steps, runTests, fix], plans: false, passed: false, seen: ranSeen });
+  await ran.sw.start(7);
+  await ran.sw._current().done;
+  assert.equal(edits(ranSeen)[0].warning, undefined);
 });
 
 test("#1213: she finishes only after three passes over her diff since her last edit", async () => {

@@ -106,7 +106,8 @@ public class ChatActionsTests
     [InlineData("<SCRIPT src=x></SCRIPT>", true)]
     [InlineData("<button onclick=\"go()\">x</button>", true)]
     [InlineData("<canvas></canvas>", true)]
-    [InlineData("<svg></svg>", true)]
+    [InlineData("<svg><rect width=\"4\" height=\"4\"/></svg>", false)] // Folio draws inline SVG
+    [InlineData("<math><mi>x</mi></math>", true)]
     [InlineData("<img src=\"https://example.com/a.png\">", true)] // Folio loads nothing from the network
     public void HtmlArtifact_NeedsBrowser(string html, bool expected)
     {
@@ -116,7 +117,7 @@ public class ChatActionsTests
     [Fact]
     public void HtmlArtifact_SaysWhyAPageNeedsABrowser()
     {
-        Assert.Equal("uses inline SVG", HtmlArtifact.BrowserReasons("<svg></svg>"));
+        Assert.Equal("uses MathML", HtmlArtifact.BrowserReasons("<math><mi>x</mi></math>"));
     }
 
     [Theory]
