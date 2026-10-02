@@ -215,6 +215,7 @@ const {
 } = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const { createCheckIns, gentleHint } = require("./check-ins");
+const { createScreenIntents } = require("./screen-intents");
 const {
   createRelationshipStore,
   createRelationshipToolSource,
@@ -960,6 +961,19 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       console.warn("Check-in failed:", e.message);
     }
   }, 5 * 60 * 1000).unref();
+}
+// #1283 (part of #698): standing intents also fire on what's on screen --
+// the foreground window (foreground-report) and the glance text -- through
+// the proactive engine; never mid-game or on a private window.
+const screenIntents = createScreenIntents({
+  matchIntents: (text) => acpMemoryStore.matchIntents(text),
+  offer: (candidate) => require("./proactive").offer(candidate),
+  isGaming: () => gamingWatch.isGaming(),
+});
+function checkScreenIntents(screen) {
+  screenIntents
+    .check({ ...require("./foreground").getForeground(), ...screen })
+    .catch((e) => console.warn("Screen intent check failed:", e.message));
 }
 // #908: the game I'm playing, if its wiki is known: the one in front (the
 // native launcher's foreground report), else the watched game that's running.
@@ -2366,6 +2380,7 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/internal/foreground-report", (req, res) => {
     try {
       require("./foreground").reportForeground(req.body || {});
+      checkScreenIntents({});
       return res.json({ ok: true });
     } catch (e) {
       return res.status(400).json({ error: e.message });
@@ -2684,6 +2699,8 @@ function registerRoutes(app, upload, deps = {}) {
     runLocalReply:
       deps.runLocalReply ||
       ((prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens)),
+    // #1283: glance text checked against standing intents.
+    checkScreenIntents: deps.checkScreenIntents || checkScreenIntents,
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,
