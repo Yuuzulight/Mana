@@ -5,6 +5,7 @@ const crypto = require('crypto');
 
 const { hasAdminKey, isLocalRestartRequest } = require("./admin-key");
 const { createMobileAuth } = require("./mobile-auth");
+const { uploadDestination } = require("./utils/live-dirs");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
 const { verifyTotpCode: defaultVerifyTotpCode } = require("./totp");
 const {
@@ -160,7 +161,7 @@ function getRequiredDeps(deps) {
 
 function registerMobileRoutes(app, deps = {}) {
   const router = express.Router();
-  const upload = multer({ dest: path.join(__dirname, "tmp") });
+  const upload = multer({ storage: multer.diskStorage({ destination: uploadDestination }) });
   const {
     mobileAuth,
     mobileMemoryStore,

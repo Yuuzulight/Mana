@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { withServer } = require("./helpers");
+const { withServer, useTempDir } = require("./helpers");
+useTempDir("MANA_UPLOAD_TMP_DIR");
 const whisperDiscovery = require("../whisper-discovery");
 
 // Exercises the real runWhisperCliPartial/spawnWhisperCliAsync pipeline

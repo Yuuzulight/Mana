@@ -18,7 +18,8 @@ const assert = require("node:assert/strict");
 
 const { createApp } = require("../server");
 const { createAuthStore } = require("../auth-store");
-const { withServer } = require("./helpers");
+const { withServer, useTempDir } = require("./helpers");
+useTempDir("MANA_PENDING_WRITES_DIR");
 
 // Same dataDir the module-level authStore in server.js resolved to via
 // MANA_AUTH_DIR above, so accounts created here are visible to the app.

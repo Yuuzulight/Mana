@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { safeJsonParse } = require("./utils/json-extract");
+const { pendingWritesDir } = require("./utils/live-dirs");
 const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
 const { createSnapshotStore } = require("./snapshot-store");
@@ -58,13 +59,18 @@ function resolveWithinRepo(requestedPath) {
 function getApprovalConfig() {
   const requireApproval =
     (process.env.FILE_WRITE_REQUIRE_APPROVAL || "1") !== "0";
-  const approvalDir =
-    process.env.MANA_PENDING_WRITES_DIR ||
-    path.join(__dirname, "data", "pending_writes");
   const approvalTimeoutMs = Number(
     process.env.FILE_WRITE_APPROVAL_TIMEOUT_MS || 5 * 60 * 1000,
   );
-  return { requireApproval, approvalDir, approvalTimeoutMs };
+  // A getter, so asking only for requireApproval never trips the test guard
+  // in pendingWritesDir() (#1187).
+  return {
+    requireApproval,
+    get approvalDir() {
+      return pendingWritesDir();
+    },
+    approvalTimeoutMs,
+  };
 }
 
 async function ensureApprovalDir() {

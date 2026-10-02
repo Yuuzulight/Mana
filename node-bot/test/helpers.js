@@ -5,6 +5,9 @@
 // keepAliveTimeout, once per test, across every file using this pattern.
 const fs = require("node:fs");
 const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
+const { after } = require("node:test");
 const zlib = require("node:zlib");
 
 async function withServer(app, fn) {
@@ -108,7 +111,19 @@ function makeZip(entries) {
   return Buffer.concat([...parts, directory, end]);
 }
 
+// #1186/#1187: points envVar (MANA_UPLOAD_TMP_DIR, MANA_PENDING_WRITES_DIR)
+// at a fresh temp dir for the rest of this test file and removes it after.
+// Without it the code refuses to fall back to node-bot/tmp or
+// data/pending_writes under the test runner.
+function useTempDir(envVar) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-test-"));
+  process.env[envVar] = dir;
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
 module.exports = {
+  useTempDir,
   useTestAdminToken,
   makeZip,
   withServer,

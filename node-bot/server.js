@@ -75,6 +75,7 @@ if (require.main === module) {
 
 const express = require("express");
 const multer = require("multer");
+const { uploadDestination, uploadTmpDir } = require("./utils/live-dirs");
 const cors = require("cors");
 const { createRequestGuard } = require("./request-guard");
 const rateLimit = require("express-rate-limit");
@@ -398,7 +399,7 @@ function createApp(deps = {}) {
     });
     next();
   });
-  	const upload = multer({ dest: path.join(__dirname, "tmp") });
+  	const upload = multer({ storage: multer.diskStorage({ destination: uploadDestination }) });
 
   	  // wire mobile device store (allow override via deps for tests)
   	  const deviceStore = deps.deviceStore || new MobileDeviceStore();
@@ -2227,9 +2228,10 @@ ensureDirectory(path.join(__dirname, "tmp"));
 
 // An upload's temp files are its multer name (32 random hex, no extension)
 // plus whatever ffmpeg/whisper appended: .wav, .out.json, .partial-out.json.
-// Both multer instances (here and mobile-routes.js) write to node-bot/tmp.
+// Both multer instances (here and mobile-routes.js) write to node-bot/tmp
+// (or MANA_UPLOAD_TMP_DIR).
 function deleteUploadFiles(uploadPath) {
-  const dir = path.join(__dirname, "tmp");
+  const dir = path.dirname(uploadPath);
   const name = path.basename(uploadPath);
   if (!/^[0-9a-f]{32}$/.test(name)) return;
   try {
@@ -2244,7 +2246,7 @@ function deleteUploadFiles(uploadPath) {
 // On start: anything left in tmp/ from before (a crash, or builds that
 // kept every voice upload) that's over an hour old. Files only -- tmp/
 // also holds the OCR model cache in tmp/tesseract.
-function sweepStaleTmpFiles(dir = path.join(__dirname, "tmp"), maxAgeMs = 60 * 60 * 1000, now = Date.now()) {
+function sweepStaleTmpFiles(dir = uploadTmpDir(), maxAgeMs = 60 * 60 * 1000, now = Date.now()) {
   let removed = 0;
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

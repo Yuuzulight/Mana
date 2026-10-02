@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp, formatMemoryMarkdown, buildMemoryNotes, buildVaultViews, buildSkillsIndexBlock } = require("../server");
-const { withServer } = require("./helpers");
+const { withServer, useTempDir } = require("./helpers");
+useTempDir("MANA_UPLOAD_TMP_DIR");
 
 test("buildSkillsIndexBlock returns nothing when there are no skills", () => {
   assert.equal(buildSkillsIndexBlock([]), "");
