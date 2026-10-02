@@ -23,11 +23,18 @@
 // the base commit and pass with the fix's files. A live case (no merged
 // fix yet, fix: null) keeps its hidden tests in bench/hidden/<id>/ and
 // only has to fail at the base.
+//
+// #1269: --gemini runs only her Gemini CLI fallback on each case (no local
+// model, nothing of hers after it), to measure Gemini on its own. It needs
+// Gemini CLI installed and signed in, and spends real quota: each case is
+// one run of many requests. MANA_SELF_WORK_GEMINI_MODEL picks the model;
+// --model, --context, --server-args and --attempts don't apply.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { createSelfWork, testEnv, systemRamPercent } = require("../self-work");
+const { createGeminiFallback } = require("../gemini-fallback");
 
 const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_DIR = path.join(__dirname, "hidden");
@@ -168,7 +175,8 @@ async function blocker({ isGaming, ramPercent, backendModelUp }) {
 // One case. deps: repoRoot, worktreesDir, runLoop, and optionally
 // reviewEdit, isGaming, ramPercent, runTests, tokens (a {prompt, completion,
 // peak, textCalls}
-// counter the model's fetch adds to).
+// counter the model's fetch adds to), gemini (#1269: her Gemini fallback,
+// run on the case instead of her loop).
 async function runCase(c, deps) {
   const { repoRoot, worktreesDir } = deps;
   const wt = path.join(worktreesDir, `bench-${c.id}`);
@@ -206,14 +214,18 @@ async function runCase(c, deps) {
       isGaming: deps.isGaming,
       ramPercent: deps.ramPercent,
       runTests: deps.runTests,
+      gemini: deps.gemini || null,
       onEvent: deps.onEvent || ((run, text) => console.log(`[bench ${c.id}] ${text}`)),
     });
     // The interface the hidden tests call (names, options, messages), when
     // the issue leaves it open, so a sound fix isn't failed on naming.
     const body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
     const started = Date.now();
+    const issue = { number: c.issue, title: c.title, body };
     // #1247: --attempts N is her best-of-N (where self-work has it).
-    const { reply, run, error } = await selfWork.bench({ number: c.issue, title: c.title, body }, wt, { attempts: deps.attempts || 1 });
+    const { reply, run, error, gemini } = deps.gemini
+      ? await selfWork.benchGemini(issue, wt)
+      : await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
     const peak = await peaks.stop();
     const contextSize = deps.contextSize ? await deps.contextSize() : null;
@@ -251,10 +263,14 @@ async function runCase(c, deps) {
       diff: { files: diff.files, added: diff.added, removed: diff.removed },
       outside: diff.files.filter((f) => !allowed.has(f)),
       // How her loop ended: finished, or why not.
-      ended: error
-        ? "error"
-        : run.halt?.state ||
-          (run.refuted ? "refuted" : run.finished && !/^Not done yet/i.test(reply?.content || "") ? "finished" : "not-finished"),
+      ended: gemini
+        ? gemini.refused.length
+          ? "refused"
+          : gemini.outcome
+        : error
+          ? "error"
+          : run.halt?.state ||
+            (run.refuted ? "refuted" : run.finished && !/^Not done yet/i.test(reply?.content || "") ? "finished" : "not-finished"),
       lastTestPassed: run.lastTestPassed,
       error: error ? error.slice(0, 300) : undefined,
       summary: String(reply?.content || "").slice(0, 600),
@@ -278,6 +294,9 @@ function failureKind(r, c) {
   if (r.ended === "refuted") return "no valid edit: reviewer refusal";
   if (/parse tool call/i.test(r.error || "")) return "no valid edit: parse failure";
   if (r.ended === "error") return "error";
+  // #1269: a Gemini run that ended without its change being scored.
+  if (r.ended === "refused") return "refused: outside her write rules";
+  if (["quota", "timeout", "turn-limit", "missing"].includes(r.ended)) return `gemini: ${r.ended}`;
   if (!r.diff.files.length) {
     if (r.editErrors) return "no valid edit: bad arguments";
     // The forced final answer after the last round often holds one more
@@ -428,6 +447,20 @@ function writeReport(results, outDir, meta = {}) {
   return md;
 }
 
+function benchEnv(repoRoot) {
+  const { parseEnv } = require("node:util");
+  const envFile = path.join(repoRoot, "node-bot", ".env");
+  return { ...process.env, ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {}) };
+}
+
+// #1269: Gemini CLI in place of her model, when it's installed and signed in.
+async function geminiModel(repoRoot) {
+  const gemini = createGeminiFallback({ env: benchEnv(repoRoot) });
+  const s = await gemini.state();
+  if (!s.installed || !s.signedIn) throw new Error(s.why);
+  return { model: `Gemini CLI ${s.version} (${s.model})`, gemini, start: async () => {}, aborted: () => null, stop: async () => {} };
+}
+
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
 // Tokens come from each reply's usage; a reply whose tool call stayed in
 // its text (no tool_calls) is counted too.
@@ -437,11 +470,9 @@ function writeReport(results, outDir, meta = {}) {
 // extra flags (a MoE model with its experts in RAM: "-ngl 99 --n-cpu-moe
 // 20"); the runtime then adopts it as the server for that model.
 function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
-  const { parseEnv } = require("node:util");
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
   const { refuteEdit } = require("../ai/adversarial-verifier");
-  const envFile = path.join(repoRoot, "node-bot", ".env");
-  const env = { ...process.env, ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {}) };
+  const env = benchEnv(repoRoot);
   env.LLAMA_SERVER_PORT = BENCH_LLAMA_PORT;
   // Text only: no vision projector taking VRAM, and no host-RAM prompt
   // cache (one conversation at a time reuses its slot's KV cache anyway).
@@ -540,10 +571,13 @@ async function main(argv) {
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
+  const useGemini = argv.includes("--gemini");
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
+    // Gemini runs in the cloud: her chat model's VRAM isn't in its way.
     backendModelUp: () =>
+      !useGemini &&
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
 
@@ -557,7 +591,7 @@ async function main(argv) {
   }
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  const model = realModel(repoRoot, tokens, config);
+  const model = useGemini ? await geminiModel(repoRoot) : realModel(repoRoot, tokens, config);
   const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000 };
   const results = [];
   const runs = [];
@@ -588,6 +622,10 @@ async function main(argv) {
         break;
       }
       results.push(result);
+      if (result.ended === "quota") {
+        console.log(`Stopping at ${c.id}: Gemini CLI is out of quota.`);
+        break;
+      }
       writeReport(results, outDir, meta);
     }
   } finally {

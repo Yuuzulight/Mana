@@ -107,6 +107,34 @@ test("a case that fixes the bug passes its hidden test, and the worktree is gone
   assert.equal(git(r.repo, "rev-parse", "HEAD"), r.c.fix);
 });
 
+// #1269: --gemini runs only her Gemini fallback on the case, under her write rules.
+test("the Gemini config scores Gemini CLI's own change, and a change outside her write rules is refused", async () => {
+  const r = makeRepo();
+  const gemini = (writes) => ({
+    model: "fake",
+    run: async ({ worktree, prompt }) => {
+      assert.match(prompt, /add\(2, 3\) gives -1\./);
+      for (const [rel, text] of Object.entries(writes)) {
+        fs.mkdirSync(path.dirname(path.join(worktree, rel)), { recursive: true });
+        fs.writeFileSync(path.join(worktree, rel), text);
+      }
+      return { outcome: "ok", ms: 5, response: "Fixed add()." };
+    },
+  });
+  const fixed = "function add(a, b) {\n  return a + b;\n}\nmodule.exports = { add };\n";
+  const ok = await runCase(r.c, { ...deps(r, []), gemini: gemini({ "node-bot/util.js": fixed }) });
+  assert.equal(ok.passed, true, ok.hiddenTail);
+  assert.equal(ok.ended, "ok");
+  assert.equal(ok.toolCalls, 0);
+  assert.deepEqual(ok.diff.files, ["node-bot/util.js"]);
+
+  const refused = await runCase(r.c, { ...deps(r, []), gemini: gemini({ "node-bot/util.js": fixed, ".github/workflows/x.yml": "on: push\n" }) });
+  assert.equal(refused.ended, "refused");
+  assert.equal(refused.failure, "refused: outside her write rules");
+  assert.equal(refused.passed, false);
+  assert.deepEqual(refused.diff.files, []);
+});
+
 test("a wrong fix fails the hidden test, and files outside the real fix are named", async () => {
   const r = makeRepo();
   const result = await runCase(
