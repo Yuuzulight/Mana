@@ -814,7 +814,7 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   assert.equal(offSeen[0].opts.contextSize, undefined);
 });
 
-test("#1245: 600 lines of reading before her first edit, then only search and edit until she changes something", async () => {
+test("#1245 / #1256: past 600 lines of reading before her first edit, reads still work and nudge her to edit", async () => {
   const repos = makeRepos();
   fs.writeFileSync(path.join(repos.live, "node-bot", "long.js"), Array.from({ length: 700 }, (_, i) => `// line ${i + 1}`).join("\n"));
   git(repos.live, "add", "-A");
@@ -830,10 +830,14 @@ test("#1245: 600 lines of reading before her first edit, then only search and ed
 
   assert.doesNotMatch(results[0], /lines of reading left/);
   assert.match(results[1], /\[100 of 600 lines of reading left before your first edit\. Plan your change now\.\]$/);
-  assert.match(results[2], /^node-bot\/long\.js lines 501-600 of 700\n/, "cut to what's left");
-  assert.match(results[3], /^You've read 600 lines without changing anything/);
+  // Past the budget: every line she asked for, and a nudge to edit.
+  assert.match(results[2], /^node-bot\/long\.js lines 501-700 of 700\n/, "not cut");
+  assert.match(results[2], /\n700: \/\/ line 700\n\[You've read 700 lines without changing anything\. Make your first edit now with coding__propose_edit;/);
+  assert.match(results[3], /^node-bot\/long\.js lines 601-700 of 700\n/, "not refused");
+  assert.match(results[3], /\[You've read 800 lines without changing anything/);
   assert.match(results[4], /long\.js:650:/, "search stays open");
-  assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/, "open again after her first edit");
+  assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/);
+  assert.doesNotMatch(results[6], /without changing anything|lines of reading left/, "no nudge after her first edit");
 });
 
 // #1247: attempts that write add() differently; the fake tests count how
