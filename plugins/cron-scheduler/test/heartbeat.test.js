@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { parseHeartbeat, createCheckToolGate, createHeartbeat } = require("../heartbeat");
+const { parseHeartbeat, listItems, replaceItems, createCheckToolGate, createHeartbeat } = require("../heartbeat");
 const { createApprovalGate } = require("../../../node-bot/approval-gate");
 
 const tempDir = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -288,4 +288,91 @@ test("dry run -> approval -> quiet runs stay silent; writes are listed in the ne
   const restarted = createHeartbeat({ dataDir, now: () => clock, runCheck: async () => "NOTHING_TO_REPORT", approvalGate: gate });
   await restarted.runDue();
   assert.equal(gate.listPending().length, 2);
+});
+
+// #699: a report is a proactive candidate, so budgets, gaming mode and
+// quiet hours apply; "urgent" rides along.
+test("heartbeat reports go through the proactive pipeline", async () => {
+  const cronPlugin = require("../index");
+  const proactive = require("../../../node-bot/proactive");
+  cronPlugin._resetForTests();
+  const dataDir = tempDir("mana-hb-proactive-");
+  const md = "- [urgent] warn me if D: is low\n";
+  const [check] = parseHeartbeat(md).checks;
+  fs.writeFileSync(path.join(dataDir, "heartbeat.md"), md);
+  fs.writeFileSync(path.join(dataDir, "heartbeat-state.json"), JSON.stringify({ checks: { [check.id]: { approved: true, nextRunAt: 0 } } }));
+  const realOffer = proactive.offer;
+  const offered = [];
+  proactive.offer = (candidate) => (offered.push(candidate), "held");
+  try {
+    const hb = cronPlugin._getHeartbeatForTests({ dataDir, buildAssistantReply: async () => "D: has 12 GB left." });
+    await hb.runDue();
+  } finally {
+    proactive.offer = realOffer;
+    cronPlugin._resetForTests();
+  }
+  assert.equal(offered.length, 1);
+  assert.equal(offered[0].reason, "heartbeat");
+  assert.equal(offered[0].urgent, true);
+  assert.equal(offered[0].payload.text, "D: has 12 GB left.");
+});
+
+test("Settings editor: items round-trip, keep ids and notes, switched-off checks don't run", () => {
+  const md = "# Checks\n- [network, read] every 2h: check github.com notifications\nnote: keep me\n- daily 09:00: summarize the day\n- every 1m: too often\n";
+  const items = listItems(md);
+  assert.deepEqual(
+    items.map(({ id, ...rest }) => rest),
+    [
+      { text: "check github.com notifications", schedule: "every 2h", permissions: ["network"], urgent: false, enabled: true },
+      { text: "summarize the day", schedule: "daily 09:00", permissions: [], urgent: false, enabled: true },
+    ],
+  );
+  // Unchanged items keep their ids (and so their approval).
+  assert.deepEqual(listItems(replaceItems(md, items)).map((i) => i.id), items.map((i) => i.id));
+
+  const next = replaceItems(md, [{ ...items[1], enabled: false, urgent: true }, { text: "new one", permissions: ["write"], schedule: "every 45m" }]);
+  assert.equal(next, "# Checks\n- ~~[urgent] daily 09:00: summarize the day~~\nnote: keep me\n- [write] every 45m: new one\n- every 1m: too often\n");
+  assert.deepEqual(parseHeartbeat(next).checks.map((c) => c.text), ["new one"]);
+  assert.equal(listItems(next)[0].enabled, false);
+  assert.equal(listItems(next)[0].id, items[1].id);
+
+  for (const [item, error] of [
+    [{ text: "" }, /no text/],
+    [{ text: "a\nb" }, /one line/],
+    [{ text: "x", permissions: ["install"] }, /isn't a permission/],
+    [{ text: "x", schedule: "every 1m" }, /shortest interval/],
+    [{ text: "x", schedule: "hourly" }, /schedule should look like/],
+    [{ text: "[write] sneaky" }, /can't start with/],
+  ]) {
+    assert.throws(() => replaceItems(md, [item]), error);
+  }
+  assert.throws(() => replaceItems(md, "nope"), /must be a list/);
+});
+
+test("GET/PUT /heartbeat/items edits heartbeat.md and refuses bad items", async () => {
+  const express = require("../../../node-bot/node_modules/express");
+  const { withServer } = require("./helpers");
+  const cronPlugin = require("../index");
+  cronPlugin._resetForTests();
+  const dataDir = tempDir("mana-hb-routes-");
+  const app = express();
+  app.use(express.json());
+  cronPlugin.registerRoutes(app, { dataDir });
+  try {
+    await withServer(app, async (baseUrl) => {
+      const put = (items) =>
+        fetch(`${baseUrl}/heartbeat/items`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
+      assert.deepEqual(await (await fetch(`${baseUrl}/heartbeat/items`)).json(), { items: [] });
+      const ok = await put([{ text: "warn me if D: drops below 50 GB", schedule: "every 30m" }]);
+      assert.equal(ok.status, 200);
+      assert.equal((await ok.json()).items[0].text, "warn me if D: drops below 50 GB");
+      assert.equal(fs.readFileSync(path.join(dataDir, "heartbeat.md"), "utf8"), "- every 30m: warn me if D: drops below 50 GB\n");
+      const bad = await put([{ text: "x", permissions: ["destructive"] }]);
+      assert.equal(bad.status, 400);
+      assert.match((await bad.json()).error, /check 1/);
+      assert.equal(fs.readFileSync(path.join(dataDir, "heartbeat.md"), "utf8"), "- every 30m: warn me if D: drops below 50 GB\n");
+    });
+  } finally {
+    cronPlugin._resetForTests();
+  }
 });
