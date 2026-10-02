@@ -84,7 +84,6 @@ const { promisify } = require("util");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { Readable } = require("node:stream");
 const http = require("http");
 const https = require("https");
 const { createWorker } = require("tesseract.js");
@@ -103,12 +102,10 @@ const { createVTubeRuntime } = require("./vtube-runtime");
   registerAdminStaticRoutes,
   registerPendingWritesRoutes,
 } = require("./server-routes");
-	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, hasAdminKey, requireAdminKeyByDefault } = require("./admin-key");
-	const {
-	  handleGetAddonStatus,
-	  handleGenerateVideo,
-	  handleAddonConsent,
-	} = require("./routes/addons");
+	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, requireAdminKeyByDefault } = require("./admin-key");
+	const { registerOpenAiCompatRoutes } = require("./openai-compat-routes");
+	const { registerAdminAccountsRoutes } = require("./admin-accounts-routes");
+	const { registerPluginStoreRoutes } = require("./plugin-store-routes");
 	const {
 	  buildCapabilityHealth,
 	  contributePluginPromptContext,
@@ -317,7 +314,7 @@ const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtim
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
-const { crisisInstruction, withCrisisInstruction } = require("./utils/crisis-check");
+const { crisisInstruction } = require("./utils/crisis-check");
 const { createRestartController } = require("./admin-restart");
 const ffxivMarketPlugin = require("../plugins/ffxiv-market");
 const {
@@ -5891,23 +5888,6 @@ function registerRoutes(app, upload, deps = {}) {
     next();
   }
 
-  // Admin-only middleware for account create/revoke (must run after
-  // authMiddleware, which sets req.user). Account management is more
-  // sensitive than the read-only /api/memory routes -- which are
-  // intentionally remote-accessible by design, per issue #93 -- so it gets
-  // an extra layer beyond just "the API key has role=admin": ADMIN_TOKEN,
-  // or the native launcher's per-run key from this PC (#670, admin-key.js),
-  // so a leaked admin API key alone isn't enough to manage accounts.
-  function requireAdmin(req, res, next) {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "Admin role required" });
-    }
-    if (hasAdminKey(req, { local: isLocalRestartRequest(req) })) {
-      return next();
-    }
-    return res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
-  }
-
   // GET /api/memory — return Mana's consolidated memory to any authenticated
   // key (admin or user role). Mana has one shared memory store, not
   // per-account partitions, so this is the same content for every valid key;
@@ -5956,148 +5936,14 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
-  // POST /v1/chat/completions — OpenAI-compatible chat endpoint (issue #95),
-  // so external tools (Obsidian Copilot, etc.) can point at Mana directly
-  // instead of only talking to Mana's own bespoke routes. Proxies straight
-  // through to the persistent llama-server's own OpenAI endpoint; unlike
-  // runLocalAssistantReply this does not inject Mana's persona system
-  // prompt, since external clients bring their own messages -- apart from
-  // the crisis note (utils/crisis-check.js) when the last user message needs it.
-  app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
-    if (!activeLlamaServerRuntime.isEnabled()) {
-      return res.status(503).json({
-        error: {
-          message:
-            "llama-server mode is disabled; /v1/chat/completions requires MANA_LLAMA_SERVER to be enabled (see docs/API_KEYS.md).",
-        },
-      });
-    }
-    try {
-      const upstream = await activeLlamaServerRuntime.proxyChatCompletion(withCrisisInstruction(req.body, deps.env || process.env));
-      res.status(upstream.status);
-      const contentType = upstream.headers.get("content-type");
-      if (contentType) res.type(contentType);
-      if (!upstream.body) {
-        return res.end();
-      }
-      // proxyChatCompletion already scheduled the idle-shutdown timer when
-      // the request was dispatched, but that only covers the time-to-first-byte:
-      // fetch() resolves once headers arrive, so a slow SSE stream (stream:
-      // true) can still outlive that timer while this pipe is mid-flight,
-      // killing the persistent llama-server process out from under the
-      // client. Reschedule once the response is actually done so the idle
-      // window is measured from real completion, not dispatch time.
-      res.on("close", () => activeLlamaServerRuntime.scheduleIdleShutdown());
-      Readable.fromWeb(upstream.body).pipe(res);
-    } catch (e) {
-      res.status(502).json({ error: { message: e?.message || String(e) } });
-    }
+  registerOpenAiCompatRoutes(app, {
+    authMiddleware,
+    activeLlamaServerRuntime,
+    llamaServerRuntime,
+    env: deps.env,
   });
 
-  // POST /v1/embeddings — OpenAI-compatible embeddings endpoint (issue #95),
-  // backed by the same local sentence-transformers embedder
-  // (tools/local_embedder.py) Mana's own memory retriever uses. See
-  // docs/API_KEYS.md for USE_EMBEDDINGS/RETRIEVER_EMBEDDER_* setup.
-  app.post("/v1/embeddings", authMiddleware, async (req, res) => {
-    const inputRaw = req.body && req.body.input;
-    const inputs = Array.isArray(inputRaw) ? inputRaw : [inputRaw];
-    if (!inputs.length || inputs.some((t) => typeof t !== "string" || !t)) {
-      return res.status(400).json({
-        error: { message: "input must be a string or array of non-empty strings" },
-      });
-    }
-    try {
-      const retrieverIndex = require("./tools/retriever-index");
-      const embeddings = await retrieverIndex.computeEmbeddings(inputs);
-      if (embeddings.some((e) => !Array.isArray(e))) {
-        return res.status(503).json({
-          error: {
-            message:
-              "Local embedder unavailable. Set USE_EMBEDDINGS=1 and run node-bot/tools/local_embedder.py (see docs/API_KEYS.md).",
-          },
-        });
-      }
-      res.json({
-        object: "list",
-        data: embeddings.map((embedding, index) => ({
-          object: "embedding",
-          embedding,
-          index,
-        })),
-        model: process.env.RETRIEVER_EMBEDDER_MODEL || "all-MiniLM-L6-v2",
-        usage: { prompt_tokens: 0, total_tokens: 0 },
-      });
-    } catch (e) {
-      res.status(500).json({ error: { message: e?.message || String(e) } });
-    }
-  });
-
-  // GET /v1/models — OpenAI-compatible model list (issue #95): the chat
-  // model llama-server would load for the default profile, plus the
-  // embedding model the local embedder serves.
-  app.get("/v1/models", authMiddleware, (req, res) => {
-    const data = [];
-    try {
-      const chatModel = llamaServerRuntime.findLlamaModel("default");
-      if (chatModel) {
-        data.push({
-          id: path.basename(chatModel),
-          object: "model",
-          created: 0,
-          owned_by: "mana",
-        });
-      }
-    } catch (e) {
-      // No local chat model configured/found -- omit rather than fail the whole list.
-    }
-    data.push({
-      id: process.env.RETRIEVER_EMBEDDER_MODEL || "all-MiniLM-L6-v2",
-      object: "model",
-      created: 0,
-      owned_by: "mana",
-    });
-    res.json({ object: "list", data });
-  });
-
-  // Admin only: POST /admin/accounts — create a new account
-  app.post("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
-    try {
-      const { email, role = "user" } = req.body;
-      if (!email) {
-        return res.status(400).json({ error: "email is required" });
-      }
-      const result = authStore.createAccount({ email, role });
-      res.status(201).json({
-        userId: result.userId,
-        email: result.email,
-        role: result.role,
-        apiKey: result.apiKey,
-        message: "Save your API key somewhere safe; it will not be shown again",
-      });
-    } catch (e) {
-      res.status(400).json({ error: e?.message || String(e) });
-    }
-  });
-
-  // Admin only: GET /admin/accounts — list all accounts
-  app.get("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
-    try {
-      const accounts = authStore.listAccounts();
-      res.json(accounts);
-    } catch (e) {
-      res.status(500).json({ error: e?.message || String(e) });
-    }
-  });
-
-  // Admin only: DELETE /admin/accounts/:userId — revoke an account
-  app.delete("/admin/accounts/:userId", authMiddleware, requireAdmin, (req, res) => {
-    try {
-      authStore.deleteAccount(req.params.userId);
-      res.json({ ok: true });
-    } catch (e) {
-      res.status(400).json({ error: e?.message || String(e) });
-    }
-  });
+  registerAdminAccountsRoutes(app, { authMiddleware, authStore });
 
   // Watched inbox folder for passive multimodal memory ingestion (issue
   // #76). deps.startMemoryInboxWatcher lets tests inject a fake and verify
@@ -6131,201 +5977,11 @@ function registerRoutes(app, upload, deps = {}) {
     }
   }
 
-  // Plugin store API endpoints. Previously lived in startServer() (bolted
-  // onto `app` after createApp() had already returned), which meant no
-  // test using this codebase's actual pattern -- createApp(deps) +
-  // withServer() -- could ever reach them; moved here so deps.pluginStore/
-  // deps.pluginSettingsStore/deps.fetchAvailablePlugins can be injected
-  // like every other route in this function, and CI actually exercises
-  // them. Also fixes real bugs found in the process:
-  // - referenced a separate, independently-buggy plugin-manager.js
-  //   instead of the already-hardened plugin-store.js (pluginStore) --
-  //   swapped to that.
-  // - the consent routes shadowed the correct module-scope
-  //   pluginSettingsStore (line 674-ish, aliased here as
-  //   activePluginSettingsStore) with `require("./plugin-settings-store")
-  //   .pluginSettingsStore`, which doesn't exist (that module only
-  //   exports createPluginSettingsStore) -- always undefined, so both
-  //   routes threw on every call. Removed the shadowing require.
-  // - toggle used to call a togglePlugin() that doesn't exist on
-  //   pluginStore; now uses activePluginSettingsStore.setEnabled(), the
-  //   same enable/disable mechanism every other plugin/capability in this
-  //   file already uses (see GET /plugins).
-  const activePluginStore = deps.pluginStore || pluginStore;
-  const fetchAvailablePlugins =
-    deps.fetchAvailablePlugins ||
-    (() =>
-      new Promise((resolve, reject) => {
-        https
-          .get(
-            "https://api.github.com/repos/Yuuzulight/Mana/contents/tools/plugins",
-            (res) => {
-              let data = "";
-              res.on("data", (chunk) => (data += chunk));
-              res.on("end", () => {
-                try {
-                  resolve(JSON.parse(data));
-                } catch (e) {
-                  reject(e);
-                }
-              });
-              res.on("error", reject);
-            },
-          )
-          .on("error", reject);
-      }));
-
-  app.get("/plugins/store", async (req, res) => {
-    try {
-      const installed = activePluginStore.list();
-      const available = await fetchAvailablePlugins();
-
-      const githubPlugins = Array.isArray(available)
-        ? available
-            .filter((item) => item.name.endsWith("/"))
-            .map((item) => ({
-              name: item.name.replace("/", ""),
-              url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${item.name}`,
-              description: "Official Mana plugin from GitHub",
-              category: "Core",
-            }))
-        : [];
-
-      const allPlugins = [
-        ...installed.map((plugin) => ({
-          name: plugin.name,
-          url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${plugin.name}`,
-          description: plugin.description || "Installed plugin",
-          category: "User Installed",
-          enabled: activePluginSettingsStore.isEnabled(plugin.name),
-        })),
-        ...githubPlugins,
-      ];
-
-      // Segment by tier (plugin vs addon) -- default to "plugin" if not specified
-      const plugins = allPlugins.filter((p) => p.tier === "plugin" || !p.tier);
-      const addons = allPlugins.filter((p) => p.tier === "addon");
-
-      res.json({
-        installed,
-        available: githubPlugins,
-        all: allPlugins,
-        plugins,
-        addons,
-      });
-    } catch (error) {
-      console.error("[PluginStore] Failed to fetch plugins:", error.message);
-      res.status(500).json({ error: `Failed to fetch plugins: ${error.message}` });
-    }
-  });
-
-  app.get("/addons/consent/:name", (req, res) => {
-    try {
-      const name = req.params.name;
-      const consentKey = `addon_consent_${name}`;
-      const consented = activePluginSettingsStore.getConsent(consentKey);
-
-      res.json({
-        consented: consented === true,
-        required: name.startsWith("@mana/"), // Add-Ons require explicit consent
-      });
-    } catch (error) {
-      console.error("[PluginStore] Failed to check addon consent:", error.message);
-      res.status(500).json({ error: `Failed to check consent: ${error.message}` });
-    }
-  });
-
-  app.post("/addons/consent/:name", (req, res) => {
-    try {
-      const name = req.params.name;
-
-      if (!req.body || typeof req.body.consented !== "boolean") {
-        return res.status(400).json({ error: "consented field is required" });
-      }
-
-      const consentKey = `addon_consent_${name}`;
-      activePluginSettingsStore.setConsent(consentKey, req.body.consented);
-
-      res.json({ ok: true, name });
-    } catch (error) {
-      console.error("[PluginStore] Failed to record addon consent:", error.message);
-      res.status(500).json({ error: `Failed to record consent: ${error.message}` });
-    }
-  });
-
-  app.post("/plugins/store/install", async (req, res) => {
-    // CodeQL review: installFromLocal can read an arbitrary local file path
-    // -- a legitimate admin capability (same trust level as e.g. the
-    // /admin/plugins_install.html UI this backs), not something any
-    // unauthenticated caller should be able to trigger. Same
-    // checkAdminAuth gate every other sensitive route in this file already
-    // uses.
-    if (!checkAdminAuth(req, res)) return;
-    try {
-      const { sourceType, urlOrPath } = req.body || {};
-
-      if (!sourceType || !urlOrPath) {
-        return res.status(400).json({ error: "sourceType and urlOrPath are required" });
-      }
-
-      let result;
-      if (sourceType === "github") {
-        result = await activePluginStore.installFromGitHub(urlOrPath);
-      } else if (sourceType === "local") {
-        result = await activePluginStore.installFromLocal(urlOrPath);
-      } else {
-        return res.status(400).json({ error: `Unknown source type: ${sourceType}` });
-      }
-
-      res.json(result);
-    } catch (error) {
-      console.error("[PluginStore] Install failed:", error.message);
-      res.status(500).json({ error: `Install failed: ${error.message}` });
-    }
-  });
-
-  app.post("/plugins/store/toggle", (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    try {
-      const { name, enabled } = req.body || {};
-
-      if (!name || typeof enabled !== "boolean") {
-        return res.status(400).json({ error: "name and enabled are required" });
-      }
-      if (!activePluginStore.get(name)) {
-        return res.status(404).json({ error: `Plugin ${name} not found` });
-      }
-
-      const result = activePluginSettingsStore.setEnabled(name, enabled);
-      res.json({ success: true, name, enabled: result });
-    } catch (error) {
-      console.error("[PluginStore] Toggle failed:", error.message);
-      res.status(500).json({ error: `Toggle failed: ${error.message}` });
-    }
-  });
-
-  // Issue #492: short-video-gen add-on tier routes (routes/addons.js),
-  // previously written but never registered on `app`. Registered here
-  // (registerRoutes), not inside startServer() where they were first
-  // wired -- checkAdminAuth is a closure private to this function, out of
-  // scope in startServer(), so gating them there would throw
-  // ReferenceError on the first request. checkAdminAuth-gated like this
-  // file's other sensitive routes (/admin/*, /zed/open, /editors/*):
-  // node-bot listens on all interfaces with CORS wide open, and /generate
-  // spawns real ffmpeg processes (will eventually trigger OAuth-gated
-  // publish calls too), so leaving these open would let anyone who can
-  // reach this machine's port trigger them.
-  app.get("/api/v1/addons/short-video-gen/status/:id", (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    return handleGetAddonStatus(req, res);
-  });
-  app.post("/api/v1/addons/short-video-gen/generate", (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    return handleGenerateVideo(req, res);
-  });
-  app.post("/api/v1/addons/short-video-gen/consent/:id", (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    return handleAddonConsent(req, res);
+  registerPluginStoreRoutes(app, {
+    checkAdminAuth,
+    activePluginSettingsStore,
+    pluginStore: deps.pluginStore,
+    fetchAvailablePlugins: deps.fetchAvailablePlugins,
   });
 }
 
