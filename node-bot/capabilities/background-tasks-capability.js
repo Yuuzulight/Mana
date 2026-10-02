@@ -4,7 +4,9 @@
 // stop of its own has canCancel: false here.
 //
 // Each task: { id, kind, title, status, startedAt?, nextRunAt?, progress?,
-// etaSeconds?, detail?, canCancel }. status is running, scheduled, waiting,
+// etaSeconds?, detail?, canCancel }, plus (#1318) endedAt?, model?, tokens?,
+// toolUses?, currentAction? (a sanitized plain-language step), canStop and
+// transcriptUrl? (GET /background-tasks/:id/transcript, its step log). status is running, scheduled, waiting,
 // paused, done or failed. progress is { done, total, unit } and only set
 // where the source really counts it; a running task without it is
 // indeterminate. etaSeconds is only set where the rate so far is a fair
@@ -15,6 +17,7 @@
 // than failing it.
 const rateLimit = require("express-rate-limit");
 const { cancelResearchJob } = require("./deep-research-capability");
+const { sanitizeDescription } = require("../ai/step-description");
 
 // server.js's app-wide limiter already covers these; a route-local one is
 // what CodeQL can see (same as memory-facts-capability.js). The panel polls
@@ -199,6 +202,7 @@ const collectors = {
       // Sources read is the one step it counts; the rest is indeterminate.
       progress: job.status === "running" && job.progress?.step === "reading" ? progressOf(job.progress.index, job.progress.total, "sources") : undefined,
       detail: job.status === "cancelled" ? "Cancelled" : job.error || job.progress?.label,
+      currentAction: job.status === "running" ? sanitizeDescription(job.progress?.label) || undefined : undefined,
       canCancel: job.status === "running" && !job.cancelRequested,
     }));
   },
@@ -217,6 +221,9 @@ const collectors = {
         // Rounds out of goal mode's cap: she may finish before it, so no ETA.
         progress: st.state === "running" && st.round > 0 ? progressOf(st.round, st.maxRounds, "rounds") : undefined,
         detail: st.step || undefined,
+        currentAction: st.state === "running" ? sanitizeDescription(st.step) || undefined : undefined,
+        toolUses: st.log?.length,
+        transcript: true,
         canCancel: st.state === "running",
       },
     ];
@@ -224,15 +231,25 @@ const collectors = {
 
   agent({ agentActivity }, t) {
     if (!agentActivity) return [];
-    return agentActivity.list().map((run) => ({
+    const task = (run, running) => ({
       id: `agent:${run.id}`,
       kind: "agent",
       title: "Working on your message",
-      status: "running",
-      startedAt: iso(t - run.elapsedMs),
+      status: running ? "running" : "done",
+      startedAt: run.startedAt || iso(t - run.elapsedMs),
+      endedAt: running ? undefined : run.endedAt,
       detail: run.stopping ? "Stopping..." : run.tool ? `Using ${run.tool}` : `${run.toolCount} tool call(s) so far`,
-      canCancel: !run.stopping,
-    }));
+      model: run.model || undefined,
+      tokens: run.tokens ?? undefined,
+      toolUses: run.toolCount,
+      currentAction: running ? run.description || "Thinking" : undefined,
+      transcript: true,
+      canCancel: running && !run.stopping,
+    });
+    return [
+      ...agentActivity.list().map((run) => task(run, true)),
+      ...(agentActivity.listRecent?.() || []).map((run) => task(run, false)),
+    ];
   },
 
   models({ llama, llamaBuilds, fishWarmup }, t) {
@@ -288,7 +305,42 @@ function listBackgroundTasks(sources = {}) {
     }
   }
   // Drop undefined fields so the JSON only carries what's known.
-  return tasks.map((task) => JSON.parse(JSON.stringify(task)));
+  return tasks.map(({ transcript, ...task }) =>
+    JSON.parse(
+      JSON.stringify({
+        ...task,
+        canStop: task.canCancel,
+        transcriptUrl: transcript ? `/background-tasks/${encodeURIComponent(task.id)}/transcript` : undefined,
+      }),
+    ),
+  );
+}
+
+// #1318: a task's step log ({ id, title, steps }), or null.
+function backgroundTaskTranscript(sources = {}, id) {
+  const task = listBackgroundTasks(sources).find((t) => t.id === id);
+  if (!task?.transcriptUrl) return null;
+  const [kind, ...rest] = String(id).split(":");
+  if (kind === "agent") {
+    const steps = sources.agentActivity?.steps(rest.join(":"));
+    return steps ? { id, title: task.title, steps } : null;
+  }
+  // self-work: its log lines are its steps; the last one is current
+  // while it runs.
+  const log = sources.selfWork?.()?.status().log || [];
+  const steps = log.map((entry, i) => {
+    const last = i === log.length - 1;
+    const running = last && task.status === "running";
+    return {
+      id: `s${i + 1}`,
+      kind: "agent",
+      description: sanitizeDescription(entry.text),
+      status: running ? "running" : last && task.status === "failed" ? "failed" : "done",
+      startedAt: entry.at,
+      endedAt: running ? null : log[i + 1]?.at || entry.at,
+    };
+  });
+  return { id, title: task.title, steps };
 }
 
 // true, false (the task has ended or can't be stopped), or null (no such task).
@@ -331,6 +383,13 @@ function registerBackgroundTasksRoutes(app, context = {}) {
     return res.json({ tasks: listBackgroundTasks(sources) });
   });
 
+  app.get("/background-tasks/:id/transcript", backgroundTasksRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const transcript = backgroundTaskTranscript(sources, req.params.id);
+    if (!transcript) return res.status(404).json({ error: "no transcript for that task" });
+    return res.json(transcript);
+  });
+
   app.post("/background-tasks/:id/cancel", backgroundTasksRateLimiter, (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     const cancelled = cancelBackgroundTask(sources, req.params.id);
@@ -346,6 +405,7 @@ const backgroundTasksCapability = {
 };
 
 module.exports = {
+  backgroundTaskTranscript,
   backgroundTasksCapability,
   cancelBackgroundTask,
   etaSeconds,

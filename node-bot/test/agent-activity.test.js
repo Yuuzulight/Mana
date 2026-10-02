@@ -17,7 +17,9 @@ test("agent activity lists only runs that called a tool, with the running tool a
   activity.toolStarted(busy, "web_search");
   now = 4000;
 
-  assert.deepEqual(activity.list(), [
+  const pick = ({ id, elapsedMs, tool, toolElapsedMs, toolCount, lastTool, stopping }) =>
+    ({ id, elapsedMs, tool, toolElapsedMs, toolCount, lastTool, stopping });
+  assert.deepEqual(activity.list().map(pick), [
     { id: busy.id, elapsedMs: 3000, tool: "web_search", toolElapsedMs: 3000, toolCount: 1, lastTool: null, stopping: false },
   ]);
 
@@ -25,7 +27,7 @@ test("agent activity lists only runs that called a tool, with the running tool a
   assert.equal(activity.stop(busy.id), true);
   assert.equal(activity.stop("nope"), false);
   assert.equal(idle.stopRequested, false);
-  assert.deepEqual(activity.list()[0], {
+  assert.deepEqual(pick(activity.list()[0]), {
     id: busy.id, elapsedMs: 3000, tool: null, toolElapsedMs: null, toolCount: 1, lastTool: "web_search", stopping: true,
   });
 
@@ -64,7 +66,10 @@ test("POST /agent/stop refuses the running reply's later tool calls; the run lea
       );
       assert.equal(reply, "tool-aware reply");
       const after = await (await fetch(`${url}/agent/activity`)).json();
-      assert.deepEqual(after, { runs: [] });
+      assert.deepEqual(after.runs, []);
+      // #1318: the last reply's steps stay readable for the chat.
+      assert.equal(after.running, false);
+      assert.deepEqual(after.steps.map((s) => [s.tool, Boolean(s.endedAt)]), [["no_such_tool", true]]);
     });
 
     assert.equal(seen.runs.length, 1);
@@ -72,11 +77,45 @@ test("POST /agent/stop refuses the running reply's later tool calls; the run lea
     assert.equal(seen.runs[0].toolCount, 1);
     assert.match(refused, /Stopped by the user/);
     // The refused call never started.
-    assert.deepEqual(events, [
-      { name: "no_such_tool", phase: "start" },
-      { name: "no_such_tool", phase: "end" },
+    // #1318: (an approval wait in between shows as waiting/resumed.)
+    const startEnd = events.filter((e) => e.phase === "start" || e.phase === "end");
+    assert.deepEqual(startEnd.map((e) => [e.name, e.phase, e.description]), [
+      ["no_such_tool", "start", "No such tool"],
+      ["no_such_tool", "end", "No such tool"],
     ]);
   } finally {
     delete process.env.MANA_TOOL_CALLING_ENABLED;
   }
+});
+
+// #1318
+test("agent activity records each step with its description, status, times and result", () => {
+  let now = Date.parse("2026-10-03T00:00:00Z");
+  const activity = createAgentActivity({ now: () => now });
+  const run = activity.start({ model: "Qwen3.5-9B" });
+  activity.toolStarted(run, "dc__start_process", { kind: "command", description: "Run the tests", detail: { command: "npm test" } });
+  activity.toolWaiting(run, true);
+  assert.equal(activity.list()[0].waiting, true);
+  assert.equal(activity.latestSteps().steps[0].status, "awaiting_approval");
+  activity.toolWaiting(run, false);
+  now += 1500;
+  activity.toolEnded(run, "dc__start_process", { ok: true, result: "2 passed", tokens: 7100 });
+  const [step] = activity.latestSteps().steps;
+  assert.deepEqual(step, {
+    id: "s1",
+    kind: "command",
+    tool: "dc__start_process",
+    description: "Run the tests",
+    detail: { command: "npm test", resultPreview: "2 passed" },
+    status: "done",
+    startedAt: "2026-10-03T00:00:00.000Z",
+    endedAt: "2026-10-03T00:00:01.500Z",
+  });
+  assert.equal(activity.list()[0].description, "Run the tests");
+  assert.equal(activity.list()[0].tokens, 7100);
+  activity.finish(run);
+  assert.deepEqual(activity.list(), []);
+  assert.equal(activity.listRecent()[0].model, "Qwen3.5-9B");
+  assert.equal(activity.steps(run.id).length, 1);
+  assert.equal(activity.steps("nope"), null);
 });

@@ -668,6 +668,8 @@ module.exports = {
   resolveToolApprovalMode,
   extractHosts,
   bindCall,
+  extractCommand,
+  isShellTool,
   resolveExecutable,
   wrapWithRiskGate,
 };

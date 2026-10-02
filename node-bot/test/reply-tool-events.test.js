@@ -25,10 +25,15 @@ test("tool-aware replies report tool start/end via replyMeta.onToolCall, skippin
     );
 
     assert.equal(reply, "tool-aware reply");
-    assert.deepEqual(events, [
-      { name: "no_such_tool", phase: "start" },
-      { name: "no_such_tool", phase: "end" },
+    // #1318: each event carries its step; the unknown tool waits for
+    // approval in between.
+    assert.deepEqual(events.map((e) => [e.name, e.phase, e.status]), [
+      ["no_such_tool", "start", "running"],
+      ["no_such_tool", "waiting", "awaiting_approval"],
+      ["no_such_tool", "resumed", "running"],
+      ["no_such_tool", "end", events[3].status],
     ]);
+    assert.equal(events[0].description, "No such tool");
   } finally {
     delete process.env.MANA_TOOL_CALLING_ENABLED;
   }
