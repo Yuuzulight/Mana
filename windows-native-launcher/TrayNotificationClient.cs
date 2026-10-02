@@ -183,12 +183,43 @@ internal sealed class TrayNotificationClient : IDisposable
             return;
         }
 
+        // #697: clicking the toast (or Open Chat) is engaged, closing it is dismissed;
+        // the backend learns per remark kind from those (POST /proactive/settings).
         new ToastContentBuilder()
+            .AddArgument("action", "openChat")
+            .AddArgument(ProactiveArgument, payload.Kind ?? payload.Type)
             .AddText(payload.Title)
             .AddText(payload.Text)
-            .AddButton(new ToastButton().SetContent("Open Chat").AddArgument("action", "openChat"))
+            .AddButton(new ToastButton().SetContent("Open Chat").AddArgument("action", "openChat").AddArgument(ProactiveArgument, payload.Kind ?? payload.Type))
             .AddButton(new ToastButton().SetContent("Dismiss").SetDismissActivation())
-            .Show();
+            .Show(toast =>
+            {
+                toast.Dismissed += (sender, e) =>
+                {
+                    if (IsUserDismissal(e.Reason) && backendClient is not null)
+                    {
+                        _ = ReportReactionAsync(backendClient, "dismissed", payload.Kind ?? payload.Type, payload.Id);
+                    }
+                };
+            });
+    }
+
+    internal const string ProactiveArgument = "proactive";
+
+    // Timing out or being hidden by the app isn't her being waved away.
+    internal static bool IsUserDismissal(Windows.UI.Notifications.ToastDismissalReason reason) =>
+        reason == Windows.UI.Notifications.ToastDismissalReason.UserCanceled;
+
+    private static async Task ReportReactionAsync(ManaBackendClient backendClient, string reaction, string? kind, string? id)
+    {
+        try
+        {
+            await backendClient.ReportProactiveReactionAsync(reaction, kind, id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"TrayNotificationClient: couldn't report the {reaction} reaction. {ex.Message}");
+        }
     }
 
     private void OnToastActivated(ToastNotificationActivatedEventArgsCompat e) =>
@@ -205,6 +236,10 @@ internal sealed class TrayNotificationClient : IDisposable
         if (args["action"] == "openChat")
         {
             openChat();
+            if (backendClient is not null && args.TryGetValue(ProactiveArgument, out string? kind))
+            {
+                await ReportReactionAsync(backendClient, "engaged", kind, null);
+            }
         }
         else if (args["action"] == BrowserTakeOverAction && backendClient is not null)
         {

@@ -144,8 +144,9 @@ function getScheduler(deps = {}) {
           .catch(() => {});
       },
     });
-    // #699: heartbeat.md's checks, next to jobs.json. Their reports go out
-    // as "cron" tray notifications (the launcher's proactive toast types).
+    // #699: heartbeat.md's checks, next to jobs.json. Their reports are
+    // proactive candidates like any other remark, so the daily budget,
+    // gaming mode and quiet hours apply ("urgent" skips the budget).
     heartbeat = createHeartbeat({
       dataDir: scheduler.dataDir,
       runCheck: (prompt, wrapToolPolicy, sessionId) => {
@@ -158,7 +159,7 @@ function getScheduler(deps = {}) {
           scheduled: true,
         });
       },
-      notify: (payload) => notifyTray(payload).catch(() => {}),
+      notify: (payload) => proactive.offer({ reason: "heartbeat", payload, urgent: Boolean(payload.urgent) }),
       isGaming: deps.isGaming,
       isEnabled: () => isPluginEnabled(module.exports, deps.pluginSettingsStore),
       approvalGate: deps.approvalGate,
@@ -199,6 +200,18 @@ function registerCronSchedulerRoutes(app, deps = {}) {
       return res.status(201).json(job);
     } catch (e) {
       return res.status(400).json({ error: e.message });
+    }
+  });
+
+  // #699: Settings > Heartbeat edits heartbeat.md's checks as a list.
+  app.get("/heartbeat/items", (req, res) => res.json({ items: heartbeat.getItems() }));
+
+  app.put("/heartbeat/items", (req, res) => {
+    try {
+      return res.json({ items: heartbeat.setItems(req.body?.items) });
+    } catch (e) {
+      // A file system error (it has a code) isn't the request's fault.
+      return res.status(e.code ? 500 : 400).json({ error: e.message });
     }
   });
 

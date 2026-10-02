@@ -44,8 +44,10 @@ change in `cron-scheduler.js`, not a rewrite.
 ## Heartbeat (#699)
 
 `node-bot/data/cron-scheduler/heartbeat.md` is a checklist Mana runs in
-the background, one check per `-` line. She only speaks up (a "cron" tray
-toast) when a check finds something you need to know or act on:
+the background, one check per `-` line. She only speaks up when a check
+finds something you need to know or act on, and that report is a proactive
+remark like any other (daily budget, gaming hold, quiet hours; `urgent`
+skips the budget). Settings > Heartbeat in the launcher edits the list:
 
 ```
 - [read, network] every 30m: check github.com notifications for review requests
@@ -58,7 +60,8 @@ toast) when a check finds something you need to know or act on:
   names (so name the site: `github.com`, not "GitHub"). Every write is
   snapshotted first and listed in the next report. `install` and
   `destructive` can't be granted; those calls always wait in the approval
-  queue. `urgent` is passed along with the check's reports.
+  queue. `urgent` lets the check's reports skip the daily budget.
+- A struck-through line (`- ~~every 30m: ...~~`) is switched off.
 - Default interval 30 minutes; `every 15m:`, `every 2h:`, `daily 09:00:`
   override it (5 minutes at the shortest).
 - A new or edited check (different permissions or text) does a dry run
@@ -78,6 +81,8 @@ toast) when a check finds something you need to know or act on:
 - `GET /cron/jobs` -- list all jobs.
 - `POST /cron/jobs` -- `{ name, jobType, schedule, actionName | prompt, sessionId?, enabled? }`.
 - `DELETE /cron/jobs/:id` -- remove a job.
+- `GET /heartbeat/items` -- heartbeat.md's checks as `{ items: [{ id, text, schedule, permissions, urgent, enabled }] }`.
+- `PUT /heartbeat/items` -- `{ items }` replaces the checks in order (headings and notes stay); a bad item is a 400 and nothing is written.
 
 ## Why the core logic is dependency-injected
 
