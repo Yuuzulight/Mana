@@ -42,7 +42,7 @@ test("POST /agent/stop refuses the running reply's later tool calls; the run lea
     let refused = null;
     let baseUrl = null;
     const app = createApp({
-      llamaServerRuntime: { isEnabled: () => true },
+      llamaServerRuntime: { isEnabled: () => true, getStatus: () => ({ model: "D:\\models\\qwen.gguf" }) },
       runToolAwareReply: async (prompt, toolPolicy) => {
         await Promise.resolve(toolPolicy.executeTool("no_such_tool", {})).catch(() => {});
         seen = await (await fetch(`${baseUrl}/agent/activity`)).json();
@@ -73,6 +73,8 @@ test("POST /agent/stop refuses the running reply's later tool calls; the run lea
     });
 
     assert.equal(seen.runs.length, 1);
+    // #1338: a Windows model path shows as its file name only.
+    assert.equal(seen.runs[0].model, "qwen.gguf");
     assert.equal(seen.runs[0].lastTool, "no_such_tool");
     assert.equal(seen.runs[0].toolCount, 1);
     assert.match(refused, /Stopped by the user/);

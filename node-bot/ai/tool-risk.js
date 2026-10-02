@@ -560,7 +560,10 @@ function describeCall(name, risk, args) {
   const parts = [`${name} (${risk.tier})`];
   if (risk.command) parts.push(`runs: ${risk.command.slice(0, 200)}`);
   else if (args && typeof args === "object" && Object.keys(args).length) {
-    const json = JSON.stringify(args);
+    // #1338: the step `description` goes last, so a long one can't push
+    // the real args out of the 300-char cut.
+    const { description, ...rest } = args;
+    const json = JSON.stringify(description === undefined ? rest : { ...rest, description });
     parts.push(`with ${json.length > 300 ? `${json.slice(0, 300)}...` : json}`);
   }
   if (risk.cwd) parts.push(`in ${risk.cwd}`);
