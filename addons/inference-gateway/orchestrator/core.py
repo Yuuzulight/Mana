@@ -131,19 +131,18 @@ class ManaOrchestrator:
     
     async def ensure_backends(self):
         """Lazy-load backends on first request."""
-        if not self._backends["vllm"]:
+        # .get(): _backends starts empty, so indexing it raised KeyError (#498).
+        if not self._backends.get("vllm"):
             # vLLM runs as separate process with OpenAI-compatible API
             from .backends.vllm_wrapper import VLLMBackend
             self._backends["vllm"] = VLLMBackend("http://localhost:8001")
         
-        if not self._backends["llama_cpp"]:
+        if not self._backends.get("llama_cpp"):
             # llama.cpp also exposes OpenAI-compatible endpoint
             from .backends.llama_cpp_wrapper import LlamaCPPBackend
             self._backends["llama_cpp"] = LlamaCPPBackend("http://localhost:8081")
         
-        if not self._backends["colibri"]:
-            # TODO: Colibri integration when available
-            pass
+        # Colibri has no wrapper yet; _backend_call reports it as unregistered.
     
     async def health_check(self):
         """Periodic health check for all backends."""
@@ -196,7 +195,10 @@ class ManaOrchestrator:
     
     async def _backend_call(self, backend_name: str, request: InferenceRequest, config: Dict) -> dict:
         """Forward request to selected backend."""
-        backend = self._backends[backend_name]
+        backend = self._backends.get(backend_name)
+        if backend is None:
+            registered = ", ".join(sorted(self._backends)) or "none"
+            raise RuntimeError(f"Backend '{backend_name}' is not registered (registered: {registered})")
         
         # Build request payload (OpenAI-compatible)
         payload = {
