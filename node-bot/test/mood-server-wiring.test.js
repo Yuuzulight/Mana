@@ -112,3 +112,27 @@ test("GET /mood, reset and freeze (a boolean, no value sliders)", async () => {
     assert.deepEqual(reset.history.map((h) => h.event), ["reset"]);
   });
 });
+
+// Part of #700: GET /mood names the emotion her mood leans toward, and an
+// untagged sentence is spoken with it; a tagged one keeps its own tag.
+test("/mood leans to an emotion and /synthesize speaks untagged sentences with it", async () => {
+  const { registerCoreRoutes } = require("../server-routes");
+  const moodStore = frazzledStore();
+  const app = express();
+  app.use(express.json());
+  moodCapability.registerRoutes(app, { moodStore });
+  registerCoreRoutes(app, { single: () => (req, res, next) => next() }, {
+    TTS_PROVIDER: "qwen3tts",
+    moodStore,
+    synthesizeReply: async (text, opts) => Buffer.from(String(opts.emotion)),
+  });
+  await withServer(app, async (baseUrl) => {
+    const say = async (body) =>
+      (await fetch(`${baseUrl}/synthesize`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).text();
+    assert.equal((await (await fetch(`${baseUrl}/mood`)).json()).emotion, "thinking");
+    assert.equal(await say({ text: "hi" }), "thinking");
+    assert.equal(await say({ text: "hi", emotion: "excited" }), "excited");
+    moodStore.setFrozen(true);
+    assert.equal(await say({ text: "hi" }), "undefined", "frozen mood leaves her voice alone");
+  });
+});

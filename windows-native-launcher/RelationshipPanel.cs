@@ -22,6 +22,9 @@ internal sealed class RelationshipPanel : FlowLayoutPanel
     internal TextBox EditText { get; } = new() { Width = 420, PlaceholderText = "Note or milestone", AccessibleName = "Text", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
     internal TextBox EditDate { get; } = new() { Width = 110, PlaceholderText = "YYYY-MM-DD", AccessibleName = "Milestone date", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
     internal string StatusText => status.Text;
+    // Part of #700: the active character's mood, in words only.
+    private readonly Label mood = new() { AutoSize = true, ForeColor = DarkTheme.Muted };
+    internal string MoodText => mood.Text;
 
     // loadNow: false in tests, which call ReloadAsync themselves.
     public RelationshipPanel(ManaBackendClient backendClient, bool loadNow = true)
@@ -62,6 +65,7 @@ internal sealed class RelationshipPanel : FlowLayoutPanel
             MaximumSize = new System.Drawing.Size(560, 0),
             ForeColor = DarkTheme.Text,
         });
+        Controls.Add(mood);
         Controls.Add(Row(Characters, NewButton("Refresh", ReloadAsync)));
         Controls.Add(Items);
         Controls.Add(Row(EditText, EditDate));
@@ -95,6 +99,14 @@ internal sealed class RelationshipPanel : FlowLayoutPanel
         var index = relationships.ToList().FindIndex(r => r.Id == keep);
         Characters.SelectedIndex = relationships.Count == 0 ? -1 : Math.Max(index, 0);
         ShowItems();
+        try
+        {
+            mood.Text = $"Right now she's feeling {(await backendClient.GetMoodAsync()).Summary}.";
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            mood.Text = ""; // an older node-bot without /mood: just no line
+        }
     }
 
     private void ShowItems()

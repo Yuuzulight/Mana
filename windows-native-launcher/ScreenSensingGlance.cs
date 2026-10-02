@@ -5,8 +5,11 @@ namespace Mana.NativeLauncher;
 
 // #690: Electron's ambient screen glance (windows-launcher renderer.js
 // runScreenSensingGlance, #272/#283), ported. Opt-in with
-// MANA_SCREEN_SENSING_ENABLED=1, every MANA_SCREEN_SENSING_INTERVAL_MS
-// (default 2 minutes). Each glance reads the foreground window's text first
+// MANA_SCREEN_SENSING_ENABLED=1. #1286: runs when GlanceTrigger says so
+// (a window switch or title change, else every
+// MANA_SCREEN_SENSING_INTERVAL_MS), never while blockReason has one
+// (ScreenPrivacyGuard: a private window in front, quiet hours), and sends
+// nothing when the screen reads the same as last glance. Each glance reads the foreground window's text first
 // (ScreenContextReader: UI Automation tree, OCR fallback) and POSTs that to
 // /screen-sensing/glance; only when no usable text comes back does it
 // capture the primary screen and send the image instead (Electron's only
@@ -26,7 +29,9 @@ internal sealed class ScreenSensingGlance
     private readonly Func<string> captureScreen;
     private readonly Action<string> surface;
     private readonly long presenceIdleMs;
+    private readonly Func<string?> blockReason;
     private bool running;
+    private string lastSent = "";
 
     public ScreenSensingGlance(
         ManaBackendClient backendClient,
@@ -36,8 +41,10 @@ internal sealed class ScreenSensingGlance
         Func<Task<string>> readScreenText,
         Func<string> captureScreen,
         Action<string> surface,
-        long presenceIdleMs)
+        long presenceIdleMs,
+        Func<string?>? blockReason = null)
     {
+        this.blockReason = blockReason ?? (() => null);
         this.backendClient = backendClient;
         this.voiceIdle = voiceIdle;
         this.gamingModeActive = gamingModeActive;
@@ -56,6 +63,13 @@ internal sealed class ScreenSensingGlance
         {
             return;
         }
+        // Before any read or capture: a blocked window is never looked at.
+        var reason = blockReason();
+        if (reason is not null)
+        {
+            Console.WriteLine($"ScreenSensingGlance: skipped, {reason}.");
+            return;
+        }
         running = true;
         try
         {
@@ -63,9 +77,16 @@ internal sealed class ScreenSensingGlance
             // and JPEG-encoding a full screen, would hitch it (same as the
             // clip buffer's capture).
             var text = (await Task.Run(readScreenText)).Trim();
-            var summary = IsUsableText(text)
-                ? await backendClient.ScreenSensingGlanceAsync(text: text, image: null, gamingModeActive())
-                : await backendClient.ScreenSensingGlanceAsync(text: null, image: await Task.Run(captureScreen), gamingModeActive());
+            var image = IsUsableText(text) ? null : await Task.Run(captureScreen);
+            // Unchanged since the last glance: nothing new to say. Only a
+            // hash of an image is kept, never the image.
+            var seen = image is null ? text : $"image:{image.GetHashCode()}";
+            if (seen == lastSent)
+            {
+                return;
+            }
+            var summary = await backendClient.ScreenSensingGlanceAsync(text: image is null ? text : null, image: image, gamingModeActive());
+            lastSent = seen; // after the call: a failed one is retried next glance
             // Re-check: a turn may have started during the capture or the
             // vision call, and a glance shouldn't land on top of it.
             if (!string.IsNullOrWhiteSpace(summary) && voiceIdle())
