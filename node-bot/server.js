@@ -266,6 +266,7 @@ const { visionCaptureBridge } = require("./vision-capture-bridge");
 const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
+const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
 const { createSelfWork } = require("./self-work");
 const { createGitToolSource } = require("./ai/git-tool-source");
 const { refuteEdit } = require("./ai/adversarial-verifier");
@@ -2635,6 +2636,14 @@ function registerRoutes(app, upload, deps = {}) {
       llamaBuilds: deps.llamaBuilds || llamaBuilds,
       fishWarmup: () => ttsRuntime.getFishWarmupStatus(),
     },
+    // #1265: the cron scheduler's script jobs. folioUpdater is built
+    // further down; the job only runs after startup.
+    scriptActions: {
+      [FOLIO_UPDATE_ACTION]: async () => {
+        await folioUpdater.run();
+        return null;
+      },
+    },
     // Only cron-scheduler's agent-job executor uses this today -- every
     // other capability builds its own scoped model-reply function above.
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
@@ -2881,6 +2890,34 @@ function registerRoutes(app, upload, deps = {}) {
         if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
       },
     });
+  // #1265: Mana keeps Folio up to date: an hourly job (Folio looked at
+  // daily, an open bump PR checked hourly), and "Check now".
+  const folioUpdater =
+    deps.folioUpdater ||
+    createFolioUpdater({
+      approvalGate: activeApprovalGate,
+      isGaming: deps.isGaming || gamingWatch.isGaming,
+      statePath: path.join(acpMemoryStore.dataDir, "folio-update.json"),
+      notify: ({ text, url }) => notifyTray({ type: "self-work", title: "Folio update", text, url }),
+    });
+  if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) folioUpdater.ensureJob(cronSchedulerPlugin.getScheduler());
+  app.get("/folio-update", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(folioUpdater.status());
+  });
+  app.post("/folio-update", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    folioUpdater.setEnabled(req.body?.enabled === true);
+    return res.json(folioUpdater.status());
+  });
+  app.post("/folio-update/run", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      return res.json(await folioUpdater.run({ force: true }));
+    } catch (e) {
+      return res.json({ status: "error", error: e.message });
+    }
+  });
   app.get("/self-work", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json(selfWork.status());
