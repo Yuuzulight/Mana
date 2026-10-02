@@ -28,6 +28,7 @@ nul
 
 # Ignore model download artifacts (optionally keep model manifests)
 tools/whisper/Release/
+tools/whisper/bin/
 tools/whisper-cuda/
 tools/ffmpeg/
 tts-service/kokoro/

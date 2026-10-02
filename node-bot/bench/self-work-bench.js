@@ -546,9 +546,33 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     async stop() {
       clearInterval(watch.timer);
       await runtime.stop();
-      if (server && server.exitCode === null) server.kill();
+      // Wait for it to exit: a reload right after would otherwise race the
+      // old server for the port (or get its /health answer).
+      if (server && server.exitCode === null) {
+        const exited = require("node:events").once(server, "exit");
+        server.kill();
+        await exited;
+      }
     },
   };
+}
+
+// #1278: wait out a game, a RAM spike or her chat model for up to 20
+// minutes, with the bench's model unloaded meanwhile so the game gets the
+// VRAM back; it's loaded again once the case can start (without
+// --server-args the runtime reloads it on the case's first request).
+// Returns why the case still can't start, or null.
+async function waitOut(c, gate, model, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
+  let why = await blocker(gate);
+  if (!why) return null;
+  await model.stop();
+  for (let waited = 0; why && waited < 20; waited += 1) {
+    console.log(`Waiting before ${c.id}: ${why}.`);
+    await sleep(60000);
+    why = await blocker(gate);
+  }
+  if (!why) await model.start();
+  return why;
 }
 
 async function main(argv) {
@@ -599,13 +623,7 @@ async function main(argv) {
   try {
     await model.start();
     for (const { c, repeat } of runs) {
-      // Wait out a game, a RAM spike or her chat model for up to 20 minutes.
-      let why = await blocker(gate);
-      for (let waited = 0; why && waited < 20; waited += 1) {
-        console.log(`Waiting before ${c.id}: ${why}.`);
-        await new Promise((resolve) => setTimeout(resolve, 60000));
-        why = await blocker(gate);
-      }
+      const why = await waitOut(c, gate, model);
       if (why) {
         console.log(`Stopping before ${c.id}: ${why}.`);
         break;
@@ -642,4 +660,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree };
+module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut };
