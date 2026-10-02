@@ -1539,11 +1539,26 @@ function createLlamaServerRuntime(options = {}) {
     // </parameter></function>, left in the text when llama-server's parser
     // didn't take it (measured: 6 of 10 benchmark runs ended on one).
     // Values are text; a non-string schema type gets them parsed as JSON.
+    // #1258: a call ends at the </function> that's followed by the next
+    // call or the end, and a value at the </parameter> that's followed by
+    // the next parameter or the end of the call, so code with </parameter>
+    // or </function> in it comes through whole. In a closed call the last
+    // value may leave out its </parameter> (it runs to </function>); a call
+    // cut off mid-value doesn't run.
     if (!found.length) {
-      for (const [, name, body] of text.matchAll(/<function=([\w.-]+)>([\s\S]*?)(?:<\/function>|$)/g)) {
+      const call = /<function=([\w.-]+)>([\s\S]*?)(?:(<\/function>)\s*(?=<\/tool_call>|<tool_call>|<function=[\w.-]+>|$)|$)/g;
+      for (const [, name, body, closed] of text.matchAll(call)) {
         const props = params.get(name)?.properties || {};
         const args = {};
-        for (const [, key, value] of body.matchAll(/<parameter=([\w.-]+)>\r?\n?([\s\S]*?)\r?\n?<\/parameter>/g)) {
+        const values = [];
+        let end = 0;
+        for (const m of body.matchAll(/<parameter=([\w.-]+)>\r?\n?([\s\S]*?)\r?\n?<\/parameter>\s*(?=<parameter=[\w.-]+>|$)/g)) {
+          values.push(m);
+          end = m.index + m[0].length;
+        }
+        const last = closed && /^\s*<parameter=([\w.-]+)>\r?\n?([\s\S]*?)\s*$/.exec(body.slice(end));
+        if (last) values.push(last);
+        for (const [, key, value] of values) {
           args[key] = value;
           if (props[key]?.type && props[key].type !== "string") {
             try {
@@ -2122,6 +2137,17 @@ function createLlamaServerRuntime(options = {}) {
           // saw. Awaiting a plain (non-Promise) return value is a no-op, so
           // this stays exactly backward-compatible with tool-policy.js's
           // synchronous executeTool().
+          // #1258: a call without a required argument (lost in parsing, or
+          // cut off at the token limit) goes back saying which, and why.
+          const required = (toolPolicy.tools || []).find((t) => t?.function?.name === name)?.function?.parameters?.required || [];
+          const given = args && typeof args === "object" ? args : {};
+          const missing = required.filter((key) => !(key in given));
+          if (missing.length) {
+            const cut = json?.choices?.[0]?.finish_reason === "length";
+            throw new Error(
+              `${name} needs ${missing.join(", ")}, which didn't arrive${cut ? ": your reply hit its token limit and the call was cut off" : ""}. Make the call again with every required argument (for a code change, give old_text and replace only the lines that change).`,
+            );
+          }
           const result = await toolPolicy.executeTool(name, args);
           resultText = String(result);
           executedToolCalls.push({ name, args, ok: true });
