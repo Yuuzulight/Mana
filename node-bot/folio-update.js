@@ -1,13 +1,16 @@
-// #1265: Mana keeps Folio up to date. Once a day (the cron scheduler's
-// "folio-update" script job) and on "Check now" (Settings > Approvals): the
-// newest commit on Folio main whose CI passed on Windows and Ubuntu, if
-// it's newer than the launcher's pin and wasn't tried before, becomes a PR
-// -- a throwaway worktree off origin/main under D:\Mana-worktrees, with
-// FolioCommit and FolioVersion set the way pack-folio.ps1 checks them,
-// "Part of #<Keep Folio up to date>", and auto-merge on, so it merges once
-// the required CI passes. It all goes through my "GitHub writes" approval
-// setting. A PR whose CI fails stays open, I get a notice, and that Folio
-// commit is never tried again.
+// #1265: Mana keeps Folio up to date. Once a day (from the cron scheduler's
+// hourly "folio-update" script job) and on "Check now" (Settings >
+// Approvals): the newest commit on Folio main whose CI passed on Windows and
+// Ubuntu, if it's newer than the launcher's pin and wasn't tried before,
+// becomes a PR -- a throwaway worktree off origin/main under
+// D:\Mana-worktrees, with FolioCommit and FolioVersion set the way
+// pack-folio.ps1 checks them, "Part of #<Keep Folio up to date>". Every hour
+// while it's open, its checks are looked at: once every check run on its
+// head commit passed (the launcher's build and tests among them) and it's
+// mergeable, she merges it; a failed one gets me a notice, the PR stays
+// open, and that Folio commit is never tried again. No GitHub auto-merge, so
+// no repo setting is needed and nothing merges past a broken launcher. Her
+// writes go through my "GitHub writes" approval setting.
 const fs = require("node:fs");
 const path = require("node:path");
 const { resolveGitApprovalModes, runCommand, testEnv } = require("./ai/git-tool-source");
@@ -18,6 +21,12 @@ const TRACKING_TITLE = "Keep Folio up to date";
 const JOB_ACTION = "folio-update";
 const NETWORK_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_LISTED = 100;
+const HOUR_MS = 60 * 60 * 1000;
+// Folio itself is looked at once a day; the hourly runs only watch an open PR.
+const LOOK_EVERY_MS = 23 * HOUR_MS;
+// Has to be there and green before a bump merges: the launcher built and tested against the new Folio.
+const LAUNCHER_CHECK = "Build and test windows-native-launcher";
+const FAILED = ["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"];
 
 // <FolioCommit>/<FolioVersion> in the csproj text.
 function readPin(csproj) {
@@ -44,7 +53,7 @@ function packVersion(props, count) {
   return version;
 }
 
-// Done, and passed on both OSes, nothing failed.
+// A Folio commit's checks: done, passed on both OSes, nothing failed.
 function isGreen(checks) {
   const ok = (c) => c.status === "completed" && ["success", "skipped", "neutral"].includes(c.conclusion);
   return (
@@ -52,6 +61,17 @@ function isGreen(checks) {
     checks.every(ok) &&
     ["windows", "ubuntu"].every((os) => checks.some((c) => c.conclusion === "success" && c.name.toLowerCase().includes(os)))
   );
+}
+
+// A bump PR: its head commit's check runs and gh's mergeable ->
+// { fail, url } | { merge: true } | {} (wait). Skipped or neutral waits: a
+// workflow whose path filter doesn't apply leaves no check run at all.
+function prVerdict(checks, mergeable) {
+  const bad = checks.find((c) => c.status === "completed" && FAILED.includes(c.conclusion));
+  if (bad) return { fail: `${bad.name} (${bad.conclusion})`, url: bad.url };
+  if (mergeable === "CONFLICTING") return { fail: "it conflicts with main" };
+  const allPassed = checks.every((c) => c.status === "completed" && c.conclusion === "success");
+  return allPassed && checks.some((c) => c.name === LAUNCHER_CHECK) && mergeable === "MERGEABLE" ? { merge: true } : {};
 }
 
 // "Merge pull request #12 from x/y\n\nTitle" -> { number: 12, title }.
@@ -76,13 +96,13 @@ function prBody({ from, sha, version, prs, commits, tracking }) {
     "",
     `Full diff: https://github.com/${FOLIO}/compare/${from}...${sha}`,
     "",
-    "Auto-merge is on, so this merges once the required CI passes. If CI fails it stays open, and this Folio commit isn't tried again.",
+    "This gets merged once every check on it has passed, the launcher's build and tests included. If one fails it stays open, and this Folio commit isn't tried again.",
   ].join("\n");
 }
 
-// statePath: { enabled, trackingIssue, tried: { <sha>: { pr, url, state, version } } }.
+// statePath: { enabled, lookedAt, trackingIssue, tried: { <sha>: { pr, url, state, version } } }.
 // notify({ text, url }): her notice. approvalGate: server.js's.
-function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approvalGate, isGaming = () => false, notify = () => {}, statePath, env = process.env } = {}) {
+function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approvalGate, isGaming = () => false, notify = () => {}, statePath, env = process.env, now = Date.now } = {}) {
   const root = path.resolve(repoRoot || path.join(__dirname, ".."));
   const worktrees = path.resolve(worktreesDir || path.join(path.dirname(root), "Mana-worktrees"));
   // Keyed like git-tool-source's approvals for this repo ("d:/mana").
@@ -110,6 +130,10 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   function save(state) {
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  }
+  function setTried(sha, fields) {
+    const state = load();
+    save({ ...state, tried: { ...state.tried, [sha]: { ...state.tried?.[sha], ...fields } } });
   }
   const isEnabled = () => load().enabled !== false;
 
@@ -139,7 +163,7 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
         (
           await gh([
             "issue", "create", "--title", TRACKING_TITLE,
-            "--body", "Where the launcher's Folio updates collect. Once a day I check Folio main, and when there's a newer commit whose CI passed on Windows and Ubuntu, a PR moves the pin (FolioCommit/FolioVersion in windows-native-launcher/ManaNativeLauncher.csproj) to it and merges itself once the required CI passes. This stays open.",
+            "--body", "Where the launcher's Folio updates collect. Once a day I check Folio main, and when there's a newer commit whose CI passed on Windows and Ubuntu, a PR moves the pin (FolioCommit/FolioVersion in windows-native-launcher/ManaNativeLauncher.csproj) to it, and it's merged once every check on it passes, the launcher's included. This stays open.",
           ])
         ).split("/").pop(),
       );
@@ -147,9 +171,35 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
     return number;
   }
 
-  // The bump, once it's allowed. payload: { sha, version, from, prs, commits }.
-  async function bump(payload) {
+  // As ai/git-tool-source.js's gated(), on the "github" tier: "off" runs it
+  // now (unless I said never), logged; otherwise the gate asks -- every
+  // time for "ask" -- and runs it once I allow it.
+  async function gated(summary, payload) {
+    const mode = resolveGitApprovalModes(approvalGate.getGitApprovalModes()).github;
+    const never = approvalGate.listRemembered().some((r) => r.key === actionType && r.answer === "never");
+    if (mode === "off" && !never) {
+      const entry = { name: actionType, args: payload, decision: "no approval (setting)", summary };
+      try {
+        const result = await perform(payload);
+        approvalGate.guardianAuditLog.append({ ...entry, ok: true });
+        return { status: "approved", result };
+      } catch (e) {
+        approvalGate.guardianAuditLog.append({ ...entry, ok: false, error: e.message });
+        throw e;
+      }
+    }
+    return approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" });
+  }
+  // A game may have started since it was asked.
+  function perform(payload) {
     if (isGaming()) throw new Error("A game is running, so I'm leaving git alone until it's closed.");
+    return payload.merge ? merge(payload) : bump(payload);
+  }
+  approvalGate?.registerExecutor(actionType, perform);
+  const asking = () => approvalGate.listPending().some((p) => p.actionType === actionType);
+
+  // The bump. payload: { sha, version, from, prs, commits }.
+  async function bump(payload) {
     const { sha, version } = payload;
     const short = sha.slice(0, 12);
     const branch = `folio/${short}`;
@@ -166,13 +216,8 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
       const title = `Update Folio to ${sha.slice(0, 7)} (${version})`;
       const url = (await gh(["pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", prBody({ ...payload, tracking })], wt)).split(/\s+/).pop();
       const pr = Number(url.split("/").pop());
-      const auto = await exec("gh", ["pr", "merge", String(pr), "--auto", "--merge"], { cwd: wt, env: ghEnv, timeoutMs: NETWORK_TIMEOUT_MS });
-      const state = load();
-      save({ ...state, tried: { ...state.tried, [sha]: { pr, url, state: "open", version } } });
-      const text =
-        auto.code === 0
-          ? `I opened #${pr} to update Folio to ${sha.slice(0, 7)}; it merges itself once CI passes.`
-          : `I opened #${pr} to update Folio to ${sha.slice(0, 7)}, but couldn't turn on auto-merge (${(auto.stderr || auto.stdout).trim().slice(0, 200)}), so it needs merging by hand once CI passes.`;
+      setTried(sha, { pr, url, state: "open", version });
+      const text = `I opened #${pr} to update Folio to ${sha.slice(0, 7)}; I'll merge it once every check on it passes.`;
       notify({ text, url });
       return text;
     } finally {
@@ -181,40 +226,44 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
       await exec("git", ["branch", "-D", branch], { cwd: root, env: gitEnv });
     }
   }
-  approvalGate?.registerExecutor(actionType, bump);
 
-  // Open bump PRs: merged or closed since, or CI failed (a notice, and
-  // that commit stays tried).
-  async function checkOpen() {
-    const state = load();
-    const open = Object.entries(state.tried || {}).filter(([, t]) => t.state === "open");
-    for (const [sha, t] of open) {
-      const { state: prState } = await ghJson(["pr", "view", String(t.pr), "--json", "state"]);
-      if (prState !== "OPEN") {
-        t.state = prState.toLowerCase();
-        continue;
-      }
-      // gh exits non-zero while checks fail or are pending; its JSON is still the answer.
-      const r = await exec("gh", ["pr", "checks", String(t.pr), "--json", "name,bucket,link"], { cwd: root, env: ghEnv, timeoutMs: NETWORK_TIMEOUT_MS });
-      let checks = [];
-      try {
-        checks = JSON.parse(r.stdout);
-      } catch {}
-      const failed = checks.filter((c) => c.bucket === "fail");
-      if (!failed.length) continue;
-      t.state = "failed";
-      t.failed = failed.map((c) => c.name);
-      notify({
-        text: `The Folio update #${t.pr} (Folio ${sha.slice(0, 7)}) failed CI: ${t.failed.join(", ")}. I left it open and won't try that Folio commit again.`,
-        url: failed[0].link || t.url,
-      });
-    }
-    if (open.length) save({ ...load(), tried: state.tried });
+  // payload: { merge: true, sha (Folio's), pr, head }. gh refuses if the PR
+  // moved past the head commit whose checks passed.
+  async function merge({ sha, pr, head }) {
+    await gh(["pr", "merge", String(pr), "--merge", `--match-head-commit=${head}`]);
+    setTried(sha, { state: "merged" });
+    const text = `I merged #${pr}: the launcher is on Folio ${sha.slice(0, 7)} now.`;
+    notify({ text, url: load().tried?.[sha]?.url });
+    return text;
   }
 
-  // What happened, as { status, ... }: off, gaming, busy, waiting,
-  // current, tried, pending, opened (or what the approval said).
-  async function run() {
+  // The open bump PR: merged or closed since; a failed check (a notice, and
+  // that commit stays tried); or every check passed and it's mergeable (it
+  // merges, through the approval setting); else it waits for the next hour.
+  async function checkOpen() {
+    const open = Object.entries(load().tried || {}).filter(([, t]) => t.state === "open");
+    for (const [sha, t] of open) {
+      const p = await ghJson(["pr", "view", String(t.pr), "--json", "state,mergeable,headRefOid"]);
+      if (p.state !== "OPEN") {
+        setTried(sha, { state: p.state.toLowerCase() });
+        continue;
+      }
+      const checks = await ghJson(["api", `repos/{owner}/{repo}/commits/${p.headRefOid}/check-runs?per_page=100`, "--jq", "[.check_runs[] | {name, status, conclusion, url: .html_url}]"]);
+      const verdict = prVerdict(checks, p.mergeable);
+      if (verdict.fail) {
+        setTried(sha, { state: "failed", failed: verdict.fail });
+        notify({ text: `The Folio update #${t.pr} (Folio ${sha.slice(0, 7)}) failed: ${verdict.fail}. I left it open and won't try that Folio commit again.`, url: verdict.url || t.url });
+      } else if (verdict.merge && !asking()) {
+        const summary = `Merge #${t.pr} "Update Folio to ${sha.slice(0, 7)}" (a merge commit): all ${checks.length} checks on ${p.headRefOid.slice(0, 8)} passed, the launcher's included`;
+        await gated(summary, { merge: true, sha, pr: t.pr, head: p.headRefOid });
+      }
+    }
+  }
+
+  // What happened, as { status, ... }: off, gaming, busy, waiting, later,
+  // current, tried, pending, opened (or what the approval said). force:
+  // look at Folio now ("Check now"); the hourly job looks once a day.
+  async function run({ force = false } = {}) {
     if (!isEnabled()) return { status: "off" };
     if (isGaming()) return { status: "gaming" };
     if (running) return { status: "busy" };
@@ -224,6 +273,9 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
       // One at a time: a newer bump would change the same two lines.
       const waiting = Object.entries(load().tried || {}).find(([, t]) => t.state === "open");
       if (waiting) return { status: "waiting", sha: waiting[0], pr: waiting[1].pr };
+      if (!force && now() - (load().lookedAt || 0) < LOOK_EVERY_MS) return { status: "later" };
+      save({ ...load(), lookedAt: now() });
+
       await git(["fetch", "origin", "main"]);
       const pin = readPin(await git(["show", `origin/main:${CSPROJ}`]));
       const sha = await newestGreen();
@@ -235,34 +287,18 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
       const existing = await ghJson(["pr", "list", "--state", "all", "--head", `folio/${sha.slice(0, 12)}`, "--json", "number,state,url"]);
       if (existing.length) {
         const [p] = existing;
-        const state = load();
-        save({ ...state, tried: { ...state.tried, [sha]: { pr: p.number, url: p.url, state: p.state.toLowerCase() } } });
+        setTried(sha, { pr: p.number, url: p.url, state: p.state.toLowerCase() });
         return { status: "tried", sha, pr: p.number };
       }
-      if (approvalGate.listPending().some((p) => p.actionType === actionType)) return { status: "pending", sha };
+      if (asking()) return { status: "pending", sha };
 
       const messages = (await gh(["api", "--paginate", `repos/${FOLIO}/compare/${pin.commit}...${sha}?per_page=100`, "--jq", ".commits[].commit.message | @json"]))
         .split(/\r?\n/)
         .filter(Boolean)
         .map((l) => JSON.parse(l));
       const payload = { sha, version: await folioVersion(sha), from: pin.commit, prs: mergedPrs(messages), commits: compare.ahead_by };
-      const summary = `Update Folio to ${sha.slice(0, 7)} (${payload.version}, ${payload.prs.length} Folio PR(s) since the pin): push folio/${sha.slice(0, 12)} to origin from ${root}, open a PR (Part of "${TRACKING_TITLE}") and turn on auto-merge, so it merges once the required CI passes`;
-
-      // As ai/git-tool-source.js's gated(), on the "github" tier.
-      const mode = resolveGitApprovalModes(approvalGate.getGitApprovalModes()).github;
-      const never = approvalGate.listRemembered().some((r) => r.key === actionType && r.answer === "never");
-      if (mode === "off" && !never) {
-        const entry = { name: actionType, args: payload, decision: "no approval (setting)", summary };
-        try {
-          const text = await bump(payload);
-          approvalGate.guardianAuditLog.append({ ...entry, ok: true });
-          return { status: "opened", sha, text };
-        } catch (e) {
-          approvalGate.guardianAuditLog.append({ ...entry, ok: false, error: e.message });
-          throw e;
-        }
-      }
-      const outcome = await approvalGate.requestApproval(actionType, { summary, payload, forceReview: mode === "ask" });
+      const summary = `Update Folio to ${sha.slice(0, 7)} (${payload.version}, ${payload.prs.length} Folio PR(s) since the pin): push folio/${sha.slice(0, 12)} to origin from ${root} and open a PR (Part of "${TRACKING_TITLE}"). It's merged later, once every check on it passes, the launcher's included`;
+      const outcome = await gated(summary, payload);
       if (outcome.status === "approved") return { status: "opened", sha, text: outcome.result };
       return { status: outcome.status, sha, requestId: outcome.requestId, reason: outcome.reason };
     } finally {
@@ -270,10 +306,10 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
     }
   }
 
-  // The daily job, added at start when it's missing. The toggle is what turns it off.
+  // The hourly job, added at start when it's missing. The toggle is what turns it off.
   function ensureJob(cron) {
     if (cron.listJobs().some((j) => j.actionName === JOB_ACTION)) return;
-    cron.addJob({ name: TRACKING_TITLE, jobType: "script", actionName: JOB_ACTION, schedule: { type: "daily", hour: 6, minute: 0 } });
+    cron.addJob({ name: TRACKING_TITLE, jobType: "script", actionName: JOB_ACTION, schedule: { type: "interval", everyMs: HOUR_MS } });
   }
 
   return {
@@ -284,4 +320,4 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   };
 }
 
-module.exports = { JOB_ACTION, createFolioUpdater, isGreen, mergedPrs, packVersion, readPin, setPin };
+module.exports = { JOB_ACTION, LAUNCHER_CHECK, createFolioUpdater, isGreen, mergedPrs, packVersion, prVerdict, readPin, setPin };

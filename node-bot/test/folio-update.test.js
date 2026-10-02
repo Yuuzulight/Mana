@@ -8,11 +8,12 @@ const { execFileSync } = require("node:child_process");
 
 const { createApprovalGate } = require("../approval-gate");
 const { runCommand } = require("../ai/git-tool-source");
-const { createFolioUpdater, isGreen, packVersion, mergedPrs } = require("../folio-update");
+const { LAUNCHER_CHECK, createFolioUpdater, isGreen, packVersion, prVerdict, mergedPrs } = require("../folio-update");
 
 const PIN = "a".repeat(40);
 const NEW = "b".repeat(40);
 const OLDER = "c".repeat(40);
+const HEAD = "d".repeat(40); // the bump PR's head commit
 const CSPROJ = "windows-native-launcher/ManaNativeLauncher.csproj";
 const PROPS = "<Project><PropertyGroup><VersionPrefix>0.1.0</VersionPrefix>\n<VersionSuffix>m1.$(FolioBuild)</VersionSuffix></PropertyGroup></Project>";
 const GREEN = [
@@ -20,6 +21,10 @@ const GREEN = [
   { name: "build-and-test (windows-latest)", status: "completed", conclusion: "success" },
 ];
 const RED = [GREEN[0], { ...GREEN[1], conclusion: "failure" }];
+// The bump PR's own checks.
+const run = (name, conclusion = "success", status = "completed") => ({ name, status, conclusion: status === "completed" ? conclusion : null, url: `https://ci/${name}` });
+const PR_GREEN = [run(LAUNCHER_CHECK), run("Node tests (full suite)"), run("dco"), run("build")];
+const OPEN_PR = { tried: { [NEW]: { pr: 71, url: "https://github.com/x/y/pull/71", state: "open" } } };
 
 const bases = [];
 test.after(() => bases.forEach((b) => fs.rmSync(b, { recursive: true, force: true })));
@@ -45,13 +50,14 @@ function makeRepos() {
   return { base, origin, live, worktrees: path.join(base, "worktrees"), statePath: path.join(base, "data", "folio-update.json") };
 }
 
-// gh answers: newest runs first; checks per sha; the PR's checks.
-function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, [PIN]: GREEN }, prChecks = [], prState = "OPEN", prList = [] } = {}) {
+// gh answers: Folio's newest runs first and checks per sha; the bump PR's state, mergeability and checks.
+function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, [PIN]: GREEN }, prChecks = [], prState = "OPEN", mergeable = "MERGEABLE", prList = [] } = {}) {
   const calls = [];
   const answer = (args) => {
     const [a, b] = args;
     const json = (v) => ({ code: 0, stdout: JSON.stringify(v), stderr: "" });
     if (a === "api" && /actions\/runs/.test(b)) return json(runs);
+    if (a === "api" && b === `repos/{owner}/{repo}/commits/${HEAD}/check-runs?per_page=100`) return json(prChecks);
     if (a === "api" && /check-runs/.test(b)) return json(checks[b.split("/")[4]] || []);
     if (a === "api" && b === "--paginate") {
       return { code: 0, stdout: [JSON.stringify("Merge pull request #12 from Yuuzulight/x\n\nDraw tables"), JSON.stringify("Fix a typo")].join("\n"), stderr: "" };
@@ -64,8 +70,7 @@ function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, 
     if (a === "pr" && b === "list") return json(prList);
     if (a === "pr" && b === "create") return { code: 0, stdout: "https://github.com/x/y/pull/71\n", stderr: "" };
     if (a === "pr" && b === "merge") return { code: 0, stdout: "", stderr: "" };
-    if (a === "pr" && b === "view") return json({ state: prState });
-    if (a === "pr" && b === "checks") return { ...json(prChecks), code: prChecks.some((c) => c.bucket === "fail") ? 1 : 0 };
+    if (a === "pr" && b === "view") return json({ state: prState, mergeable, headRefOid: HEAD });
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
   const exec = async (cmd, args, opts) => {
@@ -76,7 +81,7 @@ function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, 
   return { exec, calls };
 }
 
-function updater(repos, gh, { mode = "off", state } = {}) {
+function updater(repos, gh, { mode = "off", state, now } = {}) {
   const gate = createApprovalGate({ dataDir: path.join(repos.base, "gate") });
   gate.setGitApprovalMode("github", mode);
   if (state) {
@@ -84,13 +89,14 @@ function updater(repos, gh, { mode = "off", state } = {}) {
     fs.writeFileSync(repos.statePath, JSON.stringify(state));
   }
   const notices = [];
-  const u = createFolioUpdater({ repoRoot: repos.live, worktreesDir: repos.worktrees, exec: gh.exec, approvalGate: gate, statePath: repos.statePath, notify: (n) => notices.push(n) });
+  const u = createFolioUpdater({ repoRoot: repos.live, worktreesDir: repos.worktrees, exec: gh.exec, approvalGate: gate, statePath: repos.statePath, notify: (n) => notices.push(n), now });
   return { u, gate, notices };
 }
 
 const writes = (calls) => calls.filter((a) => ["create", "merge"].includes(a[1]) || a[0] === "push");
+const merges = (calls) => calls.filter((a) => a[0] === "pr" && a[1] === "merge");
 
-test("the version is Folio's own: prefix, suffix and the commit count", () => {
+test("the version is Folio's own; which commits and PRs count as green", () => {
   assert.equal(packVersion(PROPS, 629), "0.1.0-m1.629");
   assert.equal(packVersion(PROPS.replace("m1.", "m2."), 7), "0.1.0-m2.7");
   assert.throws(() => packVersion(PROPS.replace("$(FolioBuild)", "$(Other)"), 7), /can't work out/);
@@ -99,9 +105,18 @@ test("the version is Folio's own: prefix, suffix and the commit count", () => {
   assert.equal(isGreen([GREEN[0]]), false, "both OSes");
   assert.equal(isGreen([GREEN[0], { ...GREEN[1], status: "in_progress", conclusion: null }]), false);
   assert.deepEqual(mergedPrs(["Merge pull request #12 from a/b\n\nDraw tables", "Fix"]), [{ number: 12, title: "Draw tables" }]);
+
+  assert.deepEqual(prVerdict(PR_GREEN, "MERGEABLE"), { merge: true });
+  assert.deepEqual(prVerdict(PR_GREEN, "UNKNOWN"), {}, "mergeable not known yet: wait");
+  assert.deepEqual(prVerdict(PR_GREEN.slice(1), "MERGEABLE"), {}, "no launcher check yet: wait");
+  assert.deepEqual(prVerdict([...PR_GREEN, run("CodeQL", null, "in_progress")], "MERGEABLE"), {}, "pending: wait");
+  assert.deepEqual(prVerdict([...PR_GREEN, run("CodeQL", "skipped")], "MERGEABLE"), {}, "skipped: wait");
+  assert.deepEqual(prVerdict([...PR_GREEN, run("CodeQL", "neutral")], "MERGEABLE"), {}, "neutral: wait");
+  assert.equal(prVerdict([run(LAUNCHER_CHECK, "cancelled"), run("dco", null, "queued")], "MERGEABLE").fail, `${LAUNCHER_CHECK} (cancelled)`);
+  assert.match(prVerdict(PR_GREEN, "CONFLICTING").fail, /conflicts/);
 });
 
-test("a newer green Folio commit becomes a PR with auto-merge, off a throwaway worktree", async () => {
+test("a newer green Folio commit becomes a PR off a throwaway worktree, not merged yet", async () => {
   const repos = makeRepos();
   const gh = fakeGh();
   const { u, notices } = updater(repos, gh);
@@ -124,16 +139,16 @@ test("a newer green Folio commit becomes a PR with auto-merge, off a throwaway w
   assert.match(body, /Part of #70\./);
   assert.match(body, /Yuuzulight\/Folio#12 Draw tables/);
   assert.doesNotMatch(body, /claude|co-authored|the user|agent/i);
-  assert.deepEqual(gh.calls.find((a) => a[1] === "merge"), ["pr", "merge", "71", "--auto", "--merge"]);
+  assert.deepEqual(merges(gh.calls), [], "no auto-merge, no merge yet");
   assert.equal(gh.calls.filter((a) => a[0] === "issue" && a[1] === "create").length, 1);
   assert.equal(notices.length, 1);
   assert.match(notices[0].text, /#71/);
   assert.equal(u.status().tried[NEW].state, "open");
 
-  // While it's open, the next run waits for it.
+  // An hour later its checks haven't run: it waits.
   const next = await u.run();
   assert.equal(next.status, "waiting");
-  assert.equal(gh.calls.filter((a) => a[1] === "create").length, 2, "nothing new opened");
+  assert.equal(writes(gh.calls).length, 2, "nothing new opened, nothing merged");
 });
 
 test("nothing happens when the newest green commit is the pin, CI is red, it was tried, or the toggle is off", async () => {
@@ -164,51 +179,98 @@ test("an older green commit when the newest one's CI failed", async () => {
   assert.equal(result.sha, OLDER);
 });
 
-test("a bump PR whose CI fails: a notice with the failing check, left open, never retried", async () => {
+test("Folio itself is looked at once a day; Check now looks whenever", async () => {
   const repos = makeRepos();
-  const failing = [
-    { name: "Build and test windows-native-launcher", bucket: "fail", link: "https://ci/1" },
-    { name: "Node tests (full suite)", bucket: "pass", link: "https://ci/2" },
-  ];
-  const gh = fakeGh({ prChecks: failing });
-  const { u, notices } = updater(repos, gh, { state: { tried: { [NEW]: { pr: 71, url: "https://github.com/x/y/pull/71", state: "open" } } } });
+  const gh = fakeGh({ runs: [PIN] });
+  let clock = 1_000_000_000;
+  const { u } = updater(repos, gh, { now: () => clock });
+  const looks = () => gh.calls.filter((a) => /actions\/runs/.test(a[1])).length;
+  assert.equal((await u.run()).status, "current");
+  clock += 60 * 60 * 1000;
+  assert.equal((await u.run()).status, "later");
+  assert.equal(looks(), 1);
+  assert.equal((await u.run({ force: true })).status, "current");
+  clock += 24 * 60 * 60 * 1000;
+  assert.equal((await u.run()).status, "current");
+  assert.equal(looks(), 3);
+});
+
+test("every check on the bump PR passed, the launcher's included: it's merged", async () => {
+  const repos = makeRepos();
+  const gh = fakeGh({ runs: [NEW], prChecks: PR_GREEN });
+  const { u, notices } = updater(repos, gh, { state: OPEN_PR });
+  await u.run();
+  assert.deepEqual(merges(gh.calls), [["pr", "merge", "71", "--merge", `--match-head-commit=${HEAD}`]]);
+  assert.equal(u.status().tried[NEW].state, "merged");
+  assert.match(notices[0].text, /merged #71/);
+  assert.equal(notices[0].url, "https://github.com/x/y/pull/71");
+});
+
+test("pending, skipped, a missing launcher check or unknown mergeability: it waits", async () => {
+  for (const [label, ghOptions] of [
+    ["pending", { prChecks: [...PR_GREEN, run("Analyze (csharp)", null, "in_progress")] }],
+    ["skipped", { prChecks: [...PR_GREEN, run("CodeQL", "skipped")] }],
+    ["launcher check missing", { prChecks: PR_GREEN.filter((c) => c.name !== LAUNCHER_CHECK) }],
+    ["mergeable unknown", { prChecks: PR_GREEN, mergeable: "UNKNOWN" }],
+  ]) {
+    const repos = makeRepos();
+    const gh = fakeGh(ghOptions);
+    const { u, notices } = updater(repos, gh, { state: OPEN_PR });
+    const result = await u.run();
+    assert.equal(result.status, "waiting", label);
+    assert.deepEqual(merges(gh.calls), [], label);
+    assert.deepEqual(notices, [], label);
+    assert.equal(u.status().tried[NEW].state, "open", label);
+  }
+});
+
+test("a failed check on the bump PR: a notice with its link, no merge, never retried", async () => {
+  const repos = makeRepos();
+  const gh = fakeGh({ prChecks: [run(LAUNCHER_CHECK, "failure"), run("Node tests (full suite)")] });
+  const { u, notices } = updater(repos, gh, { state: OPEN_PR });
   const result = await u.run();
   assert.equal(result.status, "tried");
   assert.equal(notices.length, 1);
-  assert.match(notices[0].text, /#71.*failed CI: Build and test windows-native-launcher/);
-  assert.equal(notices[0].url, "https://ci/1");
+  assert.match(notices[0].text, new RegExp(`#71.*failed: ${LAUNCHER_CHECK} \\(failure\\)`));
+  assert.equal(notices[0].url, `https://ci/${LAUNCHER_CHECK}`);
   assert.equal(u.status().tried[NEW].state, "failed");
-  assert.deepEqual(writes(gh.calls), [], "not closed, not merged, not retried");
+  assert.deepEqual(writes(gh.calls), [], "not merged, not retried");
 
-  const again = await u.run();
+  const again = await u.run({ force: true });
   assert.equal(again.status, "tried");
   assert.equal(notices.length, 1, "one notice");
 });
 
-test("through the approval setting: asks first, opens it once I allow it", async () => {
+test("through the approval setting: the PR and its merge each ask first", async () => {
   const repos = makeRepos();
   const gh = fakeGh();
   const { u, gate } = updater(repos, gh, { mode: "ask" });
-  const result = await u.run();
-  assert.equal(result.status, "pending");
+  assert.equal((await u.run()).status, "pending");
   assert.deepEqual(writes(gh.calls), [], "nothing before I allow it");
-  assert.equal((await u.run()).status, "pending", "asked once");
-  assert.equal(gate.listPending().length, 1);
+  assert.equal((await u.run({ force: true })).status, "pending", "asked once");
   const [request] = gate.listPending();
-  assert.match(request.summary, /auto-merge/);
-  const decided = await gate.decide(request.id, "allow-once");
-  assert.equal(decided.status, "approved");
+  assert.equal(gate.listPending().length, 1);
+  assert.equal((await gate.decide(request.id, "allow-once")).status, "approved");
   assert.ok(gh.calls.some((a) => a[0] === "pr" && a[1] === "create"));
   assert.ok(git(repos.origin, "branch", "--list", `folio/${NEW.slice(0, 12)}`));
+
+  const green = fakeGh({ prChecks: PR_GREEN });
+  const { u: later, gate: gate2 } = updater(repos, green, { mode: "ask" });
+  await later.run();
+  assert.deepEqual(merges(green.calls), [], "the merge asks too");
+  const [mergeRequest] = gate2.listPending();
+  assert.match(mergeRequest.summary, /^Merge #71/);
+  await gate2.decide(mergeRequest.id, "allow-once");
+  assert.equal(merges(green.calls).length, 1);
 });
 
-test("the routes need my admin key", async () => {
+test("the routes need my admin key, and Check now looks at Folio now", async () => {
   const { createApp } = require("../server");
   const { withServer, useTestAdminToken } = require("./helpers");
   const fetchAsAdmin = useTestAdminToken();
   const calls = [];
   const fake = {
-    run: async () => (calls.push("run"), { status: "current" }),
+    run: async (opts) => (calls.push(opts), { status: "current" }),
     status: () => ({ enabled: true, tried: {} }),
     setEnabled: (on) => calls.push(on),
     ensureJob: () => {},
@@ -220,5 +282,5 @@ test("the routes need my admin key", async () => {
     assert.deepEqual(await (await fetchAsAdmin(`${baseUrl}/folio-update/run`, post({}))).json(), { status: "current" });
     assert.deepEqual(await (await fetchAsAdmin(`${baseUrl}/folio-update`, post({ enabled: false }))).json(), { enabled: true, tried: {} });
   });
-  assert.deepEqual(calls, ["run", false]);
+  assert.deepEqual(calls, [{ force: true }, false]);
 });

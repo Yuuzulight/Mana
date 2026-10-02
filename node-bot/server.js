@@ -2890,7 +2890,8 @@ function registerRoutes(app, upload, deps = {}) {
         if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
       },
     });
-  // #1265: Mana keeps Folio up to date: daily, and on "Check now".
+  // #1265: Mana keeps Folio up to date: an hourly job (Folio looked at
+  // daily, an open bump PR checked hourly), and "Check now".
   const folioUpdater =
     deps.folioUpdater ||
     createFolioUpdater({
@@ -2912,7 +2913,7 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/folio-update/run", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
-      return res.json(await folioUpdater.run());
+      return res.json(await folioUpdater.run({ force: true }));
     } catch (e) {
       return res.json({ status: "error", error: e.message });
     }

@@ -52,7 +52,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ComboBox[] gitApprovalCombos = Array.ConvertAll(GitApprovalTiers, tier => new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, AccessibleName = $"Git approval: {tier}" });
     private readonly Label gitDangerWarning = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.OrangeRed, AccessibleName = "Git danger warning" };
     // #1265: Mana's daily Folio update PRs, through "GitHub writes".
-    private readonly CheckBox keepFolioCheck = new() { Text = "Keep Folio up to date (a PR when Folio main moves on, merged once CI passes)", AutoSize = true, ForeColor = DarkTheme.Text, AccessibleName = "Keep Folio up to date" };
+    private readonly CheckBox keepFolioCheck = new() { Text = "Keep Folio up to date (a PR when Folio main moves on, merged once every check passes)", AutoSize = true, ForeColor = DarkTheme.Text, AccessibleName = "Keep Folio up to date" };
     private readonly Label folioStatusLabel = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 8, 3, 3), AccessibleName = "Folio check result" };
     private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Voice provider" };
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
