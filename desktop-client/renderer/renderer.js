@@ -2510,24 +2510,9 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
     try {
       const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
 
-      // Render two sections: Plugins (tier: "plugin") and Add-Ons (tier: "addon")
-      const pluginRows = [];
-      for (const p of j.plugins || []) {
-        const isInstalled = j.installed?.includes(p.name);
-        if (!isInstalled) continue;
-
-        pluginRows.push(
-          `<div class="plugin-row" data-plugin="${escapeHtml(p.name)}">
-            <div class="plugin-row-info">
-              <strong>${escapeHtml(p.name)}</strong>
-              <span>${escapeHtml(p.description || 'Optional Mana capability')}</span>
-            </div>
-            ${p.enabled ? '<button class="plugin-switch on" data-plugin-key="' + escapeHtml(p.name) + '" aria-pressed="true" title="Enabled"></button>' :
-                          '<button class="plugin-switch" data-plugin-key="' + escapeHtml(p.name) + '" aria-pressed="false" title="Disabled"></button>'}
-          </div>`
-        );
-      }
-
+      // Render two sections: Plugins (tier: "plugin") and Add-Ons (tier: "addon").
+      // Plugins lists installed and available ones alike (#499); each row's
+      // button opens the details modal, where install/uninstall happen.
       const addonRows = [];
       for (const a of j.addons || []) {
         // Add-Ons require explicit consent on first load — check via API or assume not consented
@@ -2549,7 +2534,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
       // Build the popup menu with two distinct sections
       const html = [
         '<h4 class="section-title">🔌 Plugins</h4>',
-        pluginRows.length ? pluginRows.join('') : '<p class="subtitle muted">No plugins installed.</p>',
+        window.ManaPluginStoreUi.pluginRowsHtml(j.plugins || []),
         '',
         '<h4 class="section-title">⚡ Add-Ons</h4>',
         addonRows.length ? addonRows.join('') : '<p class="subtitle muted">No add-ons available.</p>'
@@ -2561,140 +2546,68 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
     }
   }
 
-  // Plugin details modal — uses real API data instead of mock data
-  let currentPluginDetails = null;
-
+  // Plugin details modal (#499): opened from each row's button. Always
+  // refetches so install/uninstall state is never stale; buttons are wired
+  // with listeners because inline onclick can't see this closure's functions.
   async function showPluginDetails(pluginName) {
-    if (!currentPluginDetails) {
+    let data;
+    try {
+      const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
+      data = (j.all || []).find((p) => p.name === pluginName);
+    } catch (e) {
+      setPluginsStatus(`Failed to load plugin details: ${e.message}`, true);
+      return;
+    }
+    if (!data) return;
+
+    hidePluginDetails();
+    document.body.insertAdjacentHTML('beforeend', window.ManaPluginStoreUi.pluginDetailsHtml(data));
+    const modal = document.getElementById('pluginDetailsModal');
+    const statusEl = modal.querySelector('.plugin-details-status');
+    modal.querySelector('.close-btn').addEventListener('click', hidePluginDetails);
+    modal.querySelector('.close-btn').focus();
+
+    modal.querySelector('.plugin-install-btn')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      statusEl.textContent = 'Installing...';
+      await installPlugin('github', data.url);
+      showPluginDetails(pluginName);
+    });
+
+    modal.querySelector('.plugin-uninstall-btn')?.addEventListener('click', async (e) => {
+      if (!window.confirm(`Uninstall plugin "${pluginName}"?`)) return;
+      e.target.disabled = true;
       try {
-        const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
-        // Find the plugin in either "all" or by name match
-        currentPluginDetails = (j.all || []).find(p => p.name === pluginName) || null;
-      } catch (e) {
-        console.error('[Plugins] Failed to fetch plugin details:', e.message);
-        return;
+        await fetchJson(`${BACKEND_URL}/plugins/store/uninstall`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: pluginName }),
+        });
+        hidePluginDetails();
+        setPluginsStatus(`Uninstalled plugin: ${pluginName}`);
+        loadPlugins();
+      } catch (err) {
+        statusEl.textContent = `Uninstall failed: ${err.message}`;
+        e.target.disabled = false;
       }
-    }
-
-    if (!currentPluginDetails) return;
-
-    const data = currentPluginDetails;
-
-    // Create modal HTML with real API data + Install button
-    const modalHTML = `
-      <div id="pluginDetailsModal" class="modal-overlay">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h2>${escapeHtml(data.name)}</h2>
-            <button class="close-btn" onclick="hidePluginDetails()">×</button>
-          </div>
-          <div class="modal-body">
-            <p><strong>Version:</strong> ${escapeHtml(data.version || 'N/A')}</p>
-            <p><strong>Author:</strong> ${escapeHtml(data.author || 'Unknown')}</p>
-            <p><strong>Description:</strong> ${escapeHtml(data.description || 'No description available.')}</p>
-            <hr style="border-color: var(--border-soft); margin: 1rem 0;">
-            <h3>GitHub Repository</h3>
-            ${data.url ? `<a href="${escapeHtml(data.url)}" target="_blank" rel="noopener noreferrer">View on GitHub →</a>` : ''}
-            <hr style="border-color: var(--border-soft); margin: 1rem 0;">
-            <h3>Permissions</h3>
-            ${data.permissions ? `<ul>${(data.permissions || []).map(p => `<li>${escapeHtml(p)}</li>`).join('')}</ul>` : ''}
-            <hr style="border-color: var(--border-soft); margin: 1rem 0;">
-            <h3>Action</h3>
-            ${!isInstalled ?
-              `<button class="btn-primary" onclick="installFromModal('${escapeHtml(data.name)}')">Install Plugin</button>` :
-              '<span style="color: var(--muted-soft);">Already installed.</span>'}
-          </div>
-        </div>
-      </div>
-    `;
-
-    // Inject modal into body (only once)
-    if (!document.getElementById('pluginDetailsModal')) {
-      document.body.insertAdjacentHTML('beforeend', modalHTML);
-    } else {
-      const existing = document.getElementById('pluginDetailsModal');
-      existing.remove();
-      document.body.insertAdjacentHTML('beforeend', modalHTML);
-    }
-
-    // Show modal with animation
-    setTimeout(() => {
-      const modal = document.getElementById('pluginDetailsModal');
-      if (modal) {
-        modal.style.opacity = '1';
-        modal.style.transform = 'translateY(0)';
-        modal.classList.add('active');
-
-        // Focus close button for accessibility
-        const closeBtn = modal.querySelector('.close-btn');
-        if (closeBtn) closeBtn.focus();
-      }
-    }, 50);
+    });
   }
 
   function hidePluginDetails() {
-    const modal = document.getElementById('pluginDetailsModal');
-    if (!modal) return;
-
-    modal.classList.remove('active');
-
-    // Fade out after transition
-    setTimeout(() => {
-      modal.style.opacity = '0';
-      modal.style.transform = 'translateY(-20px)';
-
-      // Remove from DOM after animation completes
-      setTimeout(() => {
-        if (modal.parentNode) {
-          modal.parentNode.removeChild(modal);
-        }
-      }, 300);
-    }, 150);
+    document.getElementById('pluginDetailsModal')?.remove();
   }
 
-  // Install button handler wired to installPlugin()
-  window.installFromModal = async function(pluginName) {
-    const modal = document.getElementById('pluginDetailsModal');
-    if (!modal || !modal.classList.contains('active')) return;
-
-    try {
-      const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
-      const isInstalled = (j.installed || []).includes(pluginName);
-
-      if (isInstalled) {
-        alert(`Plugin ${escapeHtml(pluginName)} is already installed.`);
-        return;
-      }
-
-      // Call installPlugin() from renderer.js
-      await window.installPlugin('github', j.all.find(p => p.name === pluginName)?.url || '');
-
-      // Refresh modal to show "Already installed" state
-      hidePluginDetails();
-      setTimeout(() => {
-        showPluginDetails(pluginName);
-      }, 600);
-    } catch (e) {
-      alert(`Failed to install plugin: ${escapeHtml(e.message)}`);
-    }
-  };
-
-  // Close modal when clicking outside content
-  document.addEventListener('click', (e) => {
-    const modal = document.getElementById('pluginDetailsModal');
-    if (!modal || !modal.classList.contains('active')) return;
-
-    if (e.target === modal || e.target.closest('.modal-overlay')) {
-      hidePluginDetails();
-    }
+  pluginsListEl?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.plugin-details-btn');
+    if (btn) showPluginDetails(btn.dataset.plugin);
   });
 
-  // Close with Escape key
+  // Close on a click on the backdrop itself (not inside the dialog) or Escape.
+  document.addEventListener('click', (e) => {
+    if (e.target.id === 'pluginDetailsModal') hidePluginDetails();
+  });
   document.addEventListener('keydown', (e) => {
-    const modal = document.getElementById('pluginDetailsModal');
-    if (!modal || !modal.classList.contains('active') || e.key !== 'Escape') return;
-
-    hidePluginDetails();
+    if (e.key === 'Escape') hidePluginDetails();
   });
 
   // Install new plugin from GitHub or local file
@@ -2745,6 +2658,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
 
   // Install button handler (can be wired from the UI)
   window.installPlugin = installPlugin;
+  loadPlugins();
 
   // Memory (Settings > Memory, issue #324): browse/manage acp-memory-store's
   // remembered facts (memory__remember), including the unverifiedSource flag

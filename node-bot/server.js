@@ -6179,6 +6179,7 @@ function registerRoutes(app, upload, deps = {}) {
     try {
       const installed = activePluginStore.list();
       const available = await fetchAvailablePlugins();
+      const installedNames = new Set(installed.map((plugin) => plugin.name));
 
       const githubPlugins = Array.isArray(available)
         ? available
@@ -6188,6 +6189,7 @@ function registerRoutes(app, upload, deps = {}) {
               url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${item.name}`,
               description: "Official Mana plugin from GitHub",
               category: "Core",
+              installed: installedNames.has(item.name.replace("/", "")),
             }))
         : [];
 
@@ -6195,11 +6197,15 @@ function registerRoutes(app, upload, deps = {}) {
         ...installed.map((plugin) => ({
           name: plugin.name,
           url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${plugin.name}`,
+          version: plugin.version,
+          author: plugin.author,
           description: plugin.description || "Installed plugin",
           category: "User Installed",
+          installed: true,
           enabled: activePluginSettingsStore.isEnabled(plugin.name),
         })),
-        ...githubPlugins,
+        // #499: an installed plugin appears once, as installed.
+        ...githubPlugins.filter((plugin) => !plugin.installed),
       ];
 
       // Segment by tier (plugin vs addon) -- default to "plugin" if not specified
@@ -6282,6 +6288,20 @@ function registerRoutes(app, upload, deps = {}) {
       console.error("[PluginStore] Install failed:", error.message);
       res.status(500).json({ error: `Install failed: ${error.message}` });
     }
+  });
+
+  // #499: the store modal's Uninstall button. Admin-gated like install;
+  // pluginStore.uninstall() already contains the name to pluginsDir.
+  app.post("/plugins/store/uninstall", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const { name } = req.body || {};
+    if (!name || typeof name !== "string") {
+      return res.status(400).json({ error: "name is required" });
+    }
+    if (!activePluginStore.uninstall(name)) {
+      return res.status(404).json({ error: `Plugin ${name} not found` });
+    }
+    res.json({ success: true, name });
   });
 
   app.post("/plugins/store/toggle", (req, res) => {
