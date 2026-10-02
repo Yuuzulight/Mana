@@ -40,7 +40,7 @@ test("a docs page keeps its steps, code and options table", () => {
   const { markdown } = extractMainContent(fixture("docs"), "https://folio.example/docs/install");
   assert.match(markdown, /^# Installing the CLI\n/);
   assert.match(markdown, /1\. Download the installer from the \[downloads page\]\(\/downloads\)\.\n2\. Run it/);
-  assert.match(markdown, /```\nfolio --version\nfolio 0\.1\.0\n```/);
+  assert.match(markdown, /```\r?\nfolio --version\r?\nfolio 0\.1\.0\r?\n```/);
   assert.match(markdown, /\| Flag \| What it does \|\n\| --- \| --- \|\n\| `--quiet` \| Prints only errors \|\n\| `--out <dir>` \| Where files are written \\\| default: \. \|/);
   for (const junk of ["Introduction", "Configuration", "Docs /", "On this page", "helpful", "analytics"]) {
     assert.doesNotMatch(markdown, new RegExp(junk), junk);
