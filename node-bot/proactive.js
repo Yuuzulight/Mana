@@ -294,6 +294,12 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     if (patch.reaction !== undefined && !["dismissed", "engaged"].includes(patch.reaction)) {
       throw new Error("reaction must be dismissed or engaged");
     }
+    if (patch.resetReason !== undefined) {
+      delete next.learned[reasonOf(patch.resetReason)];
+    }
+    if (patch.resetAllLearned === true) {
+      next.learned = {};
+    }
     settings = next;
     // Turned back on by hand: a fresh start, not the dislike that muted it.
     if (patch.unmute !== undefined) delete settings.learned[reasonOf(patch.unmute)];

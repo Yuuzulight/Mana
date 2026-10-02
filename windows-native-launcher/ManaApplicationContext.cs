@@ -71,6 +71,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // pick the screen-context read interval, same signal the tray icon
     // text already reflects.
     private bool gamingModeActive;
+    // #697: audio and call awareness
+    private readonly IAudioSessionDetector audioDetector = new WindowsAudioSessionDetector();
 
     // #661: approvals/edit proposals waiting on the user (see
     // RefreshWaitingAsync), and whether Dream Mode's idle consolidation has
@@ -183,7 +185,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ShowSessionList();
             chatLog.SelectMessageContaining(text);
         };
-        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles);
+        voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles, isAudioBusy: () => settings.HoldSpeechDuringAudio && audioDetector.IsAudioBusy());
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #914 group mode: her sister's mouth closes when the reply ends, and
         // her avatar shows and hides with Mana's.

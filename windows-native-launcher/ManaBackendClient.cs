@@ -2894,6 +2894,27 @@ internal sealed class ManaBackendClient
             ?? new ManaMemoryGraph();
     }
 
+    // #697 / #1282: proactive settings and learned reactions (GET/POST /proactive/settings).
+    public async Task<ManaProactiveSettings> GetProactiveSettingsAsync()
+    {
+        using var response = await http.GetAsync("/proactive/settings");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaProactiveSettings>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaProactiveSettings();
+    }
+
+    public async Task<ManaProactiveSettings> UpdateProactiveSettingsAsync(object patch)
+    {
+        var json = JsonSerializer.Serialize(patch, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/proactive/settings", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<ManaProactiveSettings>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? new ManaProactiveSettings();
+    }
+
     private static ReplyStreamEvent ParseReplyStreamEvent(JsonElement root)
     {
         return new ReplyStreamEvent
@@ -3699,3 +3720,38 @@ internal sealed class ManaCalendarAccount
     public bool PasswordSet { get; init; }
     public bool Unreadable { get; init; }
 }
+
+// #697: GET/POST /proactive/settings response and models.
+internal sealed class ManaProactiveSettings
+{
+    public bool Ok { get; init; }
+    public ManaQuietHoursSettings QuietHours { get; init; } = new();
+    public bool InQuietHours { get; init; }
+    public long? SnoozedUntil { get; init; }
+    public IReadOnlyList<string> Muted { get; init; } = Array.Empty<string>();
+    public bool Away { get; init; }
+    public ManaLastRemark? LastRemark { get; init; }
+    public Dictionary<string, ManaLearnedReason> Learned { get; init; } = new();
+}
+
+internal sealed class ManaQuietHoursSettings
+{
+    public bool Enabled { get; init; }
+    public string Start { get; init; } = "01:00";
+    public string End { get; init; } = "09:00";
+}
+
+internal sealed class ManaLastRemark
+{
+    public string? Reason { get; init; }
+    public string? Title { get; init; }
+    public string? Text { get; init; }
+    public long? At { get; init; }
+}
+
+internal sealed class ManaLearnedReason
+{
+    public double Score { get; init; }
+    public double Multiplier { get; init; }
+}
+
