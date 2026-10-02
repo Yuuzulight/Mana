@@ -518,7 +518,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     if (!serverArgs) return;
     watch.timer = setInterval(() => {
       const ram = systemRamPercent();
-      if (ram > BENCH_MAX_RAM_PERCENT && server && server.exitCode === null) {
+      if (ram > BENCH_MAX_RAM_PERCENT && running(server)) {
         watch.aborted = `RAM reached ${ram}%, so the bench stopped its llama-server`;
         console.log(watch.aborted);
         server.kill();
@@ -529,12 +529,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     args.push("--no-webui", "--cache-ram", "0", "-t", String(env.LLAMA_THREADS || 4), ...serverArgs.split(/[\s,]+/).filter(Boolean));
     console.log(`Starting the bench's llama-server: ${args.join(" ")}`);
     server = spawn(runtime.findLlamaServerBin(), args, { windowsHide: true, stdio: "ignore" });
-    for (let waited = 0; waited < 600; waited += 2) {
-      if (await globalThis.fetch(`http://127.0.0.1:${BENCH_LLAMA_PORT}/health`).then((r) => r.ok, () => false)) return;
-      if (server.exitCode !== null) throw new Error(`the bench's llama-server exited (${server.exitCode})`);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-    throw new Error("the bench's llama-server didn't come up in 10 minutes");
+    await waitUp(server, () => globalThis.fetch(`http://127.0.0.1:${BENCH_LLAMA_PORT}/health`).then((r) => r.ok, () => false));
   }
   return {
     start,
@@ -548,13 +543,28 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
       await runtime.stop();
       // Wait for it to exit: a reload right after would otherwise race the
       // old server for the port (or get its /health answer).
-      if (server && server.exitCode === null) {
+      if (running(server)) {
         const exited = require("node:events").once(server, "exit");
         server.kill();
         await exited;
       }
     },
   };
+}
+
+// A child killed by a signal keeps exitCode null and gets a signalCode.
+function running(child) {
+  return Boolean(child) && child.exitCode === null && child.signalCode === null;
+}
+
+// Polls /health until the server answers; stops as soon as it has exited.
+async function waitUp(server, healthy, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
+  for (let waited = 0; waited < 600; waited += 2) {
+    if (await healthy()) return;
+    if (!running(server)) throw new Error(`the bench's llama-server exited (${server.exitCode ?? server.signalCode})`);
+    await sleep(2000);
+  }
+  throw new Error("the bench's llama-server didn't come up in 10 minutes");
 }
 
 // #1278: wait out a game, a RAM spike or her chat model for up to 20
@@ -660,4 +670,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut };
+module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp };
