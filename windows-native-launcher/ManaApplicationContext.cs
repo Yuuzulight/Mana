@@ -207,7 +207,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
             clipCaptureTimer.Tick += async (_, _) => await CaptureClipFrameAsync();
             clipCaptureTimer.Start();
 
-            // #690: the ambient glance itself, on Electron's schedule.
+            // #690: the ambient glance itself. #1286: on window switches and
+            // title changes (settled 2s, at most every
+            // MANA_SCREEN_SENSING_MIN_INTERVAL_MS), with the old interval
+            // timer as a slow fallback.
             var glance = new ScreenSensingGlance(
                 backendClient,
                 () => voiceLoop.IsIdle,
@@ -216,9 +219,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 screenContextReader.ReadForGlanceAsync,
                 ScreenCapture.CaptureAsJpegDataUrl,
                 chatLog.AppendManaMessage,
-                PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
-            glanceTimer = new System.Windows.Forms.Timer { Interval = PositiveIntEnv("MANA_SCREEN_SENSING_INTERVAL_MS", 120000) };
-            glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
+                PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000),
+                ScreenPrivacyGuard.GlanceBlockReason);
+            var glanceTrigger = new GlanceTrigger(
+                settleMs: 2000,
+                minIntervalMs: PositiveIntEnv("MANA_SCREEN_SENSING_MIN_INTERVAL_MS", 30000),
+                fallbackMs: PositiveIntEnv("MANA_SCREEN_SENSING_INTERVAL_MS", 600000),
+                Environment.TickCount64);
+            glanceTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            glanceTimer.Tick += async (_, _) =>
+            {
+                var (window, title) = ScreenPrivacyGuard.Foreground();
+                if (glanceTrigger.Poll(window, title, Environment.TickCount64))
+                {
+                    await glance.RunOnceAsync();
+                }
+            };
             glanceTimer.Start();
         }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog, artifactViewer);
@@ -679,6 +695,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // most useful to have covered.
     private async Task CaptureClipFrameAsync()
     {
+        // #1286: the one gap it does allow -- no frame while a private
+        // window (ScreenPrivacyGuard) is in front.
+        if (ScreenPrivacyGuard.CurrentBlockReason() is not null)
+        {
+            return;
+        }
         try
         {
             var image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
