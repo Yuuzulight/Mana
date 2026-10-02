@@ -33,4 +33,8 @@ internal static class SystemIdle
     // subtraction wraps, so this stays right across the ~49.7-day rollover.
     internal static int IdleSecondsBetween(uint nowTicks, uint lastInputTicks) =>
         (int)((nowTicks - lastInputTicks) / 1000);
+
+    // #845: recent keyboard or mouse input (active at the PC within threshold).
+    public static bool IsActive(long thresholdMs = 2000) =>
+        (GetIdleMilliseconds() ?? 0) <= thresholdMs;
 }

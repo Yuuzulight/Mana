@@ -908,9 +908,9 @@ internal sealed partial class SessionListForm : Form
         g.DrawLine(pen, x + 9, y + 14, x + 9, y + 16.5f);
     }
 
-    // #1121: My shell's "Send to Mana" -- a chat message from me, queued
-    // like a typed one while she's busy.
-    private async Task SendToManaAsync(string text)
+    // #1121: My shell's "Send to Mana" and #844: mini message box under Mana --
+    // a chat message from me, queued like a typed one while she's busy.
+    internal async Task SendToManaAsync(string text)
     {
         if (messageQueue.Count > 0 || !await voiceLoop.SubmitTypedCommandAsync(text))
         {

@@ -428,6 +428,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     // #619: SessionListForm shows it in the avatar card's status line.
     public event Action<string?>? HearingChanged;
+    public event Action<string>? ManaMessageAppended;
 
     public void ShowHearing(string? text) => RunOnUiThread(() => HearingChanged?.Invoke(text));
 
@@ -444,6 +445,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var message = new Message(fromUser: false) { FinalText = text };
         message.Blocks.AddRange(blocks);
         Add(message, forceScroll: false);
+        ManaMessageAppended?.Invoke(text);
     });
 
     // #914: "Noted: ..." -- her relationship note or milestone, its own
