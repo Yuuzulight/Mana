@@ -62,13 +62,17 @@ const MAX_PR_REVIEW_NOTES = 30;
 // #1214: an issue run's rounds follow the issue: a floor, more for each
 // thing it asks for (a bullet or numbered line) and each file it names,
 // and a hard ceiling.
-const MIN_ROUNDS = 12;
+// #1255: the floor is 24 (at 12 most benchmark runs ran out of rounds), and
+// an issue that names no file gets more, not fewer: finding the files
+// takes rounds of its own.
+const MIN_ROUNDS = 24;
+const EXPLORE_ROUNDS = 6;
 const MAX_ROUNDS_CEILING = 40;
 function roundBudget(body) {
   const text = String(body || "");
   const asks = (text.match(/^\s*(?:[-*]|\d+\.)\s+/gm) || []).length;
   const files = new Set(text.match(/[\w./-]+\.(?:js|cs|ts|json|md|ps1|py)\b/g) || []).size;
-  return Math.min(MAX_ROUNDS_CEILING, MIN_ROUNDS + 3 * asks + 2 * files);
+  return Math.min(MAX_ROUNDS_CEILING, MIN_ROUNDS + 3 * asks + (files ? 2 * files : EXPLORE_ROUNDS));
 }
 // #1214: her coding runs' own llama-server context (chat keeps
 // LLAMA_CONTEXT); MANA_SELF_WORK_LLAMA_CONTEXT=0 leaves chat's.
