@@ -165,7 +165,33 @@ test("an issue goes from worktree to a pushed branch and a PR, never main", asyn
   assert.ok(fs.lstatSync(path.join(worktree, "node-bot", "node_modules")).isSymbolicLink());
 });
 
-test("#1213: a change the reviewer refutes at the end isn't pushed; the run stops to ask me", async () => {
+// #1251: a refutation goes back to her as feedback; the run goes on.
+test("#1251: a refuted finish isn't pushed; she hears why, and a fixed change opens a PR", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const reviewed = [];
+  const refix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a + b;", new_text: "return b + a;" }];
+  const { sw, ghCalls } = selfWork(repos, {
+    calls: [fix, runTests, finish, refix, runTests, finish],
+    seen,
+    reviewEdit: async (p) => {
+      reviewed.push(p);
+      return reviewed.length === 1 ? { verdict: "refuted", failingCase: "add(1, 1) -> returns 3 (breaks intent)" } : { verdict: "holds" };
+    },
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const finishes = seen.filter((s) => s.name === "session_goal__finish");
+  assert.match(finishes[0].error, /^Not finished: your reviewer found a way your change to node-bot\/util\.js breaks: add\(1, 1\) -> returns 3 \(breaks intent\)\. Fix it with coding__propose_edit.*\(1 of 3/);
+  assert.equal(JSON.parse(finishes[1].result).finished, true);
+  // The reviewer knows what the issue asks for.
+  assert.equal(reviewed[0].intent, "#7: Fix the add helper\nadd() subtracts.");
+  assert.equal(sw.status().state, "pr-open", sw.status().step);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /b \+ a/);
+  assert.equal(ghCalls.filter((a) => a[0] === "pr" && a[1] === "create").length, 1);
+});
+
+test("#1251: one refuted finish and no fix means no PR", async () => {
   const repos = makeRepos();
   const { sw, ghCalls } = selfWork(repos, {
     calls: [fix, runTests, finish],
@@ -173,6 +199,31 @@ test("#1213: a change the reviewer refutes at the end isn't pushed; the run stop
   });
   await sw.start(7);
   await sw._current().done;
+  assert.notEqual(sw.status().state, "pr-open", sw.status().step);
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
+});
+
+test("#1251: a reviewer's note doesn't block her finish", async () => {
+  const repos = makeRepos();
+  const { sw } = selfWork(repos, { calls: [fix, runTests, finish], review: { verdict: "note", failingCase: "", reason: "the name could be clearer" } });
+  await sw.start(7);
+  await sw._current().done;
+  const status = sw.status();
+  assert.equal(status.state, "pr-open", status.step);
+  assert.ok(status.log.some((l) => l.text === "My reviewer's note on node-bot/util.js: the name could be clearer"));
+});
+
+test("#1213 / #1251: the third refutation of a file stops the run to ask me; the same diff isn't reviewed again", async () => {
+  const repos = makeRepos();
+  let reviewerCalls = 0;
+  const { sw, ghCalls } = selfWork(repos, {
+    calls: [plan, fix, runTests, ...reviews, finish, finish, finish],
+    plans: false,
+    reviewEdit: async () => ((reviewerCalls += 1), { verdict: "refuted", failingCase: "add(1, 1) returns 3" }),
+  });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(reviewerCalls, 1, "an unchanged diff gets the same answer, not a re-roll");
   const status = sw.status();
   assert.equal(status.state, "needs-you");
   assert.match(status.step, /add\(1, 1\) returns 3/);
