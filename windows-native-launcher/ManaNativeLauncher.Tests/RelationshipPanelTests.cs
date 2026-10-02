@@ -28,7 +28,8 @@ public sealed class RelationshipPanelTests
         var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
         {
             requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath} {request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()}".TrimEnd());
-            var json = request.Method == HttpMethod.Get ? Listing : "{}";
+            var json = request.RequestUri!.AbsolutePath == "/mood" ? "{\"summary\":\"tired, chatty\",\"emotion\":\"thinking\",\"energy\":0.2}"
+                : request.Method == HttpMethod.Get ? Listing : "{}";
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         }));
         RunSta(() =>
@@ -36,6 +37,7 @@ public sealed class RelationshipPanelTests
             using var panel = new RelationshipPanel(client, loadNow: false);
             panel.ReloadAsync().GetAwaiter().GetResult();
             Assert.Equal(new[] { "Mana", "Evil Mana" }, panel.Characters.Items.Cast<string>());
+            Assert.Equal("Right now she's feeling tired, chatty.", panel.MoodText); // #700: words, never numbers
             Assert.Equal(new[] { "Note: They call me a gremlin.", "Milestone 2025-06-03: The first time we talked" }, panel.Items.Items.Cast<string>());
 
             panel.Items.SelectedIndex = 1;
