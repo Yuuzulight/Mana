@@ -212,6 +212,7 @@ const {
 } = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const { createCheckIns, gentleHint } = require("./check-ins");
+const { createScreenIntents } = require("./screen-intents");
 const {
   createRelationshipStore,
   createRelationshipToolSource,
@@ -254,6 +255,7 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
+const { createProactiveToolSource } = require("./ai/proactive-tool-source");
 const { briefingLines: mailCalendarBriefingLines, createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
 const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
 const { checkMail } = require("./imap-client");
@@ -956,6 +958,19 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       console.warn("Check-in failed:", e.message);
     }
   }, 5 * 60 * 1000).unref();
+}
+// #1283 (part of #698): standing intents also fire on what's on screen --
+// the foreground window (foreground-report) and the glance text -- through
+// the proactive engine; never mid-game or on a private window.
+const screenIntents = createScreenIntents({
+  matchIntents: (text) => acpMemoryStore.matchIntents(text),
+  offer: (candidate) => require("./proactive").offer(candidate),
+  isGaming: () => gamingWatch.isGaming(),
+});
+function checkScreenIntents(screen) {
+  screenIntents
+    .check({ ...require("./foreground").getForeground(), ...screen })
+    .catch((e) => console.warn("Screen intent check failed:", e.message));
 }
 // #908: the game I'm playing, if its wiki is known: the one in front (the
 // native launcher's foreground report), else the watched game that's running.
@@ -2362,6 +2377,7 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/internal/foreground-report", (req, res) => {
     try {
       require("./foreground").reportForeground(req.body || {});
+      checkScreenIntents({});
       return res.json({ ok: true });
     } catch (e) {
       return res.status(400).json({ error: e.message });
@@ -2377,6 +2393,8 @@ function registerRoutes(app, upload, deps = {}) {
     if (idleSeconds < BRIEFING_ACTIVE_SECONDS) briefingOnActive();
     const thresholdSeconds =
       Number(process.env.MANA_IDLE_THRESHOLD_MS || 20 * 60 * 1000) / 1000;
+    // #1282: away past the same threshold holds proactive remarks until I'm back.
+    require("./proactive").setAway(idleSeconds >= thresholdSeconds);
 
     if (idleSeconds < thresholdSeconds) {
       idleConsolidationFiredForCurrentIdlePeriod = false;
@@ -2678,6 +2696,8 @@ function registerRoutes(app, upload, deps = {}) {
     runLocalReply:
       deps.runLocalReply ||
       ((prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens)),
+    // #1283: glance text checked against standing intents.
+    checkScreenIntents: deps.checkScreenIntents || checkScreenIntents,
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,
@@ -3396,6 +3416,9 @@ function registerRoutes(app, upload, deps = {}) {
       return res.status(400).json({ ok: false, error: e.message });
     }
   });
+
+  // #1282: quiet hours, "not now" and muted remark kinds.
+  require("./proactive").registerRoutes(app);
 
   // { kind }: log in to the saved account and report what went wrong.
   app.post("/mail-calendar/test", async (req, res) => {
@@ -5159,6 +5182,8 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #1282: "not now", "don't bring this up again", quiet hours.
+            ...(userChat ? [createProactiveToolSource({ proactive: require("./proactive") })] : []),
             // #1010: "let me try your PR" / "back to main" -- a PR number
             // only from my own message. #1194: "update to main" asks me first.
             ...(userChat

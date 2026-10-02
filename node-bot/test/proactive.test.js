@@ -16,6 +16,7 @@ function setup() {
     deliver: (payload) => state.sent.push(payload.text),
     isGaming: () => state.gaming,
     inBreak: () => state.inBreak,
+    isAway: () => state.away,
     canDeliver: () => !state.noLauncher,
     now: () => state.t,
   });
@@ -180,4 +181,145 @@ test("tray-notifier has listeners only while its broadcaster says someone is con
   assert.equal(trayNotifier.hasListeners(), true);
   trayNotifier.setBroadcaster(() => {}); // no check given: assume someone is
   assert.equal(trayNotifier.hasListeners(), true);
+});
+
+// #1282: quiet hours, "not now", muted kinds, away.
+const at = (h, m = 0) => new Date(2026, 8, 29, h, m).getTime();
+
+test("#1282 quiet hours are off by default and hold, not drop, inside the window", async () => {
+  const { state, p, say, later } = setup();
+  assert.equal(p.getSettings().quietHours.enabled, false);
+  state.t = at(2);
+  assert.equal(say("night thought", { score: 0.9 }), "delivered"); // off: goes out at 2am
+  p.updateSettings({ quietHours: { enabled: true } }); // default 01:00-09:00
+  assert.equal(p.getSettings().inQuietHours, true);
+  assert.equal(say("morning thought", { score: 0.9, ttlMs: DAY }), "held");
+  assert.equal(say("raid now", { explicit: true }), "held"); // only spacing holds it
+  assert.equal(later(), "raid now"); // reminders I set still arrive
+  assert.equal(later(), null);
+  state.t = at(9);
+  assert.equal(later(), "morning thought");
+  await tick();
+  assert.deepEqual(state.sent, ["night thought", "raid now", "morning thought"]);
+});
+
+test("#1282 a quiet-hours window can cross midnight; held remarks still expire", () => {
+  const { state, p, say, later } = setup();
+  p.updateSettings({ quietHours: { enabled: true, start: "23:00", end: "7:30" } });
+  assert.equal(p.getSettings().quietHours.end, "07:30");
+  state.t = at(23, 30);
+  assert.equal(p.getSettings().inQuietHours, true);
+  assert.equal(say("stale soon", { score: 0.9 }), "held"); // 1 h TTL
+  state.t = at(12);
+  assert.equal(p.getSettings().inQuietHours, false);
+  state.t = new Date(2026, 8, 30, 7, 30).getTime();
+  assert.equal(later(), null); // expired overnight, not delivered late
+});
+
+test("#1282 \"not now\" snoozes for 60 minutes by default; 0 resumes", async () => {
+  const { state, p, say, later } = setup();
+  const s = p.updateSettings({ snoozeMinutes: null });
+  assert.equal(s.snoozedUntil, state.t + 60 * MINUTE);
+  assert.equal(say("a", { score: 0.9, ttlMs: DAY }), "held");
+  assert.equal(later(), null);
+  state.t += 60 * MINUTE;
+  assert.equal(later(), "a");
+  p.updateSettings({ snoozeMinutes: 10 });
+  assert.equal(say("b", { score: 0.9 }), "held");
+  p.updateSettings({ snoozeMinutes: 0 });
+  assert.equal(p.getSettings().snoozedUntil, null);
+  assert.equal(later(), "b");
+  await tick();
+  assert.deepEqual(state.sent, ["a", "b"]);
+});
+
+test("#1282 a muted kind is dropped, waiting ones too, until unmuted; explicit ones aren't muted", async () => {
+  const { state, p, later } = setup();
+  const offer = (reason, text, extra = {}) => p.offer({ reason, payload: { text }, score: 0.9, ...extra });
+  assert.equal(offer("briefing", "first"), "delivered");
+  assert.equal(p.getSettings().lastRemark.reason, "briefing");
+  assert.equal(offer("briefing", "waiting"), "held");
+  assert.equal(offer("check-in", "how are you"), "held");
+  assert.deepEqual(p.updateSettings({ mute: "briefing" }).muted, ["briefing"]);
+  assert.deepEqual(p.listHeld().map((c) => c.text), ["how are you"]);
+  assert.equal(offer("briefing", "again"), "dropped");
+  assert.equal(offer("briefing", "you asked", { explicit: true }), "held");
+  assert.equal(later(), "you asked");
+  assert.equal(later(), "how are you");
+  assert.deepEqual(p.updateSettings({ unmute: "briefing" }).muted, []);
+  state.t += MINUTE;
+  assert.equal(offer("briefing", "back"), "delivered");
+  await tick();
+  assert.deepEqual(state.sent, ["first", "you asked", "how are you", "back"]);
+});
+
+test("#1282 remarks wait while I'm away and go out when I'm back", () => {
+  const { state, p, say, later } = setup();
+  state.away = true;
+  assert.equal(p.getSettings().away, true);
+  assert.equal(say("build finished", { score: 0.9 }), "held");
+  assert.equal(say("raid", { explicit: true }), "delivered"); // reminders I set still arrive
+  assert.equal(later(), null);
+  state.away = false;
+  assert.equal(later(), "build finished");
+});
+
+test("#1282 bad settings are refused without changing anything; settings survive a restart", () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "proactive-")), "proactive-held.json");
+  try {
+    const before = setup();
+    before.p.persistTo(file);
+    assert.throws(() => before.p.updateSettings({ mute: "x", quietHours: { start: "25:00" } }), /HH:MM/);
+    assert.throws(() => before.p.updateSettings({ snoozeMinutes: -5 }), /snoozeMinutes/);
+    assert.throws(() => before.p.updateSettings({ mute: "" }), /kind/);
+    assert.deepEqual(before.p.getSettings().muted, []);
+    before.p.updateSettings({ mute: "dream-insight", snoozeMinutes: 30, quietHours: { enabled: true, start: "22:00" } });
+
+    const after = setup();
+    after.state.t = before.state.t;
+    after.p.persistTo(file);
+    const s = after.p.getSettings();
+    assert.deepEqual(s.muted, ["dream-insight"]);
+    assert.deepEqual(s.quietHours, { enabled: true, start: "22:00", end: "09:00" });
+    assert.equal(s.snoozedUntil, before.state.t + 30 * MINUTE);
+  } finally {
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  }
+});
+
+test("#1282 GET/POST /proactive/settings for Settings and the launcher", async () => {
+  const express = require("express");
+  const { registerRoutes } = require("../proactive");
+  const { p } = setup();
+  const app = express();
+  app.use(express.json());
+  registerRoutes(app, p);
+  const server = app.listen(0);
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/proactive/settings`;
+    const post = (body) => fetch(base, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal((await (await fetch(base)).json()).quietHours.enabled, false);
+    const ok = await (await post({ mute: "check-in", quietHours: { enabled: true } })).json();
+    assert.deepEqual([ok.ok, ok.muted, ok.quietHours.enabled], [true, ["check-in"], true]);
+    const bad = await post({ snoozeMinutes: "soon" });
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error, /snoozeMinutes/);
+  } finally {
+    server.close();
+  }
+});
+
+test("#1282 the chat tool snoozes, mutes and sets quiet hours", async () => {
+  const { createProactiveToolSource } = require("../ai/proactive-tool-source");
+  const { state, p } = setup();
+  const tools = createProactiveToolSource({ proactive: p });
+  assert.equal(tools.isKnownToolName("proactive__settings"), true);
+  assert.equal(tools.listToolSchemas()[0].function.name, "proactive__settings");
+  const run = async (args) => JSON.parse(await tools.executeTool("proactive__settings", args));
+  assert.equal((await run({})).snoozedUntil, null); // just reports
+  assert.equal((await run({ snooze_minutes: 60 })).snoozedUntil, state.t + 60 * MINUTE);
+  assert.deepEqual((await run({ mute: "briefing" })).muted, ["briefing"]);
+  const s = await run({ quiet_hours_enabled: true, quiet_start: "00:30", unmute: "briefing" });
+  assert.deepEqual([s.quietHours, s.muted], [{ enabled: true, start: "00:30", end: "09:00" }, []]);
+  await assert.rejects(tools.executeTool("proactive__settings", { quiet_end: "nope" }), /HH:MM/);
 });

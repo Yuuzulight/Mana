@@ -1311,6 +1311,16 @@ function createAcpMemoryStore(options = {}) {
     saveFacts(facts, { op: "fire" });
   }
 
+  // #1283: the intents some text (what's on screen) touches, by the same
+  // matcher chat uses. Doesn't start their cooldown: screen-intents.js
+  // keeps its own, shorter one.
+  async function matchIntents(text) {
+    const facts = loadFacts().filter((fact) => fact.trigger && isRecallable(fact));
+    if (!facts.length) return [];
+    const similarityById = await factSimilarities(text, withUserWordsVariants(facts), {});
+    return factRecallCandidates(facts, text, similarityById, Date.parse(now())).intents;
+  }
+
   // Issue #431: the point-in-time query the whole feature is for -- "what
   // did I believe was true on date X". Deliberately ignores status
   // (stale/archived) -- see acp-memory-store's own header comment on
@@ -2508,6 +2518,7 @@ function createAcpMemoryStore(options = {}) {
     describeEntities,
     getRelatedFacts,
     getRelatedFactsEntries,
+    matchIntents,
     rememberFact,
     listFactKeys,
     listFacts,
