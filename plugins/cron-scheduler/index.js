@@ -14,19 +14,16 @@ let heartbeat = null;
 const LATE_REMINDER_MS = 5 * 60 * 1000;
 const REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_REPLAYED = 3;
-// ponytail: check-ins' fixed 1am-9am quiet window (check-ins.js); read
-// #697's quiet-hours setting here once it exists.
-const QUIET_FROM_HOUR = 1;
-const QUIET_UNTIL_HOUR = 9;
-
 // The missed reminders of one catch-up (one runDueJobs pass), while it runs.
 let replay = null;
 // Reminders that came up in quiet time: shown silently then, said after it.
 let saidLater = [];
 
-function inQuietTime(ms) {
-  const hour = new Date(ms).getHours();
-  return hour >= QUIET_FROM_HOUR && hour < QUIET_UNTIL_HOUR;
+// #1284: quiet-hours window from proactive settings.
+function inQuietTime(ms = Date.now()) {
+  const qh = proactive.getSettings ? proactive.getSettings().quietHours : null;
+  if (!qh?.enabled) return false;
+  return typeof proactive.inQuietHours === "function" ? proactive.inQuietHours(qh, ms) : false;
 }
 
 // In quiet time a reminder is a silent toast, and she says it once quiet

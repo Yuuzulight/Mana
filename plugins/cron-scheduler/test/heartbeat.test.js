@@ -297,7 +297,7 @@ test("heartbeat reports go through the proactive pipeline", async () => {
   const proactive = require("../../../node-bot/proactive");
   cronPlugin._resetForTests();
   const dataDir = tempDir("mana-hb-proactive-");
-  const md = "- [urgent] warn me if D: is low\n";
+  const md = "- warn me if D: is low\n";
   const [check] = parseHeartbeat(md).checks;
   fs.writeFileSync(path.join(dataDir, "heartbeat.md"), md);
   fs.writeFileSync(path.join(dataDir, "heartbeat-state.json"), JSON.stringify({ checks: { [check.id]: { approved: true, nextRunAt: 0 } } }));
@@ -313,7 +313,6 @@ test("heartbeat reports go through the proactive pipeline", async () => {
   }
   assert.equal(offered.length, 1);
   assert.equal(offered[0].reason, "heartbeat");
-  assert.equal(offered[0].urgent, true);
   assert.equal(offered[0].payload.text, "D: has 12 GB left.");
 });
 

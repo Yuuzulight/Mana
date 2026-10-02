@@ -265,5 +265,6 @@ module.exports = {
   listHeld: proactive.listHeld,
   getSettings: proactive.getSettings,
   updateSettings: proactive.updateSettings,
+  inQuietHours,
   DAILY_BUDGET,
 };
