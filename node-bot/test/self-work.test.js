@@ -110,7 +110,8 @@ function selfWork(repos, { calls, plans = true, answer = "I made add() add and t
     repoRoot: repos.live,
     worktreesDir: repos.worktrees,
     exec: fakeExec(ghCalls, { labels, prs, issues, author, login }),
-    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
+    // One attempt unless a test asks for more (#1247).
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value", MANA_SELF_WORK_ATTEMPTS: "1" },
     protectedPaths: guard,
     reviewEdit: async () => review,
     runLoop: scriptedLoop(plans ? planned(calls) : calls, answer, seen),
@@ -636,6 +637,262 @@ test("#1194: an idle moment offers, once, to update her live copy to her merged 
   assert.equal(offers[0].notice, true);
 });
 
+test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
+  const repos = makeRepos();
+  const worktree = path.join(repos.base, "bench-wt");
+  git(repos.live, "worktree", "add", "-q", "--detach", worktree, "HEAD");
+  const { sw, ghCalls } = selfWork(repos, { calls: [fix, runTests, finish] });
+  const { reply, run } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, worktree);
+
+  assert.equal(run.finished, true);
+  assert.equal(run.lastTestPassed, true);
+  assert.match(reply.content, /made add\(\) add/);
+  assert.match(fs.readFileSync(path.join(worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
+  assert.deepEqual(ghCalls, []);
+  assert.equal(git(worktree, "status", "--porcelain"), "M node-bot/util.js");
+  assert.equal(git(repos.origin, "branch", "--list"), "* main");
+  assert.equal(sw.status().state, "idle");
+});
+
+test("#1214: rounds follow the issue, up to a ceiling", () => {
+  assert.equal(roundBudget("add() subtracts."), 12);
+  assert.equal(roundBudget("In `node-bot/doctor.js`:\n- a GPU row\n- a warning\n1. a message for `foreground.js`"), 12 + 3 * 3 + 2 * 2);
+  assert.equal(roundBudget(Array(30).fill("- one more thing").join("\n")), 40);
+});
+
+test("#1214: her run gets its own context and the issue's rounds, and reads 120 lines unless she asks for more", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const long = Array.from({ length: 300 }, (_, i) => `// line ${i + 1}`).join("\n");
+  const calls = [
+    ["coding__propose_edit", { path: "node-bot/long.js", new_text: long }],
+    ["self_work__read", { path: "node-bot/long.js" }],
+    ["self_work__read", { path: "node-bot/long.js", start_line: 10, end_line: 400 }],
+  ];
+  const { sw } = selfWork(repos, { calls, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
+
+  assert.equal(seen[0].opts.contextSize, 32768);
+  assert.equal(seen[0].opts.maxRounds, 12);
+  assert.equal(sw.status().maxRounds, 12);
+  assert.match(results[1], /^node-bot\/long\.js lines 1-120 of 300\n/);
+  assert.match(results[2], /^node-bot\/long\.js lines 10-259 of 300\n/);
+
+  // MANA_SELF_WORK_LLAMA_CONTEXT=0: chat's context.
+  const offSeen = [];
+  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_LLAMA_CONTEXT: "0" };
+  const off = selfWork(makeRepos(), { calls: [], seen: offSeen, env });
+  await off.sw.start(7);
+  await off.sw._current().done;
+  assert.equal(offSeen[0].opts.contextSize, undefined);
+});
+
+test("#1245: 600 lines of reading before her first edit, then only search and edit until she changes something", async () => {
+  const repos = makeRepos();
+  fs.writeFileSync(path.join(repos.live, "node-bot", "long.js"), Array.from({ length: 700 }, (_, i) => `// line ${i + 1}`).join("\n"));
+  git(repos.live, "add", "-A");
+  git(repos.live, "commit", "-q", "-m", "long");
+  git(repos.live, "push", "-q", "origin", "main");
+  const seen = [];
+  const read = (start, end) => ["self_work__read", { path: "node-bot/long.js", start_line: start, end_line: end }];
+  const calls = [read(1, 250), read(251, 500), read(501, 700), read(601, 700), ["self_work__search", { text: "line 650" }], fix, read(601, 700)];
+  const { sw } = selfWork(repos, { calls, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
+
+  assert.doesNotMatch(results[0], /lines of reading left/);
+  assert.match(results[1], /\[100 of 600 lines of reading left before your first edit\. Plan your change now\.\]$/);
+  assert.match(results[2], /^node-bot\/long\.js lines 501-600 of 700\n/, "cut to what's left");
+  assert.match(results[3], /^You've read 600 lines without changing anything/);
+  assert.match(results[4], /long\.js:650:/, "search stays open");
+  assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/, "open again after her first edit");
+});
+
+// #1247: attempts that write add() differently; the fake tests count how
+// far util.js is from adding (a + b: 0 failing, a * b: 1, a / b: 3). Each
+// attempt plans, edits, runs the tests, reviews its diff and finishes,
+// unless finishes(i) says no; extra(i) runs before its tests.
+function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4", finishes = () => true, extra = () => {}, ramAfterLoop = 50 } = {}) {
+  let n = 0;
+  let inLoop = false;
+  const testCommands = [];
+  const runLoop = async (prompt, policy) => {
+    inLoop = true;
+    const i = n++;
+    const op = writes[Math.min(i, writes.length - 1)];
+    await policy.executeTool("self_work__plan", { steps: ["Change add()", "Test it"], no_test: "scripted attempts" });
+    await policy.executeTool("coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: `return a ${op} b;` });
+    await extra(i, policy);
+    await policy.executeTool("coding__run_tests", { path: "node-bot/test/util.test.js" });
+    inLoop = false;
+    if (!finishes(i)) return { content: `Not done yet: add() uses ${op}.` };
+    for (const pass of ["correctness", "edge cases", "scope"]) await policy.executeTool("self_work__review", { pass });
+    await policy.executeTool("session_goal__finish", { reason: "done" });
+    return { content: `I made add() use ${op}.` };
+  };
+  const failing = { "+": 0, "*": 1, "/": 3 };
+  const runTests = async (command, cwd) => {
+    testCommands.push(command);
+    const body = fs.readFileSync(path.join(cwd, "util.js"), "utf8");
+    const f = failing[/return a (.) b;/.exec(body)?.[1]] ?? 5;
+    const names = Array.from({ length: f }, (_, i) => `not ok ${i + 1} - add case ${i + 1}`).join("\n");
+    return { exitCode: f ? 1 : 0, timedOut: false, output: `${names}\n# fail ${f}` };
+  };
+  const sw = createSelfWork({
+    repoRoot: repos.live,
+    worktreesDir: repos.worktrees,
+    exec: fakeExec(ghCalls),
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_ATTEMPTS: attempts },
+    protectedPaths: guard,
+    runLoop,
+    runTests,
+    onEvent: (run, text) => events.push(text),
+    // Before the first attempt (the start check) and inside one: 50%.
+    ramPercent: () => (inLoop || n === 0 ? 50 : ramAfterLoop),
+    sleep: async () => {},
+  });
+  return { sw, attempts: () => n, testCommands };
+}
+
+const prCreate = (ghCalls) => ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
+
+test("#1247: attempts run from a clean worktree until one passes its tests, and that one is kept", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const events = [];
+  const { sw, attempts } = attemptsWork(repos, ["*", "+", "/"], { ghCalls, events });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 2, "stops at the first passing attempt");
+  assert.equal(sw.status().state, "pr-open", sw.status().step);
+  assert.ok(events.includes("Attempt 1 of 4: finished, 1 failing."));
+  assert.ok(events.includes("Attempt 2 of 4: finished, tests passing."));
+  const create = prCreate(ghCalls);
+  assert.ok(!create.includes("--draft"));
+  assert.match(create[create.indexOf("--body") + 1], /\(Attempt 2 of 2\.\)/);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \+ b/);
+});
+
+test("#1247: when no attempt passes, the finished one with the fewest failing tests goes up as a draft listing them", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const { sw, attempts } = attemptsWork(repos, ["/", "*", "/", "/"], { ghCalls });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 4);
+  assert.equal(sw.status().state, "pr-open", sw.status().step);
+  const create = prCreate(ghCalls);
+  assert.ok(create.includes("--draft"));
+  const body = create[create.indexOf("--body") + 1];
+  assert.match(body, /None of my 4 attempts finished with all its tests passing\. Attempt 2 came closest: it finished/);
+  assert.match(body, /- add case 1/);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \* b/);
+});
+
+test("#1247: an attempt that didn't finish is never the draft, even with its tests passing", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const { sw } = attemptsWork(repos, ["+", "*"], { ghCalls, attempts: "2", finishes: (i) => i === 1 });
+  await sw.start(7);
+  await sw._current().done;
+
+  const body = prCreate(ghCalls)[prCreate(ghCalls).indexOf("--body") + 1];
+  assert.doesNotMatch(body, /passed its tests/);
+  assert.match(body, /Attempt 2 came closest: it finished/);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \* b/);
+});
+
+test("#1247: with no attempt that finished, no PR, and the run says how each went", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const { sw } = attemptsWork(repos, ["/", "*"], { ghCalls, attempts: "2", finishes: () => false });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(sw.status().state, "not-done");
+  assert.match(sw.status().step, /None of my 2 attempts at #7 finished with its tests run and passing, so no PR \(attempt 1 didn't finish, 3 failing; attempt 2 didn't finish, 1 failing\)/);
+  assert.equal(prCreate(ghCalls), undefined);
+});
+
+test("#1247: the closest attempt comes back whole when its patch ends in a blank context line", async () => {
+  const repos = makeRepos();
+  // zz.js sorts after util.js, so its hunk ends the patch: "-first();",
+  // "+second();", then the context " a();", " b();" and " " (the blank line).
+  fs.writeFileSync(path.join(repos.live, "node-bot", "zz.js"), "first();\na();\nb();\n\nc();\n");
+  git(repos.live, "add", "-A");
+  git(repos.live, "commit", "-q", "-m", "zz");
+  git(repos.live, "push", "-q", "origin", "main");
+  const ghCalls = [];
+  const extra = (i, policy) => i === 0 && policy.executeTool("coding__propose_edit", { path: "node-bot/zz.js", old_text: "first();", new_text: "second();" });
+  const { sw } = attemptsWork(repos, ["*", "/"], { ghCalls, attempts: "2", extra });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(sw.status().state, "pr-open", sw.status().step);
+  assert.equal(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/zz.js"), "second();\na();\nb();\n\nc();");
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \* b/);
+});
+
+test("#1247: RAM that stays high after an attempt pauses the run instead of judging it", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const { sw, attempts, testCommands } = attemptsWork(repos, ["*", "+"], { ghCalls, ramAfterLoop: 95 });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 1);
+  assert.equal(testCommands.length, 1, "only her own test run, none to judge it");
+  assert.equal(sw.status().state, "paused");
+  assert.match(sw.status().step, /RAM stayed above/);
+  assert.equal(prCreate(ghCalls), undefined);
+});
+
+test("#1247: a file name that isn't a plain test name never reaches the judge's shell", async () => {
+  const repos = makeRepos();
+  const wt = path.join(repos.worktrees, "mana-7", "node-bot");
+  const extra = () => {
+    fs.writeFileSync(path.join(wt, "a;b.js"), "module.exports = 1;\n");
+    fs.mkdirSync(path.join(wt, "test"), { recursive: true });
+    fs.writeFileSync(path.join(wt, "test", "a;b.test.js"), "// x\n");
+  };
+  const { sw, testCommands } = attemptsWork(repos, ["+"], { attempts: "2", extra });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.ok(testCommands.length > 0);
+  assert.ok(testCommands.every((c) => !c.includes(";")), testCommands.join(" | "));
+});
+
+test("#1247: a reset between attempts only runs in a worktree's own top folder", async () => {
+  const repos = makeRepos();
+  // A folder inside the live checkout, not a worktree of its own.
+  const inner = path.join(repos.live, "node-bot");
+  const sw = createSelfWork({
+    repoRoot: repos.live,
+    worktreesDir: repos.worktrees,
+    exec: fakeExec([]),
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
+    protectedPaths: guard,
+    runLoop: async () => {
+      fs.writeFileSync(path.join(inner, "keep.txt"), "mine\n");
+      return { content: "Not done yet." };
+    },
+    runTests: async () => ({ exitCode: 1, timedOut: false, output: "" }),
+    onEvent: () => {},
+    ramPercent: () => 50,
+  });
+  const { error } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, inner, { attempts: 2 });
+
+  assert.match(error, /isn't a worktree's top folder/);
+  assert.equal(fs.readFileSync(path.join(inner, "keep.txt"), "utf8"), "mine\n");
+  assert.match(fs.readFileSync(path.join(inner, "util.js"), "utf8"), /a - b/);
+});
+
 test("#1211: her first edit waits for a plan, and the plan is checked off in her run", async () => {
   const repos = makeRepos();
   const seen = [];
@@ -713,78 +970,4 @@ test("#1213: no PR unless the diff is the one her reviewer passed when she finis
   assert.deepEqual(reviewed.sort(), ["node-bot/generated.js", "node-bot/util.js"]);
   assert.equal(status.reviewedDiff, undefined, "the diff stays out of status");
   assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
-});
-
-test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
-  const repos = makeRepos();
-  const worktree = path.join(repos.base, "bench-wt");
-  git(repos.live, "worktree", "add", "-q", "--detach", worktree, "HEAD");
-  const { sw, ghCalls } = selfWork(repos, { calls: [fix, runTests, finish] });
-  const { reply, run } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, worktree);
-
-  assert.equal(run.finished, true);
-  assert.equal(run.lastTestPassed, true);
-  assert.match(reply.content, /made add\(\) add/);
-  assert.match(fs.readFileSync(path.join(worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
-  assert.deepEqual(ghCalls, []);
-  assert.equal(git(worktree, "status", "--porcelain"), "M node-bot/util.js");
-  assert.equal(git(repos.origin, "branch", "--list"), "* main");
-  assert.equal(sw.status().state, "idle");
-});
-
-test("#1214: rounds follow the issue, up to a ceiling", () => {
-  assert.equal(roundBudget("add() subtracts."), 12);
-  assert.equal(roundBudget("In `node-bot/doctor.js`:\n- a GPU row\n- a warning\n1. a message for `foreground.js`"), 12 + 3 * 3 + 2 * 2);
-  assert.equal(roundBudget(Array(30).fill("- one more thing").join("\n")), 40);
-});
-
-test("#1214: her run gets its own context and the issue's rounds, and reads 120 lines unless she asks for more", async () => {
-  const repos = makeRepos();
-  const seen = [];
-  const long = Array.from({ length: 300 }, (_, i) => `// line ${i + 1}`).join("\n");
-  const calls = [
-    ["coding__propose_edit", { path: "node-bot/long.js", new_text: long }],
-    ["self_work__read", { path: "node-bot/long.js" }],
-    ["self_work__read", { path: "node-bot/long.js", start_line: 10, end_line: 400 }],
-  ];
-  const { sw } = selfWork(repos, { calls, seen });
-  await sw.start(7);
-  await sw._current().done;
-  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
-
-  assert.equal(seen[0].opts.contextSize, 32768);
-  assert.equal(seen[0].opts.maxRounds, 12);
-  assert.equal(sw.status().maxRounds, 12);
-  assert.match(results[1], /^node-bot\/long\.js lines 1-120 of 300\n/);
-  assert.match(results[2], /^node-bot\/long\.js lines 10-259 of 300\n/);
-
-  // MANA_SELF_WORK_LLAMA_CONTEXT=0: chat's context.
-  const offSeen = [];
-  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_LLAMA_CONTEXT: "0" };
-  const off = selfWork(makeRepos(), { calls: [], seen: offSeen, env });
-  await off.sw.start(7);
-  await off.sw._current().done;
-  assert.equal(offSeen[0].opts.contextSize, undefined);
-});
-
-test("#1245: 600 lines of reading before her first edit, then only search and edit until she changes something", async () => {
-  const repos = makeRepos();
-  fs.writeFileSync(path.join(repos.live, "node-bot", "long.js"), Array.from({ length: 700 }, (_, i) => `// line ${i + 1}`).join("\n"));
-  git(repos.live, "add", "-A");
-  git(repos.live, "commit", "-q", "-m", "long");
-  git(repos.live, "push", "-q", "origin", "main");
-  const seen = [];
-  const read = (start, end) => ["self_work__read", { path: "node-bot/long.js", start_line: start, end_line: end }];
-  const calls = [read(1, 250), read(251, 500), read(501, 700), read(601, 700), ["self_work__search", { text: "line 650" }], fix, read(601, 700)];
-  const { sw } = selfWork(repos, { calls, seen });
-  await sw.start(7);
-  await sw._current().done;
-  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
-
-  assert.doesNotMatch(results[0], /lines of reading left/);
-  assert.match(results[1], /\[100 of 600 lines of reading left before your first edit\. Plan your change now\.\]$/);
-  assert.match(results[2], /^node-bot\/long\.js lines 501-600 of 700\n/, "cut to what's left");
-  assert.match(results[3], /^You've read 600 lines without changing anything/);
-  assert.match(results[4], /long\.js:650:/, "search stays open");
-  assert.match(results[6], /^node-bot\/long\.js lines 601-700 of 700\n/, "open again after her first edit");
 });
