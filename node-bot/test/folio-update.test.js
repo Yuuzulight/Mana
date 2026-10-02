@@ -51,7 +51,7 @@ function makeRepos() {
 }
 
 // gh answers: Folio's newest runs first and checks per sha; the bump PR's state, mergeability and checks.
-function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, [PIN]: GREEN }, prChecks = [], prState = "OPEN", mergeable = "MERGEABLE", prList = [] } = {}) {
+function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, [PIN]: GREEN }, prChecks = [], prState = "OPEN", mergeable = "MERGEABLE", prList = [], createdAt = new Date().toISOString() } = {}) {
   const calls = [];
   const answer = (args) => {
     const [a, b] = args;
@@ -70,7 +70,8 @@ function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, 
     if (a === "pr" && b === "list") return json(prList);
     if (a === "pr" && b === "create") return { code: 0, stdout: "https://github.com/x/y/pull/71\n", stderr: "" };
     if (a === "pr" && b === "merge") return { code: 0, stdout: "", stderr: "" };
-    if (a === "pr" && b === "view") return json({ state: prState, mergeable, headRefOid: HEAD });
+    if (a === "pr" && b === "view") return json({ state: prState, mergeable, headRefOid: HEAD, createdAt });
+    if (a === "pr" && b === "close") return { code: 0, stdout: "", stderr: "" };
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
   const exec = async (cmd, args, opts) => {
@@ -93,7 +94,7 @@ function updater(repos, gh, { mode = "off", state, now } = {}) {
   return { u, gate, notices };
 }
 
-const writes = (calls) => calls.filter((a) => ["create", "merge"].includes(a[1]) || a[0] === "push");
+const writes = (calls) => calls.filter((a) => ["create", "merge", "close"].includes(a[1]) || a[0] === "push");
 const merges = (calls) => calls.filter((a) => a[0] === "pr" && a[1] === "merge");
 
 test("the version is Folio's own; which commits and PRs count as green", () => {
@@ -107,11 +108,11 @@ test("the version is Folio's own; which commits and PRs count as green", () => {
   assert.deepEqual(mergedPrs(["Merge pull request #12 from a/b\n\nDraw tables", "Fix"]), [{ number: 12, title: "Draw tables" }]);
 
   assert.deepEqual(prVerdict(PR_GREEN, "MERGEABLE"), { merge: true });
-  assert.deepEqual(prVerdict(PR_GREEN, "UNKNOWN"), {}, "mergeable not known yet: wait");
-  assert.deepEqual(prVerdict(PR_GREEN.slice(1), "MERGEABLE"), {}, "no launcher check yet: wait");
-  assert.deepEqual(prVerdict([...PR_GREEN, run("CodeQL", null, "in_progress")], "MERGEABLE"), {}, "pending: wait");
-  assert.deepEqual(prVerdict([...PR_GREEN, run("CodeQL", "skipped")], "MERGEABLE"), {}, "skipped: wait");
-  assert.deepEqual(prVerdict([...PR_GREEN, run("CodeQL", "neutral")], "MERGEABLE"), {}, "neutral: wait");
+  assert.match(prVerdict(PR_GREEN, "UNKNOWN").wait, /whether it can merge/, "mergeable not known yet: wait");
+  assert.equal(prVerdict(PR_GREEN.slice(1), "MERGEABLE").wait, `${LAUNCHER_CHECK} (missing)`, "no launcher check yet: wait");
+  assert.equal(prVerdict([...PR_GREEN, run("CodeQL", null, "in_progress")], "MERGEABLE").wait, "CodeQL (in_progress)", "pending: wait");
+  assert.equal(prVerdict([...PR_GREEN, run("CodeQL", "skipped")], "MERGEABLE").wait, "CodeQL (skipped)", "skipped: wait");
+  assert.equal(prVerdict([...PR_GREEN, run("CodeQL", "neutral")], "MERGEABLE").wait, "CodeQL (neutral)", "neutral: wait");
   assert.equal(prVerdict([run(LAUNCHER_CHECK, "cancelled"), run("dco", null, "queued")], "MERGEABLE").fail, `${LAUNCHER_CHECK} (cancelled)`);
   assert.match(prVerdict(PR_GREEN, "CONFLICTING").fail, /conflicts/);
 });
@@ -222,6 +223,31 @@ test("pending, skipped, a missing launcher check or unknown mergeability: it wai
     assert.deepEqual(notices, [], label);
     assert.equal(u.status().tried[NEW].state, "open", label);
   }
+});
+
+test("still waiting after a day: one notice naming what it waits on; after two days it's closed and the next bump goes", async () => {
+  const repos = makeRepos();
+  const opened = Date.parse("2026-10-01T00:00:00Z");
+  let clock = opened + 25 * 60 * 60 * 1000;
+  const pending = [...PR_GREEN, run("Analyze (csharp)", null, "queued")];
+  const gh = fakeGh({ runs: [OLDER], prChecks: pending, createdAt: new Date(opened).toISOString() });
+  const { u, notices } = updater(repos, gh, { state: OPEN_PR, now: () => clock });
+  assert.equal((await u.run()).status, "waiting");
+  assert.deepEqual(notices, [{ text: "Folio update #71 has been waiting 24h on Analyze (csharp) (queued).", url: "https://github.com/x/y/pull/71" }]);
+  clock += 60 * 60 * 1000;
+  assert.equal((await u.run()).status, "waiting");
+  assert.equal(notices.length, 1, "one notice");
+  assert.deepEqual(writes(gh.calls), []);
+
+  clock = opened + 49 * 60 * 60 * 1000;
+  const result = await u.run();
+  const closed = gh.calls.find((a) => a[0] === "pr" && a[1] === "close");
+  assert.equal(closed[2], "71");
+  assert.match(closed[closed.indexOf("--comment") + 1], /waited two days on Analyze \(csharp\) \(queued\)/);
+  assert.equal(u.status().tried[NEW].state, "expired");
+  assert.equal(result.status, "opened", "the next bump goes");
+  assert.equal(result.sha, OLDER);
+  assert.deepEqual(merges(gh.calls), []);
 });
 
 test("a failed check on the bump PR: a notice with its link, no merge, never retried", async () => {

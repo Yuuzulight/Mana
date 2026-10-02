@@ -8,7 +8,9 @@
 // while it's open, its checks are looked at: once every check run on its
 // head commit passed (the launcher's build and tests among them) and it's
 // mergeable, she merges it; a failed one gets me a notice, the PR stays
-// open, and that Folio commit is never tried again. No GitHub auto-merge, so
+// open, and that Folio commit is never tried again. Still waiting after a
+// day (a check pending, skipped or missing): one notice; after two days it's
+// closed with a comment, so the next bump can go. No GitHub auto-merge, so
 // no repo setting is needed and nothing merges past a broken launcher. Her
 // writes go through my "GitHub writes" approval setting.
 const fs = require("node:fs");
@@ -22,6 +24,7 @@ const JOB_ACTION = "folio-update";
 const NETWORK_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_LISTED = 100;
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 // Folio itself is looked at once a day; the hourly runs only watch an open PR.
 const LOOK_EVERY_MS = 23 * HOUR_MS;
 // Has to be there and green before a bump merges: the launcher built and tested against the new Folio.
@@ -64,14 +67,17 @@ function isGreen(checks) {
 }
 
 // A bump PR: its head commit's check runs and gh's mergeable ->
-// { fail, url } | { merge: true } | {} (wait). Skipped or neutral waits: a
-// workflow whose path filter doesn't apply leaves no check run at all.
+// { fail, url } | { merge: true } | { wait: what it waits on }. Skipped or
+// neutral waits: a workflow whose path filter doesn't apply leaves no check
+// run at all.
 function prVerdict(checks, mergeable) {
   const bad = checks.find((c) => c.status === "completed" && FAILED.includes(c.conclusion));
   if (bad) return { fail: `${bad.name} (${bad.conclusion})`, url: bad.url };
   if (mergeable === "CONFLICTING") return { fail: "it conflicts with main" };
-  const allPassed = checks.every((c) => c.status === "completed" && c.conclusion === "success");
-  return allPassed && checks.some((c) => c.name === LAUNCHER_CHECK) && mergeable === "MERGEABLE" ? { merge: true } : {};
+  const unfinished = checks.filter((c) => !(c.status === "completed" && c.conclusion === "success"));
+  if (unfinished.length) return { wait: unfinished.map((c) => `${c.name} (${c.conclusion || c.status})`).join(", ") };
+  if (!checks.some((c) => c.name === LAUNCHER_CHECK)) return { wait: `${LAUNCHER_CHECK} (missing)` };
+  return mergeable === "MERGEABLE" ? { merge: true } : { wait: "GitHub working out whether it can merge" };
 }
 
 // "Merge pull request #12 from x/y\n\nTitle" -> { number: 12, title }.
@@ -193,7 +199,7 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   // A game may have started since it was asked.
   function perform(payload) {
     if (isGaming()) throw new Error("A game is running, so I'm leaving git alone until it's closed.");
-    return payload.merge ? merge(payload) : bump(payload);
+    return payload.merge ? merge(payload) : payload.close ? close(payload) : bump(payload);
   }
   approvalGate?.registerExecutor(actionType, perform);
   const asking = () => approvalGate.listPending().some((p) => p.actionType === actionType);
@@ -243,7 +249,7 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   async function checkOpen() {
     const open = Object.entries(load().tried || {}).filter(([, t]) => t.state === "open");
     for (const [sha, t] of open) {
-      const p = await ghJson(["pr", "view", String(t.pr), "--json", "state,mergeable,headRefOid"]);
+      const p = await ghJson(["pr", "view", String(t.pr), "--json", "state,mergeable,headRefOid,createdAt"]);
       if (p.state !== "OPEN") {
         setTried(sha, { state: p.state.toLowerCase() });
         continue;
@@ -256,8 +262,25 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
       } else if (verdict.merge && !asking()) {
         const summary = `Merge #${t.pr} "Update Folio to ${sha.slice(0, 7)}" (a merge commit): all ${checks.length} checks on ${p.headRefOid.slice(0, 8)} passed, the launcher's included`;
         await gated(summary, { merge: true, sha, pr: t.pr, head: p.headRefOid });
+      } else if (verdict.wait) {
+        // Never forever: a word after a day, closed after two so the next bump can go.
+        const age = now() - Date.parse(p.createdAt);
+        if (age > 2 * DAY_MS && !asking()) {
+          await gated(`Close #${t.pr} "Update Folio to ${sha.slice(0, 7)}": open two days, still waiting on ${verdict.wait}`, { close: true, sha, pr: t.pr, why: verdict.wait });
+        } else if (age > DAY_MS && !t.warned) {
+          setTried(sha, { warned: true });
+          notify({ text: `Folio update #${t.pr} has been waiting 24h on ${verdict.wait}.`, url: t.url });
+        }
       }
     }
+  }
+
+  // payload: { close: true, sha, pr, why }. That Folio commit stays tried.
+  async function close({ sha, pr, why }) {
+    const comment = `This has waited two days on ${why} without every check passing, so I'm closing it; the next Folio update can go ahead.`;
+    await gh(["pr", "close", String(pr), "--comment", comment]);
+    setTried(sha, { state: "expired" });
+    return `Closed #${pr}.`;
   }
 
   // What happened, as { status, ... }: off, gaming, busy, waiting, later,
