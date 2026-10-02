@@ -397,6 +397,16 @@ internal sealed class ManaBackendClient
         return System.Text.RegularExpressions.Regex.Replace(reply, @"^\s*<think>[\s\S]*?</think>", "").Trim();
     }
 
+    // #697: what happened to a proactive toast, "engaged" or "dismissed". The
+    // backend scores its last remark; kind/id ride along for the log.
+    public async Task ReportProactiveReactionAsync(string reaction, string? kind, string? id)
+    {
+        var payload = JsonSerializer.Serialize(new { reaction, kind, id });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/proactive/settings", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #697 part 1: which app just came to the front (ForegroundWindowReporter).
     public async Task ReportForegroundAsync(string app, string title)
     {
