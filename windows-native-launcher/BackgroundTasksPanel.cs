@@ -19,6 +19,10 @@ namespace Mana.NativeLauncher;
 // min left" when it sends an ETA); an animated sweep for running work it
 // can't measure, still when Windows' animation effects are off, and
 // stopped while the panel is hidden.
+//
+// #1318: running work leads as a "Running" section of cards (title, "Agent
+// 38s", model, tokens, tool uses, what it's doing now, View transcript and
+// Stop); finished tasks sit last in a compact "Finished" list.
 internal sealed class BackgroundTasksPanel : Panel
 {
     private const int RefreshMs = 3000;
@@ -37,6 +41,9 @@ internal sealed class BackgroundTasksPanel : Panel
         ("briefing", "Briefing"),
         ("proactive", "Waiting to tell you"),
     ];
+
+    internal const string RunningTitle = "Running";
+    internal const string FinishedTitle = "Finished";
 
     private static readonly string[] StatusOrder = ["running", "waiting", "scheduled", "paused", "failed", "done"];
 
@@ -58,19 +65,24 @@ internal sealed class BackgroundTasksPanel : Panel
     private readonly Button openSelfWorkButton = new() { Text = "Open What I'm working on", Dock = DockStyle.Top, Height = 28, AccessibleName = "Open What I'm working on" };
 
     private readonly Dictionary<string, TaskRow> rows = new();
+    private readonly Dictionary<string, TaskCard> cards = new();
+    private readonly Dictionary<string, ManaBackgroundTask> latest = new();
+    private readonly Dictionary<string, TaskTranscriptForm> transcripts = new();
+    private readonly Action<ManaBackgroundTask> openTranscript;
     private readonly Dictionary<string, Label> headers = new();
     private static readonly Font HeaderFont = new("Segoe UI", 8.5F, FontStyle.Bold);
     private bool refreshing;
     private bool selfWorkShown;
     private double phase = 0.5;
 
-    // openSelfWork/now: tests pass fakes; by default the self-work window
-    // and the clock.
-    public BackgroundTasksPanel(ManaBackendClient client, Action? openSelfWork = null, Func<DateTimeOffset>? now = null)
+    // openSelfWork/now/openTranscript: tests pass fakes; by default the
+    // self-work window, the clock and the transcript window.
+    public BackgroundTasksPanel(ManaBackendClient client, Action? openSelfWork = null, Func<DateTimeOffset>? now = null, Action<ManaBackgroundTask>? openTranscript = null)
     {
         this.client = client;
         this.openSelfWork = openSelfWork ?? (() => new SelfWorkForm(client).Show());
         this.now = now ?? (() => DateTimeOffset.Now);
+        this.openTranscript = openTranscript ?? OpenTranscript;
         Dock = DockStyle.Fill;
         BackColor = DarkTheme.Panel2;
         AccessibleName = "Background tasks";
@@ -104,6 +116,10 @@ internal sealed class BackgroundTasksPanel : Panel
             foreach (var row in AllRows().Where(r => r.Indeterminate))
             {
                 row.Phase = phase;
+            }
+            foreach (var card in cards.Values)
+            {
+                card.Phase = phase;
             }
         };
     }
@@ -198,7 +214,12 @@ internal sealed class BackgroundTasksPanel : Panel
         var ordered = new List<Control>();
         var keptRows = new HashSet<string>();
         var keptHeaders = new HashSet<string>();
-        foreach (var (title, items) in Group(tasks.Where(t => t.Kind != "self-work")))
+        latest.Clear();
+        foreach (var task in tasks)
+        {
+            latest[task.Id] = task;
+        }
+        void AddHeader(string title)
         {
             if (!headers.TryGetValue(title, out var header))
             {
@@ -207,6 +228,36 @@ internal sealed class BackgroundTasksPanel : Panel
             }
             keptHeaders.Add(title);
             ordered.Add(header);
+        }
+
+        var others = tasks.Where(t => t.Kind != "self-work").ToList();
+        var running = Group(others.Where(t => t.Status == "running")).SelectMany(g => g.Tasks).ToList();
+        if (running.Count > 0)
+        {
+            AddHeader(RunningTitle);
+        }
+        var keptCards = new HashSet<string>();
+        foreach (var task in running)
+        {
+            if (!cards.TryGetValue(task.Id, out var card))
+            {
+                card = new TaskCard(CancelAsync, openTranscript);
+                cards[task.Id] = card;
+            }
+            card.SetTask(task, at);
+            keptCards.Add(task.Id);
+            ordered.Add(card);
+        }
+        // Scheduled/waiting work by kind as before, then finished, newest first.
+        var finished = others.Where(t => t.Status is "done" or "failed").OrderByDescending(t => t.EndedAt ?? t.StartedAt ?? DateTimeOffset.MinValue).ToList();
+        var groups = Group(others.Where(t => t.Status != "running" && !finished.Contains(t))).ToList();
+        if (finished.Count > 0)
+        {
+            groups.Add((FinishedTitle, finished));
+        }
+        foreach (var (title, items) in groups)
+        {
+            AddHeader(title);
             foreach (var task in items)
             {
                 if (!rows.TryGetValue(task.Id, out var row))
@@ -242,6 +293,11 @@ internal sealed class BackgroundTasksPanel : Panel
             rows[id].Dispose();
             rows.Remove(id);
         }
+        foreach (var id in cards.Keys.Where(id => !keptCards.Contains(id)).ToList())
+        {
+            cards[id].Dispose();
+            cards.Remove(id);
+        }
         foreach (var title in headers.Keys.Where(t => !keptHeaders.Contains(t)).ToList())
         {
             headers[title].Dispose();
@@ -268,16 +324,33 @@ internal sealed class BackgroundTasksPanel : Panel
     private IEnumerable<TaskRow> AllRows() => selfWorkShown ? rows.Values.Append(selfWorkRow) : rows.Values;
 
     private void UpdateAnimation() =>
-        frameTimer.Enabled = animate && refreshTimer.Enabled && AllRows().Any(r => r.Indeterminate);
+        frameTimer.Enabled = animate && refreshTimer.Enabled && (AllRows().Any(r => r.Indeterminate) || cards.Values.Any(c => c.Indeterminate));
 
-    private async Task CancelAsync(TaskRow row)
+    // One transcript window per task; opening it again brings it forward.
+    private void OpenTranscript(ManaBackgroundTask task)
     {
-        var task = row.Task;
+        if (transcripts.TryGetValue(task.Id, out var open) && !open.IsDisposed)
+        {
+            open.Activate();
+            return;
+        }
+        var form = new TaskTranscriptForm(client, task, () => latest.TryGetValue(task.Id, out var t) && t.Status == "running", now);
+        transcripts[task.Id] = form;
+        form.FormClosed += (_, _) => transcripts.Remove(task.Id);
+        form.Show(FindForm());
+    }
+
+    private Task CancelAsync(TaskRow row) => CancelAsync(row.Task, enabled => row.CancelEnabled = enabled);
+
+    private Task CancelAsync(TaskCard card) => CancelAsync(card.Task, enabled => card.StopEnabled = enabled);
+
+    private async Task CancelAsync(ManaBackgroundTask? task, Action<bool> setEnabled)
+    {
         if (task is null)
         {
             return;
         }
-        row.CancelEnabled = false;
+        setEnabled(false);
         try
         {
             // False: it ended (or can't stop) meanwhile; the refresh shows which.
@@ -288,7 +361,7 @@ internal sealed class BackgroundTasksPanel : Panel
             if (!IsDisposed)
             {
                 ShowError($"Couldn't cancel {task.Title}: {ex.Message}");
-                row.CancelEnabled = true;
+                setEnabled(true);
             }
             return;
         }
@@ -400,6 +473,153 @@ internal sealed class BackgroundTasksPanel : Panel
             frameTimer.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    // #1318: one running task. Title, then "Agent 38s · model · tokens ·
+    // tool uses", then what it's doing now, then View transcript and the
+    // bar; Stop where the backend can really stop it. Words come from
+    // BackgroundTaskText; colours from DarkTheme at paint time.
+    internal sealed class TaskCard : Control
+    {
+        private static readonly Font TitleFont = new("Segoe UI", 9F, FontStyle.Bold);
+        private static readonly Font SmallFont = new("Segoe UI", 8F);
+        private readonly Button stopButton = new() { Text = "Stop", Width = 60, Height = 22, Visible = false };
+        private readonly LinkLabel transcriptLink = new() { Text = "View transcript", AutoSize = true, Location = new Point(6, 64), Visible = false };
+        private string meta = "";
+        private string action = "";
+        private double phase = 0.5;
+
+        public TaskCard(Func<TaskCard, Task> stop, Action<ManaBackgroundTask> openTranscript)
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            TabStop = true;
+            Dock = DockStyle.Top;
+            Height = 92;
+            AccessibleRole = AccessibleRole.ListItem;
+            DarkTheme.ApplyButton(stopButton);
+            stopButton.Font = SmallFont;
+            stopButton.Click += async (_, _) => await stop(this);
+            transcriptLink.Font = SmallFont;
+            transcriptLink.LinkClicked += (_, _) =>
+            {
+                if (Task is { } task)
+                {
+                    openTranscript(task);
+                }
+            };
+            Controls.Add(stopButton);
+            Controls.Add(transcriptLink);
+        }
+
+        public ManaBackgroundTask? Task { get; private set; }
+        public Button StopButton => stopButton;
+        public LinkLabel TranscriptLink => transcriptLink;
+        public string MetaText => meta;
+        public string ActionText => action;
+        public bool Indeterminate => Task is { } t && Bar(t) == BarKind.Indeterminate;
+
+        public bool StopEnabled
+        {
+            get => stopButton.Enabled;
+            set => stopButton.Enabled = value;
+        }
+
+        public double Phase
+        {
+            get => phase;
+            set
+            {
+                phase = value;
+                if (Indeterminate)
+                {
+                    Invalidate();
+                }
+            }
+        }
+
+        public void SetTask(ManaBackgroundTask task, DateTimeOffset now)
+        {
+            var newTask = Task?.Id != task.Id;
+            Task = task;
+            Text = task.Title;
+            meta = BackgroundTaskText.Meta(task, now);
+            action = BackgroundTaskText.Action(task);
+            AccessibleName = BackgroundTaskText.CardName(task, now);
+            stopButton.Visible = task.Stoppable;
+            stopButton.AccessibleName = $"Stop {task.Title}";
+            if (newTask || !task.Stoppable)
+            {
+                stopButton.Enabled = true;
+            }
+            // No link until the backend keeps a step log for it.
+            transcriptLink.Visible = !string.IsNullOrEmpty(task.TranscriptUrl);
+            transcriptLink.AccessibleName = $"View transcript of {task.Title}";
+            transcriptLink.BackColor = DarkTheme.Panel;
+            transcriptLink.LinkColor = transcriptLink.ActiveLinkColor = transcriptLink.VisitedLinkColor = DarkTheme.Accent;
+            Invalidate();
+        }
+
+        protected override void OnGotFocus(EventArgs e)
+        {
+            base.OnGotFocus(e);
+            Invalidate();
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            base.OnLostFocus(e);
+            Invalidate();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            stopButton.Location = new Point(Width - stopButton.Width - 6, 5);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(DarkTheme.Panel);
+            using (var line = new Pen(DarkTheme.Border))
+            {
+                g.DrawLine(line, 0, Height - 1, Width, Height - 1);
+            }
+            if (Task is null)
+            {
+                return;
+            }
+            const int x = 8;
+            var right = Width - 8 - (stopButton.Visible ? stopButton.Width + 6 : 0);
+            var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter;
+            TextRenderer.DrawText(g, Task.Title, TitleFont, new Rectangle(x, 5, Math.Max(0, right - x), 20), DarkTheme.Text, flags);
+            TextRenderer.DrawText(g, meta, SmallFont, new Rectangle(x, 26, Math.Max(0, Width - 2 * x), 16), DarkTheme.Muted, flags);
+            TextRenderer.DrawText(g, action, SmallFont, new Rectangle(x, 43, Math.Max(0, Width - 2 * x), 18), DarkTheme.Text, flags);
+
+            // Same bar as TaskRow's: measured fill, else the sweep.
+            var track = new Rectangle(x, Height - 9, Math.Max(0, Width - 2 * x), 3);
+            using var trackBrush = new SolidBrush(DarkTheme.Border);
+            using var fill = new SolidBrush(DarkTheme.Accent);
+            g.FillRectangle(trackBrush, track);
+            if (Task.Progress is { } progress)
+            {
+                g.FillRectangle(fill, track.X, track.Y, (int)(track.Width * progress.Fraction), track.Height);
+            }
+            else
+            {
+                var band = (int)(track.Width * 0.3);
+                var left = track.X + (int)((track.Width + band) * phase) - band;
+                var visible = Rectangle.Intersect(track, new Rectangle(left, track.Y, band, track.Height));
+                if (!visible.IsEmpty)
+                {
+                    g.FillRectangle(fill, visible);
+                }
+            }
+            if (Focused)
+            {
+                ControlPaint.DrawFocusRectangle(g, new Rectangle(1, 1, Width - 2, Height - 3), DarkTheme.Text, DarkTheme.Panel);
+            }
+        }
     }
 
     // One task: chip and title, then when/progress/detail, then the bar,
