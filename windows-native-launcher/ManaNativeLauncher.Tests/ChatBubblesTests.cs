@@ -116,4 +116,40 @@ public class ChatBubblesTests
         Assert.Equal(clickThrough, (ChatBubblesForm.ExStyle(0, gameRunning) & ChatBubblesForm.WsExTransparent) != 0);
         Assert.Equal(clickThrough, (ChatBubblesForm.ExStyle(ChatBubblesForm.WsExTransparent, gameRunning) & ChatBubblesForm.WsExTransparent) != 0);
     }
+
+    // #845: a text-only remark shown while away stays until I've been active for its reading time.
+    [Fact]
+    public void TextOnlyRemark_CountsDownOnlyWhileActive()
+    {
+        var stack = new ChatBubbleStack();
+        stack.AddTextOnly("Notice from Mana.", now: 0); // 3 words -> 4000 ms floor
+
+        // While inactive, even after 60 seconds away, it stays fully opaque
+        stack.Tick(60000, isActive: false);
+        Assert.Single(stack.Bubbles);
+        Assert.Equal(1, stack.Bubbles[0].Alpha);
+
+        // Active for 2 seconds (2000 ms of reading time elapsed)
+        stack.Tick(62000, isActive: true);
+        Assert.Single(stack.Bubbles);
+        Assert.Equal(1, stack.Bubbles[0].Alpha);
+
+        // Inactive again for another 30 seconds: countdown pauses
+        stack.Tick(92000, isActive: false);
+        Assert.Single(stack.Bubbles);
+        Assert.Equal(1, stack.Bubbles[0].Alpha);
+
+        // Active for remaining 2 seconds: reaches FadeAt
+        stack.Tick(94000, isActive: true);
+        Assert.Single(stack.Bubbles);
+        Assert.Equal(1, stack.Bubbles[0].Alpha);
+
+        // Halfway through fade (FadeMs / 2)
+        stack.Tick(94000 + (ChatBubbleStack.FadeMs / 2), isActive: true);
+        Assert.Equal(0.5, stack.Bubbles[0].Alpha, 3);
+
+        // Completely faded out and cleared
+        stack.Tick(94000 + ChatBubbleStack.FadeMs, isActive: true);
+        Assert.Empty(stack.Bubbles);
+    }
 }

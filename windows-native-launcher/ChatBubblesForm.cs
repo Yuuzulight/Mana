@@ -17,7 +17,7 @@ internal sealed class ChatBubbleStack
     public const int MaxBubbles = 3;
     public const double FadeMs = 400;
 
-    public sealed class Bubble(string text, double endsAt, double lingerMs)
+    public sealed class Bubble(string text, double endsAt, double lingerMs, bool requiresActive = false)
     {
         public string Text { get; } = text;
         // When her voice finishes this sentence; +infinity until known.
@@ -25,9 +25,11 @@ internal sealed class ChatBubbleStack
         public double LingerMs { get; set; } = lingerMs;
         public double FadeAt => EndsAt + LingerMs;
         public double Alpha { get; set; } = 1;
+        public bool RequiresActive { get; } = requiresActive;
     }
 
     private readonly List<Bubble> bubbles = [];
+    private double lastTick = double.NaN;
 
     // Oldest first.
     public IReadOnlyList<Bubble> Bubbles => bubbles;
@@ -42,7 +44,7 @@ internal sealed class ChatBubbleStack
     // A new sentence starts playing (durationMs 0 = length unknown: it ends
     // at SpeechEnded). The older bubbles' sentences are over; what's left
     // of their reading time is halved, and past the third they fade now.
-    public void Add(string text, double now, double durationMs)
+    public void Add(string text, double now, double durationMs, bool requiresActive = false)
     {
         for (var i = 0; i < bubbles.Count; i++)
         {
@@ -54,8 +56,17 @@ internal sealed class ChatBubbleStack
                 older.LingerMs = Math.Min(older.LingerMs, now - older.EndsAt);
             }
         }
-        bubbles.Add(new Bubble(text, durationMs > 0 ? now + durationMs : double.PositiveInfinity, LingerMs(text)));
+        var endsAt = requiresActive ? now : (durationMs > 0 ? now + durationMs : double.PositiveInfinity);
+        bubbles.Add(new Bubble(text, endsAt, LingerMs(text), requiresActive));
+        if (double.IsNaN(lastTick))
+        {
+            lastTick = now;
+        }
     }
+
+    // #845: text-only remarks linger for reading time, but countdown only while active.
+    public void AddTextOnly(string text, double now) =>
+        Add(text, now, 0, requiresActive: true);
 
     // She stopped talking (finished or interrupted).
     public void SpeechEnded(double now)
@@ -76,9 +87,19 @@ internal sealed class ChatBubbleStack
     }
 
     // Updates each bubble's opacity and drops the faded ones; true if
-    // anything changed.
-    public bool Tick(double now)
+    // anything changed. #845: pauses countdown on text-only bubbles when inactive.
+    public bool Tick(double now, bool isActive = true)
     {
+        if (!double.IsNaN(lastTick) && now > lastTick && !isActive)
+        {
+            var inactiveElapsed = now - lastTick;
+            foreach (var bubble in bubbles.Where(b => b.RequiresActive && !double.IsInfinity(b.EndsAt)))
+            {
+                bubble.EndsAt += inactiveElapsed;
+            }
+        }
+        lastTick = now;
+
         var changed = bubbles.RemoveAll(b => now >= b.FadeAt + FadeMs) > 0;
         foreach (var bubble in bubbles)
         {
@@ -89,7 +110,11 @@ internal sealed class ChatBubbleStack
         return changed;
     }
 
-    public void Clear() => bubbles.Clear();
+    public void Clear()
+    {
+        bubbles.Clear();
+        lastTick = double.NaN;
+    }
 }
 
 // #701: Mana's spoken sentences as glass bubbles beside the avatar, for when
@@ -118,15 +143,18 @@ internal sealed class ChatBubblesForm : Form
     private readonly Font font = new("Segoe UI", 10.5F);
     private readonly Func<Rectangle?> anchor;
     private readonly Func<bool> chatWindowInView;
+    private readonly Func<bool> isUserActive;
     private List<(Rectangle Bounds, ChatBubbleStack.Bubble Bubble)> layout = [];
     private long lastFrameMs = Environment.TickCount64;
 
     // anchor: Mana's avatar on screen, or null while she's hidden.
     // chatWindowInView: whether the chat window is on screen and not covered.
-    public ChatBubblesForm(Func<Rectangle?> anchor, Func<bool> chatWindowInView)
+    // isUserActive: whether there was recent keyboard or mouse input (#845).
+    public ChatBubblesForm(Func<Rectangle?> anchor, Func<bool> chatWindowInView, Func<bool>? isUserActive = null)
     {
         this.anchor = anchor;
         this.chatWindowInView = chatWindowInView;
+        this.isUserActive = isUserActive ?? (() => SystemIdle.IsActive());
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -234,6 +262,32 @@ internal sealed class ChatBubblesForm : Form
         stack.SpeechEnded(Environment.TickCount64);
     }
 
+    // #845: text-only remarks shown without speech (ambient glance, held speech during calls, etc.)
+    // Stays until the user has been active long enough to have read it.
+    public void ShowTextRemark(string text)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => ShowTextRemark(text));
+            return;
+        }
+        text = text.Trim();
+        if (!BubblesOn || text.Length == 0 || chatWindowInView())
+        {
+            return;
+        }
+        upcoming.Clear();
+        stack.AddTextOnly(text, Environment.TickCount64);
+        stack.Tick(Environment.TickCount64, isUserActive());
+        Render();
+        if (!Visible)
+        {
+            Visible = true;
+        }
+        lastFrameMs = Environment.TickCount64;
+        frameTimer.Start();
+    }
+
     private void AddBubble(string text, double durationMs)
     {
         text = text.Trim();
@@ -242,7 +296,7 @@ internal sealed class ChatBubblesForm : Form
             return;
         }
         stack.Add(text, Environment.TickCount64, durationMs);
-        stack.Tick(Environment.TickCount64);
+        stack.Tick(Environment.TickCount64, isUserActive());
         Render();
         if (!Visible)
         {
@@ -272,7 +326,7 @@ internal sealed class ChatBubblesForm : Form
             stack.Pause(now - lastFrameMs);
         }
         lastFrameMs = now;
-        if (stack.Tick(now) || (stack.Bubbles.Count == 0 && Visible))
+        if (stack.Tick(now, isUserActive()) || (stack.Bubbles.Count == 0 && Visible))
         {
             Render();
         }

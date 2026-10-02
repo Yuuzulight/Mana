@@ -38,6 +38,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly VisionCaptureClient visionCaptureClient;
     private readonly ArtifactViewerForm artifactViewer;
     private readonly QuickEntryForm quickEntry;
+    private readonly MiniMessageBoxForm miniMessageBox; // #844
     private readonly SessionListForm sessionListForm;
     private readonly ChatView chatLog;
     private readonly SynchronizationContext uiContext;
@@ -185,6 +186,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
             ShowSessionList();
             chatLog.SelectMessageContaining(text);
         };
+        // #845: text-only remarks (ambient screen glance, backend notices, held remarks)
+        // show as chat bubbles when bubbles are on.
+        chatLog.ManaMessageAppended += text => chatBubbles.ShowTextRemark(text);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles, isAudioBusy: () => settings.HoldSpeechDuringAudio && audioDetector.IsAudioBusy());
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
         // #914 group mode: her sister's mouth closes when the reply ends, and
@@ -251,6 +255,11 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // #525: quick entry types a command instead of speaking one,
         // through the exact same turn-processing path.
         quickEntry = new QuickEntryForm(text => voiceLoop.SubmitTypedCommandAsync(text));
+        // #844: a small floating message box under Mana when chat bubbles are on,
+        // queued like the chat window's box while she's busy.
+        miniMessageBox = new MiniMessageBoxForm(
+            text => sessionListForm.SendToManaAsync(text),
+            () => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null);
         // #689: every global hotkey, bound from Settings > Hotkeys (defaults
         // in HotkeyBindings). #523 vision and #585 clip go through the normal
         // reply pipeline. #584's manual interrupt stops playback and drops
@@ -358,9 +367,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         sessionListForm.Resize += (_, _) => SyncAvatarWithChat(); // minimized or restored
         // #662: a click wakes her -- but never turns listening back on after
         // I switched it off (the chat window's mic button still does).
+        // #844: with chat bubbles on, opens a small floating message box under
+        // her instead, so I can reply without opening the chat window.
         avatarOverlay.Clicked += () =>
         {
-            if (voiceLoop.IsListening)
+            if (chatBubbles.BubblesOn)
+            {
+                miniMessageBox.Open();
+            }
+            else if (voiceLoop.IsListening)
             {
                 voiceLoop.Wake();
             }
@@ -1494,6 +1509,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // would risk not actually tearing the window down.
         artifactViewer.Dispose();
         quickEntry.Close();
+        miniMessageBox.Close();
         // #520: same Dispose-not-Close reasoning as artifactViewer above.
         sessionListForm.Dispose();
         processManager.Dispose();
