@@ -94,6 +94,16 @@ test("POST /screen-sensing/glance skips a text glance when no model is loaded", 
   });
 });
 
+test("POST /screen-sensing/glance hands window text to the standing-intent check, even with no model (#1283)", async () => {
+  const checked = [];
+  const app = buildApp({ runLocalReply: async () => null, checkScreenIntents: (screen) => checked.push(screen) });
+  await withServer(app, async (baseUrl) => {
+    await postJson(`${baseUrl}/screen-sensing/glance`, { text: "Party Finder - raid tonight", gamingModeActive: true });
+    await postJson(`${baseUrl}/screen-sensing/glance`, { image: "data:image/png;base64,fakeimagedata" }).catch(() => {});
+  });
+  assert.deepEqual(checked, [{ text: "Party Finder - raid tonight", gaming: true }]);
+});
+
 test("POST /screen-sensing/glance summarizes via runVisionReply and surfaces a genuine glance", async () => {
   const calls = [];
   const runVisionReply = async (prompt, images) => {

@@ -640,3 +640,90 @@ test("#1161: the report is Markdown with its screenshots as data images, and a s
     "https://example.com/:\n  phone: 1 console errors, 0 failed requests, layout ok, 2 images without alt text\n  broken links: https://example.com/gone (HTTP 404)",
   );
 });
+
+// #704: her cursor. The fake page records drawCursorInPage /
+// clearCursorInPage calls; every other evaluate goes to the stock fake.
+function withCursorPage(boxes = {}) {
+  const { drawCursorInPage, clearCursorInPage } = require("../browser-automation");
+  const page = createFakePage();
+  const evaluate = page.evaluate;
+  page.evaluate = async (fn, arg) => {
+    if (fn === drawCursorInPage) return page.state.calls.push(["cursor", arg]);
+    if (fn === clearCursorInPage) return page.state.calls.push(["clearCursor"]);
+    return evaluate(fn, arg);
+  };
+  const locator = page.locator;
+  page.locator = (selector) => ({
+    ...locator(selector),
+    boundingBox: async () => {
+      if (boxes[selector] instanceof Error) throw boxes[selector];
+      return boxes[selector] ?? { x: 10, y: 20, width: 100, height: 30 };
+    },
+  });
+  return page;
+}
+
+test("#704: her cursor is drawn on the element before she clicks, types, selects or hovers -- only while I watch", async () => {
+  let watching = true;
+  const page = withCursorPage();
+  const session = createBrowserSession({ page, cursor: () => watching });
+  await session.click("e5");
+  await session.type("e4", "dogs");
+  await session.select("e8", "Large");
+  await session.hover("e3");
+  const steps = actions(page).map((c) => c[0]);
+  assert.deepEqual(steps, ["cursor", "click", "cursor", "fill", "cursor", "select", "cursor", "hover"]);
+  assert.deepEqual(actions(page)[0][1], { id: "__mana_agent_cursor", x: 10, y: 20, width: 100, height: 30 });
+
+  watching = false;
+  page.state.calls.length = 0;
+  await session.click("e5");
+  assert.deepEqual(actions(page).map((c) => c[0]), ["click"]);
+});
+
+test("#704: no cursor by default, and one that can't be drawn never stops the action", async () => {
+  const quiet = withCursorPage();
+  await createBrowserSession({ page: quiet }).click("e5");
+  assert.deepEqual(actions(quiet).map((c) => c[0]), ["click"]);
+
+  const page = withCursorPage({ "aria-ref=e5": new Error("element is not visible") });
+  await createBrowserSession({ page, cursor: () => true }).click("e5");
+  assert.deepEqual(actions(page).map((c) => c[0]), ["click"]);
+});
+
+test("#704: a click by sight hides her cursor from the vision model, then draws it where she clicks", async () => {
+  const page = withCursorPage();
+  const session = createBrowserSession({ page, cursor: () => true });
+  await session.lookAndClick("the Play button", async () => ({ x: 300, y: 200 }));
+  const steps = actions(page);
+  assert.deepEqual(steps.map((c) => c[0]), ["clearCursor", "screenshot", "cursor", "mouseClick"]);
+  assert.deepEqual(steps[2][1], { id: "__mana_agent_cursor", x: 300, y: 200, width: 0, height: 0 });
+});
+
+test("#704: the cursor overlay takes no clicks, is hidden from her snapshot and has no text", () => {
+  const { drawCursorInPage } = require("../browser-automation");
+  const made = [];
+  const el = () => {
+    const node = { style: {}, children: [], attrs: {}, setAttribute: (k, v) => (node.attrs[k] = v), append: (...c) => node.children.push(...c), remove: () => (node.removed = true) };
+    made.push(node);
+    return node;
+  };
+  const body = el();
+  const timers = [];
+  global.document = { getElementById: () => null, createElement: el, body };
+  global.setTimeout = ((real) => Object.assign((fn) => timers.push(fn), { real }))(setTimeout);
+  try {
+    drawCursorInPage({ id: "__mana_agent_cursor", x: 10, y: 20, width: 100, height: 30 });
+  } finally {
+    global.setTimeout = global.setTimeout.real;
+    delete global.document;
+  }
+  const root = body.children[0];
+  assert.equal(root.id, "__mana_agent_cursor");
+  assert.equal(root.attrs["aria-hidden"], "true");
+  assert.match(root.style.cssText, /pointer-events:none/);
+  assert.equal(root.children.length, 2);
+  assert.ok(made.every((n) => !n.textContent && !n.innerText));
+  timers.forEach((fn) => fn());
+  assert.equal(root.removed, true);
+});

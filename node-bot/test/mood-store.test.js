@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { DEFAULTS, EVENTS, createMoodStore, moodPromptBlock } = require("../mood-store");
+const { DEFAULTS, EVENTS, createMoodStore, moodEmotion, moodPromptBlock } = require("../mood-store");
 
 const HOUR = 3600000;
 // Local-time constructor, so time-of-day nudges don't depend on the CI's TZ.
@@ -154,10 +154,23 @@ test("the prompt block reports the real values and shapes tone -- never whether 
   const block = moodPromptBlock(tired, "casual");
   assert.match(block, /energy low \(20%\)/);
   assert.match(block, /answer honestly/);
+  assert.match(block, /Never say these numbers/);
   assert.match(block, /shorter and a little sleepy/);
   assert.match(block, /chattier and tease/);
   assert.match(block, /never whether you help/);
   assert.equal(moodPromptBlock({ ...tired, frozen: true }, "casual"), null, "frozen is steady neutral Mana");
   assert.equal(moodPromptBlock(tired, "coding"), null);
   assert.equal(moodPromptBlock(tired, "developer"), null);
+});
+
+// Part of #700: the emotion tag her mood leans toward (idle face, voice pace).
+test("mood leans toward one emotion tag, or none", () => {
+  const base = { energy: 0.6, sociability: 0.5, stress: 0.3, frozen: false };
+  assert.equal(moodEmotion(base), null);
+  assert.equal(moodEmotion({ ...base, energy: 0.2 }), "thinking");
+  assert.equal(moodEmotion({ ...base, stress: 0.7, energy: 0.9 }), "thinking", "stress wins over energy");
+  assert.equal(moodEmotion({ ...base, energy: 0.9 }), "happy");
+  assert.equal(moodEmotion({ ...base, sociability: 0.8 }), "happy");
+  assert.equal(moodEmotion({ ...base, energy: 0.2, frozen: true }), null);
+  assert.equal(createMoodStore().get().emotion, null, "the defaults don't lean");
 });

@@ -31,6 +31,9 @@ function registerScreenSensingRoutes(app, deps = {}) {
       return res.status(400).json({ error: "image or text is required" });
     }
     const gamingModeActive = Boolean(req.body?.gamingModeActive);
+    // #1283: standing intents can fire on the window's text, whatever the
+    // summary decides (fire-and-forget; never sees the image).
+    if (text) deps.checkScreenIntents?.({ text, gaming: gamingModeActive });
 
     try {
       let rawSummary;

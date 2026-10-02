@@ -121,6 +121,17 @@ function describeMood(mood) {
   return words.length ? words.join(", ") : "okay";
 }
 
+// Part of #700: the one emotion tag (utils/emotion-tags.js) her mood leans
+// toward, or null when it doesn't lean. Clients reuse the tag paths they
+// already have: her idle face, and /synthesize's pace for an untagged
+// sentence (a few percent slower or faster, never more).
+function moodEmotion(mood) {
+  if (!mood || mood.frozen) return null;
+  if (mood.stress > 0.6 || mood.energy < 0.35) return "thinking";
+  if (mood.energy > 0.75 || mood.sociability > 0.7) return "happy";
+  return null;
+}
+
 // The system-message text for one reply, or null when mood shouldn't show:
 // frozen (steady neutral Mana), or a coding/developer reply -- the
 // task-performing mode, where only the work matters.
@@ -142,6 +153,7 @@ function moodPromptBlock(mood, mode) {
   return [
     `Your mood right now (it's real -- if asked how you feel, answer honestly from it): energy ${levelWord(mood.energy)} (${pct(mood.energy)}), sociability ${levelWord(mood.sociability)} (${pct(mood.sociability)}), stress ${levelWord(mood.stress)} (${pct(mood.stress)}).`,
     hints.length ? `Let it color your tone: ${hints.join("; ")}.` : "",
+    "Never say these numbers or percentages out loud: if it comes up, put it in words.",
     "Mood only changes how you say things: never whether you help, how thoroughly, or how accurate you are.",
   ]
     .filter(Boolean)
@@ -192,6 +204,7 @@ function createMoodStore(options = {}) {
       history: state.history,
     };
     mood.summary = describeMood(mood);
+    mood.emotion = moodEmotion(mood);
     return mood;
   }
 
@@ -256,4 +269,4 @@ function createMoodStore(options = {}) {
   return { get, record, recordTurn, reset, setFrozen };
 }
 
-module.exports = { DEFAULTS, EVENTS, createMoodStore, levelWord, moodPromptBlock };
+module.exports = { DEFAULTS, EVENTS, createMoodStore, levelWord, moodEmotion, moodPromptBlock };
