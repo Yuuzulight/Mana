@@ -215,6 +215,7 @@ const {
 } = require("./personality-store");
 const { createMoodStore, levelWord, moodPromptBlock } = require("./mood-store");
 const { createCheckIns, gentleHint } = require("./check-ins");
+const { createScreenIntents } = require("./screen-intents");
 const {
   createRelationshipStore,
   createRelationshipToolSource,
@@ -257,6 +258,7 @@ const { createSpeechToolSource } = require("./ai/speech-tool-source");
 const { createVisionToolSource } = require("./ai/vision-tool-source");
 const { createSessionGoalToolSource } = require("./ai/session-goal-tool-source");
 const { createReminderToolSource } = require("./ai/reminder-tool-source");
+const { createProactiveToolSource } = require("./ai/proactive-tool-source");
 const { briefingLines: mailCalendarBriefingLines, createMailCalendarToolSource } = require("./ai/mail-calendar-tool-source");
 const { createMailCalendarSettingsStore } = require("./mail-calendar-settings-store");
 const { checkMail } = require("./imap-client");
@@ -316,6 +318,7 @@ const { createRetrieverRuntime } = require("./ai/retriever-runtime");
 const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
+const { createSentenceChunker } = require("./utils/sentence-chunker");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
 const { crisisInstruction, withCrisisInstruction } = require("./utils/crisis-check");
 const { createRestartController } = require("./admin-restart");
@@ -959,6 +962,19 @@ if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
       console.warn("Check-in failed:", e.message);
     }
   }, 5 * 60 * 1000).unref();
+}
+// #1283 (part of #698): standing intents also fire on what's on screen --
+// the foreground window (foreground-report) and the glance text -- through
+// the proactive engine; never mid-game or on a private window.
+const screenIntents = createScreenIntents({
+  matchIntents: (text) => acpMemoryStore.matchIntents(text),
+  offer: (candidate) => require("./proactive").offer(candidate),
+  isGaming: () => gamingWatch.isGaming(),
+});
+function checkScreenIntents(screen) {
+  screenIntents
+    .check({ ...require("./foreground").getForeground(), ...screen })
+    .catch((e) => console.warn("Screen intent check failed:", e.message));
 }
 // #908: the game I'm playing, if its wiki is known: the one in front (the
 // native launcher's foreground report), else the watched game that's running.
@@ -2365,6 +2381,7 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/internal/foreground-report", (req, res) => {
     try {
       require("./foreground").reportForeground(req.body || {});
+      checkScreenIntents({});
       return res.json({ ok: true });
     } catch (e) {
       return res.status(400).json({ error: e.message });
@@ -2380,6 +2397,8 @@ function registerRoutes(app, upload, deps = {}) {
     if (idleSeconds < BRIEFING_ACTIVE_SECONDS) briefingOnActive();
     const thresholdSeconds =
       Number(process.env.MANA_IDLE_THRESHOLD_MS || 20 * 60 * 1000) / 1000;
+    // #1282: away past the same threshold holds proactive remarks until I'm back.
+    require("./proactive").setAway(idleSeconds >= thresholdSeconds);
 
     if (idleSeconds < thresholdSeconds) {
       idleConsolidationFiredForCurrentIdlePeriod = false;
@@ -2681,6 +2700,8 @@ function registerRoutes(app, upload, deps = {}) {
     runLocalReply:
       deps.runLocalReply ||
       ((prompt, maxTokens) => llamaServerRuntime.runLocalReplyIfSafelyLoaded(prompt, maxTokens)),
+    // #1283: glance text checked against standing intents.
+    checkScreenIntents: deps.checkScreenIntents || checkScreenIntents,
     pluginSettingsStore: activePluginSettingsStore,
     skillsStore: activeSkillsStore,
     env: deps.env || process.env,
@@ -3399,6 +3420,9 @@ function registerRoutes(app, upload, deps = {}) {
       return res.status(400).json({ ok: false, error: e.message });
     }
   });
+
+  // #1282: quiet hours, "not now" and muted remark kinds.
+  require("./proactive").registerRoutes(app);
 
   // { kind }: log in to the saved account and report what went wrong.
   app.post("/mail-calendar/test", async (req, res) => {
@@ -5162,6 +5186,8 @@ function registerRoutes(app, upload, deps = {}) {
             // #905: reminders the user asks for in chat -- not offered to
             // scheduled replies, which nobody is asking in.
             ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
+            // #1282: "not now", "don't bring this up again", quiet hours.
+            ...(userChat ? [createProactiveToolSource({ proactive: require("./proactive") })] : []),
             // #1010: "let me try your PR" / "back to main" -- a PR number
             // only from my own message. #1194: "update to main" asks me first.
             ...(userChat
@@ -5357,6 +5383,16 @@ function registerRoutes(app, upload, deps = {}) {
               }
             }
             turnToolSchemas = mergedToolPolicy.tools;
+            // Issue #623: the tool path isn't streamed, so the finished reply
+            // goes out sentence by sentence here, each with its own face,
+            // instead of as one clip with one face.
+            if (wrappedOnSentence && !firstPassStreamed) {
+              firstPassStreamed = true;
+              const chunker = createSentenceChunker();
+              for (const sentence of [...chunker.push(toolResult.content), ...chunker.flush()]) {
+                await wrappedOnSentence(sentence);
+              }
+            }
             return toolResult.content;
           }
           console.warn(
@@ -5749,6 +5785,7 @@ function registerRoutes(app, upload, deps = {}) {
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     characters: characterStore,
     buildGroupReaction: deps.buildGroupReaction || buildGroupReaction,
+    moodStore: activeMoodStore, // #700
     capabilities,
     pluginSettingsStore: activePluginSettingsStore,
     contributePluginPromptContext:
@@ -6179,6 +6216,7 @@ function registerRoutes(app, upload, deps = {}) {
     try {
       const installed = activePluginStore.list();
       const available = await fetchAvailablePlugins();
+      const installedNames = new Set(installed.map((plugin) => plugin.name));
 
       const githubPlugins = Array.isArray(available)
         ? available
@@ -6188,6 +6226,7 @@ function registerRoutes(app, upload, deps = {}) {
               url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${item.name}`,
               description: "Official Mana plugin from GitHub",
               category: "Core",
+              installed: installedNames.has(item.name.replace("/", "")),
             }))
         : [];
 
@@ -6195,11 +6234,15 @@ function registerRoutes(app, upload, deps = {}) {
         ...installed.map((plugin) => ({
           name: plugin.name,
           url: `https://github.com/Yuuzulight/Mana/tree/main/tools/plugins/${plugin.name}`,
+          version: plugin.version,
+          author: plugin.author,
           description: plugin.description || "Installed plugin",
           category: "User Installed",
+          installed: true,
           enabled: activePluginSettingsStore.isEnabled(plugin.name),
         })),
-        ...githubPlugins,
+        // #499: an installed plugin appears once, as installed.
+        ...githubPlugins.filter((plugin) => !plugin.installed),
       ];
 
       // Segment by tier (plugin vs addon) -- default to "plugin" if not specified
@@ -6282,6 +6325,20 @@ function registerRoutes(app, upload, deps = {}) {
       console.error("[PluginStore] Install failed:", error.message);
       res.status(500).json({ error: `Install failed: ${error.message}` });
     }
+  });
+
+  // #499: the store modal's Uninstall button. Admin-gated like install;
+  // pluginStore.uninstall() already contains the name to pluginsDir.
+  app.post("/plugins/store/uninstall", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const { name } = req.body || {};
+    if (!name || typeof name !== "string") {
+      return res.status(400).json({ error: "name is required" });
+    }
+    if (!activePluginStore.uninstall(name)) {
+      return res.status(404).json({ error: `Plugin ${name} not found` });
+    }
+    res.json({ success: true, name });
   });
 
   app.post("/plugins/store/toggle", (req, res) => {

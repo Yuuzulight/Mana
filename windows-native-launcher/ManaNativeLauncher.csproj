@@ -84,6 +84,24 @@
     <Delete Files="$(SpeakerModelPath).tmp" />
   </Target>
 
+  <!-- #909: pipecat-ai's Smart Turn v3.2 end-of-turn model (BSD-2-Clause,
+       see THIRD_PARTY.md), pinned to a revision and checked against its
+       SHA-256 before it's kept, same as the speaker model above. Without it
+       SmartTurnRunner falls back to silence and transcript only. -->
+  <Target Name="FetchSmartTurnModel" BeforeTargets="Build">
+    <PropertyGroup>
+      <SmartTurnModelDir>$(MSBuildProjectDirectory)\assets\turn</SmartTurnModelDir>
+      <SmartTurnModelPath>$(SmartTurnModelDir)\smart-turn-v3.2-cpu.onnx</SmartTurnModelPath>
+      <SmartTurnModelUrl>https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx</SmartTurnModelUrl>
+      <SmartTurnModelSha256>2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f</SmartTurnModelSha256>
+    </PropertyGroup>
+    <MakeDir Directories="$(SmartTurnModelDir)" Condition="!Exists('$(SmartTurnModelDir)')" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(SmartTurnModelUrl)' -OutFile '$(SmartTurnModelPath).tmp' -UserAgent 'mana-fetch-smart-turn-model'&quot;" Condition="!Exists('$(SmartTurnModelPath)')" ContinueOnError="WarnAndContinue" />
+    <VerifyFileHash File="$(SmartTurnModelPath).tmp" Hash="$(SmartTurnModelSha256)" Algorithm="SHA256" Condition="Exists('$(SmartTurnModelPath).tmp')" ContinueOnError="WarnAndContinue" />
+    <Copy SourceFiles="$(SmartTurnModelPath).tmp" DestinationFiles="$(SmartTurnModelPath)" Condition="Exists('$(SmartTurnModelPath).tmp') And '$(MSBuildLastTaskResult)' == 'true'" />
+    <Delete Files="$(SmartTurnModelPath).tmp" />
+  </Target>
+
   <!-- #937: Folio, from the local package folder in nuget.config.
        pack-folio.ps1 builds the packages from FolioCommit and checks that
        they come out as FolioVersion; CI runs it before restoring. To bump
