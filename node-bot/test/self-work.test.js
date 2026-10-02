@@ -154,11 +154,11 @@ test("an issue goes from worktree to a pushed branch and a PR, never main", asyn
   assert.doesNotMatch(body, /Co-Authored-By/i);
   assert.doesNotMatch(git(worktree, "log", "-1", "--format=%B"), /Co-Authored-By/i);
   assert.ok(!ghCalls.some((a) => a.includes("merge")), "she never merges");
-  // Goal mode, capped at the issue's rounds (#1214: a one-line issue gets 12); tests ran in the worktree, without the backend's keys.
-  assert.equal(seen[0].opts.maxRounds, 12);
+  // Goal mode, capped at the issue's rounds (#1255: a one-line issue that names no file gets 30); tests ran in the worktree, without the backend's keys.
+  assert.equal(seen[0].opts.maxRounds, 30);
   // #1124: the round she's on, for the Background tasks panel.
   assert.equal(status.round, 1);
-  assert.equal(status.maxRounds, 12);
+  assert.equal(status.maxRounds, 30);
   assert.match(seen[0].opts.goal, /^Implement issue #7/);
   assert.equal(testRuns[0].command, "node --test test/util.test.js");
   assert.equal(testRuns[0].cwd, path.join(worktree, "node-bot"));
@@ -779,9 +779,13 @@ test("bench mode runs her loop in the worktree it's given, with no gh, commit or
   assert.equal(sw.status().state, "idle");
 });
 
-test("#1214: rounds follow the issue, up to a ceiling", () => {
-  assert.equal(roundBudget("add() subtracts."), 12);
-  assert.equal(roundBudget("In `node-bot/doctor.js`:\n- a GPU row\n- a warning\n1. a message for `foreground.js`"), 12 + 3 * 3 + 2 * 2);
+test("#1214 / #1255: rounds follow the issue from a floor of 24, a vague one gets more, up to a ceiling", () => {
+  assert.equal(roundBudget("In `node-bot/util.js`, add() subtracts."), 24 + 2);
+  assert.equal(roundBudget("In `node-bot/doctor.js`:\n- a GPU row\n- a warning\n1. a message for `foreground.js`"), 24 + 3 * 3 + 2 * 2);
+  // No file named: finding them takes rounds, so never less than a named one.
+  assert.equal(roundBudget("add() subtracts."), 30);
+  assert.equal(roundBudget(""), 30);
+  assert.ok(roundBudget("add() subtracts.") > roundBudget("In `node-bot/util.js`, add() subtracts."));
   assert.equal(roundBudget(Array(30).fill("- one more thing").join("\n")), 40);
 });
 
@@ -800,8 +804,8 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
 
   assert.equal(seen[0].opts.contextSize, 32768);
-  assert.equal(seen[0].opts.maxRounds, 12);
-  assert.equal(sw.status().maxRounds, 12);
+  assert.equal(seen[0].opts.maxRounds, 30);
+  assert.equal(sw.status().maxRounds, 30);
   assert.match(results[1], /^node-bot\/long\.js lines 1-120 of 300\n/);
   assert.match(results[2], /^node-bot\/long\.js lines 10-259 of 300\n/);
 
