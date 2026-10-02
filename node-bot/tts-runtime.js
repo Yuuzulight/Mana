@@ -4,6 +4,7 @@ const http = require("node:http");
 const https = require("node:https");
 const { spawnSync: defaultSpawnSync } = require("node:child_process");
 const { FISH_VRAM_MB, detectGpuVramUsageMb, getGpu } = require("./model-management");
+const EMOTION_RATES = require("./utils/emotion-rates.json");
 
 const DEFAULT_KOKORO_LANGUAGE_PROFILES = {
   english: { lang: "en-us", speed: 1.12 },
@@ -505,13 +506,22 @@ function createTtsRuntime(options = {}) {
     return fishDeviceSwapInFlight;
   }
 
-  function pickKokoroLanguageProfile(text) {
+  function pickKokoroLanguageProfile(text, emotion) {
     const language = detectTtsLanguage(text);
-    return {
+    const profile = {
       voice: kokoroManaVoice,
       pitch: kokoroManaPitch,
       ...(kokoroLanguageProfiles[language] || kokoroLanguageProfiles.english),
     };
+    // #909: the same per-emotion rate Qwen3-TTS uses -- a little faster and
+    // higher when excited, slower and lower when sad. Pitch stays inside the
+    // service's 0.8-1.3 clamp. KOKORO_TTS_EMOTION=off keeps one voice.
+    const rate = env.KOKORO_TTS_EMOTION === "off" ? 1 : EMOTION_RATES[emotion] || 1;
+    if (rate !== 1) {
+      profile.speed = (profile.speed || 1) * rate;
+      profile.pitch = Math.max(0.8, Math.min(1.3, profile.pitch * rate));
+    }
+    return profile;
   }
 
   // Returns a GPT-SoVITS text_lang code for this text, or null when the
@@ -557,7 +567,7 @@ function createTtsRuntime(options = {}) {
     } else if (provider === "kokoro") {
       await ensureKokoro();
       const startedAt = nowMs();
-      const kokoroProfile = pickKokoroLanguageProfile(text);
+      const kokoroProfile = pickKokoroLanguageProfile(text, emotion);
       audio = await postJson(`${kokoroTtsUrl}/synthesize`, {
         text,
         ...kokoroProfile,
@@ -661,7 +671,7 @@ function createTtsRuntime(options = {}) {
 
     if (activeProvider === "kokoro") {
       try {
-        const res = await synthesizeWithConfiguredProvider("kokoro", text);
+        const res = await synthesizeWithConfiguredProvider("kokoro", text, emotion);
         return res.audio;
       } catch (error) {
         if (kokoroTtsFallbackProvider === "none") {

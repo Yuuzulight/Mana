@@ -381,7 +381,9 @@ function registerMobileRoutes(app, deps = {}) {
     try {
       const text = requireString(req.body?.text, "text");
 
-      const audio = await synthesizeReply(text);
+      // #909: the reply's emotion tag styles her voice, as on desktop.
+      const emotion = typeof req.body?.emotion === "string" ? req.body.emotion : undefined;
+      const audio = await synthesizeReply(text, { emotion });
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (error) {

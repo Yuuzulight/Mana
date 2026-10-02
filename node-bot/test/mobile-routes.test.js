@@ -532,3 +532,27 @@ test("pairing requires a valid TOTP code when mobileTotpSecret is set, and healt
     fs.rmSync(filePath, { force: true });
   }
 });
+
+test("mobile synthesis passes the reply's emotion through (#909)", async () => {
+  const seen = [];
+  const app = createApp(
+    makeMobileDeps({
+      synthesizeReply: async (text, opts) => {
+        seen.push(opts);
+        return Buffer.from("fake-wav");
+      },
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const token = await unlock(baseUrl);
+    const response = await fetch(`${baseUrl}/mobile/synthesize`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "hello", emotion: "happy" }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  assert.deepEqual(seen, [{ emotion: "happy" }]);
+});

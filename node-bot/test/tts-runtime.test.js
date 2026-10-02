@@ -646,3 +646,31 @@ test("resolveTtsProvider: Fish on CUDA with room for it, Kokoro otherwise; expli
   assert.equal(resolveTtsProvider({ TTS_PROVIDER: "fish" }, { gpu: noDetection, vramUsage: noDetection }), "fish");
   assert.equal(resolveTtsProvider({ TTS_BIN: "C:\tts.exe" }, { gpu: noDetection, vramUsage: noDetection }), "cli");
 });
+
+test("tts runtime maps the emotion tag to Kokoro speed and pitch (#909)", async () => {
+  const calls = [];
+  const make = (extraEnv = {}) =>
+    createTtsRuntime({
+      env: { TTS_PROVIDER: "kokoro", KOKORO_TTS_URL: "http://kokoro.local", KOKORO_MANA_PITCH: "1.25", ...extraEnv },
+      postJsonBuffer: async (url, body) => {
+        calls.push(body);
+        return Buffer.from("kokoro-audio");
+      },
+      fetchImpl: async () => ({ ok: true }),
+      nowMs: () => 1,
+      logPerf: () => {},
+    });
+
+  await make().synthesizeReply("hello there", "excited");
+  await make().synthesizeReply("hello there", "sad");
+  await make({ KOKORO_TTS_EMOTION: "off" }).synthesizeReply("hello there", "excited");
+  await make().synthesizeReply("hello there");
+
+  assert.ok(Math.abs(calls[0].speed - 1.12 * 1.07) < 1e-9);
+  assert.equal(calls[0].pitch, 1.3); // 1.25 * 1.07 clamped
+  assert.ok(Math.abs(calls[1].speed - 1.12 * 0.93) < 1e-9);
+  assert.ok(Math.abs(calls[1].pitch - 1.25 * 0.93) < 1e-9);
+  assert.equal(calls[2].speed, 1.12);
+  assert.equal(calls[2].pitch, 1.25);
+  assert.equal(calls[3].speed, 1.12);
+});

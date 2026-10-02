@@ -8,6 +8,7 @@ tools/qwen3-tts/.venv's python; the native launcher does that for you.
 """
 
 import io
+import json
 import os
 import threading
 from urllib.parse import urlsplit
@@ -44,15 +45,13 @@ MAX_SEQ_LEN = 1024
 # slower a little lower, as people sound when excited or sad: at most 7% and
 # ~1.3 semitones either way. QWEN3_TTS_EMOTION=off keeps one voice for every
 # tag.
-EMOTION_RATES = {} if os.environ.get("QWEN3_TTS_EMOTION") == "off" else {
-    "excited": 1.07,
-    "surprised": 1.05,
-    "happy": 1.04,
-    "angry": 1.03,
-    "thinking": 0.97,
-    "disappointed": 0.95,
-    "sad": 0.93,
-}
+# The table lives in node-bot/utils/emotion-rates.json so Kokoro shares it.
+EMOTION_RATES = {} if os.environ.get("QWEN3_TTS_EMOTION") == "off" else json.loads(
+    open(
+        os.path.join(os.path.dirname(__file__), "..", "node-bot", "utils", "emotion-rates.json"),
+        encoding="utf-8",
+    ).read()
+)
 
 app = FastAPI(title="Mana Qwen3-TTS")
 model = None
