@@ -1539,15 +1539,17 @@ function createLlamaServerRuntime(options = {}) {
     // </parameter></function>, left in the text when llama-server's parser
     // didn't take it (measured: 6 of 10 benchmark runs ended on one).
     // Values are text; a non-string schema type gets them parsed as JSON.
-    // #1258: a call ends at the </function> that's followed by the next
-    // call or the end, and a value at the </parameter> that's followed by
-    // the next parameter or the end of the call, so code with </parameter>
-    // or </function> in it comes through whole. In a closed call the last
-    // value may leave out its </parameter> (it runs to </function>); a call
-    // cut off mid-value doesn't run.
+    // #1258: a call ends at the first </function> after which the next
+    // </function> (if any) comes after another <function=...>: prose may
+    // follow a call, and code with </function> in it stays in its value. A
+    // value ends at the </parameter> that's followed by the next parameter
+    // or the end of the call, so code with </parameter> in it comes through
+    // whole. The last value may leave out its </parameter> (it runs to
+    // </function>). A call without its </function> (a reply cut off) doesn't
+    // run.
     if (!found.length) {
-      const call = /<function=([\w.-]+)>([\s\S]*?)(?:(<\/function>)\s*(?=<\/tool_call>|<tool_call>|<function=[\w.-]+>|$)|$)/g;
-      for (const [, name, body, closed] of text.matchAll(call)) {
+      const call = /<function=([\w.-]+)>([\s\S]*?)<\/function>(?=(?:(?!<\/function>)[\s\S])*?(?:<function=[\w.-]+>|$))/g;
+      for (const [, name, body] of text.matchAll(call)) {
         const props = params.get(name)?.properties || {};
         const args = {};
         const values = [];
@@ -1556,8 +1558,8 @@ function createLlamaServerRuntime(options = {}) {
           values.push(m);
           end = m.index + m[0].length;
         }
-        const last = closed && /^\s*<parameter=([\w.-]+)>\r?\n?([\s\S]*?)\s*$/.exec(body.slice(end));
-        if (last) values.push(last);
+        const last = /^\s*<parameter=([\w.-]+)>\r?\n?([\s\S]*)$/.exec(body.slice(end));
+        if (last) values.push([last[0], last[1], last[2].trimEnd()]);
         for (const [, key, value] of values) {
           args[key] = value;
           if (props[key]?.type && props[key].type !== "string") {

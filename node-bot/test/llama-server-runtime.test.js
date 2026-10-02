@@ -2020,6 +2020,34 @@ test("#1258 a large multi-line XML value with <, >, </ and code comes through wh
   assert.equal(open.executedArgs[0]?.new_text, BIG_CODE);
 });
 
+test("#1258 calls end at their </function> with prose after or between them; each keeps its own arguments", async () => {
+  const read = (p) => `<function=read_file>\n<parameter=path>\n${p}\n</parameter>\n</function>`;
+  const run = async (text) => (await runGoalScript({ tools: [READ_TOOL], turns: [text, "Done."], options: { goal: null } })).executedArgs;
+
+  assert.deepEqual(await run(`${read("a.js")}\nLet me read it.`), [{ path: "a.js" }]);
+  assert.deepEqual(await run(`${read("a.js")}\nThen the next one.\n${read("b.js")}\nThat's both.`), [{ path: "a.js" }, { path: "b.js" }]);
+  // One written out in her prose before the real call.
+  assert.deepEqual(
+    await run(`Last time I used ${read("quoted.js")} for this. Now:\n<tool_call>\n${read("real.js")}\n</tool_call>`),
+    [{ path: "quoted.js" }, { path: "real.js" }],
+  );
+});
+
+test("#1258 a call cut off before its </function> doesn't run, even after a </parameter> in its value", async () => {
+  const text = '<tool_call>\n<function=coding__propose_edit>\n<parameter=path>\na.js\n</parameter>\n<parameter=new_text>\nconst close = "\n</parameter>';
+  const { executed } = await runGoalScript({ tools: [EDIT_TOOL], turns: [text, "Done."], options: { goal: null } });
+  assert.deepEqual(executed, []);
+});
+
+test("#1258 a value with a long run of whitespace parses quickly", async () => {
+  const spaces = " ".repeat(40000);
+  const text = `<function=coding__propose_edit>\n<parameter=path>\na.js\n</parameter>\n<parameter=new_text>\nx${spaces}y${spaces}\n</function>`;
+  const started = Date.now();
+  const { executedArgs } = await runGoalScript({ tools: [EDIT_TOOL], turns: [text, "Done."], options: { goal: null } });
+  assert.ok(Date.now() - started < 500, `took ${Date.now() - started}ms`);
+  assert.equal(executedArgs[0].new_text, `x${spaces}y`);
+});
+
 test("#1258 a call without a required argument goes back saying which, and that a cut-off reply was cut off", async () => {
   const response = (finishReason) => ({
     json: {
