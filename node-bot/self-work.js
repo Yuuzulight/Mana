@@ -70,6 +70,9 @@ const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
 const DEFAULT_READ_LINES = 120;
+// #1245: lines she may read in an issue run before her first edit; after
+// that only search and edit, until she's changed something.
+const READ_BUDGET_LINES = 600;
 const MAX_LIST = 100;
 const MAX_LOG = 30;
 
@@ -760,6 +763,7 @@ ${String(issue.body || "").slice(0, 4000)}
 
 How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
+- You can read ${READ_BUDGET_LINES} lines before your first edit, so search first and read only what the change needs; then make the change.
 - Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
 - If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail; changes to the code wait until then.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
@@ -783,6 +787,9 @@ ${
     let progressed = false;
     let lastTestOutcome = null;
     const looked = new Set();
+    // #1245: lines read before her first edit, and whether she's made one.
+    let readLines = 0;
+    let madeEdit = false;
     // #1213: files she's changed this run, and review passes since her last change.
     const edited = new Set();
     const reviewed = new Set();
@@ -823,11 +830,25 @@ ${
     function read({ path: rel, start_line, end_line }) {
       const full = inside(rel);
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to read a credential file");
+      const budgeted = r.kind !== "refresh" && !madeEdit;
+      const left = READ_BUDGET_LINES - readLines;
+      if (budgeted && left <= 0) {
+        throw new Error(
+          `You've read ${READ_BUDGET_LINES} lines without changing anything. Make your first edit now with ${CODING_EDIT_TOOL_NAME}; find the exact lines with self_work__search if you need them. Reading opens again after your first edit.`,
+        );
+      }
       const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
       const from = Math.max(1, Number(start_line) || 1);
-      const to = Math.min(lines.length, Number(end_line) || from + DEFAULT_READ_LINES - 1, from + MAX_READ_LINES - 1);
+      let to = Math.min(lines.length, Number(end_line) || from + DEFAULT_READ_LINES - 1, from + MAX_READ_LINES - 1);
+      if (budgeted) to = Math.min(to, from + left - 1);
       const shown = lines.slice(from - 1, to).map((l, i) => `${from + i}: ${l}`).join("\n");
-      return `${rel} lines ${from}-${to} of ${lines.length}\n${shown}`;
+      if (budgeted) readLines += Math.max(0, to - from + 1);
+      const remaining = READ_BUDGET_LINES - readLines;
+      const note =
+        budgeted && remaining <= READ_BUDGET_LINES / 2
+          ? `\n[${remaining} of ${READ_BUDGET_LINES} lines of reading left before your first edit. Plan your change now.]`
+          : "";
+      return `${rel} lines ${from}-${to} of ${lines.length}\n${shown}${note}`;
     }
 
     // #1211: her plan, on the run (so status() shows it) and with each edit.
@@ -888,6 +909,7 @@ ${
       r.lastTestPassed = false;
       if (next !== original) {
         progressed = true;
+        madeEdit = true;
         // A new change needs reviewing again.
         reviewed.clear();
         edited.add(relPath);
