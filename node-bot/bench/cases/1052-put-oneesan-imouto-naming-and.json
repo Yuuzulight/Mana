@@ -1,5 +1,6 @@
 {
   "id": "1052-put-oneesan-imouto-naming-and",
+  "kind": "node-bug",
   "pr": 1052,
   "issue": 1041,
   "base": "9091e2b3dfd22946be0ccb56294f4be35c24ae50",

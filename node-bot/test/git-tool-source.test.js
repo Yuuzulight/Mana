@@ -108,6 +108,34 @@ test("a repo outside the roots asks me once; allow once lets her in until restar
   assert.equal(gate.isGranted(key), false, "allow once isn't remembered");
 });
 
+test("a repo whose origin is one of my GitHub repos needs no approval; anything else still asks", async () => {
+  const notLoggedIn = { code: 1, stdout: "", stderr: "not logged in" };
+  const cases = [
+    { origin: "https://github.com/Yuuzulight/thing.git", allowed: true },
+    { origin: "https://github.com/Yuuzulight/thing", allowed: true },
+    { origin: "git@github.com:Yuuzulight/thing.git", allowed: true },
+    { origin: "git@github.com:yuuzuLIGHT/thing.git", allowed: true },
+    { origin: "git@github.com:Ana/thing.git", env: { MANA_SELF_WORK_OWNER: "ana" }, login: notLoggedIn, allowed: true },
+    { origin: "https://github.com/someone-else/thing.git", allowed: false },
+    { origin: "https://gitlab.com/Yuuzulight/thing.git", allowed: false },
+    { origin: "https://github.com/Yuuzulight", allowed: false },
+    { origin: null, allowed: false },
+    { origin: null, upstream: "https://github.com/Yuuzulight/thing.git", allowed: false },
+    { origin: "https://github.com/Yuuzulight/thing.git", login: notLoggedIn, allowed: false },
+  ];
+  for (const c of cases) {
+    const { outside, gate, ghCalls, call } = setup({ "api user": c.login ?? "Yuuzulight\n" }, c.env);
+    if (c.origin) git(outside, "remote", "add", "origin", c.origin);
+    if (c.upstream) git(outside, "remote", "add", "upstream", c.upstream);
+    const what = JSON.stringify(c);
+    const out = await call("git__read", { repo: outside, action: "status" });
+    if (c.allowed) assert.match(out, /## main/, what);
+    else assert.match(JSON.parse(out).error, /needs the user's OK first/, what);
+    assert.equal(gate.listPending().length, c.allowed ? 0 : 1, what);
+    if (c.env) assert.equal(ghCalls.length, 0, "the owner setting skips gh");
+  }
+});
+
 test("a worktree of an allowed repo is allowed; a folder that isn't a repo isn't", async () => {
   const { base, repo, call } = setup();
   const wt = path.join(base, "wt");

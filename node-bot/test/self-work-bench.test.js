@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 const { execFileSync } = require("node:child_process");
 
-const { runCase, verifyCase, writeReport } = require("../bench/self-work-bench");
+const { runCase, verifyCase, writeReport, summarize, failureKind } = require("../bench/self-work-bench");
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe" }).trim();
@@ -82,7 +82,7 @@ const plan = ["self_work__plan", { steps: ["fix add()", "finish"], no_test: "the
 
 function deps(r, calls) {
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  return { repoRoot: r.repo, worktreesDir: r.worktrees, runLoop: fakeModel(calls, tokens), tokens, ramPercent: () => 50, onEvent: () => {} };
+  return { repoRoot: r.repo, worktreesDir: r.worktrees, runLoop: fakeModel(calls, tokens), tokens, ramPercent: () => 50, onEvent: () => {}, sample: async () => ({ vramMb: 9000, ramPercent: 80 }) };
 }
 
 test("a case that fixes the bug passes its hidden test, and the worktree is gone after", async () => {
@@ -94,7 +94,8 @@ test("a case that fixes the bug passes its hidden test, and the worktree is gone
   assert.equal(result.rounds, 6);
   assert.equal(result.toolCalls, 6);
   assert.equal(result.toolErrors, 0);
-  assert.deepEqual(result.tokens, { prompt: 600, completion: 60, peak: 600, textCalls: 0 });
+  assert.deepEqual([result.peakVramMb, result.peakRamPercent, result.failure], [9000, 80, null]);
+  assert.deepEqual(result.tokens, { prompt: 600, completion: 60, peak: 600, textCalls: 0, tps: null });
   assert.deepEqual(result.diff, { files: ["node-bot/util.js"], added: 1, removed: 1 });
   assert.deepEqual(result.outside, []);
   assert.match(result.patch, /\+  return a \+ b;/);
@@ -150,11 +151,58 @@ test("the report has a row per case and each case's diff", async () => {
   const result = await runCase(r.c, deps(r, [plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish]));
   const md = writeReport([result], out, { model: "fake.gguf" });
 
-  assert.match(md, /1\/1 hidden tests passing\. Model: fake\.gguf\./);
-  assert.match(md, /\| 1-add-subtracts \| pass \| finished \| 6 \| 6 \(0\) \| \d+s \| 600 \/ 60 \/ 600 \| 0 \|/);
+  assert.match(md, /Model: fake\.gguf\. 1 cases x 1 repeat\(s\)\./);
+  assert.match(md, /\*\*pass@1 100%, pass@1 100%\*\*/);
+  assert.match(md, /\| 1-add-subtracts \| - \| 1 \| pass \| finished \| - \| 6 \| 6 \(0\) \| \d+s \| 600 \/ 60 \/ 600 \| 0 \|/);
   const json = JSON.parse(fs.readFileSync(path.join(out, "report.json"), "utf8"));
   assert.equal(json.results[0].patch, undefined);
   assert.match(fs.readFileSync(path.join(out, "1-add-subtracts.diff"), "utf8"), /a \+ b/);
+});
+
+// #1221
+test("a live case's hidden tests come from its own folder, and verify only needs them to fail at the base", () => {
+  const r = makeRepo();
+  const hiddenFrom = path.join(r.repo, "..", "hidden");
+  fs.mkdirSync(path.join(hiddenFrom, "node-bot", "test"), { recursive: true });
+  fs.writeFileSync(
+    path.join(hiddenFrom, "node-bot", "test", "util.test.js"),
+    'const test = require("node:test");\nconst assert = require("node:assert");\ntest("adds", () => assert.equal(require("../util").add(1, 1), 2));\n',
+  );
+  const live = { ...r.c, id: "2-live", fix: null, hiddenFrom };
+  assert.deepEqual(verifyCase(live, { repoRoot: r.repo, worktreesDir: r.worktrees }).ok, true);
+});
+
+test("pass@1 is the mean over repeats, pass@k any repeat, the spread the fewest and most passes", () => {
+  const run = (id, kind, repeat, passed) => ({ id, kind, repeat, passed, wallMs: 1000, rounds: 5, toolCalls: 5, tokens: { prompt: 10, completion: 1, peak: 10 } });
+  const s = summarize([
+    run("a", "node-bug", 1, true), run("b", "launcher", 1, false),
+    run("a", "node-bug", 2, false), run("b", "launcher", 2, false),
+    run("a", "node-bug", 3, true), run("b", "launcher", 3, true),
+  ]);
+  assert.equal(s.overall.pass1, 0.5);
+  assert.equal(s.overall.passK, 1);
+  assert.deepEqual(s.overall.spread, [0, 2]);
+  assert.equal(s.byKind["node-bug"].pass1, 2 / 3);
+  assert.equal(s.byKind.launcher.passK, 1);
+});
+
+test("each failed run gets one failure kind", () => {
+  const c = { fixFiles: ["node-bot/util.js", "docs/x.md"] };
+  const base = { passed: false, ended: "not-finished", summary: "", rounds: 5, maxRounds: 20, editErrors: 0, contextSize: 16384, outside: [], tokens: { peak: 5000, textCalls: 0 }, diff: { files: [] } };
+  const kind = (over) => failureKind({ ...base, ...over }, c);
+  assert.equal(kind({ passed: true }), null);
+  assert.equal(kind({ tokens: { peak: 13000, textCalls: 0 } }), "context overflow");
+  assert.equal(kind({ ended: "stuck" }), "stuck");
+  assert.equal(kind({ ended: "refuted" }), "no valid edit: reviewer refusal");
+  assert.equal(kind({ ended: "error", error: "llama-server reply failed (500): Failed to parse tool call arguments" }), "no valid edit: parse failure");
+  assert.equal(kind({ editErrors: 2 }), "no valid edit: bad arguments");
+  assert.equal(kind({ tokens: { peak: 5000, textCalls: 1 } }), "no valid edit: parse failure");
+  assert.equal(kind({ rounds: 20 }), "out of rounds");
+  assert.equal(kind({ rounds: 20, tokens: { peak: 5000, textCalls: 1 } }), "out of rounds", "a call in the forced final answer");
+  assert.equal(kind({}), "no valid edit");
+  assert.equal(kind({ diff: { files: ["node-bot/other.js"] }, outside: ["node-bot/other.js"] }), "wrong file");
+  assert.equal(kind({ diff: { files: ["node-bot/util.js", "node-bot/x.js"] }, outside: ["node-bot/x.js"] }), "scope creep");
+  assert.equal(kind({ diff: { files: ["node-bot/util.js"] } }), "tests fail");
 });
 
 // #1249: a case's id and hidden tests stay inside the repo.
