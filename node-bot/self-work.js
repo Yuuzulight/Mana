@@ -7,8 +7,9 @@
 // (#1193), which asks me every time unless I've changed that setting.
 // Writes apply directly in her worktree once they parse. Before she can
 // finish, she reviews her own diff in three passes and the adversarial
-// reviewer (#788 / #622) reads it (#1213); a refutation stops the run and
-// asks me. I review everything in the PR.
+// reviewer (#788 / #622) reads it (#1213); a refutation goes back to her
+// to fix, and the third on one file stops the run and asks me (#1251). I
+// review everything in the PR.
 //
 // #1194: a run can also bring one of her own open PRs up to date
 // ("update your PR #N"): main merged in, conflicts fixed with the same
@@ -55,6 +56,9 @@ const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
 // ("// ... rest unchanged", "# existing code omitted", a bare "// ...").
 const ELIDED_RE = /^\s*(?:\/\/|#|\/\*|<!--)\s*(?:\.\.\.|…|(?:rest|remainder)\b|.*\b(?:existing|remaining|rest of|other|previous|original|same)\b.*\b(?:unchanged|omitted|as before)\b)/i;
 const MAX_ROUNDS = 20;
+// #1251: refutations of one file before the run stops and asks me.
+const MAX_REFUTATIONS = 3;
+const MAX_PR_REVIEW_NOTES = 30;
 // #1214: an issue run's rounds follow the issue: a floor, more for each
 // thing it asks for (a bullet or numbered line) and each file it names,
 // and a hard ceiling.
@@ -617,7 +621,12 @@ function createSelfWork(options = {}) {
     const testing = closest
       ? `None of my ${r.attempts.length} attempts finished with all its tests passing. Attempt ${best.kept} came closest: it finished, but these still fail, so it's a draft until they pass:\n${best.failing.map((f) => `- ${f}`).join("\n") || "- (no test names in the output)"}`
       : `${r.lastTestCommand}: passed.${r.attempts?.length > 1 ? ` (Attempt ${best.kept} of ${r.attempts.length}.)` : ""}`;
-    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${testing}`;
+    // #1251: everything my reviewer said this run, refutations I fixed and notes.
+    const notes = [...new Set(r.reviewNotes)];
+    const reviewer = notes.length
+      ? `\n\n## My reviewer\n${notes.slice(0, MAX_PR_REVIEW_NOTES).map((n) => `- ${n.slice(0, 500)}`).join("\n")}${notes.length > MAX_PR_REVIEW_NOTES ? `\n- ...and ${notes.length - MAX_PR_REVIEW_NOTES} more` : ""}`
+      : "";
+    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${testing}${reviewer}`;
     let url;
     try {
       url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", title, "--body", body, ...(touched.length || closest ? ["--draft"] : [])], r.worktree);
@@ -635,7 +644,7 @@ function createSelfWork(options = {}) {
 
   // Goal mode over her worktree tools, for a real run and a bench run alike.
   function loop(r, issue) {
-    return runLoop(buildPrompt(r, issue), worktreeTools(r), {
+    return runLoop(buildPrompt(r, issue), worktreeTools(r, { intent: `#${r.issue}: ${r.title}\n${String(issue.body || "")}` }), {
       goal: `Implement issue #${r.issue}: ${r.title}`,
       maxRounds: r.maxRounds,
       contextSize: Number(env.MANA_SELF_WORK_LLAMA_CONTEXT ?? DEFAULT_SELF_WORK_CONTEXT) || undefined,
@@ -959,6 +968,8 @@ ${
     // #1213: files she's changed this run, and review passes since her last change.
     const edited = new Set();
     const reviewed = new Set();
+    // #1251: per file, the last refuted diff, its verdict and how many so far.
+    const refutations = new Map();
 
     // Inside the worktree by name and by real path: a link (node_modules)
     // can't carry a write out of it.
@@ -1115,10 +1126,14 @@ ${
     }
 
     // #1213: finishing takes her three passes since her last edit, then the
-    // adversarial reviewer on each changed source file; a refutation stops
-    // the run and asks me. An issue run's reviewer reads every file in her
-    // final diff (files her tests wrote too), and that diff is what a PR
-    // may open with; a refresh's, only her own edits (not main's changes).
+    // adversarial reviewer on each changed source file. An issue run's
+    // reviewer reads every file in her final diff (files her tests wrote
+    // too), and that diff is what a PR may open with; a refresh's, only her
+    // own edits (not main's changes).
+    // #1251: a refutation refuses the finish and goes back to her to fix;
+    // the same diff gets the same answer without asking the reviewer again,
+    // and the third on one file stops the run and asks me. A note doesn't
+    // block.
     async function finish(args) {
       if (edited.size) {
         const left = Object.keys(REVIEW_PASSES).filter((p) => !reviewed.has(p));
@@ -1130,12 +1145,33 @@ ${
       const changed = r.kind === "refresh" ? [...edited] : (await git(["-c", "core.quotePath=false", "diff", "--name-only", "HEAD"], root)).split(/\r?\n/).filter(Boolean);
       for (const relPath of reviewEdit ? changed : []) {
         const diff = await diffNow(relPath);
-        const verdict = diff ? await reviewEdit({ relativePath: relPath, diff, summary: `my change to ${relPath} for #${r.issue}` }) : null;
-        if (verdict?.verdict === "refuted") {
+        if (!diff) continue;
+        const last = refutations.get(relPath);
+        const cached = last?.diff === diff;
+        let verdict = cached
+          ? last.verdict
+          : await reviewEdit({ relativePath: relPath, diff, summary: `my change to ${relPath} for #${r.issue}`, intent: extra.intent || r.title });
+        // A refutation that doesn't name an input, the wrong behaviour and
+        // what it breaks is a note here (and still blocks everywhere else).
+        if (verdict?.verdict === "refuted" && verdict.concrete !== true) {
+          verdict = { verdict: "note", failingCase: "", reason: `not a concrete failure: ${verdict.failingCase}` };
+        }
+        if (verdict?.verdict === "note") {
+          log(r, `My reviewer's note on ${relPath}: ${verdict.reason}`);
+          (r.reviewNotes ||= []).push(`Note on \`${relPath}\`: ${verdict.reason}`);
+        }
+        if (verdict?.verdict !== "refuted") continue;
+        const count = (last?.count || 0) + 1;
+        refutations.set(relPath, { diff, verdict, count });
+        log(r, `My reviewer refuted my change to ${relPath}: ${verdict.failingCase}`);
+        if (!cached) (r.reviewNotes ||= []).push(`Refuted \`${relPath}\`: ${verdict.failingCase}`);
+        if (count >= MAX_REFUTATIONS) {
           r.refuted = { path: relPath, failingCase: verdict.failingCase };
-          log(r, `My reviewer refuted my change to ${relPath}: ${verdict.failingCase}`);
           return JSON.stringify({ status: "blocked", error: `refuted by review: ${verdict.failingCase}` });
         }
+        throw new Error(
+          `Not finished: your reviewer found a way your change to ${relPath} breaks: ${verdict.failingCase}. Fix it with ${CODING_EDIT_TOOL_NAME}, review again, then finish. (${count} of ${MAX_REFUTATIONS}: at ${MAX_REFUTATIONS} the run stops.)`,
+        );
       }
       // #1249: the exact tree she finished with (binary and whitespace
       // changes included), which a PR has to match. A refresh never opens one.

@@ -11,6 +11,7 @@ const {
   MAX_TOOL_CALLS_PER_SESSION,
 } = require("../acp-autonomous-loop");
 const { createHooksStore } = require("../hooks-store");
+const { refuteEdit } = require("../ai/adversarial-verifier");
 const { waitForPendingFile } = require("./helpers");
 
 function hooksWith(...rules) {
@@ -243,6 +244,29 @@ test("a refuted source-file write asks, even with approved:true and approvals of
   assert.equal(pending.adversarialReview.failingCase, "an empty list crashes it");
   assert.equal(res.results[0].status, "ok");
   assert.deepEqual(writes, ["new"]);
+});
+
+// #1251: the real reviewer's parser, for every form a REFUTED reply comes in:
+// none of them lets a write through without asking.
+test("a write refuted in any form (one line, BREAKS: security, cut off) still asks", async (t) => {
+  const dir = approvalEnv(t, "0");
+  fakeTarget(t, "pb-review-forms.js");
+  for (const reply of [
+    "REFUTED: an empty list crashes it",
+    "VERDICT: REFUTED\nINPUT: a path with ..\nWRONG: it writes outside the repo\nBREAKS: security",
+    "VERDICT: REFUTED\nINPUT: an empty list\nWRO",
+  ]) {
+    const reviewWrite = ({ path: p, before, after, summary }) =>
+      refuteEdit({ relativePath: p, diff: `-${before}\n+${after}\n`, summary, env: {}, runLocalReply: async () => reply });
+    const running = executeAutonomousStep(
+      step("file_write", { path: "src/pb-review-forms.js", content: "new", mode: "overwrite", approved: true }),
+      "pb-review-forms",
+      { reviewWrite, hooksStore: hooksWith(), snapshotStore: { recordSnapshot: () => ({ id: "s" }) } },
+    );
+    const pending = await approveNext(dir);
+    await running;
+    assert.equal(pending.adversarialReview?.verdict, "refuted", reply);
+  }
 });
 
 test("a write the review holds, or a non-source file, needs no extra approval", async (t) => {
