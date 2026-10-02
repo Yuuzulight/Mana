@@ -236,6 +236,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
+const { stepInfo, trimResult, withStepDescriptions } = require("./ai/step-description");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
 const { untrustedLinks, untrustedSources } = require("./ai/untrusted-content");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
@@ -2875,7 +2876,8 @@ function registerRoutes(app, upload, deps = {}) {
   // #646: the chat tool loop's live runs (current tool, elapsed), polled
   // by the launcher's activity panel -- read-only, no auth, same as above.
   app.get("/agent/activity", (req, res) => {
-    return res.json({ runs: agentActivity.list() });
+    // #1318: plus the current (else last) reply's steps for the chat.
+    return res.json({ runs: agentActivity.list(), ...agentActivity.latestSteps() });
   });
 
   // #646: Stop from that panel, by run id.
@@ -5061,7 +5063,9 @@ function registerRoutes(app, upload, deps = {}) {
     async function replyMaybeWithTools(promptText) {
       turnToolSchemas = [];
       const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
-      activityRun = agentActivity.start();
+      activityRun = agentActivity.start({
+        model: String(activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\/]/).pop() || null,
+      });
       // #1122: the Browser tool lists the web pages this turn took in.
       activeBrowserAutomationToolSource.activityLog.recordTurnPages(untrustedLinks(promptText));
       let reply;
@@ -5259,6 +5263,25 @@ function registerRoutes(app, upload, deps = {}) {
                 ]
               : []),
           ]);
+          // #1318: command and sub-task tools ask for a `description`.
+          mergedToolPolicy = withStepDescriptions(mergedToolPolicy);
+          // #1318: a step held in the approval queue shows as awaiting
+          // approval in the chat and activity panel until it's answered.
+          const stepApprovalGate = new Proxy(activeApprovalGate, {
+            get(target, prop) {
+              const value = Reflect.get(target, prop, target);
+              if (typeof value !== "function") return value;
+              if (prop !== "requestApproval") return value.bind(target);
+              return async (...request) => {
+                reportTool(activityRun.tool, "waiting");
+                try {
+                  return await value.apply(target, request);
+                } finally {
+                  reportTool(activityRun.tool, "resumed");
+                }
+              };
+            },
+          });
           // Issue #281: on the "fast" (small) profile, protect its limited
           // context from a large tool catalogue and from raw tool-result
           // payloads -- both reuse this same already-loaded model rather
@@ -5282,7 +5305,7 @@ function registerRoutes(app, upload, deps = {}) {
           // wrapWithToolCallLog below -- so a denied or ask-gated call still
           // lands in the audit trail as its own logged event, additive to
           // both existing gates rather than replacing either.
-          mergedToolPolicy = wrapWithHooks(mergedToolPolicy, activeHooksStore, activeApprovalGate, {
+          mergedToolPolicy = wrapWithHooks(mergedToolPolicy, activeHooksStore, stepApprovalGate, {
             snapshotStore,
           });
           // Issue #669: per-call risk tiers. Destructive calls (rm -rf,
@@ -5296,7 +5319,7 @@ function registerRoutes(app, upload, deps = {}) {
           mergedToolPolicy =
             typeof replyMeta?.wrapToolPolicy === "function"
               ? replyMeta.wrapToolPolicy(mergedToolPolicy, activeApprovalGate)
-              : wrapWithRiskGate(mergedToolPolicy, activeApprovalGate, {
+              : wrapWithRiskGate(mergedToolPolicy, stepApprovalGate, {
                   mode: resolveToolApprovalMode(
                     activeApprovalGate.getToolApprovalMode(),
                     (deps.env || process.env).MANA_TOOL_APPROVAL,
@@ -5320,13 +5343,19 @@ function registerRoutes(app, upload, deps = {}) {
           const onToolCall =
             replyMeta && typeof replyMeta.onToolCall === "function" ? replyMeta.onToolCall : null;
           const run = activityRun;
-          const reportTool = (name, phase) => {
-            if (isExpressionToolName(name)) return;
-            if (phase === "start") agentActivity.toolStarted(run, name);
-            else agentActivity.toolEnded(run, name);
+          // #1318: each step's description/status/duration goes to the
+          // activity record and, as a "tool" event, to the chat's step lines.
+          const reportTool = (name, phase, extra) => {
+            if (!name || isExpressionToolName(name)) return;
+            const step =
+              phase === "start"
+                ? agentActivity.toolStarted(run, name, extra)
+                : phase === "waiting" || phase === "resumed"
+                  ? agentActivity.toolWaiting(run, phase === "waiting")
+                  : agentActivity.toolEnded(run, name, extra);
             if (!onToolCall) return;
             try {
-              onToolCall({ name, phase });
+              onToolCall({ ...step, name, phase });
             } catch (e) {}
           };
           mergedToolPolicy.executeTool = async (name, args) => {
@@ -5339,16 +5368,23 @@ function registerRoutes(app, upload, deps = {}) {
             if (run.stopRequested) {
               throw new Error("Stopped by the user. Don't call any more tools; answer with what you have.");
             }
-            reportTool(name, "start");
+            reportTool(name, "start", stepInfo(name, args));
+            let ok = false;
+            let result;
             try {
               // #1121: a command this call runs is stopped by this loop's Stop.
-              const result = await terminalFeed.runWith({ stop: () => agentActivity.stop(run.id) }, () =>
+              result = await terminalFeed.runWith({ stop: () => agentActivity.stop(run.id) }, () =>
                 executeLoggedTool(name, args),
               );
               turnTools.push(name);
+              ok = true;
               return result;
             } finally {
-              reportTool(name, "end");
+              reportTool(name, "end", {
+                ok,
+                result: ok ? trimResult(result) : undefined,
+                tokens: activeLlamaServerRuntime.getLastPromptUsage?.()?.promptTokens,
+              });
             }
           };
           const toolResult = await runToolAwareReply(
@@ -5361,6 +5397,7 @@ function registerRoutes(app, upload, deps = {}) {
               extraMessages: memoryExtraMessages,
               thinking: () => thinkHarder,
               goal: goalMode ? sessionGoal : null,
+              onRoundText: () => agentActivity.textShown(run),
             },
           );
           if (toolResult.content && toolResult.content.trim()) {

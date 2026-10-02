@@ -3573,3 +3573,39 @@ test("#1214 a forced final answer past the context ends goal mode with a note, n
 
   assert.equal(result.content, "Not done yet: the conversation outgrew the model's context");
 });
+
+// #1318
+test("runToolAwareReply reports reply text shown alongside a round's tool calls", async () => {
+  let call = 0;
+  let serverUp = false;
+  const withText = makeToolCallResponse(["read_file"]);
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      call += 1;
+      if (call === 1) {
+        const json = await withText.json();
+        json.choices[0].message.content = "Let me check that file.";
+        return { ok: true, json: async () => json };
+      }
+      return call === 2 ? makeToolCallResponse(["read_file"]) : makeAnswerResponse("Done.");
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+  const texts = [];
+  await runtime.runToolAwareReply("check it", makeFakePolicy({ executeTool: () => "ok" }), {
+    onRoundText: (text) => texts.push(text),
+  });
+  assert.deepEqual(texts, ["Let me check that file."]);
+});

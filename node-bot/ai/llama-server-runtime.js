@@ -1884,6 +1884,8 @@ function createLlamaServerRuntime(options = {}) {
       goal = null,
       // #1124: (round, roundLimit) at the start of each round.
       onRound = null,
+      // #1318: (text) when a round shows reply text alongside its tool calls.
+      onRoundText = null,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") {
@@ -2131,6 +2133,7 @@ function createLlamaServerRuntime(options = {}) {
       unansweredRechecks = 0;
 
       const boundedCalls = requestedToolCalls.slice(0, callsPerRoundLimit);
+      if (visibleContent) onRoundText?.(visibleContent);
       messages.push({
         role: "assistant",
         content: visibleContent || null,

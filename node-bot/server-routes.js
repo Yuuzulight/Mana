@@ -574,7 +574,8 @@ function registerCoreRoutes(app, upload, deps) {
       // working while a tool runs.
       const replyMeta = {
         systemPatch: input.systemPatch,
-        onToolCall: ({ name, phase }) => writeEvent({ type: "tool", name, phase }),
+        // #1318: plus the step (description, kind, status, detail...).
+        onToolCall: (call) => writeEvent({ ...call, type: "tool" }),
         // #914: a relationship note she just made, for its chat line.
         onNoted: (noted) => writeEvent({ type: "noted", ...noted }),
         // #675: the client's "think harder" (deep-thinking toggle): true

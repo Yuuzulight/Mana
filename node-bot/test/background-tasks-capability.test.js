@@ -9,6 +9,7 @@ const {
   cancelBackgroundTask,
   etaSeconds,
   listBackgroundTasks,
+  backgroundTaskTranscript,
 } = require("../capabilities/background-tasks-capability");
 
 const MIN = 60 * 1000;
@@ -83,6 +84,7 @@ test("every source's state becomes a task", () => {
     // Its countdown: 30 of 40 minutes gone.
     progress: { done: 30 * MIN, total: 40 * MIN, unit: "ms" },
     canCancel: true,
+    canStop: true,
   });
   assert.equal(tasks["cron:c1"].status, "paused");
   assert.equal(tasks["cron:c1"].progress, undefined);
@@ -217,4 +219,54 @@ test("routes need the admin key; cancel answers 404 / 409 / 200", async () => {
     assert.equal((await cancel("heartbeat:h1")).status, 409);
     assert.equal((await cancel("nope")).status, 404);
   });
+});
+
+// #1318
+test("agent and self-work tasks carry model, tokens, tool uses, the current action and a transcript", () => {
+  const { createAgentActivity } = require("../agent-activity");
+  let t = NOW;
+  const agentActivity = createAgentActivity({ now: () => t });
+  const done = agentActivity.start({ model: "Qwen3.5-9B" });
+  agentActivity.toolStarted(done, "dc__write_file", { kind: "file_create", description: "Create x.js" });
+  agentActivity.toolEnded(done, "dc__write_file", { tokens: 900 });
+  agentActivity.finish(done);
+  const live = agentActivity.start({ model: "Qwen3.5-9B" });
+  agentActivity.toolStarted(live, "dc__start_process", { kind: "command", description: "Run a command" });
+  t += 5000;
+  const { sources } = fakeSources({
+    agentActivity,
+    selfWork: () => ({
+      status: () => ({
+        state: "running", issue: 7, title: "Fix add", startedAt: new Date(NOW).toISOString(), step: "Running the tests in C:\\Users\\me\\work",
+        round: 1, maxRounds: 20, log: [{ at: "2026-10-03T00:00:00.000Z", text: "Read the issue" }, { at: "2026-10-03T00:01:00.000Z", text: "Run **tests**" }],
+      }),
+    }),
+  });
+  const tasks = byId(listBackgroundTasks(sources));
+  const running = tasks[`agent:${live.id}`];
+  assert.equal(running.status, "running");
+  assert.equal(running.model, "Qwen3.5-9B");
+  assert.equal(running.toolUses, 1);
+  assert.equal(running.currentAction, "Run a command");
+  assert.equal(running.canStop, true);
+  assert.equal(running.transcriptUrl, `/background-tasks/agent%3A${live.id}/transcript`);
+  const finished = tasks[`agent:${done.id}`];
+  assert.equal(finished.status, "done");
+  assert.equal(finished.tokens, 900);
+  assert.equal(finished.currentAction, undefined);
+  assert.equal(finished.canStop, false);
+
+  assert.doesNotMatch(tasks["self-work"].currentAction, /Users/);
+  assert.equal(tasks["self-work"].toolUses, 2);
+  assert.equal(tasks["research:j1"].transcriptUrl, undefined);
+
+  assert.deepEqual(backgroundTaskTranscript(sources, `agent:${done.id}`).steps.map((s) => s.description), ["Create x.js"]);
+  const selfWork = backgroundTaskTranscript(sources, "self-work");
+  assert.equal(selfWork.title, "#7: Fix add");
+  assert.deepEqual(selfWork.steps.map((s) => [s.description, s.status, s.endedAt]), [
+    ["Read the issue", "done", "2026-10-03T00:01:00.000Z"],
+    ["Run tests", "running", null],
+  ]);
+  assert.equal(backgroundTaskTranscript(sources, "research:j1"), null);
+  assert.equal(backgroundTaskTranscript(sources, "agent:999"), null);
 });

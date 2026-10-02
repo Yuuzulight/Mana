@@ -31,3 +31,27 @@ test("GET /background-tasks needs the admin key and lists self-work; cancel stop
     assert.equal(stopped, 1);
   });
 });
+
+// #1318
+test("GET /background-tasks/:id/transcript returns a task's steps behind the admin key", async () => {
+  const app = createApp({
+    selfWork: {
+      status: () => ({
+        state: "running", issue: 5, title: "Tidy", startedAt: new Date().toISOString(), step: "Reading", round: 1, maxRounds: 20,
+        log: [{ at: "2026-10-03T00:00:00.000Z", text: "Reading" }],
+      }),
+      stop: () => true,
+      startIdle: async () => ({ ok: false }),
+      chatToolSource: () => null,
+    },
+  });
+  await withServer(app, async (base) => {
+    const { tasks } = await (await fetch(`${base}/background-tasks`)).json();
+    const selfWork = tasks.find((t) => t.id === "self-work");
+    assert.equal(selfWork.currentAction, "Reading");
+    assert.equal((await globalThis.fetch(`${base}${selfWork.transcriptUrl}`)).status, 401);
+    const transcript = await (await fetch(`${base}${selfWork.transcriptUrl}`)).json();
+    assert.deepEqual(transcript.steps.map((s) => [s.description, s.status]), [["Reading", "running"]]);
+    assert.equal((await fetch(`${base}/background-tasks/nope/transcript`)).status, 404);
+  });
+});
