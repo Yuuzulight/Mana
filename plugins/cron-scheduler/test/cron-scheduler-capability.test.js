@@ -278,23 +278,49 @@ test("missed reminders older than a day aren't brought up", async () => {
   assert.deepEqual(scheduler.listJobs(), []);
 });
 
-test("in quiet time (1am-9am) a reminder is a silent toast, said once quiet time is over", async () => {
-  const threeAm = new Date(2026, 9, 2, 3, 0).getTime();
-  const { offered } = await catchUp(["water the plants."], { dueAt: threeAm, now: threeAm });
-  assert.equal(offered.length, 1);
-  assert.equal(offered[0].text, "water the plants.");
-  assert.equal(offered[0].speak, undefined);
-
+test("in quiet time a reminder is a silent toast, said once quiet time is over", async () => {
   const proactive = require("../../../node-bot/proactive");
+  const prevQuiet = proactive.getSettings().quietHours;
+  proactive.updateSettings({ quietHours: { enabled: true } });
   const realOffer = proactive.offer;
   const later = [];
-  proactive.offer = (candidate) => (later.push(candidate.payload), "held");
   try {
+    const threeAm = new Date(2026, 9, 2, 3, 0).getTime();
+    const { offered } = await catchUp(["water the plants."], { dueAt: threeAm, now: threeAm });
+    assert.equal(offered.length, 1);
+    assert.equal(offered[0].text, "water the plants.");
+    assert.equal(offered[0].speak, undefined);
+
+    proactive.offer = (candidate) => (later.push(candidate.payload), "held");
     cronPlugin._sayHeldRemindersForTests(new Date(2026, 9, 2, 8, 59).getTime());
     assert.deepEqual(later, []);
     cronPlugin._sayHeldRemindersForTests(new Date(2026, 9, 2, 9, 0).getTime());
     assert.deepEqual(later.map((p) => [p.text, p.speak, p.kind]), [["water the plants.", "water the plants!", "reminder-late"]]);
   } finally {
     proactive.offer = realOffer;
+    proactive.updateSettings({ quietHours: prevQuiet });
+  }
+});
+
+test("#699: an urgent heartbeat report is toasted at once, silently in quiet time", async () => {
+  const proactive = require("../../../node-bot/proactive");
+  const realOffer = proactive.offer;
+  const prevQuiet = proactive.getSettings().quietHours;
+  proactive.updateSettings({ quietHours: { enabled: true } });
+  const offered = [];
+  const trayEvents = [];
+  proactive.offer = (c) => offered.push(c);
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+  try {
+    const quiet = new Date(2026, 9, 2, 3).getTime();
+    const day = new Date(2026, 9, 2, 14).getTime();
+    await cronPlugin._notifyHeartbeatForTests({ type: "cron", text: "disk full", urgent: true, speak: "disk full!" }, quiet);
+    await cronPlugin._notifyHeartbeatForTests({ type: "cron", text: "disk full", urgent: true, speak: "disk full!" }, day);
+    cronPlugin._notifyHeartbeatForTests({ type: "cron", text: "all fine" }, day);
+    assert.deepEqual(trayEvents.map((p) => [p.text, p.speak]), [["disk full", undefined], ["disk full", "disk full!"]]);
+    assert.deepEqual(offered.map((c) => [c.reason, c.payload.text]), [["heartbeat", "all fine"]]);
+  } finally {
+    proactive.offer = realOffer;
+    proactive.updateSettings({ quietHours: prevQuiet });
   }
 });

@@ -14,19 +14,16 @@ let heartbeat = null;
 const LATE_REMINDER_MS = 5 * 60 * 1000;
 const REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_REPLAYED = 3;
-// ponytail: check-ins' fixed 1am-9am quiet window (check-ins.js); read
-// #697's quiet-hours setting here once it exists.
-const QUIET_FROM_HOUR = 1;
-const QUIET_UNTIL_HOUR = 9;
-
 // The missed reminders of one catch-up (one runDueJobs pass), while it runs.
 let replay = null;
 // Reminders that came up in quiet time: shown silently then, said after it.
 let saidLater = [];
 
-function inQuietTime(ms) {
-  const hour = new Date(ms).getHours();
-  return hour >= QUIET_FROM_HOUR && hour < QUIET_UNTIL_HOUR;
+// #1284: quiet-hours window from proactive settings.
+function inQuietTime(ms = Date.now()) {
+  const qh = proactive.getSettings ? proactive.getSettings().quietHours : null;
+  if (!qh?.enabled) return false;
+  return typeof proactive.inQuietHours === "function" ? proactive.inQuietHours(qh, ms) : false;
 }
 
 // In quiet time a reminder is a silent toast, and she says it once quiet
@@ -40,6 +37,15 @@ function offerReminder(payload, nowMs) {
     payload = silent;
   }
   proactive.offer({ reason: "reminder", explicit: true, payload });
+}
+
+// #699: an urgent heartbeat report is toasted right away, even while
+// remarks are held (gaming, budget, quiet hours), but never said aloud in
+// quiet time. Everything else is a proactive candidate.
+function notifyHeartbeat(payload, nowMs = Date.now()) {
+  if (!payload.urgent) return proactive.offer({ reason: "heartbeat", payload });
+  const { speak, ...silent } = payload;
+  return notifyTray(inQuietTime(nowMs) ? silent : payload).catch(() => {});
 }
 
 function sayHeldReminders(nowMs) {
@@ -146,7 +152,7 @@ function getScheduler(deps = {}) {
     });
     // #699: heartbeat.md's checks, next to jobs.json. Their reports are
     // proactive candidates like any other remark, so the daily budget,
-    // gaming mode and quiet hours apply ("urgent" skips the budget).
+    // gaming mode and quiet hours apply; an urgent one is toasted at once.
     heartbeat = createHeartbeat({
       dataDir: scheduler.dataDir,
       runCheck: (prompt, wrapToolPolicy, sessionId) => {
@@ -159,7 +165,7 @@ function getScheduler(deps = {}) {
           scheduled: true,
         });
       },
-      notify: (payload) => proactive.offer({ reason: "heartbeat", payload, urgent: Boolean(payload.urgent) }),
+      notify: (payload) => notifyHeartbeat(payload),
       isGaming: deps.isGaming,
       isEnabled: () => isPluginEnabled(module.exports, deps.pluginSettingsStore),
       approvalGate: deps.approvalGate,
@@ -232,6 +238,7 @@ module.exports = {
   description:
     "Run a script action or a full agent prompt on a fixed schedule (interval or daily-at-time), independent of chat or idle activity. Results are delivered as a chat turn in the job's session.",
   registerRoutes: registerCronSchedulerRoutes,
+  _notifyHeartbeatForTests: notifyHeartbeat,
   // #905: server.js's reminder tools share the routes' job list.
   getScheduler,
   // #1124: null until the scheduler is built (at route registration).
