@@ -306,3 +306,23 @@ test("a mutation that doesn't apply leaves no worktree behind", async () => {
   assert.equal(fs.existsSync(path.join(r.worktrees, `bench-${c.id}`)), false);
   assert.doesNotMatch(git(r.repo, "worktree", "list"), /bench-gen-add/);
 });
+
+test("#1278: a pause unloads the bench's model, and it's loaded again once the game ends", async () => {
+  const { waitOut } = require("../bench/self-work-bench");
+  const calls = [];
+  const model = { stop: async () => calls.push("stop"), start: async () => calls.push("start") };
+  const c = { id: "1-add-subtracts" };
+  const gate = (gaming) => ({ isGaming: () => gaming.shift() ?? false, ramPercent: () => 50, backendModelUp: async () => false });
+  const sleep = async () => calls.push("sleep");
+
+  assert.equal(await waitOut(c, gate([false]), model, sleep), null);
+  assert.deepEqual(calls, [], "no pause: the model stays loaded");
+
+  assert.equal(await waitOut(c, gate([true, true, false]), model, sleep), null);
+  assert.deepEqual(calls, ["stop", "sleep", "sleep", "start"]);
+
+  calls.length = 0;
+  const why = await waitOut(c, gate(Array(30).fill(true)), model, sleep);
+  assert.equal(why, "a game is running");
+  assert.deepEqual(calls, ["stop", ...Array(20).fill("sleep")], "never cleared: stays unloaded, the run stops");
+});
