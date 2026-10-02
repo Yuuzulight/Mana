@@ -52,6 +52,9 @@ const GUARDRAIL_LABEL = "mana-guardrail";
 // #1212: a test file, which she may write before she's seen a test fail.
 const TEST_PATH_RE = /(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i;
 const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
+// #1253: a comment line in a whole-file rewrite that stands in for code
+// ("// ... rest unchanged", "# existing code omitted", a bare "// ...").
+const ELIDED_RE = /^\s*(?:\/\/|#|\/\*|<!--)\s*(?:\.\.\.|…|(?:rest|remainder)\b|.*\b(?:existing|remaining|rest of|other|previous|original|same)\b.*\b(?:unchanged|omitted|as before)\b)/i;
 const MAX_ROUNDS = 20;
 // #1251: refutations of one file before the run stops and asks me.
 const MAX_REFUTATIONS = 3;
@@ -211,7 +214,7 @@ const TOOL_SCHEMAS = [
     function: {
       name: CODING_EDIT_TOOL_NAME,
       description:
-        "Change a file in your worktree: old_text must match the file exactly once and is replaced by new_text. For a new file, leave old_text empty and put the whole file in new_text. It has to parse, and your adversarial reviewer checks it before it's written.",
+        "Change a file in your worktree: old_text must match the file exactly once and is replaced by new_text. Without old_text, new_text is the whole file: a new one, or every line of an existing one (no placeholders like \"// rest unchanged\"). It has to parse; your adversarial reviewer reads your diff when you finish.",
       parameters: {
         type: "object",
         properties: {
@@ -1067,8 +1070,15 @@ ${
       const eol = original.includes("\r\n") ? "\r\n" : "\n";
       const norm = (s) => String(s).replace(/\r?\n/g, eol);
       let next;
-      if (exists) {
-        if (!oldText) throw new Error(`${relPath} exists: give old_text to replace`);
+      // #1253: new_text alone on a file that exists rewrites all of it.
+      const rewrite = exists && !oldText;
+      const wholeFile = `new_text without old_text replaces the whole of ${relPath}: send every line of it, or give old_text to change just a part.`;
+      if (rewrite) {
+        const kept = new Set(original.split(/\r?\n/).map((l) => l.trim()));
+        const stub = String(newText).split(/\r?\n/).find((l) => ELIDED_RE.test(l) && !kept.has(l.trim()));
+        if (stub) throw new Error(`"${stub.trim()}" stands in for code that isn't there. ${wholeFile}`);
+        next = norm(newText);
+      } else if (exists) {
         const parts = original.split(norm(oldText));
         if (parts.length !== 2) throw new Error(`old_text must match ${relPath} exactly once (found ${parts.length - 1})`);
         next = parts.join(norm(newText));
@@ -1077,7 +1087,13 @@ ${
         next = norm(newText);
       }
       // Truncation and syntax checks, and the diff she sees.
-      const proposal = proposals.createProposal({ relativePath: relPath, originalContent: original, proposedContent: next, summary });
+      let proposal;
+      try {
+        proposal = proposals.createProposal({ relativePath: relPath, originalContent: original, proposedContent: next, summary });
+      } catch (e) {
+        if (rewrite) e.message = `${e.message.replace(/ \(pass allowShrink to override\)/, "")}. ${wholeFile}`;
+        throw e;
+      }
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, next, "utf8");
       r.lastTestPassed = false;

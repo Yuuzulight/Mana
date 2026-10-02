@@ -253,6 +253,11 @@ test("writes stay inside her worktree and off her guardrails", async () => {
       ["coding__propose_edit", { path: "node-bot/node_modules/dep/index.js", old_text: "// live", new_text: "// hacked" }],
       ["coding__propose_edit", { path: "../live/node-bot/util.js", old_text: "a - b", new_text: "a + b" }],
       ["coding__propose_edit", { path: "node-bot/.env", new_text: "X=1" }],
+      // #1253: a whole-file rewrite (no old_text) meets the same checks.
+      ["coding__propose_edit", { path: "node-bot/approval-gate.js", new_text: "// gone\n" }],
+      ["coding__propose_edit", { path: "node-bot/node_modules/dep/index.js", new_text: "// hacked\n" }],
+      ["coding__propose_edit", { path: ".github/workflows/ci.yml", new_text: "on: push\n" }],
+      ["coding__propose_edit", { path: ".gitignore", new_text: "" }],
     ],
     labels: [{ name: "mana-task" }],
     seen,
@@ -264,7 +269,64 @@ test("writes stay inside her worktree and off her guardrails", async () => {
   assert.match(errors[1], /outside my worktree/);
   assert.match(errors[2], /escapes/);
   assert.match(errors[3], /credential/);
+  assert.match(errors[4], /one of my guardrails/);
+  assert.match(errors[5], /outside my worktree/);
+  assert.match(errors[6], /isn't mine to write/);
+  assert.match(errors[7], /empty content would erase/);
+  const worktree = path.join(repos.worktrees, "mana-7");
+  assert.match(fs.readFileSync(path.join(worktree, "node-bot", "approval-gate.js"), "utf8"), /^\/\/ guard\r?\n$/);
+  assert.match(fs.readFileSync(path.join(worktree, ".gitignore"), "utf8"), /^node_modules\r?\n$/);
+  assert.ok(!fs.existsSync(path.join(worktree, ".github")));
   assert.equal(fs.readFileSync(path.join(repos.live, "node-bot", "node_modules", "dep", "index.js"), "utf8"), "// live\n");
+  assert.equal(sw.status().state, "no-change");
+});
+
+// #1253: new_text without old_text on a file that exists replaces it.
+const addsFile = "function add(a, b) {\n  return a + b;\n}\nmodule.exports = { add };\n";
+
+test("#1253: a whole-file rewrite applies, and she and her reviewer see the real diff", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const reviewed = [];
+  const rewrite = ["coding__propose_edit", { path: "node-bot/util.js", new_text: addsFile, summary: "add adds" }];
+  const { sw } = selfWork(repos, {
+    calls: [rewrite, runTests, finish],
+    seen,
+    reviewEdit: async (p) => (reviewed.push(p), { verdict: "holds" }),
+  });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(sw.status().state, "pr-open", sw.status().step);
+  assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \+ b/);
+  const { diff } = JSON.parse(seen.find((s) => s.name === "coding__propose_edit").result);
+  assert.match(diff, /-  return a - b;\r?\n\+  return a \+ b;/);
+  assert.doesNotMatch(diff, /^[-+](function add|module\.exports)/m, "only the changed line");
+  assert.match(reviewed[0].diff, /-  return a - b;\r?\n\+  return a \+ b;/);
+  assert.doesNotMatch(reviewed[0].diff, /^[-+](function add|module\.exports)/m);
+});
+
+test("#1253: a rewrite that leaves code out is refused, and says why", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const rewrite = (text) => ["coding__propose_edit", { path: "node-bot/util.js", new_text: text }];
+  const { sw } = selfWork(repos, {
+    calls: [
+      // Most of the file, with a placeholder for the rest.
+      rewrite("function add(a, b) {\n  return a + b;\n}\n// ... rest unchanged\n"),
+      rewrite("function add(a, b) {\n  // ...\n}\nmodule.exports = { add };\n"),
+      // Under half the file.
+      rewrite("module.exports = {};\n"),
+    ],
+    seen,
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const errors = seen.filter((s) => s.name === "coding__propose_edit").map((s) => s.error);
+  assert.match(errors[0], /^"\/\/ \.\.\. rest unchanged" stands in for code that isn't there\. new_text without old_text replaces the whole of node-bot\/util\.js: send every line of it, or give old_text to change just a part\.$/);
+  assert.match(errors[1], /^"\/\/ \.\.\." stands in for code/);
+  assert.match(errors[2], /content is \d+% of the original, which looks truncated rather than edited\. new_text without old_text replaces the whole of node-bot\/util\.js/);
+  assert.doesNotMatch(errors[2], /allowShrink/);
+  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a - b/);
   assert.equal(sw.status().state, "no-change");
 });
 
