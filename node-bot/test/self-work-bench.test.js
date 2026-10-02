@@ -157,6 +157,27 @@ test("the report has a row per case and each case's diff", async () => {
   assert.match(fs.readFileSync(path.join(out, "1-add-subtracts.diff"), "utf8"), /a \+ b/);
 });
 
+// #1249: a case's id and hidden tests stay inside the repo.
+test("case files with an id or hidden test that climbs out or is absolute are refused", () => {
+  const { loadCases } = require("../bench/self-work-bench");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-bench-cases-"));
+  bases.push(dir);
+  const write = (c) => {
+    for (const f of fs.readdirSync(dir)) fs.rmSync(path.join(dir, f));
+    fs.writeFileSync(path.join(dir, "case.json"), JSON.stringify({ id: "1-ok", hiddenTests: ["node-bot/test/util.test.js"], ...c }));
+  };
+  write({});
+  assert.equal(loadCases(dir)[0].id, "1-ok");
+  for (const bad of [{ id: "../evil" }, { id: "a/b" }, { id: "x..y" }]) {
+    write(bad);
+    assert.throws(() => loadCases(dir), /bad case id/);
+  }
+  for (const hidden of ["../outside.test.js", "node-bot/../../x.js", "/etc/passwd", "C:\\Windows\\x.js", "node-bot\\..\\..\\x.js"]) {
+    write({ hiddenTests: [hidden] });
+    assert.throws(() => loadCases(dir), /must be a relative path inside the repo/, hidden);
+  }
+});
+
 // #1231: a generated case is a bug patched into the base, with the test that
 // catches it out of the tree until she's done.
 function generatedCase(r) {

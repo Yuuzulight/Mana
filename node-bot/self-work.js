@@ -72,7 +72,7 @@ const DEFAULT_ATTEMPTS = 4;
 const MAX_ATTEMPTS = 8;
 const DEFAULT_MAX_MINUTES = 120;
 // What an attempt starts without: the last one's outcome and plan.
-const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedDiff"];
+const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree"];
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
@@ -311,6 +311,24 @@ function createSelfWork(options = {}) {
     return git(["-c", "core.quotePath=false", "diff", "HEAD", "--", ...paths], worktree);
   }
 
+  // #1249: everything in the worktree, staged, as one tree id.
+  async function stagedTree(worktree) {
+    await assertTop(worktree, "stage it");
+    await git(["add", "-A"], worktree);
+    return git(["write-tree"], worktree);
+  }
+
+  // Index- and tree-changing git (reset, clean, add -A) only runs in a
+  // worktree's own top folder, never a folder inside another checkout.
+  async function assertTop(worktree, what) {
+    const norm = (p) => {
+      const real = fs.realpathSync.native(path.resolve(p));
+      return process.platform === "win32" ? real.toLowerCase() : real;
+    };
+    const top = await git(["rev-parse", "--show-toplevel"], worktree);
+    if (norm(top) !== norm(worktree)) throw new Error(`${worktree} isn't a worktree's top folder (that's ${top}), so I didn't ${what}`);
+  }
+
   // Whose repo this is, for her prompts and the chat-start check:
   // MANA_SELF_WORK_OWNER, else the gh login, else the origin remote's
   // owner. Looked up once (a run awaits it before her loop starts).
@@ -341,7 +359,7 @@ function createSelfWork(options = {}) {
 
   function status() {
     if (!current) return { state: "idle" };
-    const { done, stopRequested, lastTestPassed, halt, reviewedDiff, ...shown } = current;
+    const { done, stopRequested, lastTestPassed, halt, reviewedTree, ...shown } = current;
     return { ...shown, log: [...current.log] };
   }
 
@@ -577,8 +595,8 @@ function createSelfWork(options = {}) {
       return end(r, "not-done", `I couldn't finish #${r.issue}. ${summary}`.trim());
     }
     if (!closest && !r.lastTestPassed) return end(r, "tests-failing", `My tests aren't passing after my last change for #${r.issue}, so no PR.`);
-    // #1213: a PR only with the diff my reviewer passed when I finished.
-    if (r.reviewedDiff !== (await worktreeDiff(r.worktree))) {
+    // #1213: a PR only with the tree my reviewer passed when I finished.
+    if (r.reviewedTree !== (await stagedTree(r.worktree))) {
       return end(r, "needs-you", `My diff for #${r.issue} isn't the one my reviewer passed when I finished, so no PR. It's in ${r.worktree}.`);
     }
     const vetted = await vet(r);
@@ -756,6 +774,8 @@ How to work:
     r.attempts = [];
     let closest = null;
     let reply = null;
+    // #1249: the closest attempt's patch is on disk before any reset.
+    const patchFile = path.join(os.tmpdir(), `mana-self-work-${r.issue}-${process.pid}.patch`);
     for (let i = 1; i <= attempts; i += 1) {
       if (i > 1) {
         if (isGaming() || Date.now() - started > maxMs) break;
@@ -768,19 +788,26 @@ How to work:
       const finished = Boolean(r.finished) && !/^Not done yet/i.test(reply?.content || "");
       const verdict = await judge(r);
       // RAM stayed high: not judged, and no more attempts (as her tests tool halts).
-      if (!verdict) return { reply, kept: i };
+      if (!verdict) {
+        if (closest) r.halt.text += ` My closest attempt so far (${closest.kept}) is saved in ${patchFile}.`;
+        return { reply, kept: i };
+      }
       r.attempts.push({ attempt: i, finished, passed: verdict.passed, failures: verdict.failures });
       log(r, `Attempt ${i} of ${attempts}: ${finished ? "finished" : "not finished"}, ${verdict.passed ? "tests passing" : `${verdict.failures} failing`}.`);
-      if (finished && verdict.passed) return { reply, kept: i };
+      if (finished && verdict.passed) {
+        fs.rmSync(patchFile, { force: true });
+        return { reply, kept: i };
+      }
       if (!finished || !r.lastTestCommand || !verdict.ran) continue;
       const patch = await snapshot(r);
       if (patch && (!closest || verdict.failures < closest.failures)) {
-        closest = { kept: i, patch, reply, failures: verdict.failures, failing: verdict.failing, state: Object.fromEntries(ATTEMPT_STATE.map((k) => [k, r[k]])) };
+        fs.writeFileSync(patchFile, patch);
+        closest = { kept: i, reply, failures: verdict.failures, failing: verdict.failing, state: Object.fromEntries(ATTEMPT_STATE.map((k) => [k, r[k]])) };
       }
     }
     if (!closest) return { reply, kept: r.attempts.length, none: true };
     await resetWorktree(r);
-    await applyPatch(r, closest.patch);
+    await applyPatch(r, patchFile);
     Object.assign(r, closest.state);
     log(r, `None passed; I kept attempt ${closest.kept}, which finished with the fewest failing tests.`);
     return { reply: closest.reply, kept: closest.kept, failing: closest.failing };
@@ -789,12 +816,7 @@ How to work:
   // Back to HEAD: her changes and new files go; ignored files (the
   // node_modules link) stay. Only in her worktree's own top folder.
   async function resetWorktree(r) {
-    const norm = (p) => {
-      const real = fs.realpathSync.native(path.resolve(p));
-      return process.platform === "win32" ? real.toLowerCase() : real;
-    };
-    const top = await git(["rev-parse", "--show-toplevel"], r.worktree);
-    if (norm(top) !== norm(r.worktree)) throw new Error(`${r.worktree} isn't a worktree's top folder (that's ${top}), so I didn't reset it`);
+    await assertTop(r.worktree, "reset it");
     await git(["reset", "-q", "--hard", "HEAD"], r.worktree);
     await git(["clean", "-fdq", "-e", "node_modules"], r.worktree);
   }
@@ -802,6 +824,7 @@ How to work:
   // An attempt's whole change, new files included, as a patch: git's own
   // bytes (run() trims, which breaks a patch's last line).
   async function snapshot(r) {
+    await assertTop(r.worktree, "take a snapshot of it");
     await git(["add", "-A"], r.worktree);
     const diff = await exec("git", ["diff", "--cached", "--binary", "HEAD"], { cwd: r.worktree, env: gitEnv });
     await git(["reset", "-q"], r.worktree);
@@ -810,9 +833,7 @@ How to work:
   }
 
   // The patch file stays if it doesn't apply, so the attempt isn't lost.
-  async function applyPatch(r, patch) {
-    const file = path.join(os.tmpdir(), `mana-self-work-${r.issue}-${process.pid}.patch`);
-    fs.writeFileSync(file, patch);
+  async function applyPatch(r, file) {
     try {
       await git(["apply", "--whitespace=nowarn", file], r.worktree);
     } catch (e) {
@@ -1089,7 +1110,7 @@ ${
           throw new Error(`Before you finish, review your diff with self_work__review: ${left.join(", then ")}. Fix what you find.`);
         }
       }
-      const whole = await diffNow();
+      await git(["add", "-A", "-N"], root);
       const changed = r.kind === "refresh" ? [...edited] : (await git(["-c", "core.quotePath=false", "diff", "--name-only", "HEAD"], root)).split(/\r?\n/).filter(Boolean);
       for (const relPath of reviewEdit ? changed : []) {
         const diff = await diffNow(relPath);
@@ -1100,7 +1121,9 @@ ${
           return JSON.stringify({ status: "blocked", error: `refuted by review: ${verdict.failingCase}` });
         }
       }
-      r.reviewedDiff = whole;
+      // #1249: the exact tree she finished with (binary and whitespace
+      // changes included), which a PR has to match. A refresh never opens one.
+      if (r.kind !== "refresh") r.reviewedTree = await stagedTree(root);
       r.finished = true;
       return goal.executeTool(SESSION_GOAL_FINISH_TOOL_NAME, args);
     }
