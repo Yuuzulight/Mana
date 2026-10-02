@@ -176,7 +176,7 @@ test("#1251: a refuted finish isn't pushed; she hears why, and a fixed change op
     seen,
     reviewEdit: async (p) => {
       reviewed.push(p);
-      return reviewed.length === 1 ? { verdict: "refuted", failingCase: "add(1, 1) -> returns 3 (breaks intent)" } : { verdict: "holds" };
+      return reviewed.length === 1 ? { verdict: "refuted", failingCase: "add(1, 1) -> returns 3 (breaks intent)", concrete: true } : { verdict: "holds" };
     },
   });
   await sw.start(7);
@@ -188,14 +188,18 @@ test("#1251: a refuted finish isn't pushed; she hears why, and a fixed change op
   assert.equal(reviewed[0].intent, "#7: Fix the add helper\nadd() subtracts.");
   assert.equal(sw.status().state, "pr-open", sw.status().step);
   assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /b \+ a/);
-  assert.equal(ghCalls.filter((a) => a[0] === "pr" && a[1] === "create").length, 1);
+  const creates = ghCalls.filter((a) => a[0] === "pr" && a[1] === "create");
+  assert.equal(creates.length, 1);
+  // The refutation she fixed is in the PR for me to see.
+  const body = creates[0][creates[0].indexOf("--body") + 1];
+  assert.match(body, /\n\n## My reviewer\n- Refuted `node-bot\/util\.js`: add\(1, 1\) -> returns 3 \(breaks intent\)$/);
 });
 
 test("#1251: one refuted finish and no fix means no PR", async () => {
   const repos = makeRepos();
   const { sw, ghCalls } = selfWork(repos, {
     calls: [fix, runTests, finish],
-    review: { verdict: "refuted", failingCase: "add(1, 1) returns 3" },
+    review: { verdict: "refuted", failingCase: "add(1, 1) returns 3", concrete: true },
   });
   await sw.start(7);
   await sw._current().done;
@@ -203,14 +207,21 @@ test("#1251: one refuted finish and no fix means no PR", async () => {
   assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
-test("#1251: a reviewer's note doesn't block her finish", async () => {
-  const repos = makeRepos();
-  const { sw } = selfWork(repos, { calls: [fix, runTests, finish], review: { verdict: "note", failingCase: "", reason: "the name could be clearer" } });
-  await sw.start(7);
-  await sw._current().done;
-  const status = sw.status();
-  assert.equal(status.state, "pr-open", status.step);
-  assert.ok(status.log.some((l) => l.text === "My reviewer's note on node-bot/util.js: the name could be clearer"));
+test("#1251: a reviewer's note, or a refutation that isn't concrete, doesn't block her finish and is listed in the PR", async () => {
+  for (const [review, note] of [
+    [{ verdict: "note", failingCase: "", reason: "the name could be clearer" }, "the name could be clearer"],
+    [{ verdict: "refuted", failingCase: "if a is a string it concatenates", reason: "" }, "not a concrete failure: if a is a string it concatenates"],
+  ]) {
+    const repos = makeRepos();
+    const { sw, ghCalls } = selfWork(repos, { calls: [fix, runTests, finish], review });
+    await sw.start(7);
+    await sw._current().done;
+    const status = sw.status();
+    assert.equal(status.state, "pr-open", status.step);
+    assert.ok(status.log.some((l) => l.text === `My reviewer's note on node-bot/util.js: ${note}`));
+    const create = ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
+    assert.ok(create[create.indexOf("--body") + 1].endsWith(`\n\n## My reviewer\n- Note on \`node-bot/util.js\`: ${note}`));
+  }
 });
 
 test("#1213 / #1251: the third refutation of a file stops the run to ask me; the same diff isn't reviewed again", async () => {
@@ -219,7 +230,7 @@ test("#1213 / #1251: the third refutation of a file stops the run to ask me; the
   const { sw, ghCalls } = selfWork(repos, {
     calls: [plan, fix, runTests, ...reviews, finish, finish, finish],
     plans: false,
-    reviewEdit: async () => ((reviewerCalls += 1), { verdict: "refuted", failingCase: "add(1, 1) returns 3" }),
+    reviewEdit: async () => ((reviewerCalls += 1), { verdict: "refuted", failingCase: "add(1, 1) returns 3", concrete: true }),
   });
   await sw.start(7);
   await sw._current().done;

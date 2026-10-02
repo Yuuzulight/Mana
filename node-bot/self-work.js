@@ -55,6 +55,7 @@ const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
 const MAX_ROUNDS = 20;
 // #1251: refutations of one file before the run stops and asks me.
 const MAX_REFUTATIONS = 3;
+const MAX_PR_REVIEW_NOTES = 30;
 // #1214: an issue run's rounds follow the issue: a floor, more for each
 // thing it asks for (a bullet or numbered line) and each file it names,
 // and a hard ceiling.
@@ -617,7 +618,12 @@ function createSelfWork(options = {}) {
     const testing = closest
       ? `None of my ${r.attempts.length} attempts finished with all its tests passing. Attempt ${best.kept} came closest: it finished, but these still fail, so it's a draft until they pass:\n${best.failing.map((f) => `- ${f}`).join("\n") || "- (no test names in the output)"}`
       : `${r.lastTestCommand}: passed.${r.attempts?.length > 1 ? ` (Attempt ${best.kept} of ${r.attempts.length}.)` : ""}`;
-    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${testing}`;
+    // #1251: everything my reviewer said this run, refutations I fixed and notes.
+    const notes = [...new Set(r.reviewNotes)];
+    const reviewer = notes.length
+      ? `\n\n## My reviewer\n${notes.slice(0, MAX_PR_REVIEW_NOTES).map((n) => `- ${n.slice(0, 500)}`).join("\n")}${notes.length > MAX_PR_REVIEW_NOTES ? `\n- ...and ${notes.length - MAX_PR_REVIEW_NOTES} more` : ""}`
+      : "";
+    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${guardrails}\n\n## Testing\n${testing}${reviewer}`;
     let url;
     try {
       url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", title, "--body", body, ...(touched.length || closest ? ["--draft"] : [])], r.worktree);
@@ -1125,15 +1131,24 @@ ${
         const diff = await diffNow(relPath);
         if (!diff) continue;
         const last = refutations.get(relPath);
-        const verdict =
-          last?.diff === diff
-            ? last.verdict
-            : await reviewEdit({ relativePath: relPath, diff, summary: `my change to ${relPath} for #${r.issue}`, intent: extra.intent || r.title });
-        if (verdict?.verdict === "note") log(r, `My reviewer's note on ${relPath}: ${verdict.reason}`);
+        const cached = last?.diff === diff;
+        let verdict = cached
+          ? last.verdict
+          : await reviewEdit({ relativePath: relPath, diff, summary: `my change to ${relPath} for #${r.issue}`, intent: extra.intent || r.title });
+        // A refutation that doesn't name an input, the wrong behaviour and
+        // what it breaks is a note here (and still blocks everywhere else).
+        if (verdict?.verdict === "refuted" && verdict.concrete !== true) {
+          verdict = { verdict: "note", failingCase: "", reason: `not a concrete failure: ${verdict.failingCase}` };
+        }
+        if (verdict?.verdict === "note") {
+          log(r, `My reviewer's note on ${relPath}: ${verdict.reason}`);
+          (r.reviewNotes ||= []).push(`Note on \`${relPath}\`: ${verdict.reason}`);
+        }
         if (verdict?.verdict !== "refuted") continue;
         const count = (last?.count || 0) + 1;
         refutations.set(relPath, { diff, verdict, count });
         log(r, `My reviewer refuted my change to ${relPath}: ${verdict.failingCase}`);
+        if (!cached) (r.reviewNotes ||= []).push(`Refuted \`${relPath}\`: ${verdict.failingCase}`);
         if (count >= MAX_REFUTATIONS) {
           r.refuted = { path: relPath, failingCase: verdict.failingCase };
           return JSON.stringify({ status: "blocked", error: `refuted by review: ${verdict.failingCase}` });
