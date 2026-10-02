@@ -1038,21 +1038,33 @@ test("#1211: her first edit waits for a plan, and the plan is checked off in her
   assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
 });
 
-test("#1212: her code change waits for a test she's seen fail; the test itself can come first", async () => {
+test("#1212 / #1257: a code change before a test applies with a warning; a test file she wrote or a failing test she ran clears it", async () => {
+  const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
+  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  const again = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a + b;", new_text: "return b + a;" }];
+  const edits = (seen) => seen.filter((s) => s.name === "coding__propose_edit").map((s) => JSON.parse(s.result));
+
+  // Code first: applied, with the warning; after a test file she wrote, no warning.
   const repos = makeRepos();
   const seen = [];
-  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
-  const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
-  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, runTests, fix], plans: false, passed: false, seen });
+  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, again, ...reviews, finish], plans: false, passed: false, seen });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const [first, test, second] = edits(seen);
+  assert.equal(first.status, "ok");
+  assert.match(first.warning, /^Test first: you changed code without a test for it yet\./);
+  assert.equal(test.warning, undefined);
+  assert.equal(second.warning, undefined);
+  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /b \+ a/);
+  // Her tests still have to pass: no PR.
+  assert.equal(sw.status().state, "tests-failing");
 
-  assert.match(results[1], /^Test first: write or find a test for the behaviour/);
-  assert.equal(JSON.parse(results[2]).status, "ok");
-  assert.equal(JSON.parse(results[3]).passed, false);
-  assert.equal(JSON.parse(results[4]).status, "ok");
-  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
+  // A test that was already there, run and seen failing, counts.
+  const ranSeen = [];
+  const ran = selfWork(makeRepos(), { calls: [steps, runTests, fix], plans: false, passed: false, seen: ranSeen });
+  await ran.sw.start(7);
+  await ran.sw._current().done;
+  assert.equal(edits(ranSeen)[0].warning, undefined);
 });
 
 test("#1213: she finishes only after three passes over her diff since her last edit", async () => {

@@ -940,7 +940,7 @@ How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - You can read ${READ_BUDGET_LINES} lines before your first edit, so search first and read only what the change needs; then make the change.
 - Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
-- If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail; changes to the code wait until then.
+- If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail before you change the code.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
 ${
@@ -1052,12 +1052,12 @@ ${
       if (typeof newText !== "string") throw new Error("new_text is required");
       const full = inside(rel);
       const relPath = posix(full);
-      // #1212: test first -- the code waits for a test she's seen fail.
-      if (r.kind !== "refresh" && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason) {
-        throw new Error(
-          `Test first: write or find a test for the behaviour, run it with ${CODING_TEST_TOOL_NAME} and see it fail, then change the code. If the issue has nothing a test can check, say why in self_work__plan's no_test.`,
-        );
-      }
+      // #1212 / #1257: test first, as a warning, never a refusal (refusing
+      // cost her rounds): a code change before she's seen a test fail (one
+      // that was already there counts), written a test file, or said why
+      // nothing can be tested. Her tests still have to pass for a PR.
+      const untested =
+        r.kind !== "refresh" && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason && ![...edited].some((f) => TEST_PATH_RE.test(f));
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to write a credential file");
       if (NEVER_WRITE_RE.test(relPath)) throw new Error(`${relPath} isn't mine to write`);
       const blocked = guard.protectedPathFor(full);
@@ -1110,6 +1110,9 @@ ${
         relativePath: relPath,
         diff: proposal.diff.slice(0, 2000),
         plan: r.plan ? planText() : undefined,
+        warning: untested
+          ? `Test first: you changed code without a test for it yet. Write or find a test for the behaviour and run it with ${CODING_TEST_TOOL_NAME}; it has to pass before you finish. If the issue has nothing a test can check, say why in self_work__plan's no_test.`
+          : undefined,
       });
     }
 
