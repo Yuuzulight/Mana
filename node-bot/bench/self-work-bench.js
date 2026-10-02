@@ -29,12 +29,22 @@ function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
 }
 
+// #1249: a case's id names its worktree folder and its hidden tests are
+// written and deleted inside one, so neither may be absolute or climb out.
+const badPath = (p) => typeof p !== "string" || !p || path.posix.isAbsolute(p) || path.win32.isAbsolute(p) || p.split(/[\\/]/).includes("..");
+
 function loadCases(dir = CASES_DIR) {
   return fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
     .sort()
-    .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")));
+    .map((f) => {
+      const c = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+      if (!/^[\w.-]+$/.test(String(c.id)) || String(c.id).includes("..")) throw new Error(`${f}: bad case id ${JSON.stringify(c.id)}`);
+      const bad = (c.hiddenTests || []).find(badPath);
+      if (bad !== undefined) throw new Error(`${f}: hidden test ${JSON.stringify(bad)} must be a relative path inside the repo`);
+      return c;
+    });
 }
 
 // A detached worktree at the base commit, with node-bot's packages linked in.

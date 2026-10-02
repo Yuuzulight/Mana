@@ -649,7 +649,8 @@ test("bench mode runs her loop in the worktree it's given, with no gh, commit or
   assert.match(reply.content, /made add\(\) add/);
   assert.match(fs.readFileSync(path.join(worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
   assert.deepEqual(ghCalls, []);
-  assert.equal(git(worktree, "status", "--porcelain"), "M node-bot/util.js");
+  // Uncommitted; finishing stages it (#1249: the tree her reviewer passed).
+  assert.match(git(worktree, "status", "--porcelain"), /^M\s+node-bot\/util\.js$/);
   assert.equal(git(repos.origin, "branch", "--list"), "* main");
   assert.equal(sw.status().state, "idle");
 });
@@ -751,7 +752,7 @@ function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4"
     runTests,
     onEvent: (run, text) => events.push(text),
     // Before the first attempt (the start check) and inside one: 50%.
-    ramPercent: () => (inLoop || n === 0 ? 50 : ramAfterLoop),
+    ramPercent: () => (inLoop || n === 0 ? 50 : typeof ramAfterLoop === "function" ? ramAfterLoop(n) : ramAfterLoop),
     sleep: async () => {},
   });
   return { sw, attempts: () => n, testCommands };
@@ -968,6 +969,63 @@ test("#1213: no PR unless the diff is the one her reviewer passed when she finis
   assert.equal(status.state, "needs-you", status.step);
   assert.match(status.step, /isn't the one my reviewer passed/);
   assert.deepEqual(reviewed.sort(), ["node-bot/generated.js", "node-bot/util.js"]);
-  assert.equal(status.reviewedDiff, undefined, "the diff stays out of status");
+  assert.equal(status.reviewedTree, undefined, "the tree id stays out of status");
   assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
+});
+
+// #1249: the reviewed state is the exact tree, so a binary change after she
+// finished (the same "Binary files differ" line in a text diff) stops the PR.
+test("#1249: a binary file that changes after she finished means no PR", async () => {
+  const repos = makeRepos();
+  const worktree = path.join(repos.worktrees, "mana-7");
+  const bin = (byte) => () => fs.writeFileSync(path.join(worktree, "node-bot", "blob.bin"), Buffer.from([0, 1, byte, 0]));
+  const { sw, ghCalls } = selfWork(repos, { calls: [fix, runTests, bin(2), finish, bin(3)] });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(sw.status().state, "needs-you", sw.status().step);
+  assert.match(sw.status().step, /isn't the one my reviewer passed/);
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
+});
+
+test("#1249: RAM that stays high on a later attempt leaves the closest one's patch on disk", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const { sw, attempts } = attemptsWork(repos, ["*", "/"], { ghCalls, ramAfterLoop: (n) => (n >= 2 ? 95 : 50) });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 2);
+  assert.equal(sw.status().state, "paused");
+  const file = /is saved in (.+\.patch)\./.exec(sw.status().step)?.[1];
+  assert.ok(file, sw.status().step);
+  assert.match(fs.readFileSync(file, "utf8"), /\+  return a \* b;/);
+  fs.rmSync(file, { force: true });
+  assert.equal(prCreate(ghCalls), undefined);
+});
+
+test("#1249: a snapshot between attempts only runs in a worktree's own top folder", async () => {
+  const repos = makeRepos();
+  const inner = path.join(repos.live, "node-bot");
+  const sw = createSelfWork({
+    repoRoot: repos.live,
+    worktreesDir: repos.worktrees,
+    exec: fakeExec([]),
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
+    protectedPaths: guard,
+    runLoop: async (prompt, policy) => {
+      await policy.executeTool("self_work__plan", { steps: ["Write it", "Test it"], no_test: "scripted" });
+      fs.writeFileSync(path.join(inner, "keep.txt"), "mine\n");
+      await policy.executeTool("coding__run_tests", { path: "node-bot/test/util.test.js" });
+      await policy.executeTool("session_goal__finish", { reason: "done" });
+      return { content: "Done." };
+    },
+    runTests: async () => ({ exitCode: 1, timedOut: false, output: "not ok 1 - x\n# fail 1" }),
+    onEvent: () => {},
+    ramPercent: () => 50,
+  });
+  const { error } = await sw.bench({ number: 7, title: "Fix the add helper", body: "add() subtracts." }, inner, { attempts: 2 });
+
+  assert.match(error, /isn't a worktree's top folder .*so I didn't take a snapshot of it/);
+  assert.equal(fs.readFileSync(path.join(inner, "keep.txt"), "utf8"), "mine\n");
 });
