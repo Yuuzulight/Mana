@@ -155,7 +155,7 @@ async function runCase(c, deps) {
   const before = { ...tokens };
   try {
     // Counted here, so a loop that throws still reports what it did.
-    const calls = { total: 0, errors: 0, editErrors: 0 };
+    const calls = { total: 0, errors: 0, editErrors: 0, samples: [] };
     const counted = (policy) => ({
       ...policy,
       async executeTool(name, args) {
@@ -165,6 +165,8 @@ async function runCase(c, deps) {
         } catch (e) {
           calls.errors += 1;
           if (name === "coding__propose_edit") calls.editErrors += 1;
+          // What went wrong, for the report: the first few.
+          if (calls.samples.length < 5) calls.samples.push(`${name}: ${String(e.message).slice(0, 160)}`);
           throw e;
         }
       },
@@ -207,6 +209,7 @@ async function runCase(c, deps) {
       // Calls that threw: a bad path, an edit whose old_text didn't match.
       toolErrors: calls.errors,
       editErrors: calls.editErrors,
+      errorSamples: calls.samples,
       wallMs,
       peakVramMb: peak.vramMb,
       peakRamPercent: peak.ramPercent,
