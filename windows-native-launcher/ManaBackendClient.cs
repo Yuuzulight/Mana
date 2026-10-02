@@ -1328,6 +1328,30 @@ internal sealed class ManaBackendClient
         return document.RootElement.Deserialize<ManaBriefingSettings>(web) ?? new ManaBriefingSettings();
     }
 
+    // #699: Settings > Heartbeat -- heartbeat.md's checks.
+    public async Task<IReadOnlyList<ManaHeartbeatItem>> GetHeartbeatItemsAsync()
+    {
+        using var response = await http.GetAsync("/heartbeat/items");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return (await JsonSerializer.DeserializeAsync<ManaHeartbeatItems>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web)))?.Items ?? new();
+    }
+
+    // Saves the whole list. A refused one (a bad schedule, say) throws with
+    // node-bot's error and nothing is written.
+    public async Task<IReadOnlyList<ManaHeartbeatItem>> SaveHeartbeatItemsAsync(IEnumerable<ManaHeartbeatItem> items)
+    {
+        var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        using var content = new StringContent(JsonSerializer.Serialize(new ManaHeartbeatItems { Items = items.ToList() }, web), Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync("/heartbeat/items", content);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(document.RootElement.TryGetProperty("error", out var error) ? error.GetString() : $"HTTP {(int)response.StatusCode}");
+        }
+        return document.RootElement.Deserialize<ManaHeartbeatItems>(web)?.Items ?? new();
+    }
+
     // #581: touch=false matches the editor's own "opening to browse/edit
     // isn't the same as Mana actually reaching for it" contract
     // (skills-capability.js's own comment) -- without it, opening a skill
@@ -3403,6 +3427,24 @@ internal sealed class ManaBriefingSettings
     // Comma-separated news topics, and games for patch/maintenance notices.
     public string Topics { get; set; } = "";
     public string Games { get; set; } = "";
+}
+
+// #699: one heartbeat.md check as Settings > Heartbeat edits it.
+internal sealed class ManaHeartbeatItem
+{
+    public string Id { get; set; } = "";
+    public string Text { get; set; } = "";
+    // "every 30m", "every 2h" or "daily 09:00"; empty is every 30m.
+    public string Schedule { get; set; } = "";
+    // Of "write" and "network"; read is always allowed.
+    public List<string> Permissions { get; set; } = new();
+    public bool Urgent { get; set; }
+    public bool Enabled { get; set; } = true;
+}
+
+internal sealed class ManaHeartbeatItems
+{
+    public List<ManaHeartbeatItem> Items { get; set; } = new();
 }
 
 internal sealed class ManaSpeechVocabulary
