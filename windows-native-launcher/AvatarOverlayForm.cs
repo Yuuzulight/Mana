@@ -790,6 +790,31 @@ internal sealed class AvatarOverlayForm : Form
     // enrolment's pause) shows without each one telling the avatar.
     public Func<bool>? IsListening { get; set; }
 
+    // Part of #700: the emotion tag her mood leans toward (GET /mood), shown
+    // on her idle face through the same tag -> expression path a sentence's
+    // tag takes. Null: no lean, no change. Set on the UI thread.
+    public string? IdleEmotion
+    {
+        get => idleEmotion;
+        set
+        {
+            if (idleEmotion == value)
+            {
+                return;
+            }
+            idleEmotion = value;
+            if (CurrentState == AvatarState.Idle)
+            {
+                ShowResolvedState(reapply: true);
+            }
+        }
+    }
+    private string? idleEmotion;
+
+    // Which tag the face uses: the sentence's while she speaks, her mood's at rest.
+    internal static string? FaceEmotion(AvatarState state, string? speechEmotion, string? idleEmotion) =>
+        AvatarStateArbiter.IsSpeech(state) ? speechEmotion : state == AvatarState.Idle ? idleEmotion : null;
+
     // #661: Thinking/Working/Waiting/Dreaming on or off. Callable from any
     // thread, like SetState.
     public void SetActivity(AvatarState activity, bool on)
@@ -838,7 +863,7 @@ internal sealed class AvatarOverlayForm : Form
             StateChanged?.Invoke(state);
         }
         var preferredExpression = AvatarStateArbiter.IsSpeech(state) ? speechExpression : null;
-        var emotion = AvatarStateArbiter.IsSpeech(state) ? speechEmotion : null;
+        var emotion = FaceEmotion(state, speechEmotion, idleEmotion);
 
         // #479 sub-project 4: when a real Cubism model is loaded, the
         // render timer (RenderFrame) is what actually draws every frame

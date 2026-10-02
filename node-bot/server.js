@@ -5749,6 +5749,7 @@ function registerRoutes(app, upload, deps = {}) {
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     characters: characterStore,
     buildGroupReaction: deps.buildGroupReaction || buildGroupReaction,
+    moodStore: activeMoodStore, // #700
     capabilities,
     pluginSettingsStore: activePluginSettingsStore,
     contributePluginPromptContext:
