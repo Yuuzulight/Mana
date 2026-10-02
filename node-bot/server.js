@@ -316,6 +316,7 @@ const { createRetrieverRuntime } = require("./ai/retriever-runtime");
 const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
+const { createSentenceChunker } = require("./utils/sentence-chunker");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
 const { crisisInstruction, withCrisisInstruction } = require("./utils/crisis-check");
 const { createRestartController } = require("./admin-restart");
@@ -5357,6 +5358,16 @@ function registerRoutes(app, upload, deps = {}) {
               }
             }
             turnToolSchemas = mergedToolPolicy.tools;
+            // Issue #623: the tool path isn't streamed, so the finished reply
+            // goes out sentence by sentence here, each with its own face,
+            // instead of as one clip with one face.
+            if (wrappedOnSentence && !firstPassStreamed) {
+              firstPassStreamed = true;
+              const chunker = createSentenceChunker();
+              for (const sentence of [...chunker.push(toolResult.content), ...chunker.flush()]) {
+                await wrappedOnSentence(sentence);
+              }
+            }
             return toolResult.content;
           }
           console.warn(
