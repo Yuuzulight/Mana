@@ -114,6 +114,10 @@ internal sealed class VoiceLoop : IDisposable
     // #665: read each time listening starts (see BargeInPolicy).
     private BargeInMode bargeInMode = BargeInMode.MinWords;
     private int bargeInMinWords = BargeInPolicy.DefaultMinWords;
+    // #682: MANA_BARGE_IN_VOICE / _HOLD_MS / _MIN_DBFS, read with the above.
+    private bool bargeInVoiceEnabled = true;
+    private long bargeInRequiredMs = BargeInGate.DefaultHoldMs;
+    private double bargeInMinDbfs = BargeInGate.DefaultMinDbfs;
 
     // #678: the voiceprint gate, read each time listening starts. The model
     // is only loaded once a gate mode is on and I've enrolled.
@@ -379,6 +383,9 @@ internal sealed class VoiceLoop : IDisposable
         var settings = ManaSettingsStore.Load();
         bargeInMode = BargeInPolicy.Resolve(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MODE"), settings.BargeInMode);
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
+        bargeInVoiceEnabled = BargeInGate.VoiceEnabled(Environment.GetEnvironmentVariable("MANA_BARGE_IN_VOICE"));
+        bargeInRequiredMs = BargeInGate.ResolveHoldMs(Environment.GetEnvironmentVariable("MANA_BARGE_IN_HOLD_MS"));
+        bargeInMinDbfs = BargeInGate.ResolveMinDbfs(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_DBFS"));
         wakeRearmMs = ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS"));
         speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
         speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"), settings.SpeakerThreshold);
@@ -825,8 +832,13 @@ internal sealed class VoiceLoop : IDisposable
     // CapturingInterruption by the time this returns).
     private bool ProcessSpeakingFrame(float[] frame, bool isSpeech)
     {
-        var isLoudEnough = BargeInGate.DbfsFromSamples(frame) >= BargeInGate.DefaultMinDbfs;
-        var (heldMs, triggered) = BargeInGate.Next(isSpeech, isLoudEnough, bargeInHeldMs, FrameMs);
+        // MANA_BARGE_IN_VOICE=0: hotkey-only, talking over her does nothing.
+        if (!bargeInVoiceEnabled)
+        {
+            return false;
+        }
+        var isLoudEnough = BargeInGate.DbfsFromSamples(frame) >= bargeInMinDbfs;
+        var (heldMs, triggered) = BargeInGate.Next(isSpeech, isLoudEnough, bargeInHeldMs, FrameMs, bargeInRequiredMs);
         bargeInHeldMs = heldMs;
 
         if (!triggered)
