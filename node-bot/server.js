@@ -316,6 +316,7 @@ const { createEmbedder } = require("./ai/embedder-runtime");
 const { createRetrieverRuntime } = require("./ai/retriever-runtime");
 const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
+const { createCodingSessionManager } = require("./ai/coding-session");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
 const { createSentenceChunker } = require("./utils/sentence-chunker");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
@@ -622,12 +623,24 @@ const gamingWatch = createGamingWatch({
     retrieverService.stop();
     // #872/#889: drops the vision mmproj, and swaps to MANA_GAMING_LLAMA_MODEL when it's set.
     llamaServerRuntime.setGaming(true);
+    // #1343: lock out heavy coding engine immediately
+    codingSessionManager.stopAll("game_started");
     // #914: group mode pauses; after this poll has recorded the game.
     queueMicrotask(() => characterStore.gameChanged());
   },
   onGameEnd: () => {
     llamaServerRuntime.setGaming(false);
     queueMicrotask(() => characterStore.gameChanged());
+  },
+});
+// #1343 Phase 3: Tri-mode sticky coding session manager
+const codingSessionManager = createCodingSessionManager({
+  isGaming: () => gamingWatch.isGaming(),
+  onSessionExit: (sessionId, reason) => {
+    console.log(`[Coding Session] Exited session [${sessionId || "default"}]: ${reason}`);
+  },
+  onSessionTimeout: (sessionId) => {
+    console.log(`[Coding Session] Session [${sessionId || "default"}] timed out after 15 minutes idle`);
   },
 });
 if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
@@ -3218,6 +3231,29 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // #1343 Phase 3: Coding session state and control endpoints
+  app.get("/coding-session/status", (req, res) => {
+    const sessionId = req.query?.sessionId || null;
+    return res.json({
+      active: codingSessionManager.isActive(sessionId),
+      isGaming: gamingWatch.isGaming(),
+      game: gamingWatch.game(),
+    });
+  });
+
+  app.post("/coding-session/start", (req, res) => {
+    const sessionId = req.body?.sessionId || null;
+    const result = codingSessionManager.start(sessionId);
+    return res.json(result);
+  });
+
+  app.post("/coding-session/stop", (req, res) => {
+    const sessionId = req.body?.sessionId || null;
+    const reason = req.body?.reason || "user_exit";
+    const stopped = codingSessionManager.stop(sessionId, reason);
+    return res.json({ ok: stopped });
+  });
+
   // Barge-in interruption classifier, required once at startup (matches the
   // classifyIntent pattern above) so a module-resolution failure surfaces
   // at startup instead of as a per-request 500.
@@ -4348,6 +4384,36 @@ function registerRoutes(app, upload, deps = {}) {
       transcript,
       modelProfile,
     );
+
+    // #1343 Phase 3: Sticky coding session handling and gaming guard
+    if (codingSessionManager.isExitCommand(transcript)) {
+      codingSessionManager.stop(sessionId, "user_exit");
+      if (replyMeta) replyMeta.codingSessionExited = true;
+    }
+    const inStickyCoding = codingSessionManager.isActive(sessionId);
+    if (!inStickyCoding && (codingSessionManager.isEnterCommand(transcript) || normalizedModelProfile === "coding")) {
+      if (gamingWatch.isGaming()) {
+        normalizedModelProfile = "default";
+        if (replyMeta) replyMeta.gamingHeld = true;
+      } else {
+        const startRes = codingSessionManager.start(sessionId);
+        if (startRes.ok) {
+          normalizedModelProfile = "coding";
+          if (replyMeta) {
+            replyMeta.codingSessionStarted = true;
+            replyMeta.maskingPhrase = startRes.maskingPhrase;
+          }
+        }
+      }
+    } else if (inStickyCoding) {
+      if (gamingWatch.isGaming()) {
+        codingSessionManager.stop(sessionId, "game_started");
+        normalizedModelProfile = "default";
+      } else {
+        codingSessionManager.touch(sessionId);
+        normalizedModelProfile = "coding";
+      }
+    }
     // #675: "think harder" turns thinking on for this turn's replies (tool
     // loop, streamed or plain, and regenerations) with its own bigger
     // budget -- asked for in words, or by the client's thinkHarder request
@@ -6322,4 +6388,5 @@ module.exports = {
   shouldUseRemoteAi,
   startServer,
   sweepStaleTmpFiles,
+  codingSessionManager,
 };

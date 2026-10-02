@@ -40,6 +40,10 @@ const LLAMA_MODEL_PROFILES = {
     label: "Coding",
     fallbackProfile: "default",
     names: [
+      // #1343: dedicated 14B engineering engine
+      "qwen2.5-coder-14b-instruct-q4_k_m-qwen-official.gguf",
+      "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+      "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
       // Custom imatrix calibrated on Mana's own codebase + the user's other
       // real projects (Python/TS-React/SQL/C++) plus real git diffs -- see
       // tools/quantize-work/comparison for the side-by-side that motivated
