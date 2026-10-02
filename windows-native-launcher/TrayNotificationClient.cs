@@ -28,6 +28,7 @@ internal sealed class TrayNotificationClient : IDisposable
     private readonly Action<TrayNotificationPayload>? onCharacter;
     private readonly Action<TrayNotificationPayload>? onSelfWork;
     private readonly Action<TrayNotificationPayload>? onBrowserDownload;
+    private readonly Action<TrayNotificationPayload>? onBackgroundTaskDone;
     private readonly bool proactiveToasts;
     private readonly CancellationTokenSource cts = new();
 
@@ -44,8 +45,9 @@ internal sealed class TrayNotificationClient : IDisposable
     // thread-pool thread.
     // #1008: onSelfWork gets the starts and ends of Mana's work on her own
     // code, on a thread-pool thread.
-    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<TrayNotificationPayload>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null, ManaBackendClient? backendClient = null, Action<TrayNotificationPayload>? onBrowserDownload = null)
+    public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<TrayNotificationPayload>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null, ManaBackendClient? backendClient = null, Action<TrayNotificationPayload>? onBrowserDownload = null, Action<TrayNotificationPayload>? onBackgroundTaskDone = null)
     {
+        this.onBackgroundTaskDone = onBackgroundTaskDone;
         this.onBrowserDownload = onBrowserDownload;
         this.backendClient = backendClient;
         this.onSelfWork = onSelfWork;
@@ -151,6 +153,12 @@ internal sealed class TrayNotificationClient : IDisposable
         if (payload?.Type == "self-work")
         {
             onSelfWork?.Invoke(payload);
+            return;
+        }
+        // #1337: a background task a chat started ended (on a thread-pool thread).
+        if (payload?.Type == "background_task_done")
+        {
+            onBackgroundTaskDone?.Invoke(payload);
             return;
         }
         // #1158: a download I approved, shown in the chat.

@@ -262,4 +262,46 @@ public class ChatViewTests
 
         Assert.Equal(expected.Split('|'), pieces);
     }
+
+    // #1337: a reopened chat shows its steps where they were, and its notices.
+    [Fact]
+    public void ShowHistory_PlacesSavedStepsAndTaskNotices()
+    {
+        using var view = NewView();
+        string? opened = null;
+        view.OpenTask = (id, title, running) => opened = $"{id}:{title}:{running()}";
+
+        view.ShowHistory(new[]
+        {
+            new ManaSessionTurn
+            {
+                User = "go",
+                Assistant = "On it. Done.",
+                Steps = new[] { new AgentStep("s1", "command", null, "done", Segment: 0, TextOffset: 6) },
+            },
+            new ManaSessionTurn { Notice = new ManaTaskNotice("t1", "Draft M6", "done", "Background task completed") },
+        });
+
+        Assert.Equal(new[] { "go", "On it.", "Ran a command  ›", "Done.", "Background task completed · Draft M6  ›" },
+            view.Messages.Select(m => m.PlainText));
+        view.OpenTask!("t1", "Draft M6", () => false);
+        Assert.Equal("t1:Draft M6:False", opened);
+    }
+
+    // #1337: stream steps land after the text streamed before them; the
+    // poll leaves steps that have a textOffset alone.
+    [Fact]
+    public void StreamSteps_LandInOrderAndThePollSkipsThem()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("go");
+        view.AppendReplySentence("On it.");
+        var step = new AgentStep("s1", "command", "Run it", "running", Segment: 0, TextOffset: 6);
+        view.ShowStreamSteps(new AgentSteps("x", true, new[] { step }));
+        view.ShowSteps(new AgentSteps("poll", true, new[] { step }));
+        view.AppendReplySentence("Done.");
+        view.ShowStreamSteps(new AgentSteps("x", false, new[] { step with { Status = "done" } }));
+
+        Assert.Equal(new[] { "go", "On it.", "Ran a command  ›", "Done." }, view.Messages.Select(m => m.PlainText));
+    }
 }

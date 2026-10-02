@@ -11,7 +11,9 @@ namespace Mana.NativeLauncher;
 // #1024: Kind and Emotion pick how Speak is said (AnnouncementEmotion).
 // #914: Id, on a "group" payload, is the partner replying alongside the
 // active character (null: nobody, so her avatar goes away).
-internal sealed record TrayNotificationPayload(string? Type, string Title, string Text, string? Speak = null, string? Model = null, string? Url = null, string? Kind = null, string? Emotion = null, string? Id = null)
+// #1337: SessionId, TaskId and Status, on "background_task_done", say which
+// chat's task ended and how.
+internal sealed record TrayNotificationPayload(string? Type, string Title, string Text, string? Speak = null, string? Model = null, string? Url = null, string? Kind = null, string? Emotion = null, string? Id = null, string? SessionId = null, string? TaskId = null, string? Status = null)
 {
     // Returns null for anything that isn't a well-formed JSON object --
     // a malformed or unexpectedly-shaped message (e.g. "type" present but
@@ -36,7 +38,8 @@ internal sealed record TrayNotificationPayload(string? Type, string Title, strin
             var kind = root.TryGetProperty("kind", out var kindElement) ? kindElement.GetString() : null;
             var emotion = root.TryGetProperty("emotion", out var emotionElement) ? emotionElement.GetString() : null;
             var id = root.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String ? idElement.GetString() : null;
-            return new TrayNotificationPayload(type, title, text, speak, model, url, kind, emotion, id);
+            string? Str(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+            return new TrayNotificationPayload(type, title, text, speak, model, url, kind, emotion, id, Str("sessionId"), Str("taskId"), Str("status"));
         }
         catch
         {

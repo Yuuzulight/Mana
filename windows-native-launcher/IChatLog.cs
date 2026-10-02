@@ -27,4 +27,8 @@ internal interface IChatLog
     // #619: the live partial transcript of what the user is saying right
     // now ("Hearing: ..."), or null once that segment has closed.
     void ShowHearing(string? text) { }
+
+    // #1337: the reply's steps from its stream's "tool" events, each group
+    // placed after the text streamed before it.
+    void ShowStreamSteps(AgentSteps steps) { }
 }

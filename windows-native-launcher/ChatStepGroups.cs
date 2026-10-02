@@ -20,7 +20,12 @@ internal sealed record AgentStep(
     string? Command = null,
     string? ResultPreview = null,
     string? Tool = null,
-    int? Segment = null)
+    int? Segment = null,
+    // #1337: the reply text shown before its round (UTF-16 chars), and the
+    // background task an agent step started (its id and title).
+    int? TextOffset = null,
+    string? TaskId = null,
+    string? Title = null)
 {
     public bool IsRunning => Status is "running" or "awaiting_approval";
 
@@ -64,10 +69,30 @@ internal sealed class StepGroup
 
     public string Summary => ChatStepGroups.Summarize(Steps);
 
+    // #1337: a sub-agent or background job's own line, which opens its
+    // transcript; Notice ("Background task completed") makes it the line
+    // saying that task ended.
+    public string? TaskId => Steps.Count == 1 && Steps[0].TaskId is { Length: > 0 } id ? id : null;
+    public string? Notice { get; init; }
+
     // The whole grey line, minus the +/- totals the control colours itself.
-    public string Line => Running
-        ? $"{Summary}… {CurrentDescription}".TrimEnd()
+    public string Line => TaskId is not null ? TaskLine
+        : Running ? $"{Summary}… {CurrentDescription}".TrimEnd()
         : Summary;
+
+    private string TaskLine
+    {
+        get
+        {
+            var title = Steps[0].Title ?? Steps[0].Description;
+            if (Notice is not null)
+            {
+                return string.IsNullOrWhiteSpace(title) ? Notice : $"{Notice} · {title}";
+            }
+            title = string.IsNullOrWhiteSpace(title) ? "Background task" : title;
+            return Steps[0].Status == "failed" ? $"{title} · failed" : title;
+        }
+    }
 }
 
 internal static class ChatStepGroups
@@ -87,7 +112,8 @@ internal static class ChatStepGroups
                 current = null;
                 continue;
             }
-            if (current is null || current[^1].Segment != step.Segment)
+            // #1337: an agent step that started a task gets a line of its own.
+            if (current is null || current[^1].Segment != step.Segment || step.TaskId is { Length: > 0 } || current[0].TaskId is { Length: > 0 })
             {
                 current = new List<AgentStep>();
                 groups.Add(current);
@@ -99,6 +125,40 @@ internal static class ChatStepGroups
         return groups.Select((g, i) => new StepGroup(g,
             g.Any(s => s.IsRunning) || (activity.Running && i == groups.Count - 1 && current is not null))).ToList();
     }
+
+    // #1337: a saved reply's text cut at its groups' textOffsets, in order:
+    // text, group, text... A group without one goes at the end.
+    // ponytail: a cut inside a code block or table splits it in two; the
+    // backend's offsets fall between rounds, where that's rare.
+    public static List<(string? Text, StepGroup? Group)> Interleave(string text, IReadOnlyList<AgentStep> steps)
+    {
+        var pieces = new List<(string? Text, StepGroup? Group)>();
+        void AddText(string piece)
+        {
+            if (!string.IsNullOrWhiteSpace(piece))
+            {
+                pieces.Add((piece.Trim(), null));
+            }
+        }
+        var at = 0;
+        foreach (var group in Group(new AgentSteps(null, false, steps)).OrderBy(g => g.Steps[0].TextOffset ?? text.Length))
+        {
+            var cut = Math.Clamp(group.Steps[0].TextOffset ?? text.Length, at, text.Length);
+            AddText(text[at..cut]);
+            pieces.Add((null, group));
+            at = cut;
+        }
+        AddText(text[at..]);
+        return pieces;
+    }
+
+    // #1337: the line a finished background task leaves in its chat.
+    public static StepGroup TaskNotice(string taskId, string? title, string? status, string? text) =>
+        new(new[] { new AgentStep(taskId, "agent", null, status ?? "done", TaskId: taskId, Title: title) }, false)
+        {
+            Notice = !string.IsNullOrWhiteSpace(text) ? text
+                : status == "failed" ? "Background task failed" : "Background task completed",
+        };
 
     public static string Summarize(IReadOnlyList<AgentStep> steps)
     {
@@ -174,6 +234,12 @@ internal static class ChatStepGroups
     {
         static MarkdownRun Run(string text) => new(text, false, false, false);
         var head = new List<MarkdownRun> { Run(group.Line) };
+        if (group.TaskId is not null)
+        {
+            // Opens the task's transcript rather than expanding.
+            head.Add(Run("  ›"));
+            return new List<MarkdownBlock> { new(MarkdownBlockType.Paragraph, head) };
+        }
         if (group.ChangedFiles)
         {
             head.Add(Run($"  {AddedPrefix}{group.Added}"));

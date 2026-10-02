@@ -323,7 +323,8 @@ internal sealed class VoiceLoop : IDisposable
                 // #623: each sentence's own face as its audio starts -- the
                 // model's emotion tag, else read from the sentence's text.
                 avatarOverlay.SetState(MapReplyEmotionToAvatarState(ReplyEmotionDetector.DetectReplyEmotion(sentence, emotion)), null, emotion);
-            });
+            },
+            steps => this.chatLog?.ShowStreamSteps(steps)); // #1337
     }
 
     // #681: true between Start() and Stop() -- what the tray's and chat

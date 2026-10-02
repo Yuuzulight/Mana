@@ -203,4 +203,79 @@ public class ChatStepGroupsTests
         Assert.Null(activity.Steps[1].StartedAt);
         Assert.Equal("Created vault_1318.py, used a tool…", ChatStepGroups.Group(activity).Single().Line);
     }
+
+    // #1337: an agent step that started a task is its own line, not "ran an agent".
+    [Fact]
+    public void AgentWithATaskGetsItsOwnLine()
+    {
+        var agent = new AgentStep("a1", "agent", "Start an agent", "done", Segment: 0, TaskId: "t9", Title: "Draft Folio M6 + optional track");
+        var groups = ChatStepGroups.Group(new AgentSteps("r1", false, new[]
+        {
+            Step("command") with { Segment = 0 }, Step("command") with { Segment = 0 }, agent, Step("tool") with { Segment = 0 },
+        }));
+
+        Assert.Equal(new[] { "Ran 2 commands", "Draft Folio M6 + optional track", "Used a tool" }, groups.Select(g => g.Line));
+        Assert.Equal("t9", groups[1].TaskId);
+        Assert.Null(groups[0].TaskId);
+        Assert.Equal("Draft Folio M6 + optional track  ›", string.Concat(ChatStepGroups.Blocks(groups[1], true, DateTimeOffset.UtcNow).Single().Runs.Select(r => r.Text)));
+    }
+
+    [Fact]
+    public void TaskNoticeSaysHowItEnded()
+    {
+        Assert.Equal("Background task completed · View umbrella issues 169-175", ChatStepGroups.TaskNotice("t1", "View umbrella issues 169-175", "done", null).Line);
+        Assert.Equal("Background task failed", ChatStepGroups.TaskNotice("t1", null, "failed", null).Line);
+        Assert.Equal("t1", ChatStepGroups.TaskNotice("t1", null, "done", "Done").TaskId);
+    }
+
+    // #1337: a saved reply: text, steps line, text, agent line, text.
+    [Fact]
+    public void InterleaveCutsTheTextAtEachGroupsOffset()
+    {
+        const string text = "Looking first. Found it. All three are drafting.";
+        var pieces = ChatStepGroups.Interleave(text, new[]
+        {
+            new AgentStep("s1", "command", null, "done", Segment: 0, TextOffset: 14),
+            new AgentStep("s2", "read", null, "done", Segment: 0, TextOffset: 14),
+            new AgentStep("a1", "agent", null, "done", Segment: 1, TextOffset: 24, TaskId: "t1", Title: "Draft M6"),
+        });
+
+        Assert.Equal(new[] { "Looking first.", "Ran a command, read a file", "Found it.", "Draft M6", "All three are drafting." },
+            pieces.Select(p => p.Text ?? p.Group!.Line));
+    }
+
+    [Fact]
+    public void InterleaveWithoutStepsOrOffsetsKeepsTheTextFirst()
+    {
+        Assert.Equal("Hi.", Assert.Single(ChatStepGroups.Interleave("Hi.", Array.Empty<AgentStep>())).Text);
+        var pieces = ChatStepGroups.Interleave("Hi.", new[] { new AgentStep("s1", "command", null, "done", TextOffset: 99) });
+        Assert.Equal(new[] { "Hi.", null }, pieces.Select(p => p.Text));
+    }
+
+    // #1337: saved steps and "background task ended" events in a session's history.
+    [Fact]
+    public async Task GetSessionDetailAsync_ReadsSavedStepsAndTaskEvents()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {"turns":[
+                  {"user":"go","assistant":"On it. Done.","steps":[{"id":"s1","kind":"command","status":"done","segment":0,"textOffset":6}]},
+                  {"role":"event","kind":"background_task","taskId":"t1","title":"Draft M6","status":"done","at":"2026-10-03T10:00:00Z","text":"Background task completed"},
+                  {"role":"event","kind":"something_else"},
+                  {"user":"old","assistant":"No steps."}
+                ]}
+                """,
+                Encoding.UTF8,
+                "application/json"),
+        });
+
+        var turns = (await new ManaBackendClient(handler).GetSessionDetailAsync("c1"))!.RecentTurns;
+
+        Assert.Equal(3, turns.Count);
+        Assert.Equal(6, Assert.Single(turns[0].Steps).TextOffset);
+        Assert.Equal(new ManaTaskNotice("t1", "Draft M6", "done", "Background task completed"), turns[1].Notice);
+        Assert.Empty(turns[2].Steps);
+    }
 }
