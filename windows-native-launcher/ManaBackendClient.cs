@@ -2666,9 +2666,62 @@ internal sealed class ManaBackendClient
                 EtaSeconds = e.TryGetProperty("etaSeconds", out var eta) && eta.ValueKind == JsonValueKind.Number ? eta.GetDouble() : null,
                 Detail = Text("detail"),
                 CanCancel = e.TryGetProperty("canCancel", out var cancel) && cancel.ValueKind == JsonValueKind.True,
+                EndedAt = Time("endedAt"),
+                Model = Text("model"),
+                Tokens = e.TryGetProperty("tokens", out var tokens) && tokens.ValueKind == JsonValueKind.Number ? tokens.GetDouble() : null,
+                ToolUses = e.TryGetProperty("toolUses", out var uses) && uses.ValueKind == JsonValueKind.Number ? (int)uses.GetDouble() : null,
+                CurrentAction = Text("currentAction"),
+                CanStop = e.TryGetProperty("canStop", out var stop) && stop.ValueKind is JsonValueKind.True or JsonValueKind.False ? stop.GetBoolean() : null,
+                TranscriptUrl = Text("transcriptUrl"),
             });
         }
         return tasks;
+    }
+
+    // #1318: one task's step log. Null when the backend has none for it
+    // (404: unknown id, or a backend from before #1318).
+    public async Task<ManaTaskTranscript?> GetBackgroundTaskTranscriptAsync(string id)
+    {
+        using var response = await http.GetAsync($"/background-tasks/{Uri.EscapeDataString(id)}/transcript");
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        var steps = new List<ManaTaskStep>();
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("steps", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            steps.AddRange(list.EnumerateArray().Where(s => s.ValueKind == JsonValueKind.Object).Select(ParseTaskStep));
+        }
+        string? Text(string name) => root.ValueKind == JsonValueKind.Object && root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        return new ManaTaskTranscript { Id = Text("id") ?? id, Title = Text("title") ?? "", Steps = steps };
+    }
+
+    // #1318's shared Step shape; every field optional.
+    internal static ManaTaskStep ParseTaskStep(JsonElement e)
+    {
+        static string? Text(JsonElement o, string name) => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        static int? Int(JsonElement o, string name) => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? (int)v.GetDouble() : null;
+        DateTimeOffset? Time(string name) => DateTimeOffset.TryParse(Text(e, name), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var t) ? t : null;
+        var hasDetail = e.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.Object;
+        return new ManaTaskStep
+        {
+            Id = Text(e, "id") ?? "",
+            Kind = Text(e, "kind") ?? "",
+            Tool = Text(e, "tool"),
+            Description = Text(e, "description") ?? "",
+            Status = Text(e, "status") ?? "",
+            StartedAt = Time("startedAt"),
+            EndedAt = Time("endedAt"),
+            File = Text(e, "file"),
+            Added = Int(e, "added"),
+            Removed = Int(e, "removed"),
+            Command = hasDetail ? Text(detail, "command") : null,
+            ResultPreview = hasDetail ? Text(detail, "resultPreview") : null,
+        };
     }
 
     // False when the task already ended or can't be stopped now (404/409).
@@ -3338,6 +3391,44 @@ internal sealed class ManaBackgroundTask
     public double? EtaSeconds { get; init; }
     public string? Detail { get; init; }
     public bool CanCancel { get; init; }
+    // #1318 (each null when the backend doesn't know it): the card's
+    // model, token and tool-use counts and what it's doing now; CanStop
+    // falls back to CanCancel on a backend from before #1318.
+    public DateTimeOffset? EndedAt { get; init; }
+    public string? Model { get; init; }
+    public double? Tokens { get; init; }
+    public int? ToolUses { get; init; }
+    public string? CurrentAction { get; init; }
+    public bool? CanStop { get; init; }
+    public string? TranscriptUrl { get; init; }
+    public bool Stoppable => CanStop ?? CanCancel;
+}
+
+// #1318: GET /background-tasks/:id/transcript.
+internal sealed class ManaTaskTranscript
+{
+    public string Id { get; init; } = "";
+    public string Title { get; init; } = "";
+    public IReadOnlyList<ManaTaskStep> Steps { get; init; } = [];
+}
+
+// #1318: one step of a task. Status is running, done, failed or
+// awaiting_approval; Command and ResultPreview come from its detail
+// (sanitized server-side).
+internal sealed class ManaTaskStep
+{
+    public string Id { get; init; } = "";
+    public string Kind { get; init; } = "";
+    public string? Tool { get; init; }
+    public string Description { get; init; } = "";
+    public string Status { get; init; } = "";
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? EndedAt { get; init; }
+    public string? File { get; init; }
+    public int? Added { get; init; }
+    public int? Removed { get; init; }
+    public string? Command { get; init; }
+    public string? ResultPreview { get; init; }
 }
 
 // Unit: "files", "bytes", "sources", "rounds", or "ms" for a countdown.

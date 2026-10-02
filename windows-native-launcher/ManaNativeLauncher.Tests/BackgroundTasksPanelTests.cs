@@ -151,19 +151,21 @@ public class BackgroundTasksPanelTests
             Pump(panel.RefreshAsync());
 
             var items = panel.ListItems;
-            Assert.Equal(new[] { "Models", "Loading qwen.gguf", "Memory", "Indexing files for search", "Reminders", "Broken progress", "Raid" },
+            // #1318: running work as cards under "Running", the rest grouped by kind.
+            Assert.Equal(new[] { "Running", "Loading qwen.gguf", "Indexing files for search", "Broken progress", "Reminders", "Raid" },
                 items.Select(c => c is BackgroundTasksPanel.TaskRow row ? row.Task!.Title : c.Text));
             var raid = items.OfType<BackgroundTasksPanel.TaskRow>().Single(r => r.Task!.Id == "reminder:r1");
             Assert.Equal("Raid, Scheduled, next in 12 min", raid.AccessibleName);
             Assert.True(raid.CancelButton.Visible);
             Assert.Equal("Cancel Raid", raid.CancelButton.AccessibleName);
             Assert.Equal(BackgroundTasksPanel.BarKind.Determinate, raid.BarKind);
-            var load = items.OfType<BackgroundTasksPanel.TaskRow>().Single(r => r.Task!.Id == "llama-load");
-            Assert.False(load.CancelButton.Visible);
+            var load = items.OfType<BackgroundTasksPanel.TaskCard>().Single(r => r.Task!.Id == "llama-load");
+            Assert.False(load.StopButton.Visible);
+            Assert.False(load.TranscriptLink.Visible);
             Assert.True(load.Indeterminate);
-            Assert.Equal("running 30 s", load.MetaText);
+            Assert.Equal("Model 30s", load.MetaText);
             Assert.True(items.All(c => !string.IsNullOrEmpty(c.AccessibleName)));
-            Assert.True(items.OfType<BackgroundTasksPanel.TaskRow>().All(r => r.TabStop));
+            Assert.True(items.Where(c => c is BackgroundTasksPanel.TaskRow or BackgroundTasksPanel.TaskCard).All(r => r.TabStop));
 
             Assert.False(panel.EmptyLabel.Visible);
             Assert.True(panel.SelfWorkRow.Visible);
@@ -204,7 +206,7 @@ public class BackgroundTasksPanelTests
             responses.Enqueue(Json(SampleJson));
             Click(panel.RetryButton);
             PumpUntil(() => !panel.ErrorRow.Visible);
-            Assert.Equal(7, panel.ListItems.Count);
+            Assert.Equal(6, panel.ListItems.Count);
 
             // Cancel posts, then refreshes; the row is gone once the backend drops it.
             responses.Enqueue(Json("""{"ok":true}"""));
@@ -233,6 +235,85 @@ public class BackgroundTasksPanelTests
             Assert.False(panel.Polling);
             Assert.False(panel.Animating);
         });
+    }
+
+    // #1318: a running task's card with every new field, Stop on the
+    // cancel path, View transcript, and finished tasks listed last.
+    private const string Json1318 =
+        """
+        {"tasks":[
+          {"id":"bg-1","kind":"agent","title":"Mana #1318: step descriptions in UI","status":"running","startedAt":"2026-10-01T11:59:22.000Z","model":"Qwen3.5-9B","tokens":71500,"toolUses":7,"currentAction":"Running a command","canStop":true,"canCancel":false,"transcriptUrl":"/background-tasks/bg-1/transcript"},
+          {"id":"bg-0","kind":"research","title":"Old research","status":"done","startedAt":"2026-10-01T11:00:00.000Z","endedAt":"2026-10-01T11:05:00.000Z","canStop":false},
+          {"id":"bg-2","kind":"benchmark","title":"Older bench","status":"failed","startedAt":"2026-10-01T10:00:00.000Z","endedAt":"2026-10-01T10:01:00.000Z"}
+        ]}
+        """;
+
+    [Fact]
+    public void Panel_RunningCards_StopAndTranscript_FinishedLast()
+    {
+        RunSta(() =>
+        {
+            var responses = new Queue<HttpResponseMessage>();
+            var requests = new List<string>();
+            var opened = new List<string>();
+            using var panel = new BackgroundTasksPanel(ClientReturning(request =>
+            {
+                requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+                return responses.Dequeue();
+            }), () => { }, () => Now, task => opened.Add(task.Id));
+
+            responses.Enqueue(Json(Json1318));
+            Pump(panel.RefreshAsync());
+            Assert.Equal(new[] { "Running", "Mana #1318: step descriptions in UI", "Finished", "Old research", "Older bench" },
+                panel.ListItems.Select(c => c is BackgroundTasksPanel.TaskRow row ? row.Task!.Title : c.Text));
+
+            var card = panel.ListItems.OfType<BackgroundTasksPanel.TaskCard>().Single();
+            Assert.Equal("Agent 38s · Qwen3.5-9B · 71.5k tokens · 7 tool uses", card.MetaText);
+            Assert.Equal("Running a command", card.ActionText);
+            Assert.Equal("Mana #1318: step descriptions in UI, Agent 38s, Qwen3.5-9B, 71.5k tokens, 7 tool uses, Running a command", card.AccessibleName);
+            Assert.True(card.StopButton.Visible);
+            Assert.Equal("Stop Mana #1318: step descriptions in UI", card.StopButton.AccessibleName);
+            Assert.True(card.TranscriptLink.Visible);
+
+            typeof(LinkLabel).GetMethod("OnLinkClicked", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .Invoke(card.TranscriptLink, new object[] { new LinkLabelLinkClickedEventArgs(card.TranscriptLink.Links[0]) });
+            Assert.Equal(new[] { "bg-1" }, opened);
+
+            responses.Enqueue(Json("""{"ok":true}"""));
+            responses.Enqueue(Json("""{"tasks":[]}"""));
+            Click(card.StopButton);
+            PumpUntil(() => panel.EmptyLabel.Visible);
+            Assert.Contains("POST /background-tasks/bg-1/cancel", requests);
+            Assert.True(card.IsDisposed);
+        });
+    }
+
+    [Fact]
+    public async Task GetBackgroundTaskTranscriptAsync_ReadsSteps_AndNullOn404()
+    {
+        string? path = null;
+        var transcript = await ClientReturning(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Json("""
+                {"id":"bg-1","title":"T","steps":[
+                  {"id":"s1","kind":"command","tool":"coding__run_command","description":"Run the tests","status":"done","startedAt":"2026-10-01T12:00:00.000Z","endedAt":"2026-10-01T12:00:04.000Z","detail":{"command":"node --test","resultPreview":"ok 1"}},
+                  {"id":"s2","kind":"file_create","description":"Create x.py","status":"running","file":"x.py","added":19,"removed":0},
+                  "junk"
+                ]}
+                """);
+        }).GetBackgroundTaskTranscriptAsync("bg 1");
+
+        Assert.Equal("/background-tasks/bg%201/transcript", path);
+        Assert.NotNull(transcript);
+        Assert.Equal(2, transcript!.Steps.Count);
+        var run = transcript.Steps[0];
+        Assert.Equal(("s1", "command", "Run the tests", "done", "node --test", "ok 1"), (run.Id, run.Kind, run.Description, run.Status, run.Command, run.ResultPreview));
+        Assert.Equal(Now.AddSeconds(4), run.EndedAt);
+        Assert.Equal(("x.py", 19, 0), (transcript.Steps[1].File, transcript.Steps[1].Added, transcript.Steps[1].Removed));
+        Assert.Null(transcript.Steps[1].EndedAt);
+
+        Assert.Null(await ClientReturning(_ => new HttpResponseMessage(HttpStatusCode.NotFound)).GetBackgroundTaskTranscriptAsync("gone"));
     }
 
     private static void Click(Button button) =>
