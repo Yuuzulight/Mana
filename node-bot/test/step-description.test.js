@@ -86,4 +86,9 @@ test("stepInfo gives the kind, file, line counts and a sanitized command; result
   assert.ok(trimResult("x".repeat(2000)).length <= 600);
   assert.doesNotMatch(trimResult({ path: "C:\\Users\\me\\a.txt" }), /Users/);
   assert.equal(trimResult(undefined), "");
+  // #1338: an unserializable result still previews instead of throwing.
+  const circular = {};
+  circular.self = circular;
+  assert.equal(trimResult(circular), "[result not shown]");
+  assert.equal(trimResult({ n: 1n }), "[result not shown]");
 });

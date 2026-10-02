@@ -155,7 +155,14 @@ function stepInfo(name, args) {
 }
 
 function trimResult(result) {
-  const text = typeof result === "string" ? result : result == null ? "" : JSON.stringify(result);
+  // #1338: a preview that can't serialize (circular, BigInt) must not turn
+  // a successful call into a failure.
+  let text;
+  try {
+    text = typeof result === "string" ? result : result == null ? "" : JSON.stringify(result) ?? "";
+  } catch {
+    text = "[result not shown]";
+  }
   return clip(sanitizeBridgeOutput(text.trim()), MAX_RESULT_CHARS);
 }
 
