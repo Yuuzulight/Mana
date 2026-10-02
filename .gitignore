@@ -19,6 +19,8 @@ win-bot/venv/
 
 # Ignore temp and logs
 node-bot/tmp/
+# Tasks from node-bot/bench/gen (regenerated locally, #1231)
+node-bot/bench/generated/
 *.log
 *.zip
 *.exe
