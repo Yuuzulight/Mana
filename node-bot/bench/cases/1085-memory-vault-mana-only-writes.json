@@ -1,5 +1,6 @@
 {
   "id": "1085-memory-vault-mana-only-writes",
+  "kind": "node-feature",
   "pr": 1085,
   "issue": 1084,
   "base": "1a4379bba5469e1f9883f72d831c53c4c6cb9af9",

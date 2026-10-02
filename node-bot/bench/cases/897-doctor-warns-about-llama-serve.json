@@ -1,5 +1,6 @@
 {
   "id": "897-doctor-warns-about-llama-serve",
+  "kind": "node-bug",
   "pr": 897,
   "issue": 896,
   "base": "d7f49849df68b6c3f2bfa024af9f4a871e0ed4c4",

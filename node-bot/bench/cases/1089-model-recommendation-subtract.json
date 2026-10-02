@@ -1,5 +1,6 @@
 {
   "id": "1089-model-recommendation-subtract",
+  "kind": "multi-file",
   "pr": 1089,
   "issue": 1086,
   "base": "9f5625c06f290bf3362d5db88455a6f720a8f955",
