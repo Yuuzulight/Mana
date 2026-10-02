@@ -92,7 +92,7 @@ const DEFAULT_MAX_MINUTES = 120;
 // #1259: rounds to review and finish an attempt whose tests passed unfinished.
 const REVIEW_ROUNDS = 10;
 // What an attempt starts without: the last one's outcome and plan.
-const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree", "refutations"];
+const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree", "refutations", "conversations"];
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
@@ -320,6 +320,8 @@ function createSelfWork(options = {}) {
   // her worktrees, or a fallback of the caller's (the tests' fake); none by default.
   const gemini =
     options.gemini === true ? createGeminiFallback({ env, ledgerFile: path.join(worktreesDir, "self-work-gemini.json") }) : options.gemini || null;
+  // #1287: her training records (self-work-traces.js); none by default.
+  const traces = options.traces || null;
   let current = null;
 
   async function run(cmd, args, cwd) {
@@ -559,6 +561,12 @@ function createSelfWork(options = {}) {
     const merged = JSON.parse(
       await gh(["pr", "list", "--state", "merged", "--author", "@me", "--limit", "20", "--json", "number,headRefName,mergeCommit"]),
     );
+    // #1287: her training records learn they were merged.
+    for (const p of merged) {
+      try {
+        traces?.mark(p.number, { merged: true });
+      } catch {}
+    }
     const fresh = merged.filter((p) => p.headRefName.startsWith("mana/") && p.mergeCommit?.oid && !offered.has(p.number));
     if (!fresh.length) return;
     await git(["fetch", "origin", "main"]);
@@ -669,7 +677,29 @@ function createSelfWork(options = {}) {
       await gh(["pr", "edit", r.branch, "--add-label", GUARDRAIL_LABEL], r.worktree);
     }
     r.prUrl = url.split(/\s+/).pop();
+    if (!closest) await saveTrace(r, issue);
     end(r, "pr-open", `My PR for #${r.issue} is ready: ${r.prUrl}`);
+  }
+
+  // #1287: a PR whose tests passed and whose diff my reviewer passed, as a
+  // training record (its source: a Gemini CLI change isn't kept). Never
+  // in the way of the run.
+  async function saveTrace(r, issue) {
+    if (!traces?.enabled()) return;
+    try {
+      const saved = traces.save({
+        pr: Number(/\/pull\/(\d+)/.exec(r.prUrl)?.[1]),
+        issue: { number: r.issue, title: r.title, body: String(issue.body || "") },
+        source: r.fromGemini ? "gemini-cli" : "local",
+        conversations: r.conversations || [],
+        diff: await git(["diff", "--binary", "HEAD~1", "HEAD"], r.worktree),
+        tests: { command: r.lastTestCommand || null, passed: true, attempts: r.attempts || null },
+        outcome: { testsPassed: true, reviewPassed: true, merged: false, reverted: false },
+      });
+      if (saved.saved) log(r, "I kept this run as a training record.");
+    } catch (e) {
+      log(r, `I couldn't keep this run as a training record: ${e.message}`);
+    }
   }
 
   // Goal mode over her worktree tools, for a real run and a bench run alike.
@@ -677,6 +707,11 @@ function createSelfWork(options = {}) {
   // she didn't finish: her three passes and finish (so her reviewer too).
   function loop(r, issue, review = false) {
     const tools = worktreeTools(r, { intent: `#${r.issue}: ${r.title}\n${String(issue.body || "")}`, mustReview: review });
+    // #1287: each loop's messages, for this attempt's training record.
+    const keep = (reply) => {
+      (r.conversations ||= []).push({ review, rounds: reply?.rounds, messages: reply?.messages || null });
+      return reply;
+    };
     return runLoop(review ? reviewPrompt(r, issue) : buildPrompt(r, issue), tools, {
       // The review's goal still asks for the whole issue (goal mode's check
       // reads it with her prompt, which has the issue), but without an edit
@@ -692,7 +727,7 @@ function createSelfWork(options = {}) {
       maxTokens: 2048,
       overrideSystemPrompt:
         "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
-    });
+    }).then(keep);
   }
 
   // #1203: the benchmark's way in. Her loop on an issue's text, in a
@@ -1549,7 +1584,7 @@ Before it can be a PR:
     };
   }
 
-  return { start, startIdle, refresh, stop, status, chatToolSource, bench, benchGemini, _current: () => current };
+  return { start, startIdle, refresh, stop, status, chatToolSource, bench, benchGemini, traces, _current: () => current };
 }
 
 module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
