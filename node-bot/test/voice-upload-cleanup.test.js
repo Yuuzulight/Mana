@@ -5,7 +5,8 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createApp, sweepStaleTmpFiles } = require("../server");
-const { withServer, useTestAdminToken } = require("./helpers");
+const { withServer, useTestAdminToken, useTempDir } = require("./helpers");
+useTempDir("MANA_UPLOAD_TMP_DIR");
 
 const fetch = useTestAdminToken();
 

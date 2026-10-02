@@ -13,6 +13,7 @@ const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createZedIntegration } = require("./zed-integration");
 const Diff = require("diff");
 const { runPluginInputHooks } = require("./capabilities/registry");
+const { pendingWritesDir } = require("./utils/live-dirs");
 
 const RESTART_LOCAL_ONLY_ERROR = "restart is only available from this PC";
 
@@ -1232,13 +1233,10 @@ function registerEditorRoutes(app, deps) {
 // duplicating that closure would risk the two copies drifting apart.
 function registerPendingWritesRoutes(app, deps) {
   const { checkAdminAuth } = deps;
-  const PENDING_DIR =
-    process.env.MANA_PENDING_WRITES_DIR ||
-    path.join(__dirname, "data", "pending_writes");
 
   // Pending-write ids come straight from the URL (:id) into path.join()
   // below; without this check "../../whatever" would let an admin-auth'd
-  // request read/write/delete files outside PENDING_DIR.
+  // request read/write/delete files outside the pending-writes dir.
   function isSafePendingWriteId(id) {
     return typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
   }
@@ -1246,8 +1244,8 @@ function registerPendingWritesRoutes(app, deps) {
   app.get("/admin/pending-writes", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
-      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
-      const files = await fs.promises.readdir(PENDING_DIR);
+      await fs.promises.mkdir(pendingWritesDir(), { recursive: true });
+      const files = await fs.promises.readdir(pendingWritesDir());
       const pending = [];
       for (const f of files) {
         if (
@@ -1256,7 +1254,7 @@ function registerPendingWritesRoutes(app, deps) {
           !f.endsWith(".rejected.json")
         ) {
           const id = f.replace(/\.json$/i, "");
-          const base = path.join(PENDING_DIR, id);
+          const base = path.join(pendingWritesDir(), id);
           const pendingPath = `${base}.json`;
           let payload = null;
           try {
@@ -1284,14 +1282,14 @@ function registerPendingWritesRoutes(app, deps) {
       if (!isSafePendingWriteId(id)) {
         return res.status(400).json({ ok: false, error: "invalid id" });
       }
-      const base = path.join(PENDING_DIR, id);
+      const base = path.join(pendingWritesDir(), id);
       const approvedPath = `${base}.approved.json`;
       const data = {
         approver: req.body?.approver || "local-user",
         at: new Date().toISOString(),
         note: req.body?.note || null,
       };
-      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
+      await fs.promises.mkdir(pendingWritesDir(), { recursive: true });
       await fs.promises.writeFile(
         approvedPath,
         JSON.stringify(data, null, 2),
@@ -1316,14 +1314,14 @@ function registerPendingWritesRoutes(app, deps) {
       if (!isSafePendingWriteId(id)) {
         return res.status(400).json({ ok: false, error: "invalid id" });
       }
-      const base = path.join(PENDING_DIR, id);
+      const base = path.join(pendingWritesDir(), id);
       const rejectedPath = `${base}.rejected.json`;
       const data = {
         approver: req.body?.approver || "local-user",
         at: new Date().toISOString(),
         reason: req.body?.reason || null,
       };
-      await fs.promises.mkdir(PENDING_DIR, { recursive: true });
+      await fs.promises.mkdir(pendingWritesDir(), { recursive: true });
       await fs.promises.writeFile(
         rejectedPath,
         JSON.stringify(data, null, 2),

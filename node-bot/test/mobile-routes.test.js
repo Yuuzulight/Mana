@@ -5,7 +5,8 @@ const { createMobileAuth, hashPasscode } = require("../mobile-auth");
 const { MobileDeviceStore } = require("../mobile-device-store");
 const { generateTotpSecret, generateTotpCode } = require("../totp");
 const { createApp } = require("../server");
-const { withServer } = require("./helpers");
+const { withServer, useTempDir } = require("./helpers");
+const uploadDir = useTempDir("MANA_UPLOAD_TMP_DIR");
 const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -358,7 +359,7 @@ test("mobile audio chat cleans up multer temp file when normalization throws", a
       assert.match(body.error, /bad audio/);
       assert.equal(cleanupCalls.length, 1);
       assert.equal(cleanupCalls[0].tmpPath, cleanupCalls[0].audioPath);
-      assert.match(cleanupCalls[0].tmpPath, /tmp/);
+      assert.equal(path.dirname(cleanupCalls[0].tmpPath), uploadDir);
     });
   });
 });

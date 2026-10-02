@@ -6,7 +6,8 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { withServer, useTestAdminToken } = require("./helpers");
+const { withServer, useTestAdminToken, useTempDir } = require("./helpers");
+useTempDir("MANA_UPLOAD_TMP_DIR");
 
 // Every route but a few public ones needs an admin key (admin-key.js).
 const fetch = useTestAdminToken();

@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { useTestAdminToken, withServer } = require("./helpers");
+const { useTestAdminToken, withServer, useTempDir } = require("./helpers");
+useTempDir("MANA_PENDING_WRITES_DIR");
 // #842: these routes are admin-only; every request here sends ADMIN_TOKEN.
 const fetch = useTestAdminToken();
 
