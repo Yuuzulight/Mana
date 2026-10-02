@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Automation;
 
 namespace Mana.NativeLauncher;
 
@@ -68,7 +70,33 @@ internal static class ScreenPrivacyGuard
     {
         var window = GetForegroundWindow();
         GetWindowThreadProcessId(window, out var pid);
-        return BlockReasonFor(window, pid);
+        return BlockReasonFor(window, pid) ?? PasswordFieldBlockReason(FocusedIsPassword);
+    }
+
+    // Never look while the focused control is a password box, whatever app
+    // it's in. focusIsPassword returns null when UIA couldn't answer; that
+    // fails closed like the rest of the guard.
+    internal static string? PasswordFieldBlockReason(Func<bool?> focusIsPassword) =>
+        focusIsPassword() switch
+        {
+            false => null,
+            true => "a password field has focus",
+            null => "couldn't check the focused field for a password box",
+        };
+
+    // Bounded like TextActions.ReadFocusedAsync: a hung app's UIA provider
+    // can block for seconds.
+    internal static bool? FocusedIsPassword()
+    {
+        try
+        {
+            var read = Task.Run(() => AutomationElement.FocusedElement?.Current.IsPassword ?? false);
+            return read.Wait(TimeSpan.FromMilliseconds(700)) ? read.Result : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     // "HH:mm-HH:mm" (MANA_SCREEN_SENSING_QUIET_HOURS), wrapping past
