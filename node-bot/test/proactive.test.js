@@ -454,3 +454,20 @@ test("#697 learned scores survive a restart and show read-only in GET; POST take
     fs.rmSync(path.dirname(file), { recursive: true, force: true });
   }
 });
+
+test("#697 resetReason and resetAllLearned clear learned scores", () => {
+  const s = setup();
+  s.p.updateSettings({ mute: "news" });
+  cycle(s, "trivia", "dismissed");
+  cycle(s, "weather", "engaged");
+  assert.ok(s.p.getSettings().learned.trivia);
+  assert.ok(s.p.getSettings().learned.weather);
+
+  s.p.updateSettings({ resetReason: "trivia" });
+  assert.equal(s.p.getSettings().learned.trivia, undefined);
+  assert.ok(s.p.getSettings().learned.weather);
+
+  s.p.updateSettings({ resetAllLearned: true });
+  assert.deepEqual(s.p.getSettings().learned, {});
+});
+

@@ -204,6 +204,8 @@ internal sealed class VoiceLoop : IDisposable
     // tray-status poll result, not a stale snapshot from construction time.
     private readonly ScreenContextReader? screenContextReader;
     private readonly Func<bool> isGamingModeActive;
+    // #697: returns true when another app is actively playing audio or using the mic.
+    private readonly Func<bool>? isAudioBusy;
 
     // #859: Electron's gaming-mode listen pacing. Electron listens in
     // discrete rounds and, while a game runs, waits before the next round
@@ -289,11 +291,13 @@ internal sealed class VoiceLoop : IDisposable
         ClipBuffer? clipBuffer = null,
         WakeWordClassifier? wakeWordClassifier = null,
         CaptionOverlayForm? captions = null,
-        ChatBubblesForm? bubbles = null)
+        ChatBubblesForm? bubbles = null,
+        Func<bool>? isAudioBusy = null)
     {
         this.vad = vad;
         this.captions = captions;
         this.bubbles = bubbles;
+        this.isAudioBusy = isAudioBusy;
         this.wakeWordClassifier = wakeWordClassifier;
         this.backendClient = backendClient;
         this.audioPlayer = audioPlayer;
@@ -2155,7 +2159,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             lock (stateLock)
             {
-                if (IsQuietForAnnouncement(mode, hasHeardSpeechInSegment))
+                if (IsQuietForAnnouncement(mode, hasHeardSpeechInSegment, isAudioBusy?.Invoke() ?? false))
                 {
                     mode = ListenMode.Processing;
                     break;
@@ -2192,8 +2196,9 @@ internal sealed class VoiceLoop : IDisposable
 
     // #1148: no reply in flight or playing, and no speech of mine buffered
     // in the segment being recorded (Idle alone still records me talking).
-    internal static bool IsQuietForAnnouncement(ListenMode mode, bool heardSpeechInSegment) =>
-        mode == ListenMode.Idle && !heardSpeechInSegment;
+    // #697: also not busy with external audio/calls (when enabled).
+    internal static bool IsQuietForAnnouncement(ListenMode mode, bool heardSpeechInSegment, bool audioBusy = false) =>
+        mode == ListenMode.Idle && !heardSpeechInSegment && !audioBusy;
 
     // #666: a failed reply is shown in the chat and spoken once, with the
     // same mode handling as the non-streamed fallback above. If TTS is what

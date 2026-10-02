@@ -130,6 +130,10 @@ internal sealed class ManaSettingsStore
     // Performance); off ignores the backend's watched-game scan.
     public bool GamingModeDetection { get; set; } = true;
 
+    // #697: hold speech during calls or media playback (another app using audio/mic);
+    // on by default. When active, remarks show as toasts and spoken version waits.
+    public bool HoldSpeechDuringAudio { get; set; } = true;
+
     // #912: Settings > Voice's camera toggle; off by default.
     public bool CameraSnapshots { get; set; }
 

@@ -135,6 +135,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildMcpServersTab());
         tabs.TabPages.Add(BuildHooksTab());
         tabs.TabPages.Add(new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
+        tabs.TabPages.Add(new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }); // #697
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
