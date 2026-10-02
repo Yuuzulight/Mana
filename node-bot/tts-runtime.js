@@ -74,6 +74,20 @@ const QWEN3_TTS_LANGUAGES = new Set([
   "spanish",
 ]);
 
+// #909: Mana's emotion tags (utils/emotion-tags.js) as S1-mini emotion
+// markers. neutral, thinking and wink have no marker and stay plain.
+const FISH_EMOTION_MARKERS = {
+  happy: "joyful",
+  excited: "excited",
+  surprised: "surprised",
+  sad: "sad",
+  disappointed: "upset",
+  angry: "angry",
+  disgusted: "disgusted",
+  embarrassed: "embarrassed",
+  questioning: "curious",
+};
+
 // GPT-SoVITS's cross-lingual synthesis (same reference voice, different
 // target-text language) only covers these languages regardless of version;
 // see GPT_SoVITS/text/cleaner.py's language_module_map. Anything else
@@ -195,6 +209,10 @@ function createTtsRuntime(options = {}) {
   // opt in with FISH_TTS_FALLBACK_PROVIDER=kokoro / TTS_PROVIDER=kokoro --
   // so a Fish failure surfaces instead of switching to a different voice.
   const fishTtsFallbackProvider = env.FISH_TTS_FALLBACK_PROVIDER || "none";
+  // #909: S1-mini reads inline emotion markers like "(sad)", so a sentence's
+  // emotion tag (#623) is said with that feeling. FISH_TTS_EMOTION=off speaks
+  // the plain text.
+  const fishTtsEmotion = env.FISH_TTS_EMOTION !== "off";
   const kokoroTtsFallbackProvider = env.KOKORO_TTS_FALLBACK_PROVIDER || "none";
   // Trial voice provider: GPT-SoVITS (see docs/gpt_sovits_setup.md). Not the
   // default; opt in with TTS_PROVIDER=gpt_sovits.
@@ -552,7 +570,8 @@ function createTtsRuntime(options = {}) {
     let audio = null;
     if (provider === "fish") {
       const startedAt = nowMs();
-      audio = await postFish(text);
+      const marker = fishTtsEmotion && Object.hasOwn(FISH_EMOTION_MARKERS, emotion) && FISH_EMOTION_MARKERS[emotion];
+      audio = await postFish(marker ? `(${marker}) ${text}` : text);
       logPerf("tts fish", startedAt);
     } else if (provider === "kokoro") {
       await ensureKokoro();
@@ -641,7 +660,7 @@ function createTtsRuntime(options = {}) {
 
     if (activeProvider === "fish") {
       try {
-        const res = await synthesizeWithConfiguredProvider("fish", text);
+        const res = await synthesizeWithConfiguredProvider("fish", text, emotion);
         return res.audio;
       } catch (error) {
         if (fishTtsFallbackProvider === "none") {

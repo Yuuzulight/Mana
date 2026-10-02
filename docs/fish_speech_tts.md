@@ -217,11 +217,12 @@ teasing anime little sister" personality in wording — see the base and
 `CASUAL_SYSTEM_PROMPT` system prompts). Tags observed/documented on the
 model card include `(angry)`, `(sad)`, `(whispering)`, `(shouting)`,
 `(laughing)`, `(sobbing)` — use them sparingly, inline, e.g.
-`"(shy) U-um... welcome home."` This is a manual text convention (there is
-no automatic mapping from Mana's detected reply sentiment to a tag today);
-treat it as an optional layer for future work if fine-grained emotional
-delivery becomes worth the added prompt/text engineering, not something
-Mana's replies do automatically yet.
+`"(shy) U-um... welcome home."` Since #909, each spoken sentence's emotion
+tag (#623) goes in front as one of these markers: happy is `(joyful)`,
+excited, surprised, sad, angry, disgusted and embarrassed keep their names,
+disappointed is `(upset)`, questioning is `(curious)`; neutral, thinking and
+wink stay plain. `FISH_TTS_EMOTION=off` turns this off. A fallback provider
+never gets the marker.
 
 Expected Fish Speech server
 - Mana calls `POST /v1/tts` on `FISH_TTS_URL`.

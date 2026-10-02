@@ -646,3 +646,26 @@ test("resolveTtsProvider: Fish on CUDA with room for it, Kokoro otherwise; expli
   assert.equal(resolveTtsProvider({ TTS_PROVIDER: "fish" }, { gpu: noDetection, vramUsage: noDetection }), "fish");
   assert.equal(resolveTtsProvider({ TTS_BIN: "C:\tts.exe" }, { gpu: noDetection, vramUsage: noDetection }), "cli");
 });
+
+test("#909: Fish Speech says a sentence with its emotion as an S1-mini marker", async () => {
+  const fishCalls = [];
+  const make = (env) =>
+    createTtsRuntime({
+      env: { TTS_PROVIDER: "fish", ...env },
+      postFishTtsBuffer: async (text) => {
+        fishCalls.push(text);
+        return Buffer.from("fish-audio");
+      },
+      nowMs: () => 1,
+      logPerf: () => {},
+    });
+  const runtime = make({});
+
+  await runtime.synthesizeReply("Oh no.", "sad");
+  await runtime.synthesizeReply("Hi.", "neutral");
+  await runtime.synthesizeReply("Hi.");
+  await runtime.synthesizeReply("Hi.", "constructor");
+  await make({ FISH_TTS_EMOTION: "off" }).synthesizeReply("Oh no.", "sad");
+
+  assert.deepEqual(fishCalls, ["(sad) Oh no.", "Hi.", "Hi.", "Hi.", "Oh no."]);
+});
