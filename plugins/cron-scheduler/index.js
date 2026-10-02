@@ -42,6 +42,15 @@ function offerReminder(payload, nowMs) {
   proactive.offer({ reason: "reminder", explicit: true, payload });
 }
 
+// #699: an urgent heartbeat report is toasted right away, even while
+// remarks are held (gaming, budget, quiet hours), but never said aloud in
+// quiet time. Everything else is a proactive candidate.
+function notifyHeartbeat(payload, nowMs = Date.now()) {
+  if (!payload.urgent) return proactive.offer({ reason: "heartbeat", payload });
+  const { speak, ...silent } = payload;
+  return notifyTray(inQuietTime(nowMs) ? silent : payload).catch(() => {});
+}
+
 function sayHeldReminders(nowMs) {
   if (!saidLater.length || inQuietTime(nowMs)) return;
   const held = saidLater;
@@ -146,7 +155,7 @@ function getScheduler(deps = {}) {
     });
     // #699: heartbeat.md's checks, next to jobs.json. Their reports are
     // proactive candidates like any other remark, so the daily budget,
-    // gaming mode and quiet hours apply ("urgent" skips the budget).
+    // gaming mode and quiet hours apply; an urgent one is toasted at once.
     heartbeat = createHeartbeat({
       dataDir: scheduler.dataDir,
       runCheck: (prompt, wrapToolPolicy, sessionId) => {
@@ -159,7 +168,7 @@ function getScheduler(deps = {}) {
           scheduled: true,
         });
       },
-      notify: (payload) => proactive.offer({ reason: "heartbeat", payload, urgent: Boolean(payload.urgent) }),
+      notify: (payload) => notifyHeartbeat(payload),
       isGaming: deps.isGaming,
       isEnabled: () => isPluginEnabled(module.exports, deps.pluginSettingsStore),
       approvalGate: deps.approvalGate,
@@ -232,6 +241,7 @@ module.exports = {
   description:
     "Run a script action or a full agent prompt on a fixed schedule (interval or daily-at-time), independent of chat or idle activity. Results are delivered as a chat turn in the job's session.",
   registerRoutes: registerCronSchedulerRoutes,
+  _notifyHeartbeatForTests: notifyHeartbeat,
   // #905: server.js's reminder tools share the routes' job list.
   getScheduler,
   // #1124: null until the scheduler is built (at route registration).

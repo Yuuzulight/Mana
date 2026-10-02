@@ -298,3 +298,23 @@ test("in quiet time (1am-9am) a reminder is a silent toast, said once quiet time
     proactive.offer = realOffer;
   }
 });
+
+test("#699: an urgent heartbeat report is toasted at once, silently in quiet time", async () => {
+  const proactive = require("../../../node-bot/proactive");
+  const realOffer = proactive.offer;
+  const offered = [];
+  const trayEvents = [];
+  proactive.offer = (c) => offered.push(c);
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+  try {
+    const quiet = new Date(2026, 9, 2, 3).getTime();
+    const day = new Date(2026, 9, 2, 14).getTime();
+    await cronPlugin._notifyHeartbeatForTests({ type: "cron", text: "disk full", urgent: true, speak: "disk full!" }, quiet);
+    await cronPlugin._notifyHeartbeatForTests({ type: "cron", text: "disk full", urgent: true, speak: "disk full!" }, day);
+    cronPlugin._notifyHeartbeatForTests({ type: "cron", text: "all fine" }, day);
+    assert.deepEqual(trayEvents.map((p) => [p.text, p.speak]), [["disk full", undefined], ["disk full", "disk full!"]]);
+    assert.deepEqual(offered.map((c) => [c.reason, c.payload.text]), [["heartbeat", "all fine"]]);
+  } finally {
+    proactive.offer = realOffer;
+  }
+});
