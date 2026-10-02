@@ -71,6 +71,7 @@ public class TrayShellTests
     public void TrayTooltip_AddsTheDoctorAlertAndStaysWithinTheLimit()
     {
         Assert.Equal("Mana", ManaApplicationContext.TrayTooltip("Mana", null));
+        Assert.Equal("Mana - feeling tired, chatty - Doctor: warning", ManaApplicationContext.TrayTooltip("Mana", "Doctor: warning", "tired, chatty")); // #700
         Assert.Equal("Mana - game mode - Doctor: warning: Disk: low", ManaApplicationContext.TrayTooltip("Mana - game mode", "Doctor: warning: Disk: low"));
         var longAlert = new string('x', 300);
         Assert.Equal(127, ManaApplicationContext.TrayTooltip("Mana", longAlert).Length);

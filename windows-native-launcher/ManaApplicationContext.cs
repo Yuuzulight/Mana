@@ -59,6 +59,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // tooltip until the Doctor panel is opened.
     private string? doctorAlert;
     private string trayStatus = "Mana";
+    // Part of #700: her mood in words ("tired, chatty"), from GET /mood --
+    // in the tooltip and a greyed line atop the tray menu, never numbers.
+    private string? moodSummary;
+    private readonly ToolStripMenuItem moodItem = new() { Enabled = false, Visible = false };
     // What clicking the tray balloon on screen does (each balloon sets it).
     private Action? balloonClicked;
 
@@ -371,6 +375,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         idleReportTimer = new System.Windows.Forms.Timer { Interval = 60000 };
         idleReportTimer.Tick += async (_, _) =>
         {
+            await RefreshMoodAsync(); // #700: mood drifts slowly; once a minute is plenty
             try
             {
                 if (await backendClient.ReportIdleAsync(SystemIdle.GetIdleSeconds()))
@@ -395,6 +400,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
+        menu.Items.Add(moodItem); // #700
         // #689: Electron's tray entries, plus its two quick buttons.
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
         menu.Items.Add("Settings…", null, (_, _) =>
@@ -1011,13 +1017,32 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private void SetTrayStatus(string status)
     {
         trayStatus = status;
-        trayIcon.Text = TrayTooltip(status, doctorAlert);
+        trayIcon.Text = TrayTooltip(status, doctorAlert, moodSummary);
+    }
+
+    // Part of #700: her mood shows in the tray, and leans her idle face.
+    private async Task RefreshMoodAsync()
+    {
+        try
+        {
+            var mood = await backendClient.GetMoodAsync();
+            moodSummary = mood.Summary;
+            moodItem.Text = $"Feeling {mood.Summary}";
+            moodItem.Visible = true;
+            avatarOverlay.IdleEmotion = mood.Emotion; // the active character's mood
+            SetTrayStatus(trayStatus);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            Console.WriteLine($"ManaApplicationContext: couldn't read her mood. {ex.Message}");
+        }
     }
 
     // NotifyIcon.Text throws past 127 characters.
-    internal static string TrayTooltip(string status, string? doctorAlert)
+    internal static string TrayTooltip(string status, string? doctorAlert, string? mood = null)
     {
-        var text = doctorAlert is null ? status : $"{status} - {doctorAlert}";
+        var text = mood is null ? status : $"{status} - feeling {mood}";
+        text = doctorAlert is null ? text : $"{text} - {doctorAlert}";
         return text.Length <= 127 ? text : text[..126] + "…";
     }
 
