@@ -3553,6 +3553,36 @@ test("#1214 no switch to her context without VRAM for its larger KV cache", asyn
   assert.deepEqual(spawnCalls.map((c) => argAfter(c.args, "-c")), ["16384"]);
 });
 
+// #1281: proxied requests (/v1/chat/completions) are accounted as in-flight
+// turns so a self-work context switch waits for them before restarting.
+test("#1281 a proxied request in flight delays a context switch until it ends", async () => {
+  let onSleep = () => {};
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness(
+    { LLAMA_CONTEXT: "16384" },
+    { detectGpuVramUsage: () => null, sleep: async () => (onSleep(), new Promise(setImmediate)) },
+  );
+  const contexts = () => spawnCalls.map((c) => argAfter(c.args, "-c"));
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+
+  // A proxied request that outlasts her wait: she stays at the default context.
+  const releaseStuck = holdChat();
+  const stuck = runtime.proxyChatCompletion({ messages: [{ role: "user", content: "proxy query" }] });
+  const hers = runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  while (chatBodies.length < 3) await new Promise(setImmediate);
+  releaseStuck();
+  const [stuckResp] = await Promise.all([stuck, hers]);
+  assert.equal(stuckResp.ok, true);
+  assert.deepEqual(contexts(), ["16384"]);
+
+  // One that ends while she waits: then she switches context.
+  const releaseProxy = holdChat();
+  const proxy = runtime.proxyChatCompletion({ messages: [{ role: "user", content: "second query" }] });
+  onSleep = releaseProxy;
+  const [proxyResp] = await Promise.all([proxy, runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 })]);
+  assert.equal(proxyResp.ok, true);
+  assert.deepEqual(contexts(), ["16384", "32768"]);
+});
+
 test("#1214 goal mode past 60% of the context trims all but the last 4 tool results", async () => {
   const { loopBodies } = await runGoalScript({
     turns: [...Array(6).fill(["read_file"]), ["session_goal__finish"]],

@@ -2482,9 +2482,9 @@ function createLlamaServerRuntime(options = {}) {
     findVisionMmproj,
     getVisionStatus,
     isEnabled,
-    // ponytail: the proxy's streamed body outlives this call, so an unload
-    // can still land mid-stream there; track the body if that ever bites.
-    proxyChatCompletion,
+    // #1281: count proxied requests as in-flight so a self-work context switch
+    // (and vision/gaming unloads) waits for them before restarting llama-server.
+    proxyChatCompletion: inTurn(proxyChatCompletion),
     streamLocalAssistantReply: inTurn(streamLocalAssistantReply),
     runBestOfNReply: inTurn(runBestOfNReply),
     waitForServer: inTurn(waitForServer),
