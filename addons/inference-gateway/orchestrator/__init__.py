@@ -11,9 +11,12 @@ Dual-tier architecture:
 
 from .core import ManaOrchestrator, InferenceRequest, HardwareState
 from .hardware import detect_hardware, GPUResourcePool, CPUResourcePool
-from .routing import ModelAwareRouter, MOE_MODEL_PATTERNS
+from .routing import ModelAwareRouter
 from .backends.vllm_wrapper import VLLMBackend
 from .backends.llama_cpp_wrapper import LlamaCPPBackend
+
+# routing.py keeps the patterns on the class; there is no module-level name to import.
+MOE_MODEL_PATTERNS = ModelAwareRouter.MOE_MODEL_PATTERNS
 
 __version__ = "0.1.0"
 __all__ = [
