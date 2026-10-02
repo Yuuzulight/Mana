@@ -5318,7 +5318,7 @@ function registerRoutes(app, upload, deps = {}) {
           // scope) in place of this one.
           mergedToolPolicy =
             typeof replyMeta?.wrapToolPolicy === "function"
-              ? replyMeta.wrapToolPolicy(mergedToolPolicy, stepApprovalGate)
+              ? replyMeta.wrapToolPolicy(mergedToolPolicy, activeApprovalGate)
               : wrapWithRiskGate(mergedToolPolicy, stepApprovalGate, {
                   mode: resolveToolApprovalMode(
                     activeApprovalGate.getToolApprovalMode(),
