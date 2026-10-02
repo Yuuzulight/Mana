@@ -51,6 +51,9 @@ internal sealed class SettingsPanel : UserControl
     private static readonly string[] GitApprovalModes = { "ask", "once", "off" };
     private readonly ComboBox[] gitApprovalCombos = Array.ConvertAll(GitApprovalTiers, tier => new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, AccessibleName = $"Git approval: {tier}" });
     private readonly Label gitDangerWarning = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.OrangeRed, AccessibleName = "Git danger warning" };
+    // #1265: Mana's daily Folio update PRs, through "GitHub writes".
+    private readonly CheckBox keepFolioCheck = new() { Text = "Keep Folio up to date (a PR when Folio main moves on, merged once every check passes)", AutoSize = true, ForeColor = DarkTheme.Text, AccessibleName = "Keep Folio up to date" };
+    private readonly Label folioStatusLabel = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 8, 3, 3), AccessibleName = "Folio check result" };
     private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Voice provider" };
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
@@ -1231,6 +1234,31 @@ internal sealed class SettingsPanel : UserControl
             row.Controls.Add(combo);
             modePanel.Controls.Add(row);
         }
+        keepFolioCheck.Click += async (_, _) => await SaveKeepFolioAsync();
+        var checkFolioButton = new Button { Text = "Check now", AutoSize = true, AccessibleName = "Check Folio now" };
+        DarkTheme.ApplyButton(checkFolioButton);
+        checkFolioButton.Click += async (_, _) =>
+        {
+            folioStatusLabel.Text = "Checking...";
+            string text;
+            try
+            {
+                text = await backendClient.CheckFolioNowAsync();
+            }
+            catch (Exception ex)
+            {
+                text = $"Couldn't check: {ex.Message}";
+            }
+            if (!IsDisposed)
+            {
+                folioStatusLabel.Text = text;
+            }
+        };
+        var folioRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        folioRow.Controls.Add(keepFolioCheck);
+        folioRow.Controls.Add(checkFolioButton);
+        folioRow.Controls.Add(folioStatusLabel);
+        modePanel.Controls.Add(folioRow);
         modePanel.Controls.Add(gitDangerWarning);
 
         var page = new TabPage("Approvals");
@@ -1331,6 +1359,34 @@ internal sealed class SettingsPanel : UserControl
             gitApprovalCombos[i].SelectedIndex = modes.TryGetValue(GitApprovalTiers[i], out var mode) ? Array.IndexOf(GitApprovalModes, mode) : -1;
         }
         UpdateGitDangerWarning();
+        try
+        {
+            var keep = await backendClient.GetKeepFolioUpdatedAsync();
+            if (!IsDisposed)
+            {
+                keepFolioCheck.Checked = keep;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to load Keep Folio up to date. {ex.Message}");
+        }
+    }
+
+    private async Task SaveKeepFolioAsync()
+    {
+        try
+        {
+            await backendClient.SetKeepFolioUpdatedAsync(keepFolioCheck.Checked);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                MessageBox.Show(this, $"Failed to save Keep Folio up to date: {ex.Message}", "Approvals", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                await RefreshGitApprovalModesAsync();
+            }
+        }
     }
 
     private void UpdateGitDangerWarning()

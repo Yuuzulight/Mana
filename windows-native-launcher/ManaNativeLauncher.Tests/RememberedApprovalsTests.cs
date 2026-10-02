@@ -35,6 +35,8 @@ public class RememberedApprovalsTests
                 "/approvals/remembered/forget" => """{"forgotten":true}""",
                 "/approvals/req-1/decide" => """{"status":"denied"}""",
                 "/approvals/git-mode" => """{"modes":{"local":"once","github":"ask","danger":"ask"}}""",
+                "/folio-update" => """{"enabled":false,"tried":{}}""",
+                "/folio-update/run" => """{"status":"waiting","sha":"abc","pr":71}""",
                 _ => null,
             };
             return json is null
@@ -113,6 +115,29 @@ public class RememberedApprovalsTests
             Pump(() => requests.Any(r => r.StartsWith("POST /approvals/git-mode", StringComparison.Ordinal)));
             Assert.Contains("""POST /approvals/git-mode {"tier":"danger","mode":"off"}""", requests);
             Assert.StartsWith("Warning:", warning.Text);
+        });
+    }
+
+    // #1265: "Keep Folio up to date" next to them, and "Check now".
+    [Fact]
+    public void Settings_KeepFolioUpToDate_LoadsSavesAndChecksNow()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var requests = new List<string>();
+            using var panel = new SettingsPanel(Backend(requests), new BackendLogBuffer());
+            Pump(panel.RefreshGitApprovalModesAsync());
+            var keep = All<CheckBox>(panel).Single(c => c.AccessibleName == "Keep Folio up to date");
+            Assert.False(keep.Checked);
+
+            keep.GetType().GetMethod("OnClick", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(keep, [EventArgs.Empty]);
+            Pump(() => requests.Any(r => r.StartsWith("POST /folio-update ", StringComparison.Ordinal)));
+            Assert.Contains("""POST /folio-update {"enabled":true}""", requests);
+
+            var check = All<Button>(panel).Single(b => b.AccessibleName == "Check Folio now");
+            check.GetType().GetMethod("OnClick", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(check, [EventArgs.Empty]);
+            var result = All<Label>(panel).Single(l => l.AccessibleName == "Folio check result");
+            Pump(() => result.Text == "Folio update #71 is still open.");
         });
     }
 

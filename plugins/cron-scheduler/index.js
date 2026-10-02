@@ -99,6 +99,9 @@ function getScheduler(deps = {}) {
           return deps.buildAssistantReply(job.prompt, "", "", "default", job.sessionId, null, null, { scheduled: true });
         }),
       onResult: (job, result, error) => {
+        // #1265: a script action with nothing to say (null) stays quiet;
+        // it sends its own notices.
+        if (!error && job.jobType === "script" && result == null) return;
         const assistantText = error
           ? `[cron job "${job.name}" failed: ${error}]`
           : typeof result === "string"

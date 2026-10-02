@@ -1,5 +1,6 @@
 {
   "id": "1069-alt-tabbing-to-discord-or-obs",
+  "kind": "node-feature",
   "pr": 1069,
   "issue": 1058,
   "base": "b5da5baabdc83988331700b0096384e7d72d0aaa",

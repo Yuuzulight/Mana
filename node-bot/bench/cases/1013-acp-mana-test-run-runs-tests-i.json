@@ -1,5 +1,6 @@
 {
   "id": "1013-acp-mana-test-run-runs-tests-i",
+  "kind": "node-bug",
   "pr": 1013,
   "issue": 1003,
   "base": "d1c5333acd27e21822be772f018815d9e1e29c90",

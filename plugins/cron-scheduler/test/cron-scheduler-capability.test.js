@@ -128,6 +128,27 @@ test("a completed cron job notifies the tray in addition to recording a chat tur
   assert.equal(turns[0].assistant, "hello from the script");
 });
 
+// #1265: a script action that sends its own notices returns null.
+test("a script job with nothing to say (null) stays quiet", async () => {
+  cronPlugin._resetForTests();
+  const trayEvents = [];
+  trayNotifier.setBroadcaster((payload) => trayEvents.push(payload));
+  const turns = [];
+  let now = 1000;
+  const scheduler = cronPlugin._getSchedulerForTests({
+    dataDir: createTempDir(),
+    now: () => now,
+    scriptActions: { quiet: async () => null },
+    acpMemoryStore: { appendTurn: async (turn) => turns.push(turn) },
+  });
+  scheduler.addJob({ name: "Quiet job", jobType: "script", actionName: "quiet", schedule: { type: "interval", everyMs: 500 } });
+  now = 1600;
+  await scheduler.runDueJobs();
+  assert.deepEqual(trayEvents, []);
+  assert.deepEqual(turns, []);
+  assert.equal(scheduler.listJobs()[0].lastError, null);
+});
+
 test("a failed cron job still notifies the tray, even with no acpMemoryStore configured (issue #423)", async () => {
   cronPlugin._resetForTests();
   const trayEvents = [];

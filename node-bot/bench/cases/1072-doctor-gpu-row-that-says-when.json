@@ -1,5 +1,6 @@
 {
   "id": "1072-doctor-gpu-row-that-says-when",
+  "kind": "node-feature",
   "pr": 1072,
   "issue": 1065,
   "base": "2e3667714a03ada09438e266cd9dd98461ef7fd4",
