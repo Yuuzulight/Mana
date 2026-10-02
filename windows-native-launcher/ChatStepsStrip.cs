@@ -7,20 +7,23 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #1318: the tool steps of the reply in progress, one compact grey line per
+// #1318: the fallback for steps without a segment (an older backend): the
+// tool steps of the reply in progress, one compact grey line per
 // group ("Ran a command, used 4 tools... Run the tests  +19 -0 >"), each
 // expanding into its steps and each step into its command and result.
 // Polls GET /agent/activity once a second, only while she's replying (plus
 // one last poll for the final statuses); the lines stay until the next
-// reply's run replaces them. The wording lives in ChatStepGroups.
+// reply's run replaces them. The wording lives in ChatStepGroups. Steps
+// with a segment go to ChatView.ShowSteps instead, inline in the chat.
 internal sealed class ChatStepsStrip : FlowLayoutPanel
 {
     // Not a theme token: no preset has a red yet.
-    private static readonly Color RemovedColor = Color.IndianRed;
+    internal static readonly Color RemovedColor = Color.IndianRed;
 
     private readonly ManaBackendClient backendClient;
     private readonly Func<bool> isReplying;
-    private readonly System.Windows.Forms.Timer pollTimer = new() { Interval = 1000 };
+    private readonly ChatView chatView;
+    private readonly System.Windows.Forms.Timer pollTimer = new() { Interval = 500 };
     private readonly HashSet<int> openGroups = new();
     private readonly HashSet<string> openSteps = new();
     private readonly Font font = new("Segoe UI", 9F);
@@ -31,10 +34,11 @@ internal sealed class ChatStepsStrip : FlowLayoutPanel
     private bool wasReplying;
     private bool polling;
 
-    public ChatStepsStrip(ManaBackendClient backendClient, Func<bool> isReplying)
+    public ChatStepsStrip(ManaBackendClient backendClient, ChatView chatView, Func<bool> isReplying)
     {
         this.backendClient = backendClient;
         this.isReplying = isReplying;
+        this.chatView = chatView;
         Dock = DockStyle.Bottom;
         FlowDirection = FlowDirection.TopDown;
         WrapContents = false;
@@ -67,6 +71,7 @@ internal sealed class ChatStepsStrip : FlowLayoutPanel
                 openSteps.Clear();
             }
             activity = fresh;
+            chatView.ShowSteps(fresh);
         }
         catch
         {
@@ -85,7 +90,7 @@ internal sealed class ChatStepsStrip : FlowLayoutPanel
     private void Render()
     {
         var now = DateTimeOffset.UtcNow;
-        var groups = activity is null ? Array.Empty<StepGroup>() : ChatStepGroups.Group(activity);
+        var groups = activity is null ? new List<StepGroup>() : ChatStepGroups.Group(activity).Where(g => g.Segment is null).ToList();
         var signature = string.Join("\n", groups.Select((g, i) =>
             g.Line + g.Added + g.Removed + (openGroups.Contains(i)
                 ? string.Concat(g.Steps.Select(s => ChatStepGroups.StepLine(s, now) + openSteps.Contains(s.Id)))

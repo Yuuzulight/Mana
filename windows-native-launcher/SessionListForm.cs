@@ -363,8 +363,8 @@ internal sealed partial class SessionListForm : Form
         // Last added docks first: the message box claims the bottom strip,
         // its queue (#668) sits just above it, then the chat fills the rest.
         chatArea.Controls.Add(chatLog);
-        // #1318: her tool steps, just under the reply in progress.
-        chatArea.Controls.Add(new ChatStepsStrip(backendClient, () => !voiceLoop.IsIdle));
+        // #1318: polls her tool steps; shows them inline in the chat, or here under it for an older backend.
+        chatArea.Controls.Add(new ChatStepsStrip(backendClient, chatLog, () => !voiceLoop.IsIdle));
         chatArea.Controls.Add(messageQueue);
         chatArea.Controls.Add(attachments);
         chatArea.Controls.Add(BuildMessageBox());

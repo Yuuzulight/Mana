@@ -98,6 +98,59 @@ public class ChatStepGroupsTests
     }
 
     [Fact]
+    public void EachSegmentStartsItsOwnGroup()
+    {
+        AgentStep Seg(string kind, int segment) => Step(kind) with { Segment = segment };
+        var groups = ChatStepGroups.Group(new AgentSteps("r1", true, new[] { Seg("command", 0), Seg("tool", 0), Seg("web", 1) }));
+
+        Assert.Equal(new[] { "Ran a command, used a tool", "Browsed the web" }, groups.Select(g => g.Summary));
+        Assert.Equal(new int?[] { 0, 1 }, groups.Select(g => g.Segment));
+        Assert.False(groups[0].Running);
+        Assert.True(groups[1].Running);
+    }
+
+    [Fact]
+    public void BlocksShowTotalsAsTheirOwnRunsAndStepsWhenOpen()
+    {
+        var step = new AgentStep("s1", "file_create", "Write it", "done", File: "x.py", Added: 19, Removed: 0, Command: "write x.py", ResultPreview: "ok");
+        var group = Single(false, step);
+
+        var closed = ChatStepGroups.Blocks(group, false, DateTimeOffset.UtcNow);
+        Assert.Equal(new[] { "Created x.py", "  +19", " −0", "  ›" }, Assert.Single(closed).Runs.Select(r => r.Text));
+
+        var open = ChatStepGroups.Blocks(group, true, DateTimeOffset.UtcNow);
+        Assert.Equal(new[] { MarkdownBlockType.Paragraph, MarkdownBlockType.BulletItem, MarkdownBlockType.CodeBlock }, open.Select(b => b.Type));
+        Assert.Equal("$ write x.py\n\nok", open[2].Runs[0].Text);
+    }
+
+    [Fact]
+    public void StepColorsTotalsOnly()
+    {
+        Assert.Equal(DarkTheme.Green, ChatView.StepColor("  +19"));
+        Assert.Equal(ChatStepsStrip.RemovedColor, ChatView.StepColor(" −3"));
+        Assert.Equal(DarkTheme.Muted, ChatView.StepColor("Created x.py"));
+        Assert.Equal(DarkTheme.Muted, ChatView.StepColor("+"));
+    }
+
+    [Fact]
+    public void ChatViewPlacesEachSegmentsLineAfterItsTextWithoutRepeatingTheReply()
+    {
+        using var view = new ChatView();
+        AgentStep Seg(string id, int segment) => new(id, "command", "Run it", "done", Segment: segment);
+        view.AppendUserMessage("hi");
+        view.AppendReplySentence("Let me check.");
+        view.ShowSteps(new AgentSteps("r1", true, new[] { Seg("a", 0) }));
+        view.AppendReplySentence("Now the web.");
+        view.ShowSteps(new AgentSteps("r1", true, new[] { Seg("a", 0), Seg("b", 1) }));
+        view.AppendReplySentence("Done.");
+        view.ShowSteps(new AgentSteps("r1", false, new[] { Seg("a", 0), Seg("b", 1) }));
+        view.ReportReply("Let me check. Now the web. Done.");
+
+        Assert.Equal(new[] { "Let me check.", "Ran a command  ›", "Now the web.", "Ran a command  ›", "Done." },
+            view.Messages.Skip(1).Select(m => m.PlainText));
+    }
+
+    [Fact]
     public void NoStepsNoGroups() =>
         Assert.Empty(ChatStepGroups.Group(new AgentSteps(null, true, Array.Empty<AgentStep>())));
 

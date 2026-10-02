@@ -19,7 +19,8 @@ internal sealed record AgentStep(
     int? Removed = null,
     string? Command = null,
     string? ResultPreview = null,
-    string? Tool = null)
+    string? Tool = null,
+    int? Segment = null)
 {
     public bool IsRunning => Status is "running" or "awaiting_approval";
 
@@ -47,6 +48,9 @@ internal sealed class StepGroup
         Running = running;
     }
 
+    // Which run of reply text it follows; null when the backend sends none.
+    public int? Segment => Steps[0].Segment;
+
     public IReadOnlyList<AgentStep> Steps { get; }
     public bool Running { get; }
 
@@ -68,9 +72,8 @@ internal sealed class StepGroup
 
 internal static class ChatStepGroups
 {
-    // Kinds that aren't tool steps (text the reply wrote between tool
-    // rounds) end a group. The contract has none yet, so today a reply's
-    // steps are one group.
+    // A new segment (she wrote reply text between tool rounds) starts a new
+    // group; so does a non-tool step, should the backend ever send one.
     private static bool IsToolStep(AgentStep step) => step.Kind is not ("text" or "message");
 
     public static IReadOnlyList<StepGroup> Group(AgentSteps activity)
@@ -84,7 +87,7 @@ internal static class ChatStepGroups
                 current = null;
                 continue;
             }
-            if (current is null)
+            if (current is null || current[^1].Segment != step.Segment)
             {
                 current = new List<AgentStep>();
                 groups.Add(current);
@@ -158,6 +161,41 @@ internal static class ChatStepGroups
     {
         var ms = Math.Max(0, (long)duration.TotalMilliseconds);
         return ms < 1000 ? $"{ms}ms" : ms < 60_000 ? $"{ms / 1000}s" : $"{ms / 60_000}m {ms / 1000 % 60:00}s";
+    }
+
+    // Markers ChatView colours green/red in a step line.
+    public const string AddedPrefix = "+";
+    public const string RemovedPrefix = "−";
+
+    // A group as ChatView draws it inline: the grey summary line (its +/-
+    // totals and chevron as runs of their own), then, when open, a bullet
+    // per step and each step's command and result as a code block.
+    public static List<MarkdownBlock> Blocks(StepGroup group, bool open, DateTimeOffset now)
+    {
+        static MarkdownRun Run(string text) => new(text, false, false, false);
+        var head = new List<MarkdownRun> { Run(group.Line) };
+        if (group.ChangedFiles)
+        {
+            head.Add(Run($"  {AddedPrefix}{group.Added}"));
+            head.Add(Run($" {RemovedPrefix}{group.Removed}"));
+        }
+        head.Add(Run(open ? "  ⌄" : "  ›"));
+        var blocks = new List<MarkdownBlock> { new(MarkdownBlockType.Paragraph, head) };
+        if (!open)
+        {
+            return blocks;
+        }
+        foreach (var step in group.Steps)
+        {
+            blocks.Add(new(MarkdownBlockType.BulletItem, new[] { Run(StepLine(step, now)) }));
+            var detail = string.Join("\n\n", new[] { step.Command is { Length: > 0 } c ? "$ " + c : null, step.ResultPreview }
+                .Where(t => !string.IsNullOrWhiteSpace(t)));
+            if (detail.Length > 0)
+            {
+                blocks.Add(new(MarkdownBlockType.CodeBlock, new[] { Run(detail) }));
+            }
+        }
+        return blocks;
     }
 
     // One expanded step: "Run the self-work tests - done - 4s".

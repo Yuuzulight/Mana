@@ -2476,7 +2476,8 @@ internal sealed class ManaBackendClient
                     Int(s, "removed"),
                     hasDetail ? Str(detail, "command") : null,
                     hasDetail ? Str(detail, "resultPreview") : null,
-                    Str(s, "tool")));
+                    Str(s, "tool"),
+                    Int(s, "segment")));
             }
         }
         var running = root.TryGetProperty("running", out var r) && r.ValueKind == JsonValueKind.True;
