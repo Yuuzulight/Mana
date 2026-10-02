@@ -326,3 +326,16 @@ test("#1278: a pause unloads the bench's model, and it's loaded again once the g
   assert.equal(why, "a game is running");
   assert.deepEqual(calls, ["stop", ...Array(20).fill("sleep")], "never cleared: stays unloaded, the run stops");
 });
+
+test("a llama-server killed while loading stops the wait at once", async () => {
+  const { waitUp } = require("../bench/self-work-bench");
+  const { EventEmitter } = require("node:events");
+  const server = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null });
+  let sleeps = 0;
+  const sleep = async () => {
+    sleeps += 1;
+    Object.assign(server, { signalCode: "SIGTERM" }); // the RAM watchdog's kill
+  };
+  await assert.rejects(waitUp(server, async () => false, sleep), /exited \(SIGTERM\)/);
+  assert.equal(sleeps, 1);
+});
