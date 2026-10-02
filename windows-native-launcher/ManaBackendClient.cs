@@ -1891,6 +1891,45 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1265: "Keep Folio up to date" (node-bot/folio-update.js), on unless saved off.
+    public async Task<bool> GetKeepFolioUpdatedAsync()
+    {
+        using var response = await http.GetAsync("/folio-update");
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return !(document.RootElement.TryGetProperty("enabled", out var enabled) && enabled.ValueKind == JsonValueKind.False);
+    }
+
+    public async Task SetKeepFolioUpdatedAsync(bool enabled)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { enabled }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/folio-update", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // "Check now": what the check did, as a sentence.
+    public async Task<string> CheckFolioNowAsync()
+    {
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/folio-update/run", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        string? Text(string name) => root.TryGetProperty(name, out var v) ? v.ToString() : null;
+        return Text("status") switch
+        {
+            "current" => "Folio is up to date.",
+            "opened" => Text("text") ?? "Opened a Folio update PR.",
+            "pending" => "Waiting for your OK in Approvals.",
+            "waiting" => $"Folio update #{Text("pr")} is still open.",
+            "tried" => $"The newest Folio was already tried (#{Text("pr")}).",
+            "off" => "Keep Folio up to date is off.",
+            "gaming" => "Not while a game is running.",
+            "busy" => "Already checking.",
+            var other => $"Couldn't check: {Text("error") ?? Text("reason") ?? other}",
+        };
+    }
+
     // #1154: the remembered always/never answers, for Settings > Approvals.
     public async Task<IReadOnlyList<ManaRememberedApproval>> GetRememberedApprovalsAsync()
     {

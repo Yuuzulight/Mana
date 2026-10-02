@@ -142,6 +142,42 @@ public class ChatActionsTests
         Assert.Contains(Enumerable.Range(0, 160 * 60), i => bitmap.GetPixel(i % 160, i / 160).R < 128);
     }
 
+    // #1265: Folio updates merge themselves once CI passes, so a broken one
+    // has to fail here: a representative artifact (a style sheet, custom
+    // properties, flex, a list, a table, an SVG) draws without throwing,
+    // and its text and colours come out.
+    [Fact]
+    public void TheViewerDrawsARepresentativeHtmlArtifact()
+    {
+        const string html = """
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><title>Plan</title><style>
+            :root { --accent: #2563eb; }
+            body { margin: 0; font: 14px sans-serif; background: #fff; color: #000; }
+            h1 { font-size: 22px; margin: 6px 8px; }
+            .row { display: flex; gap: 8px; padding: 0 8px; }
+            .card { flex: 1; border: 1px solid #999; border-radius: 6px; padding: 4px; }
+            .badge { width: 60px; height: 20px; background: var(--accent); margin: 6px 8px; }
+            table { border-collapse: collapse; margin: 0 8px; } td, th { border: 1px solid #999; padding: 2px 6px; }
+            </style></head><body>
+            <h1>Weekly plan</h1>
+            <div class="badge"></div>
+            <div class="row"><div class="card"><b>Mon</b><ul><li>Stream</li><li>Edit</li></ul></div><div class="card"><b>Tue</b><p>Rest</p></div></div>
+            <table><tr><th>Task</th><th>Done</th></tr><tr><td>Thumbnail</td><td>yes</td></tr></table>
+            <svg width="40" height="20"><rect width="40" height="20" fill="#16a34a"/></svg>
+            </body></html>
+            """;
+        using var viewer = new ArtifactViewerForm();
+        var view = viewer.HtmlView;
+        view.Size = new Size(400, 300);
+        view.LoadHtml(HtmlArtifact.WithCsp(html));
+        using var bitmap = new Bitmap(400, 300);
+        view.DrawToBitmap(bitmap, new Rectangle(0, 0, 400, 300));
+        var pixels = Enumerable.Range(0, 400 * 300).Select(i => bitmap.GetPixel(i % 400, i / 400)).ToList();
+        Assert.Contains(pixels, p => p.R < 100 && p.G < 100 && p.B < 100); // text
+        Assert.Contains(pixels, p => p.B > 200 && p.R < 80 && p.G < 140); // the accent badge
+    }
+
     [Theory]
     [InlineData("https://example.com/a", true)]
     [InlineData("HTTP://example.com/", true)]

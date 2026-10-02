@@ -89,7 +89,8 @@
        they come out as FolioVersion; CI runs it before restoring. To bump
        Folio: set FolioCommit to a Folio commit on main, set FolioVersion to
        0.1.0-m1.N, where N is the number of commits in that commit's
-       history, then run pack-folio.ps1 (README, Quick Start). -->
+       history, then run pack-folio.ps1 (README, Quick Start). #1265: Mana
+       does this herself once a day (node-bot/folio-update.js), as a PR. -->
   <PropertyGroup>
     <FolioCommit>637115c8cff6d83da62ef2488243bcb4cb9d1ffc</FolioCommit>
     <FolioVersion>0.1.0-m1.204</FolioVersion>
