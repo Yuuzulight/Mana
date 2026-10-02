@@ -41,7 +41,7 @@ install required artifacts.
 - Smart Turn v3.2 end-of-turn model (`smart-turn-v3.2-cpu.onnx`)
   - From pipecat-ai (https://github.com/pipecat-ai/smart-turn,
     https://huggingface.co/pipecat-ai/smart-turn-v3), BSD-2-Clause. The native
-    launcher loads it from `windows-native-launcher/assets/turn/` (gitignored)
+    launcher loads it from `windows-native-launcher/assets/turn/` (gitignored, fetched at build time)
     to tell a thinking pause from the end of a turn (#909).
 
 - pixi.js (npm)

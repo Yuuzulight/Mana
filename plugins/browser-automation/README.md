@@ -13,6 +13,10 @@ launches it by default instead of asking anyone to separately install a
 browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
 `playwright install chromium`-downloaded browser, instead.
 `MANA_BROWSER_HEADLESS=0` shows the window instead of running headless.
+While I'm watching (the Browser panel, or that window), a pink cursor and
+outline show where she's about to click, type, select, hover or drag
+(#704). It takes no clicks, stays out of her snapshot, fades after a
+moment, and never appears in my Take over window.
 
 ## One light, persistent session (#1137)
 

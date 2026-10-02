@@ -59,6 +59,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // tooltip until the Doctor panel is opened.
     private string? doctorAlert;
     private string trayStatus = "Mana";
+    // Part of #700: her mood in words ("tired, chatty"), from GET /mood --
+    // in the tooltip and a greyed line atop the tray menu, never numbers.
+    private string? moodSummary;
+    private readonly ToolStripMenuItem moodItem = new() { Enabled = false, Visible = false };
     // What clicking the tray balloon on screen does (each balloon sets it).
     private Action? balloonClicked;
 
@@ -207,7 +211,10 @@ internal sealed class ManaApplicationContext : ApplicationContext
             clipCaptureTimer.Tick += async (_, _) => await CaptureClipFrameAsync();
             clipCaptureTimer.Start();
 
-            // #690: the ambient glance itself, on Electron's schedule.
+            // #690: the ambient glance itself. #1286: on window switches and
+            // title changes (settled 2s, at most every
+            // MANA_SCREEN_SENSING_MIN_INTERVAL_MS), with the old interval
+            // timer as a slow fallback.
             var glance = new ScreenSensingGlance(
                 backendClient,
                 () => voiceLoop.IsIdle,
@@ -216,9 +223,22 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 screenContextReader.ReadForGlanceAsync,
                 ScreenCapture.CaptureAsJpegDataUrl,
                 chatLog.AppendManaMessage,
-                PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000));
-            glanceTimer = new System.Windows.Forms.Timer { Interval = PositiveIntEnv("MANA_SCREEN_SENSING_INTERVAL_MS", 120000) };
-            glanceTimer.Tick += async (_, _) => await glance.RunOnceAsync();
+                PositiveIntEnv("MANA_SCREEN_SENSING_PRESENCE_IDLE_MS", 90000),
+                ScreenPrivacyGuard.GlanceBlockReason);
+            var glanceTrigger = new GlanceTrigger(
+                settleMs: 2000,
+                minIntervalMs: PositiveIntEnv("MANA_SCREEN_SENSING_MIN_INTERVAL_MS", 30000),
+                fallbackMs: PositiveIntEnv("MANA_SCREEN_SENSING_INTERVAL_MS", 600000),
+                Environment.TickCount64);
+            glanceTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            glanceTimer.Tick += async (_, _) =>
+            {
+                var (window, title) = ScreenPrivacyGuard.Foreground();
+                if (glanceTrigger.Poll(window, title, Environment.TickCount64))
+                {
+                    await glance.RunOnceAsync();
+                }
+            };
             glanceTimer.Start();
         }
         sessionListForm = new SessionListForm(backendClient, voiceLoop, chatLog, avatarOverlay, processManager.BackendLog, artifactViewer);
@@ -371,6 +391,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         idleReportTimer = new System.Windows.Forms.Timer { Interval = 60000 };
         idleReportTimer.Tick += async (_, _) =>
         {
+            await RefreshMoodAsync(); // #700: mood drifts slowly; once a minute is plenty
             try
             {
                 if (await backendClient.ReportIdleAsync(SystemIdle.GetIdleSeconds()))
@@ -395,6 +416,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
+        menu.Items.Add(moodItem); // #700
         // #689: Electron's tray entries, plus its two quick buttons.
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
         menu.Items.Add("Settings…", null, (_, _) =>
@@ -679,6 +701,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // most useful to have covered.
     private async Task CaptureClipFrameAsync()
     {
+        // #1286: the one gap it does allow -- no frame while a private
+        // window (ScreenPrivacyGuard) is in front.
+        if (ScreenPrivacyGuard.CurrentBlockReason() is not null)
+        {
+            return;
+        }
         try
         {
             var image = await Task.Run(ScreenCapture.CaptureAsJpegDataUrl);
@@ -1011,13 +1039,32 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private void SetTrayStatus(string status)
     {
         trayStatus = status;
-        trayIcon.Text = TrayTooltip(status, doctorAlert);
+        trayIcon.Text = TrayTooltip(status, doctorAlert, moodSummary);
+    }
+
+    // Part of #700: her mood shows in the tray, and leans her idle face.
+    private async Task RefreshMoodAsync()
+    {
+        try
+        {
+            var mood = await backendClient.GetMoodAsync();
+            moodSummary = mood.Summary;
+            moodItem.Text = $"Feeling {mood.Summary}";
+            moodItem.Visible = true;
+            avatarOverlay.IdleEmotion = mood.Emotion; // the active character's mood
+            SetTrayStatus(trayStatus);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            Console.WriteLine($"ManaApplicationContext: couldn't read her mood. {ex.Message}");
+        }
     }
 
     // NotifyIcon.Text throws past 127 characters.
-    internal static string TrayTooltip(string status, string? doctorAlert)
+    internal static string TrayTooltip(string status, string? doctorAlert, string? mood = null)
     {
-        var text = doctorAlert is null ? status : $"{status} - {doctorAlert}";
+        var text = mood is null ? status : $"{status} - feeling {mood}";
+        text = doctorAlert is null ? text : $"{text} - {doctorAlert}";
         return text.Length <= 127 ? text : text[..126] + "…";
     }
 

@@ -268,6 +268,7 @@ const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
 const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
 const { createSelfWork } = require("./self-work");
+const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
@@ -315,6 +316,7 @@ const { createRetrieverRuntime } = require("./ai/retriever-runtime");
 const { createWhisperServer, belowNormal } = require("./ai/whisper-server-runtime");
 const { createGamingWatch } = require("./utils/gaming-watch");
 const { streamedMatchesFinal } = require("./utils/reply-stream-diff");
+const { createSentenceChunker } = require("./utils/sentence-chunker");
 const { EMOTION_TAG_PROMPT, stripEmotionTags, replyEmotion } = require("./utils/emotion-tags");
 const { crisisInstruction } = require("./utils/crisis-check");
 const { createRestartController } = require("./admin-restart");
@@ -2887,7 +2889,14 @@ function registerRoutes(app, upload, deps = {}) {
   const reverter = deps.reverter || createReverter();
   app.post("/updates/revert", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
-    return res.json(await reverter.revert(req.body?.pr, req.body?.reason));
+    const result = await reverter.revert(req.body?.pr, req.body?.reason);
+    // #1287: a reverted PR's training record says so.
+    if (result.ok) {
+      try {
+        selfWork.traces?.mark(Number(req.body?.pr), { reverted: true });
+      } catch {}
+    }
+    return res.json(result);
   });
 
   // #1182: git and GitHub in my chat and her self-work. One instance, so a
@@ -2904,6 +2913,8 @@ function registerRoutes(app, upload, deps = {}) {
       gitTools,
       // #1269: Gemini CLI when every local attempt failed (MANA_SELF_WORK_GEMINI*).
       gemini: true,
+      // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
+      traces: createTraceStore({ dir: path.join(acpMemoryStore.dataDir, "self-work-traces") }),
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
@@ -5379,6 +5390,16 @@ function registerRoutes(app, upload, deps = {}) {
               }
             }
             turnToolSchemas = mergedToolPolicy.tools;
+            // Issue #623: the tool path isn't streamed, so the finished reply
+            // goes out sentence by sentence here, each with its own face,
+            // instead of as one clip with one face.
+            if (wrappedOnSentence && !firstPassStreamed) {
+              firstPassStreamed = true;
+              const chunker = createSentenceChunker();
+              for (const sentence of [...chunker.push(toolResult.content), ...chunker.flush()]) {
+                await wrappedOnSentence(sentence);
+              }
+            }
             return toolResult.content;
           }
           console.warn(
@@ -5771,6 +5792,7 @@ function registerRoutes(app, upload, deps = {}) {
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     characters: characterStore,
     buildGroupReaction: deps.buildGroupReaction || buildGroupReaction,
+    moodStore: activeMoodStore, // #700
     capabilities,
     pluginSettingsStore: activePluginSettingsStore,
     contributePluginPromptContext:
