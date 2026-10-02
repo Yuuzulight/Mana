@@ -81,6 +81,7 @@ function registerCoreRoutes(app, upload, deps) {
     currentGame = () => null, // #908
     characters = null, // #914
     buildGroupReaction = null, // #914
+    moodStore = null, // #700
   } = deps;
 
   // #914 group mode (design on the issue): each of my messages gets at most
@@ -756,7 +757,9 @@ function registerCoreRoutes(app, upload, deps) {
       // #914: a reply event's character speaks in her own voice (group
       // mode's partner isn't the active one); unknown or none: the active one.
       const character = typeof req.body?.character === "string" ? req.body.character : null;
-      const synthesize = () => synthesizeReply(text, { emotion });
+      // Part of #700: an untagged sentence takes her mood's lean instead
+      // (read inside speakAs, so it's the speaking character's mood).
+      const synthesize = () => synthesizeReply(text, { emotion: emotion || moodStore?.get().emotion || undefined });
       const audio = await (character && characters ? characters.speakAs(character, synthesize) : synthesize());
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);

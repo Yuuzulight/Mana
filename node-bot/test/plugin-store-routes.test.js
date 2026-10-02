@@ -238,3 +238,52 @@ test("POST /plugins/store/toggle rejects a missing name or non-boolean enabled",
     assert.equal(response.status, 400);
   });
 });
+
+// #499: the store modal reads `installed` per entry (it used to read an
+// undefined variable) and needs an uninstall route behind its button.
+test("GET /plugins/store flags each entry installed and lists an installed plugin once", async () => {
+  const pluginStore = fakePluginStore({
+    list: () => [{ name: "my-plugin", version: "1.2.0", author: "Yuuzu" }],
+  });
+  const app = createApp({
+    pluginStore,
+    pluginSettingsStore: fakePluginSettingsStore(),
+    fetchAvailablePlugins: async () => [{ name: "my-plugin/" }, { name: "other-plugin/" }],
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const body = await (await fetch(`${baseUrl}/plugins/store`)).json();
+    assert.deepEqual(
+      body.all.map((p) => [p.name, p.installed]),
+      [["my-plugin", true], ["other-plugin", false]],
+    );
+    assert.equal(body.all[0].version, "1.2.0");
+    assert.equal(body.all[0].author, "Yuuzu");
+  });
+});
+
+test("POST /plugins/store/uninstall removes an installed plugin via pluginStore.uninstall", async () => {
+  const uninstalled = [];
+  const pluginStore = fakePluginStore({
+    uninstall: (name) => {
+      uninstalled.push(name);
+      return name === "my-plugin";
+    },
+  });
+  const app = createApp({ pluginStore, pluginSettingsStore: fakePluginSettingsStore() });
+
+  await withServer(app, async (baseUrl) => {
+    const post = (body) =>
+      fetch(`${baseUrl}/plugins/store/uninstall`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const ok = await post({ name: "my-plugin" });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { success: true, name: "my-plugin" });
+    assert.equal((await post({ name: "missing" })).status, 404);
+    assert.equal((await post({})).status, 400);
+    assert.deepEqual(uninstalled, ["my-plugin", "missing"]);
+  });
+});
