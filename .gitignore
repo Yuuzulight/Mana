@@ -163,3 +163,6 @@ forecast-service/*.log
 
 # Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
 .superpowers/
+
+# Self-work bench reports (node-bot/bench/self-work-bench.js's default --out)
+node-bot/bench/results/

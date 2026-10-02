@@ -49,12 +49,7 @@ internal sealed class PseudoConsole : IDisposable
             throw new Win32Exception(hr);
         }
 
-        job = CreateJobObjectW(IntPtr.Zero, null);
-        var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION { BasicLimitInformation = { LimitFlags = JobObjectLimitKillOnJobClose } };
-        if (job.IsInvalid || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits, Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()))
-        {
-            throw new Win32Exception();
-        }
+        job = KillOnCloseJob.Create();
 
         var environment = IntPtr.Zero;
         if (OpenProcessToken(GetCurrentProcess(), TokenQuery, out var token))
@@ -96,7 +91,7 @@ internal sealed class PseudoConsole : IDisposable
             }
             ProcessId = info.dwProcessId;
             process = new ProcessWaitHandle(info.hProcess);
-            var assigned = AssignProcessToJobObject(job, info.hProcess);
+            var assigned = KillOnCloseJob.Assign(job, info.hProcess);
             ResumeThread(info.hThread);
             CloseHandle(info.hThread);
             if (!assigned)
@@ -199,10 +194,8 @@ internal sealed class PseudoConsole : IDisposable
     private const uint CreateSuspended = 0x00000004;
     private const uint CreateUnicodeEnvironment = 0x00000400;
     private static readonly IntPtr ProcThreadAttributePseudoConsole = (IntPtr)0x00020016;
-    private const int JobObjectExtendedLimitInformation = 9;
     private const uint TokenQuery = 0x0008;
     private const int StartfUseStdHandles = 0x00000100;
-    private const uint JobObjectLimitKillOnJobClose = 0x2000;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct COORD
@@ -250,42 +243,6 @@ internal sealed class PseudoConsole : IDisposable
         public int dwThreadId;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
-    {
-        public long PerProcessUserTimeLimit;
-        public long PerJobUserTimeLimit;
-        public uint LimitFlags;
-        public UIntPtr MinimumWorkingSetSize;
-        public UIntPtr MaximumWorkingSetSize;
-        public uint ActiveProcessLimit;
-        public UIntPtr Affinity;
-        public uint PriorityClass;
-        public uint SchedulingClass;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct IO_COUNTERS
-    {
-        public ulong ReadOperationCount;
-        public ulong WriteOperationCount;
-        public ulong OtherOperationCount;
-        public ulong ReadTransferCount;
-        public ulong WriteTransferCount;
-        public ulong OtherTransferCount;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-    {
-        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
-        public IO_COUNTERS IoInfo;
-        public UIntPtr ProcessMemoryLimit;
-        public UIntPtr JobMemoryLimit;
-        public UIntPtr PeakProcessMemoryUsed;
-        public UIntPtr PeakJobMemoryUsed;
-    }
-
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CreatePipe(out SafeFileHandle readPipe, out SafeFileHandle writePipe, IntPtr attributes, int size);
 
@@ -310,15 +267,6 @@ internal sealed class PseudoConsole : IDisposable
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CreateProcessW(string? applicationName, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes,
         bool inheritHandles, uint creationFlags, IntPtr environment, string currentDirectory, ref STARTUPINFOEX startupInfo, out PROCESS_INFORMATION processInformation);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern SafeFileHandle CreateJobObjectW(IntPtr attributes, string? name);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetInformationJobObject(SafeFileHandle job, int infoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, int size);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
 
     [DllImport("kernel32.dll")]
     private static extern uint ResumeThread(IntPtr thread);

@@ -47,6 +47,8 @@ const GUARDRAIL_LABEL = "mana-guardrail";
 // Never hers to write, flagged or not: git's own files, the live packages
 // behind the node_modules link, and CI -- a workflow on her branch would
 // run with the repo's token before I've read it.
+// #1212: a test file, which she may write before she's seen a test fail.
+const TEST_PATH_RE = /(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i;
 const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
 const MAX_ROUNDS = 20;
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
@@ -65,6 +67,15 @@ const MAX_STEPS_WITHOUT_PROGRESS = 8;
 
 function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
+}
+
+// A glob as a whole-path, case-insensitive regex: * and ? stay within one
+// folder, ** crosses folders.
+function globRe(glob) {
+  const body = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*\/?|\*|\?/g, (m) => ({ "?": "[^/]", "*": "[^/]*", "**/": "(?:.*/)?" })[m] || ".*");
+  return new RegExp(`^${body}$`, "i");
 }
 
 function slugify(title) {
@@ -91,8 +102,24 @@ const TOOL_SCHEMAS = [
   {
     type: "function",
     function: {
+      name: "self_work__plan",
+      description:
+        "Your plan for the issue. Before your first edit, set 2 to 6 short steps; as you finish steps, mark them done by number. Returns the plan.",
+      parameters: {
+        type: "object",
+        properties: {
+          steps: { type: "array", items: { type: "string" }, description: "The steps in order; replaces the plan." },
+          done: { type: "array", items: { type: "integer" }, description: "Numbers of the steps you've finished." },
+          no_test: { type: "string", description: "Only when the issue has nothing a test can check: why." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "self_work__files",
-      description: "List files in your worktree whose path contains the given text (case-insensitive).",
+      description: `List files in your worktree whose path contains the given text, or matches it as a glob (*, **, ?; without a / it matches the file name). Case-insensitive, at most ${MAX_LIST}.`,
       parameters: { type: "object", properties: { contains: { type: "string" } }, required: ["contains"] },
     },
   },
@@ -100,11 +127,12 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__search",
-      description: "Search the worktree's tracked files for an exact text. Returns path:line: text matches.",
+      description: "Search the worktree's tracked files for an exact text, or a regular expression with regex: true. Returns path:line: text matches (at most 60).",
       parameters: {
         type: "object",
         properties: {
           text: { type: "string" },
+          regex: { type: "boolean", description: "Treat text as an extended regular expression." },
           path: { type: "string", description: "Optional file or folder to search in." },
         },
         required: ["text"],
@@ -684,6 +712,8 @@ ${String(issue.body || "").slice(0, 4000)}
 
 How to work:
 - Find code with self_work__files and self_work__search, and read it with self_work__read.
+- Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
+- If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail; changes to the code wait until then.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
 ${
@@ -719,14 +749,17 @@ ${
 
     async function files({ contains }) {
       const needle = String(contains || "").toLowerCase();
+      // A glob without a folder matches the file name, like .gitignore.
+      const glob = /[*?]/.test(needle) && globRe(needle);
+      const name = (f) => (needle.includes("/") ? f : path.posix.basename(f));
       const all = (await git(["ls-files"], root)).split(/\r?\n/);
-      const hits = all.filter((f) => f.toLowerCase().includes(needle));
+      const hits = all.filter((f) => (glob ? glob.test(name(f)) : f.toLowerCase().includes(needle)));
       return hits.slice(0, MAX_LIST).join("\n") + (hits.length > MAX_LIST ? `\n...and ${hits.length - MAX_LIST} more` : "");
     }
 
-    async function search({ text, path: where }) {
+    async function search({ text, path: where, regex }) {
       if (!text) throw new Error("text is required");
-      const args = ["grep", "-n", "-I", "-F", "-e", String(text)];
+      const args = ["grep", "-n", "-I", regex === true ? "-E" : "-F", "-e", String(text)];
       if (where) args.push("--", posix(inside(where)));
       const r2 = await exec("git", args, { cwd: root, env: gitEnv });
       if (r2.code === 1) return "No matches.";
@@ -745,10 +778,36 @@ ${
       return `${rel} lines ${from}-${to} of ${lines.length}\n${shown}`;
     }
 
+    // #1211: her plan, on the run (so status() shows it) and with each edit.
+    const planText = () => r.plan.map((s, i) => `${s.done ? "[x]" : "[ ]"} ${i + 1}. ${s.text}`).join("\n");
+    function plan({ steps, done, no_test: noTest }) {
+      if (String(noTest || "").trim()) r.noTestReason = String(noTest).trim();
+      if (steps !== undefined) {
+        const clean = [].concat(steps).map((s) => String(s).trim()).filter(Boolean);
+        if (clean.length < 2 || clean.length > 6) throw new Error("a plan has 2 to 6 steps");
+        r.plan = clean.map((text) => ({ text, done: false }));
+      }
+      if (!r.plan) throw new Error("set your steps first");
+      for (const n of [].concat(done ?? [])) {
+        const step = r.plan[Number(n) - 1];
+        if (!step) throw new Error(`there's no step ${n}`);
+        step.done = true;
+      }
+      return planText();
+    }
+
     async function edit({ path: rel, old_text: oldText = "", new_text: newText, summary }) {
+      // A refresh (#1194) works from main's changes and the review comments instead.
+      if (!r.plan && r.kind !== "refresh") throw new Error("Write a short plan with self_work__plan before your first edit.");
       if (typeof newText !== "string") throw new Error("new_text is required");
       const full = inside(rel);
       const relPath = posix(full);
+      // #1212: test first -- the code waits for a test she's seen fail.
+      if (r.kind !== "refresh" && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason) {
+        throw new Error(
+          `Test first: write or find a test for the behaviour, run it with ${CODING_TEST_TOOL_NAME} and see it fail, then change the code. If the issue has nothing a test can check, say why in self_work__plan's no_test.`,
+        );
+      }
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to write a credential file");
       if (NEVER_WRITE_RE.test(relPath)) throw new Error(`${relPath} isn't mine to write`);
       const blocked = guard.protectedPathFor(full);
@@ -783,7 +842,13 @@ ${
       r.lastTestPassed = false;
       if (next !== original) progressed = true;
       log(r, `Changed ${relPath}${summary ? `: ${summary}` : ""}`);
-      return JSON.stringify({ status: "ok", relativePath: relPath, adversarialReview: review || undefined, diff: proposal.diff.slice(0, 2000) });
+      return JSON.stringify({
+        status: "ok",
+        relativePath: relPath,
+        adversarialReview: review || undefined,
+        diff: proposal.diff.slice(0, 2000),
+        plan: r.plan ? planText() : undefined,
+      });
     }
 
     async function tests({ path: rel }) {
@@ -812,6 +877,7 @@ ${
       });
       const passed = result.exitCode === 0 && !result.timedOut;
       r.lastTestPassed = passed;
+      if (!passed) r.sawFailingTest = true;
       const outcome = `${passed}|${result.output}`;
       if (outcome !== lastTestOutcome) progressed = true;
       lastTestOutcome = outcome;
@@ -821,6 +887,7 @@ ${
     }
 
     const executors = {
+      self_work__plan: plan,
       self_work__files: files,
       self_work__search: search,
       self_work__read: read,
