@@ -69,13 +69,41 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
   function childEnv(extra) {
     const { NODE_ENV, DOTNET_CLI_TELEMETRY_OPTOUT, ...base } = testEnv(env);
     for (const k of AUTH_KEYS) if (env[k]) base[k] = env[k];
-    return { ...base, ...extra };
+    // cmd.exe finds gemini (and node) on PATH only, never a planted one in the worktree.
+    return { ...base, NoDefaultCurrentDirectoryInExePath: "1", ...extra };
   }
+
+  // Settings that would widen its workspace past her worktree: an
+  // includeDirectories list merges with the run's own (a list can't be
+  // emptied from another file), so any entry in my user or system default
+  // settings, or the worktree's project settings, means no run.
+  const SYSTEM_DEFAULTS = {
+    win32: path.join(env.ProgramData || "C:\\ProgramData", "gemini-cli", "system-defaults.json"),
+    darwin: "/Library/Application Support/GeminiCli/system-defaults.json",
+  };
+  function widened(worktree) {
+    const files = [
+      path.join(env.GEMINI_CLI_HOME || home, ".gemini", "settings.json"),
+      SYSTEM_DEFAULTS[process.platform] || "/etc/gemini-cli/system-defaults.json",
+      ...(worktree ? [path.join(worktree, ".gemini", "settings.json")] : []),
+    ];
+    return files.filter((f) => {
+      try {
+        return /"includeDirectories"\s*:\s*\[\s*[^\]\s]/.test(fs.readFileSync(f, "utf8"));
+      } catch {
+        return false;
+      }
+    });
+  }
+  const widenedWhy = (files) =>
+    `Gemini CLI's settings add folders to its workspace (includeDirectories in ${files.join(", ")}), where it could change files outside my worktree. Remove them to use the fallback.`;
 
   // A .js is run with node (the tests' fake); a command goes through the
   // shell on Windows, where an npm install is gemini.cmd. Every argument is
   // fixed or a checked model name, and the prompt goes in on stdin.
-  function exec(args, { cwd, input = "", timeoutMs, extraEnv = {} }) {
+  let running = null;
+  let stopped = false;
+  function exec(args, { cwd, input = "", timeoutMs, extraEnv = {}, track = false }) {
     const started = Date.now();
     return new Promise((resolve) => {
       const opts = { cwd, env: childEnv(extraEnv), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] };
@@ -89,6 +117,7 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
       } catch (e) {
         return resolve({ code: -1, stdout: "", stderr: e.message, missing: true, ms: 0 });
       }
+      if (track) running = child;
       let stdout = "";
       let stderr = "";
       let timedOut = false;
@@ -104,14 +133,13 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
       });
       child.stdin.on("error", () => {});
       child.stdin.end(input);
-      child.on("error", (e) => {
+      const done = (result) => {
         clearTimeout(timer);
-        resolve({ code: -1, stdout, stderr: e.message, missing: e.code === "ENOENT", ms: Date.now() - started });
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({ code: code ?? -1, stdout, stderr, timedOut, ms: Date.now() - started });
-      });
+        if (running === child) running = null;
+        resolve({ ...result, ms: Date.now() - started });
+      };
+      child.on("error", (e) => done({ code: -1, stdout, stderr: e.message, missing: e.code === "ENOENT" }));
+      child.on("close", (code) => done({ code: code ?? -1, stdout, stderr, timedOut }));
     });
   }
 
@@ -151,11 +179,17 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
       return [];
     }
   }
+  // A run's entry goes in as it starts (so a crash still counts against the
+  // caps) and gets its outcome when it ends.
   function record(entry) {
     if (!ledgerFile) return;
     try {
+      const runs = ledger();
+      const i = runs.findIndex((e) => e.at === entry.at && e.issue === entry.issue);
+      if (i >= 0) runs[i] = entry;
+      else runs.push(entry);
       fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
-      fs.writeFileSync(ledgerFile, JSON.stringify([...ledger(), entry].slice(-MAX_LEDGER), null, 2));
+      fs.writeFileSync(ledgerFile, JSON.stringify(runs.slice(-MAX_LEDGER), null, 2));
     } catch {}
   }
 
@@ -164,6 +198,7 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
     const d = await detect();
     const today = ledger().filter((e) => e.day === localDay(now())).length;
     const settingOff = off || badModel || isLocalOnly(env);
+    const wide = widened();
     const why = off
       ? "turned off (MANA_SELF_WORK_GEMINI=0)"
       : badModel
@@ -174,8 +209,10 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
             ? `Gemini CLI isn't installed. ${INSTALL_HINT}`
             : !d.signedIn
               ? "Gemini CLI isn't signed in: run gemini once and choose Sign in with Google."
-              : null;
-    last = { enabled: !why, installed: d.installed, signedIn: d.signedIn, version: d.version, model: model || "the CLI's default", perIssue, perDay, usedToday: today, why };
+              : wide.length
+                ? widenedWhy(wide)
+                : null;
+    last = { enabled: !why, widened: wide.length > 0, installed: d.installed, signedIn: d.signedIn, version: d.version, model: model || "the CLI's default", perIssue, perDay, usedToday: today, why };
     last.text = why
       ? `Gemini fallback: ${settingOff ? "off" : "unavailable"} -- ${why}`
       : `Gemini fallback: on (Gemini CLI ${d.version}, ${last.model}; ${today} of ${perDay} runs used today, ${perIssue} per issue).`;
@@ -187,17 +224,27 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
     return last || { enabled: false, text: "Gemini fallback: checking..." };
   }
 
-  // Why it shouldn't run for this issue now, or null.
+  // Why it shouldn't run for this issue now ({ why, notice }: notice when I
+  // have something to fix), or null.
   async function blocked(issue) {
     const s = await state();
-    if (!s.enabled) return s.why;
+    if (!s.enabled) return { why: s.why, notice: s.widened };
     const runs = ledger();
     const today = runs.filter((e) => e.day === localDay(now()));
-    if (today.some((e) => e.outcome === "quota")) return "Gemini CLI ran out of quota today, so I'm not asking it again until tomorrow.";
-    if (today.length >= perDay) return `I've used Gemini CLI ${today.length} times today (the cap is ${perDay}).`;
+    const no = (why) => ({ why, notice: false });
+    if (today.some((e) => e.outcome === "quota")) return no("Gemini CLI ran out of quota today, so I'm not asking it again until tomorrow.");
+    if (today.length >= perDay) return no(`I've used Gemini CLI ${today.length} times today (the cap is ${perDay}).`);
     const mine = runs.filter((e) => e.issue === issue).length;
-    if (mine >= perIssue) return `I've already asked Gemini CLI about #${issue} (the cap is ${perIssue} per issue).`;
+    if (mine >= perIssue) return no(`I've already asked Gemini CLI about #${issue} (the cap is ${perIssue} per issue).`);
     return null;
+  }
+
+  // Stop ends the run under way, its whole process tree.
+  function stop() {
+    if (!running) return false;
+    stopped = true;
+    killProcessTree(running);
+    return true;
   }
 
   // One headless run in worktree. outcome: ok, quota, turn-limit, timeout,
@@ -205,6 +252,11 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
   // its own (it overrides my user and the repo's project settings).
   async function run({ worktree, prompt, issue, log = true }) {
     if (badModel) throw new Error("MANA_SELF_WORK_GEMINI_MODEL isn't a model name");
+    const wide = widened(worktree);
+    if (wide.length) return { outcome: "unsafe-settings", ms: 0, code: null, response: "", error: widenedWhy(wide) };
+    const entry = { at: now().toISOString(), day: localDay(now()), issue, ms: null, outcome: "started", model: model || "default" };
+    if (log) record(entry);
+    stopped = false;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-gemini-"));
     let r;
     try {
@@ -228,6 +280,7 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
         cwd: worktree,
         input: prompt,
         timeoutMs: RUN_TIMEOUT_MS,
+        track: true,
         // Its trust prompt can't show headless; this folder is her worktree.
         extraEnv: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: settings, GEMINI_CLI_TRUST_WORKSPACE: "true" },
       });
@@ -239,22 +292,24 @@ function createGeminiFallback({ env = process.env, ledgerFile, spawnImpl = spawn
       json = JSON.parse(r.stdout.slice(r.stdout.indexOf("{")));
     } catch {}
     const error = json?.error ? String(json.error.message || JSON.stringify(json.error)) : r.code !== 0 ? `${r.stderr}\n${r.stdout}`.trim() : "";
-    const outcome = r.timedOut
-      ? "timeout"
-      : r.missing
-        ? "missing"
-        : r.code === 0 && !json?.error
-          ? "ok"
-          : QUOTA_RE.test(error)
-            ? "quota"
-            : r.code === 53
-              ? "turn-limit"
-              : "error";
-    if (log) record({ at: now().toISOString(), day: localDay(now()), issue, ms: r.ms, outcome, model: model || "default" });
+    const outcome = stopped
+      ? "stopped"
+      : r.timedOut
+        ? "timeout"
+        : r.missing
+          ? "missing"
+          : r.code === 0 && !json?.error
+            ? "ok"
+            : QUOTA_RE.test(error)
+              ? "quota"
+              : r.code === 53
+                ? "turn-limit"
+                : "error";
+    if (log) record({ ...entry, ms: r.ms, outcome });
     return { outcome, ms: r.ms, code: r.code, response: String(json?.response || "").slice(0, 4000), error: error.slice(0, 300) };
   }
 
-  return { state, info, blocked, run, model: model || "default" };
+  return { state, info, blocked, run, stop, model: model || "default" };
 }
 
 module.exports = { createGeminiFallback, INSTALL_HINT, TOOLS, POLICY };

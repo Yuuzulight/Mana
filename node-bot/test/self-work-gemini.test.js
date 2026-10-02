@@ -100,6 +100,7 @@ process.stdin.on("end", () => {
     nodeModules: fs.existsSync(path.join(process.cwd(), "node-bot", "node_modules")),
   });
   fs.writeFileSync(callsFile, JSON.stringify(calls));
+  if (b.hang) return setInterval(() => {}, 1000);
   for (const [rel, content] of Object.entries(b.writes || {})) {
     fs.mkdirSync(path.dirname(path.join(process.cwd(), rel)), { recursive: true });
     fs.writeFileSync(path.join(process.cwd(), rel), content);
@@ -305,7 +306,7 @@ test("#1269: a quota error stops cleanly with a notice, and no more runs that da
   assert.ok(events.some((e) => e.notice && /out of quota for today/.test(e.text)));
   assert.match(status.step, /Gemini CLI was out of quota/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(repos.base, "gemini-runs.json"), "utf8"))[0].outcome, "quota");
-  assert.match(await gemini.blocked(8), /ran out of quota today/);
+  assert.match((await gemini.blocked(8)).why, /ran out of quota today/);
 });
 
 test("#1269: the daily cap counts every issue's runs", async () => {
@@ -314,7 +315,7 @@ test("#1269: the daily cap counts every issue's runs", async () => {
   const fake = fakeGemini(base);
   const day = new Date().toLocaleDateString("sv");
   fs.writeFileSync(path.join(base, "gemini-runs.json"), JSON.stringify([1, 2].map((issue) => ({ day, issue, ms: 1, outcome: "ok" }))));
-  assert.match(await fallback(base, fake, { MANA_SELF_WORK_GEMINI_PER_DAY: "2" }).blocked(3), /2 times today \(the cap is 2\)/);
+  assert.match((await fallback(base, fake, { MANA_SELF_WORK_GEMINI_PER_DAY: "2" }).blocked(3))?.why, /2 times today \(the cap is 2\)/);
   assert.equal(await fallback(base, fake, { MANA_SELF_WORK_GEMINI_PER_DAY: "3" }).blocked(3), null);
 });
 
@@ -328,7 +329,7 @@ test("#1269: Gemini CLI missing shows as unavailable, with how to install it", a
   assert.equal(s.installed, false);
   assert.ok(s.why.includes(INSTALL_HINT));
   assert.match(s.text, /^Gemini fallback: unavailable -- Gemini CLI isn't installed/);
-  assert.ok((await gemini.blocked(7)).includes(INSTALL_HINT));
+  assert.ok((await gemini.blocked(7)).why.includes(INSTALL_HINT));
   // And GET /self-work carries the line.
   const sw = createSelfWork({ repoRoot: base, worktreesDir: path.join(base, "wt"), gemini, runLoop: async () => ({}) });
   assert.match(sw.status().gemini.text, /unavailable/);
@@ -352,4 +353,60 @@ test("#1269: off by setting, in local-only mode or signed out; on when found and
   const g = await fallback(base, fake, { MANA_SELF_WORK_GEMINI_MODEL: "gemini-2.5-flash" }).run({ worktree: wt, prompt: "hi", issue: 1 });
   assert.equal(g.outcome, "ok");
   assert.deepEqual(fake.calls().pop().args.slice(-2), ["-m", "gemini-2.5-flash"]);
+});
+
+test("#1269: includeDirectories in my Gemini settings means no run: unavailable, with a notice", async () => {
+  const repos = makeRepos();
+  const fake = fakeGemini(repos.base, { writes: { "node-bot/util.js": FIXED } });
+  const settings = path.join(fake.home, ".gemini", "settings.json");
+  fs.writeFileSync(settings, JSON.stringify({ security: { auth: { selectedType: "oauth-personal" } }, context: { includeDirectories: [repos.live] } }));
+  const gemini = fallback(repos.base, fake);
+  const s = await gemini.state();
+  assert.equal(s.enabled, false);
+  assert.match(s.text, /^Gemini fallback: unavailable -- Gemini CLI's settings add folders to its workspace \(includeDirectories in .*settings\.json\)/);
+  const events = [];
+  const { sw } = selfWork(repos, gemini, [ownFails], { events });
+  await runIssue(sw);
+  assert.ok(events.some((e) => e.notice && /No Gemini fallback: Gemini CLI's settings add folders/.test(e.text)));
+  assert.deepEqual(fake.calls(), []);
+  // An empty list is fine.
+  fs.writeFileSync(settings, JSON.stringify({ security: { auth: { selectedType: "oauth-personal" } }, context: { includeDirectories: [] } }));
+  assert.equal((await fallback(repos.base, fake).state()).enabled, true);
+});
+
+test("#1269: a worktree whose project settings add folders isn't run in", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "mana-gemini-project-"));
+  bases.push(base);
+  const fake = fakeGemini(base);
+  const wt = path.join(base, "wt");
+  fs.mkdirSync(path.join(wt, ".gemini"), { recursive: true });
+  fs.writeFileSync(path.join(wt, ".gemini", "settings.json"), '{ "context": { "includeDirectories": ["D:/Mana"] } }');
+  const g = await fallback(base, fake).run({ worktree: wt, prompt: "hi", issue: 1 });
+  assert.equal(g.outcome, "unsafe-settings");
+  assert.deepEqual(fake.calls(), []);
+});
+
+test("#1269: a Gemini change no test can judge (no node test covers it) gets no PR", async () => {
+  const repos = makeRepos();
+  const fake = fakeGemini(repos.base, { writes: { "windows-native-launcher/Adder.cs": "class Adder {}\n" } });
+  const { sw, ghCalls } = selfWork(repos, fallback(repos.base, fake), [ownFails, [[["coding__run_tests", {}], ...reviews, finish], "Added Adder."]]);
+  const status = await runIssue(sw);
+  assert.equal(status.state, "tests-failing", status.step);
+  assert.ok(status.log.some((l) => /My tests on Gemini CLI's change can't judge it: no tests to judge it by/.test(l.text)));
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
+});
+
+test("#1269: Stop ends a Gemini CLI run under way; its run was logged as it started", async () => {
+  const repos = makeRepos();
+  const fake = fakeGemini(repos.base, { hang: true });
+  const { sw } = selfWork(repos, fallback(repos.base, fake), [ownFails]);
+  assert.equal((await sw.start(7)).ok, true);
+  const ledger = path.join(repos.base, "gemini-runs.json");
+  for (let i = 0; i < 300 && !fake.calls().length; i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(fake.calls().length, 1, "it started");
+  assert.equal(JSON.parse(fs.readFileSync(ledger, "utf8"))[0].outcome, "started");
+  assert.equal(sw.stop(), true);
+  await sw._current().done;
+  assert.equal(sw.status().state, "stopped", sw.status().step);
+  assert.equal(JSON.parse(fs.readFileSync(ledger, "utf8"))[0].outcome, "stopped");
 });

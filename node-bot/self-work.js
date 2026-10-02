@@ -582,6 +582,8 @@ function createSelfWork(options = {}) {
   function stop() {
     if (current?.state !== "running") return false;
     current.stopRequested = true;
+    // #1269: a Gemini CLI run under way ends now, not at its own end.
+    gemini?.stop?.();
     return true;
   }
 
@@ -723,9 +725,9 @@ function createSelfWork(options = {}) {
   // didn't run or was refused, with her own last attempt put back and
   // r.fallbackNote saying why.
   async function geminiFallback(r, issue) {
-    const why = await gemini.blocked(r.issue);
-    if (why) {
-      log(r, `No Gemini fallback: ${why}`);
+    const no = await gemini.blocked(r.issue);
+    if (no) {
+      log(r, `No Gemini fallback: ${no.why}`, no.notice);
       return null;
     }
     log(r, `None of my attempts at #${r.issue} passed, so I'm asking Gemini CLI, my cloud fallback.`, true);
@@ -748,12 +750,15 @@ function createSelfWork(options = {}) {
       log(r, "Gemini CLI says I'm out of quota for today, so I won't ask it again until tomorrow.", true);
       return putBack("Gemini CLI was out of quota, so it couldn't try either.");
     }
+    if (g.outcome === "unsafe-settings") log(r, `I didn't run Gemini CLI: ${g.error}`, true);
     if (g.outcome !== "ok") return putBack(`My Gemini fallback didn't work either (${g.outcome}).`);
     if (g.refused.length) {
       log(r, `Gemini CLI changed ${g.refused.join(", ")}, which it may not; I reverted its change and refused it.`, true);
       return putBack(`My Gemini fallback's change touched ${g.refused.join(", ")}, so I refused it.`);
     }
     if (!g.changed.length) return putBack("My Gemini fallback didn't change anything either.");
+    // Its change is the one going on; mine isn't coming back.
+    fs.rmSync(patchFile, { force: true });
     r.fromGemini = { model: gemini.model };
     r.takeover = true;
     r.round = 0;
@@ -777,10 +782,11 @@ function createSelfWork(options = {}) {
     );
     // Her tests, whatever she ran: the ones for every file in the diff.
     if (r.finished && r.lastTestPassed && !r.halt && !r.stopRequested && !r.refuted) {
+      // No tests to judge it by fails it too (a change no node test covers).
       const verdict = await judge(r);
-      if (verdict?.ran && !verdict.passed) {
+      if (verdict && !(verdict.ran && verdict.passed)) {
         r.lastTestPassed = false;
-        log(r, `My tests on Gemini CLI's change fail: ${verdict.failing.join(", ")}.`);
+        log(r, `My tests on Gemini CLI's change ${verdict.ran ? "fail" : "can't judge it"}: ${verdict.failing.join(", ")}.`);
       }
     }
     return { reply, kept: 1 };
@@ -801,11 +807,13 @@ function createSelfWork(options = {}) {
     // Non-recursive: only the link goes, never the packages behind it.
     if (target) process.platform === "win32" ? fs.rmdirSync(link) : fs.unlinkSync(link);
     const dotGit = path.join(r.worktree, ".git");
-    const gitFile = fs.statSync(dotGit).isFile() ? fs.readFileSync(dotGit) : null;
     const ignored = async () => (await git(["ls-files", "-o", "-i", "--exclude-standard", "--directory"], r.worktree)).split(/\r?\n/).filter(Boolean);
+    let gitFile = null;
     let g;
     let strays = [];
+    // Everything after the link went is in here, so it always comes back.
     try {
+      gitFile = fs.statSync(dotGit).isFile() ? fs.readFileSync(dotGit) : null;
       const before = new Set(await ignored());
       g = await gemini.run({ worktree: r.worktree, prompt: geminiPrompt(r, issue), issue: r.issue, log: logged });
       strays = (await ignored()).filter((f) => !before.has(f));
