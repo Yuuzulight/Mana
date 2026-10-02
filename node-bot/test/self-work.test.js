@@ -840,7 +840,7 @@ test("#1245: 600 lines of reading before her first edit, then only search and ed
 // far util.js is from adding (a + b: 0 failing, a * b: 1, a / b: 3). Each
 // attempt plans, edits, runs the tests, reviews its diff and finishes,
 // unless finishes(i) says no; extra(i) runs before its tests.
-function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4", finishes = () => true, extra = () => {}, ramAfterLoop = 50, review = null } = {}) {
+function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4", finishes = () => true, extra = () => {}, ramAfterLoop = 50, review = null, reviewEdit = null } = {}) {
   let n = 0;
   let inLoop = false;
   const testCommands = [];
@@ -848,7 +848,7 @@ function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4"
   const runLoop = async (prompt, policy, opts) => {
     // #1259: the review round on a kept attempt she didn't finish; review
     // is its calls (by default: her tests, three passes, finish).
-    if (/^Review your diff/.test(opts.goal)) {
+    if (/^Make sure your diff fully resolves issue #7/.test(opts.goal)) {
       inLoop = true;
       const results = [];
       for (const step of review || [["coding__run_tests", { path: "node-bot/test/util.test.js" }], ...reviews, finish]) {
@@ -877,7 +877,8 @@ function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4"
     inLoop = false;
     if (!finishes(i)) return { content: `Not done yet: add() uses ${op}.` };
     for (const pass of ["correctness", "edge cases", "scope"]) await policy.executeTool("self_work__review", { pass });
-    await policy.executeTool("session_goal__finish", { reason: "done" });
+    // A refuted finish leaves her attempt unfinished.
+    await policy.executeTool("session_goal__finish", { reason: "done" }).catch(() => {});
     return { content: `I made add() use ${op}.` };
   };
   const failing = { "+": 0, "*": 1, "/": 3 };
@@ -896,6 +897,7 @@ function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4"
     protectedPaths: guard,
     runLoop,
     runTests,
+    reviewEdit,
     onEvent: (run, text) => events.push(text),
     // Before the first attempt (the start check) and inside one: 50%.
     ramPercent: () => (inLoop || n === 0 ? 50 : typeof ramAfterLoop === "function" ? ramAfterLoop(n) : ramAfterLoop),
@@ -965,7 +967,9 @@ test("#1259: an attempt whose tests pass but that she didn't finish is kept; she
   assert.equal(attempts(), 1, "stops at the first passing attempt, finished or not");
   assert.ok(events.includes("Attempt 1 of 4: not finished, tests passing."));
   assert.equal(reviewRounds.length, 1);
-  assert.match(reviewRounds[0].prompt, /Your change for it is already there, and its tests pass, but you haven't finished\./);
+  assert.match(reviewRounds[0].prompt, /to implement issue #7 .*Your change so far passes its tests, but you didn't finish, so it may not do everything the issue asks yet\./);
+  assert.match(reviewRounds[0].prompt, /Only when the issue is fully done and the tests pass, call session_goal__finish/);
+  assert.equal(reviewRounds[0].opts.goal, "Make sure your diff fully resolves issue #7, then hand it in");
   assert.ok(reviewRounds[0].opts.maxRounds <= 10);
   assert.equal(sw.status().state, "pr-open", sw.status().step);
   const create = prCreate(ghCalls);
@@ -974,16 +978,30 @@ test("#1259: an attempt whose tests pass but that she didn't finish is kept; she
   assert.match(git(repos.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \+ b/);
 });
 
-test("#1259: the review round takes her three passes before finish, and without a finish there's no PR", async () => {
-  // Finish first is refused: no edit in the round, but its diff still needs her passes.
+test("#1259: the review round takes her three passes before finish; one she doesn't hand in counts as failed", async () => {
+  // Finish first is refused: no edit in the round, but its diff still needs
+  // her passes. Unfinished, each attempt goes on to the next; none is a PR.
   const repos = makeRepos();
   const ghCalls = [];
   const early = attemptsWork(repos, ["+"], { ghCalls, finishes: () => false, review: [finish] });
   await early.sw.start(7);
   await early.sw._current().done;
   assert.match(early.reviewRounds[0].results[0], /^Before you finish, review your diff with self_work__review: correctness, then edge cases, then scope\./);
+  assert.equal(early.attempts(), 4);
+  assert.equal(early.reviewRounds.length, 4);
   assert.equal(early.sw.status().state, "not-done");
   assert.equal(prCreate(ghCalls), undefined);
+
+  // The next attempt, finished with its tests passing, is the PR.
+  const repos3 = makeRepos();
+  const ghCalls3 = [];
+  const next = attemptsWork(repos3, ["+", "+"], { ghCalls: ghCalls3, finishes: (i) => i === 1, review: [finish] });
+  await next.sw.start(7);
+  await next.sw._current().done;
+  assert.equal(next.attempts(), 2);
+  assert.equal(next.reviewRounds.length, 1);
+  assert.equal(next.sw.status().state, "pr-open", next.sw.status().step);
+  assert.match(git(repos3.origin, "show", "mana/7-fix-the-add-helper:node-bot/util.js"), /a \+ b/);
 
   // A change after her finish isn't the tree her reviewer passed: no PR.
   const repos2 = makeRepos();
@@ -996,6 +1014,22 @@ test("#1259: the review round takes her three passes before finish, and without 
   assert.equal(late.sw.status().state, "needs-you");
   assert.match(late.sw.status().step, /isn't the one my reviewer passed when I finished, so no PR/);
   assert.equal(prCreate(ghCalls2), undefined);
+});
+
+test("#1259: refutations from her attempt count on in its review round", async () => {
+  const repos = makeRepos();
+  const ghCalls = [];
+  const refuted = { verdict: "refuted", concrete: true, failingCase: "add(1, 2) is 3, not 4" };
+  // Refuted once in the attempt, then twice more in the review round: three stops the run.
+  const review = [["coding__run_tests", { path: "node-bot/test/util.test.js" }], ...reviews, finish, finish];
+  const { sw, attempts } = attemptsWork(repos, ["+"], { ghCalls, review, reviewEdit: async () => refuted });
+  await sw.start(7);
+  await sw._current().done;
+
+  assert.equal(attempts(), 1);
+  assert.equal(sw.status().state, "needs-you", sw.status().step);
+  assert.match(sw.status().step, /My reviewer found a way my change to node-bot\/util\.js breaks: add\(1, 2\) is 3, not 4/);
+  assert.equal(prCreate(ghCalls), undefined);
 });
 
 test("#1247: with no attempt that finished, no PR, and the run says how each went", async () => {

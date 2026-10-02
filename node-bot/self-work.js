@@ -81,7 +81,7 @@ const DEFAULT_MAX_MINUTES = 120;
 // #1259: rounds to review and finish an attempt whose tests passed unfinished.
 const REVIEW_ROUNDS = 10;
 // What an attempt starts without: the last one's outcome and plan.
-const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree"];
+const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree", "refutations"];
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
@@ -650,8 +650,10 @@ function createSelfWork(options = {}) {
   function loop(r, issue, review = false) {
     const tools = worktreeTools(r, { intent: `#${r.issue}: ${r.title}\n${String(issue.body || "")}`, mustReview: review });
     return runLoop(review ? reviewPrompt(r, issue) : buildPrompt(r, issue), tools, {
-      // No edit verb in the review's goal: goal mode would want a new edit.
-      goal: review ? `Review your diff for issue #${r.issue} and hand it in` : `Implement issue #${r.issue}: ${r.title}`,
+      // The review's goal still asks for the whole issue (goal mode's check
+      // reads it with her prompt, which has the issue), but without an edit
+      // verb: goal mode would refuse a finish with no new edit in the round.
+      goal: review ? `Make sure your diff fully resolves issue #${r.issue}, then hand it in` : `Implement issue #${r.issue}: ${r.title}`,
       maxRounds: review ? REVIEW_ROUNDS : r.maxRounds,
       contextSize: Number(env.MANA_SELF_WORK_LLAMA_CONTEXT ?? DEFAULT_SELF_WORK_CONTEXT) || undefined,
       // #1124: how far into the round cap she is, for the Background tasks panel.
@@ -781,8 +783,8 @@ How to work:
 
   // #1247: up to `attempts` independent runs of her loop, each from a clean
   // worktree, judged by the tests. The first with them passing is kept
-  // (#1259: finished or not; one she didn't finish gets her review round
-  // before it can be a PR). If none passes, the closest one that finished
+  // (#1259: finished or not; one she didn't finish gets a review round, and
+  // one she doesn't hand in there counts as failed). If none passes, the closest one that finished
   // (so my reviewer passed it) after running tests is put back, with `failing`
   // naming what still fails; with no such attempt, `none` (no PR). One
   // attempt is today's run, unjudged.
@@ -813,15 +815,23 @@ How to work:
       }
       r.attempts.push({ attempt: i, finished, passed: verdict.passed, failures: verdict.failures });
       log(r, `Attempt ${i} of ${attempts}: ${finished ? "finished" : "not finished"}, ${verdict.passed ? "tests passing" : `${verdict.failures} failing`}.`);
+      if (verdict.passed && !finished) {
+        log(r, `Attempt ${i}'s tests pass, so I'm checking it against the issue and reviewing it before I hand it in.`);
+        // A PR takes a finish in this round, with the tree it reviewed.
+        r.finished = false;
+        delete r.reviewedTree;
+        reply = await loop(r, issue, true);
+        if (r.halt || r.stopRequested || r.refuted) return { reply, kept: i };
+        if (r.finished && !/^Not done yet/i.test(reply?.content || "")) {
+          fs.rmSync(patchFile, { force: true });
+          return { reply, kept: i };
+        }
+        // Not handed in: the next attempt goes on as if this one had failed.
+        log(r, `I didn't hand in attempt ${i} after reviewing it.`);
+        continue;
+      }
       if (verdict.passed) {
         fs.rmSync(patchFile, { force: true });
-        if (!finished) {
-          log(r, `Attempt ${i}'s tests pass, so I'm keeping it and reviewing it before I hand it in.`);
-          // A PR takes a finish in this round, with the tree it reviewed.
-          r.finished = false;
-          delete r.reviewedTree;
-          reply = await loop(r, issue, true);
-        }
         return { reply, kept: i };
       }
       if (!finished || !r.lastTestCommand || !verdict.ran) continue;
@@ -966,17 +976,19 @@ ${
 - Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
   }
 
-  // #1259: her change is in the worktree with its tests passing; she reviews it and finishes.
+  // #1259: her change passes its tests but she didn't finish: she checks it
+  // implements the whole issue, reviews it, and finishes only if it does.
   function reviewPrompt(r, issue) {
-    return `You're working on your own code, the Mana repo, on issue #${r.issue} in your own git worktree (branch ${r.branch}). Your change for it is already there, and its tests pass, but you haven't finished.
+    return `You're working on your own code, the Mana repo, to implement issue #${r.issue} in your own git worktree (branch ${r.branch}). Your change so far passes its tests, but you didn't finish, so it may not do everything the issue asks yet.
 
 Issue #${r.issue}: ${r.title}
 ${String(issue.body || "").slice(0, 4000)}
 
 Before it can be a PR:
-- Run its tests once more with ${CODING_TEST_TOOL_NAME}.
-- Review your diff with self_work__review: correctness, then edge cases, then scope. Fix what you find with ${CODING_EDIT_TOOL_NAME} and run the tests again (a fix starts the review over).
-- Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
+- Check your diff against every part of the issue (self_work__review shows it). If something is missing, implement it with ${CODING_EDIT_TOOL_NAME}, with a test.
+- Run the tests with ${CODING_TEST_TOOL_NAME} and fix what fails.
+- Review your diff with self_work__review: correctness, then edge cases, then scope. Fix what you find (a fix starts the review over).
+- Only when the issue is fully done and the tests pass, call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
   }
 
   // extra: { schemas, executors } a run adds (a refresh's reply tool);
@@ -992,12 +1004,15 @@ Before it can be a PR:
     const looked = new Set();
     // #1245: lines read before her first edit, and whether she's made one.
     let readLines = 0;
-    let madeEdit = false;
+    // A review round (#1259) reviews an attempt's edits, so its reads aren't budgeted.
+    let madeEdit = Boolean(extra.mustReview);
     // #1213: files she's changed this run, and review passes since her last change.
     const edited = new Set();
     const reviewed = new Set();
-    // #1251: per file, the last refuted diff, its verdict and how many so far.
-    const refutations = new Map();
+    // #1251: per file, the last refuted diff, its verdict and how many so far
+    // (#1259: an attempt's review round goes on counting from its attempt).
+    const refutations = (extra.mustReview && r.refutations) || new Map();
+    r.refutations = refutations;
 
     // Inside the worktree by name and by real path: a link (node_modules)
     // can't carry a write out of it.
