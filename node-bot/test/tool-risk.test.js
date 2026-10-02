@@ -286,6 +286,10 @@ test("#911 low tier: runs without a prompt in smart mode, asks in ask mode", asy
   const smartWrite = setup({ mode: "smart" });
   await smartWrite.wrapped.executeTool("desktop__set_audio_output", { name: "Headset" });
   assert.equal(smartWrite.gate.listPending()[0].summary, 'desktop__set_audio_output (write) -- with {"name":"Headset"}');
+  // #1338: a long step description can't push the real args out of the cut.
+  const described = setup({ mode: "smart" });
+  await described.wrapped.executeTool("desktop__set_audio_output", { description: "x".repeat(400), name: "Headset" });
+  assert.match(described.gate.listPending()[0].summary, /with \{"name":"Headset","description":"x+\.\.\.$/);
 });
 
 test("#669 ask mode: even a read-only call asks; self-gated built-ins pass through", async () => {

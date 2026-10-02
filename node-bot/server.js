@@ -2874,7 +2874,7 @@ function registerRoutes(app, upload, deps = {}) {
   });
 
   // #646: the chat tool loop's live runs (current tool, elapsed), polled
-  // by the launcher's activity panel -- read-only, no auth, same as above.
+  // by the launcher's activity panel -- read-only, admin-key protected.
   app.get("/agent/activity", (req, res) => {
     // #1318: plus the current (else last) reply's steps for the chat.
     return res.json({ runs: agentActivity.list(), ...agentActivity.latestSteps() });
@@ -5064,7 +5064,7 @@ function registerRoutes(app, upload, deps = {}) {
       turnToolSchemas = [];
       const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
       activityRun = agentActivity.start({
-        model: String(activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\/]/).pop() || null,
+        model: String(activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\\/]/).pop() || null,
       });
       // #1122: the Browser tool lists the web pages this turn took in.
       activeBrowserAutomationToolSource.activityLog.recordTurnPages(untrustedLinks(promptText));
