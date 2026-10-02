@@ -409,13 +409,13 @@ internal sealed class ArtifactView : Panel
 }
 
 // #686 (Q1/Q4), #937: what Folio can't draw yet -- scripts, event handlers,
-// external resources, canvas, SVG, CSS it doesn't support (Folio's
+// external resources, canvas, MathML, SVG and CSS it doesn't support (Folio's
 // ArtifactClassifier) -- opens in the default browser, from a temp copy
 // whose CSP stops it making network requests.
 internal static class HtmlArtifact
 {
     // Why the page needs a browser (the classifier's reasons, e.g. "uses
-    // inline SVG"), or null when Folio can draw it.
+    // MathML"), or null when Folio can draw it.
     public static string? BrowserReasons(string html) =>
         ArtifactClassifier.Classify(html) is { Kind: not ArtifactKind.Static } c ? string.Join(", ", c.Reasons) : null;
 
