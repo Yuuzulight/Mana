@@ -33,6 +33,11 @@ const DESCRIPTION_PARAM = {
     "A few words, present tense, saying what this step does for the person watching (e.g. \"Run the self-work tests\", \"Search the repo for the plan gate\"). No secrets or full paths.",
 };
 
+// #1337: her chat reads like a work log. Only on the tool-aware path; kept
+// short (it's in every such prompt).
+const TOOL_NARRATION_PROMPT =
+  "When you use tools: right before a round of tool calls, write one short first-person sentence saying what you're about to do and why (e.g. \"Next I'm checking the test log to see why it failed.\"). After the tools, lead with the outcome. Plain words, no tool names, don't list the steps. If you need no tools, just answer as usual.";
+
 function needsDescription(name) {
   const n = String(name || "");
   return STEP_TOOLS.has(n) || isShellTool(n) || SUBTASK_RE.test(n.split("__").pop());
@@ -45,7 +50,8 @@ function clip(text, max) {
 function sanitizeDescription(text) {
   if (typeof text !== "string") return "";
   // Control characters, newlines and markdown/HTML markup out; one line.
-  const flat = text.replace(/[\u0000-\u001f\u007f<>`*_#[\]]+/g, " ").replace(/\s+/g, " ").trim();
+  // #1337: "#12" (an issue or PR) stays; a heading marker goes.
+  const flat = text.replace(/[\u0000-\u001f\u007f<>`*_[\]]+|#(?!\d)/g, " ").replace(/\s+/g, " ").trim();
   return clip(sanitizeBridgeOutput(flat).trim(), MAX_DESCRIPTION_CHARS);
 }
 
@@ -159,6 +165,19 @@ function trimResult(result) {
   return clip(sanitizeBridgeOutput(text.trim()), MAX_RESULT_CHARS);
 }
 
+// #1337: a tool that starts a background task names it in its JSON result
+// ({ taskId, title }); the step then links to that task's transcript.
+function launchedTask(result) {
+  let parsed;
+  try {
+    parsed = typeof result === "string" ? JSON.parse(result) : result;
+  } catch {
+    return null;
+  }
+  const taskId = typeof parsed?.taskId === "string" ? parsed.taskId.slice(0, 200) : "";
+  return taskId ? { taskId, title: sanitizeDescription(parsed.title) } : null;
+}
+
 // The tool list with `description` added to command/sub-task tools that
 // don't already take one; executeTool drops it again before the tool sees
 // it (an MCP server may refuse unknown arguments).
@@ -192,8 +211,10 @@ function withStepDescriptions(policy) {
 
 module.exports = {
   DESCRIPTION_PARAM,
+  TOOL_NARRATION_PROMPT,
   describeStep,
   fallbackDescription,
+  launchedTask,
   needsDescription,
   sanitizeDescription,
   stepInfo,

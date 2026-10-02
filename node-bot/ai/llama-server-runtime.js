@@ -2133,7 +2133,8 @@ function createLlamaServerRuntime(options = {}) {
       unansweredRechecks = 0;
 
       const boundedCalls = requestedToolCalls.slice(0, callsPerRoundLimit);
-      if (visibleContent) onRoundText?.(visibleContent);
+      // #1337: awaited, so its sentences go out before this round's tool events.
+      if (visibleContent) await onRoundText?.(visibleContent);
       messages.push({
         role: "assistant",
         content: visibleContent || null,

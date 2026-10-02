@@ -6,7 +6,8 @@
 // Each task: { id, kind, title, status, startedAt?, nextRunAt?, progress?,
 // etaSeconds?, detail?, canCancel }, plus (#1318) endedAt?, model?, tokens?,
 // toolUses?, currentAction? (a sanitized plain-language step), canStop and
-// transcriptUrl? (GET /background-tasks/:id/transcript, its step log). status is running, scheduled, waiting,
+// transcriptUrl? (GET /background-tasks/:id/transcript, its step log), and (#1337) sessionId? of the
+// chat that started it. status is running, scheduled, waiting,
 // paused, done or failed. progress is { done, total, unit } and only set
 // where the source really counts it; a running task without it is
 // indeterminate. etaSeconds is only set where the rate so far is a fair
@@ -204,6 +205,8 @@ const collectors = {
       detail: job.status === "cancelled" ? "Cancelled" : job.error || job.progress?.label,
       currentAction: job.status === "running" ? sanitizeDescription(job.progress?.label) || undefined : undefined,
       canCancel: job.status === "running" && !job.cancelRequested,
+      // #1337: the chat that started it.
+      sessionId: job.sessionId || undefined,
     }));
   },
 
@@ -225,6 +228,7 @@ const collectors = {
         toolUses: st.log?.length,
         transcript: true,
         canCancel: st.state === "running",
+        sessionId: st.sessionId || undefined,
       },
     ];
   },

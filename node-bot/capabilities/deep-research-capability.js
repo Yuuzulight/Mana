@@ -176,8 +176,12 @@ function registerDeepResearchRoutes(app, context = {}) {
         result: null,
         error: null,
         startedAt: now(),
+        sessionId,
       };
       jobs.set(jobId, job);
+      // #1337: the chat that started it hears when it ends (not on a cancel).
+      const ended = (status) =>
+        context.onBackgroundTaskDone?.({ sessionId, taskId: `research:${jobId}`, title: `Research: ${question}`, status });
 
       runDeepResearch(question, {
         maxSources,
@@ -207,6 +211,7 @@ function registerDeepResearchRoutes(app, context = {}) {
             job.result = result;
             recordResearchTurn(sessionId, question, result.report);
             notifyIfStale(question, result.report);
+            ended("done");
           }
           scheduleJobCleanup(jobId);
         })
@@ -216,6 +221,7 @@ function registerDeepResearchRoutes(app, context = {}) {
           } else {
             job.status = "error";
             job.error = error.message || String(error);
+            ended("failed");
           }
           scheduleJobCleanup(jobId);
         });

@@ -108,16 +108,19 @@ test("agent activity records each step with its description, status, times and r
     description: "Run the tests",
     detail: { command: "npm test", resultPreview: "2 passed" },
     segment: 0,
+    textOffset: 0,
     status: "done",
     startedAt: "2026-10-03T00:00:00.000Z",
     endedAt: "2026-10-03T00:00:01.500Z",
   });
   assert.equal(activity.list()[0].description, "Run the tests");
   // Text between rounds starts a new segment, once however much text.
-  activity.textShown(run);
-  activity.textShown(run);
+  // #1337: placed at the reply's length so far.
+  activity.textShown(run, 12);
+  activity.textShown(run, 30);
   activity.toolStarted(run, "x__y", {});
   assert.equal(activity.latestSteps().steps[1].segment, 1);
+  assert.equal(activity.latestSteps().steps[1].textOffset, 30);
   assert.equal(activity.list()[0].tokens, 7100);
   activity.finish(run);
   assert.deepEqual(activity.list(), []);
