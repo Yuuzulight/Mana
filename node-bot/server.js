@@ -4335,6 +4335,8 @@ function registerRoutes(app, upload, deps = {}) {
     const userChat = Boolean(replyMeta && !replyMeta.scheduled);
     let manaThinking = false;
     if (userChat) {
+      // #697: a reply soon after an unprompted remark counts as engaging with it.
+      require("./proactive").react("engaged");
       if (replyMeta.thinkHarder === false) deepThinking.set(sessionId, false);
       manaThinking = deepThinking.takeReply(sessionId);
       replyMeta.deepThinking = deepThinking.isOn(sessionId);
