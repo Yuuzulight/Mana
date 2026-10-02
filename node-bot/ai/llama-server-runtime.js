@@ -52,6 +52,24 @@ const CONTEXT_SWITCH_WAIT_MS = 2 * 60 * 1000;
 const TOOL_CALL_UNPARSED_NOTE =
   "Your last tool call couldn't be parsed: its arguments were cut off or weren't valid JSON. Make the call again with shorter arguments (for a code change, replace only the lines that change).";
 
+// #621: whether a tool call's arguments can run: they parse to a JSON
+// object with every parameter its schema requires. Calls read from text
+// (#1263) and native tool_calls both go through this, so neither runs with
+// {} in place of arguments that didn't parse. No arguments at all is {}.
+function checkToolCallArgs(raw, parameters) {
+  let args = raw ?? {};
+  if (typeof args === "string") {
+    try {
+      args = args.trim() ? JSON.parse(args) : {};
+    } catch (e) {
+      return { problem: "weren't valid JSON", missing: [] };
+    }
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) return { problem: "weren't a JSON object", missing: [] };
+  const missing = ((parameters && parameters.required) || []).filter((key) => !(key in args));
+  return { args, missing };
+}
+
 // "saved" when a memory__remember call wrote (or was approved), "pending"
 // when one is waiting on approval, else "none".
 function memoryWriteState(calls) {
@@ -1574,9 +1592,9 @@ function createLlamaServerRuntime(options = {}) {
     const calls = [];
     for (const call of found) {
       const schema = call && params.get(call.name);
-      const args = call && call.arguments;
-      if (!schema || !args || typeof args !== "object" || Array.isArray(args)) continue;
-      if (!(schema.required || []).every((key) => key in args)) continue;
+      if (!schema || call.arguments == null) continue;
+      const { args, problem, missing } = checkToolCallArgs(call.arguments, schema);
+      if (problem || missing.length) continue;
       calls.push({
         id: `text_${Date.now()}_${calls.length}`,
         type: "function",
@@ -2121,15 +2139,11 @@ function createLlamaServerRuntime(options = {}) {
 
       for (const call of boundedCalls) {
         const name = call.function && call.function.name;
-        let args = {};
-        try {
-          args = call.function && call.function.arguments
-            ? JSON.parse(call.function.arguments)
-            : {};
-        } catch (e) {
-          // Malformed arguments from the model -- report back as a tool
-          // error below instead of throwing and losing the whole reply.
-        }
+        // #621: arguments that didn't parse, or a required one that didn't
+        // arrive, go back as a tool error below; the tool doesn't run.
+        const parameters = (toolPolicy.tools || []).find((t) => t?.function?.name === name)?.function?.parameters;
+        const checked = checkToolCallArgs(call.function && call.function.arguments, parameters);
+        const args = checked.args || {};
 
         let resultText;
         try {
@@ -2141,13 +2155,15 @@ function createLlamaServerRuntime(options = {}) {
           // synchronous executeTool().
           // #1258: a call without a required argument (lost in parsing, or
           // cut off at the token limit) goes back saying which, and why.
-          const required = (toolPolicy.tools || []).find((t) => t?.function?.name === name)?.function?.parameters?.required || [];
-          const given = args && typeof args === "object" ? args : {};
-          const missing = required.filter((key) => !(key in given));
-          if (missing.length) {
-            const cut = json?.choices?.[0]?.finish_reason === "length";
+          const cut = json?.choices?.[0]?.finish_reason === "length" ? ": your reply hit its token limit and the call was cut off" : "";
+          if (checked.problem) {
             throw new Error(
-              `${name} needs ${missing.join(", ")}, which didn't arrive${cut ? ": your reply hit its token limit and the call was cut off" : ""}. Make the call again with every required argument (for a code change, give old_text and replace only the lines that change).`,
+              `${name}'s arguments ${checked.problem}${cut}. Make the call again with complete JSON arguments (for a code change, replace only the lines that change).`,
+            );
+          }
+          if (checked.missing.length) {
+            throw new Error(
+              `${name} needs ${checked.missing.join(", ")}, which didn't arrive${cut}. Make the call again with every required argument (for a code change, give old_text and replace only the lines that change).`,
             );
           }
           const result = await toolPolicy.executeTool(name, args);
