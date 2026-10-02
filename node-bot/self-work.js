@@ -89,8 +89,10 @@ const DEFAULT_SELF_WORK_CONTEXT = 32768;
 const DEFAULT_ATTEMPTS = 4;
 const MAX_ATTEMPTS = 8;
 const DEFAULT_MAX_MINUTES = 120;
+// #1259: rounds to review and finish an attempt whose tests passed unfinished.
+const REVIEW_ROUNDS = 10;
 // What an attempt starts without: the last one's outcome and plan.
-const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree"];
+const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree", "refutations"];
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
@@ -669,10 +671,16 @@ function createSelfWork(options = {}) {
   }
 
   // Goal mode over her worktree tools, for a real run and a bench run alike.
-  function loop(r, issue) {
-    return runLoop(buildPrompt(r, issue), worktreeTools(r, { intent: `#${r.issue}: ${r.title}\n${String(issue.body || "")}` }), {
-      goal: `Implement issue #${r.issue}: ${r.title}`,
-      maxRounds: r.maxRounds,
+  // #1259: review is a short round on an attempt whose tests pass but that
+  // she didn't finish: her three passes and finish (so her reviewer too).
+  function loop(r, issue, review = false) {
+    const tools = worktreeTools(r, { intent: `#${r.issue}: ${r.title}\n${String(issue.body || "")}`, mustReview: review });
+    return runLoop(review ? reviewPrompt(r, issue) : buildPrompt(r, issue), tools, {
+      // The review's goal still asks for the whole issue (goal mode's check
+      // reads it with her prompt, which has the issue), but without an edit
+      // verb: goal mode would refuse a finish with no new edit in the round.
+      goal: review ? `Make sure your diff fully resolves issue #${r.issue}, then hand it in` : `Implement issue #${r.issue}: ${r.title}`,
+      maxRounds: review ? REVIEW_ROUNDS : r.maxRounds,
       contextSize: Number(env.MANA_SELF_WORK_LLAMA_CONTEXT ?? DEFAULT_SELF_WORK_CONTEXT) || undefined,
       // #1124: how far into the round cap she is, for the Background tasks panel.
       onRound: (round) => {
@@ -988,9 +996,10 @@ How to work:
   }
 
   // #1247: up to `attempts` independent runs of her loop, each from a clean
-  // worktree, judged by the tests. The first that finishes with them
-  // passing is kept. If none does, the closest one that finished (so my
-  // reviewer passed it) after running tests is put back, with `failing`
+  // worktree, judged by the tests. The first with them passing is kept
+  // (#1259: finished or not; one she didn't finish gets a review round, and
+  // one she doesn't hand in there counts as failed). If none passes, the closest one that finished
+  // (so my reviewer passed it) after running tests is put back, with `failing`
   // naming what still fails; with no such attempt, `none` (no PR). One
   // attempt is today's run, unjudged.
   async function bestOf(r, issue, attempts) {
@@ -1020,7 +1029,22 @@ How to work:
       }
       r.attempts.push({ attempt: i, finished, passed: verdict.passed, failures: verdict.failures });
       log(r, `Attempt ${i} of ${attempts}: ${finished ? "finished" : "not finished"}, ${verdict.passed ? "tests passing" : `${verdict.failures} failing`}.`);
-      if (finished && verdict.passed) {
+      if (verdict.passed && !finished) {
+        log(r, `Attempt ${i}'s tests pass, so I'm checking it against the issue and reviewing it before I hand it in.`);
+        // A PR takes a finish in this round, with the tree it reviewed.
+        r.finished = false;
+        delete r.reviewedTree;
+        reply = await loop(r, issue, true);
+        if (r.halt || r.stopRequested || r.refuted) return { reply, kept: i };
+        if (r.finished && !/^Not done yet/i.test(reply?.content || "")) {
+          fs.rmSync(patchFile, { force: true });
+          return { reply, kept: i };
+        }
+        // Not handed in: the next attempt goes on as if this one had failed.
+        log(r, `I didn't hand in attempt ${i} after reviewing it.`);
+        continue;
+      }
+      if (verdict.passed) {
         fs.rmSync(patchFile, { force: true });
         return { reply, kept: i };
       }
@@ -1154,7 +1178,7 @@ How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Aim to make your first edit within ${READ_BUDGET_LINES} lines of reading: search first and read only what the change needs; then make the change.
 - Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
-- If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail; changes to the code wait until then.
+- If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail before you change the code.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
 ${
@@ -1166,7 +1190,23 @@ ${
 - Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
   }
 
-  // extra: { schemas, executors } a run adds (a refresh's reply tool).
+  // #1259: her change passes its tests but she didn't finish: she checks it
+  // implements the whole issue, reviews it, and finishes only if it does.
+  function reviewPrompt(r, issue) {
+    return `You're working on your own code, the Mana repo, to implement issue #${r.issue} in your own git worktree (branch ${r.branch}). Your change so far passes its tests, but you didn't finish, so it may not do everything the issue asks yet.
+
+Issue #${r.issue}: ${r.title}
+${String(issue.body || "").slice(0, 4000)}
+
+Before it can be a PR:
+- Check your diff against every part of the issue (self_work__review shows it). If something is missing, implement it with ${CODING_EDIT_TOOL_NAME}, with a test.
+- Run the tests with ${CODING_TEST_TOOL_NAME} and fix what fails.
+- Review your diff with self_work__review: correctness, then edge cases, then scope. Fix what you find (a fix starts the review over).
+- Only when the issue is fully done and the tests pass, call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
+  }
+
+  // extra: { schemas, executors } a run adds (a refresh's reply tool);
+  // mustReview: her three passes before finishing even with no edit this loop (#1259).
   function worktreeTools(r, extra = {}) {
     const root = r.worktree;
     const goal = createSessionGoalToolSource();
@@ -1178,13 +1218,16 @@ ${
     const looked = new Set();
     // #1245: lines read before her first edit, and whether she's made one.
     let readLines = 0;
-    let madeEdit = false;
+    // A review round (#1259) reviews an attempt's edits, so its reads aren't budgeted.
+    let madeEdit = Boolean(extra.mustReview);
     // #1213: files she's changed this run, and review passes since her last
     // change. #1269: a takeover starts with Gemini CLI's files in it.
     const edited = new Set(extra.edited || []);
     const reviewed = new Set();
-    // #1251: per file, the last refuted diff, its verdict and how many so far.
-    const refutations = new Map();
+    // #1251: per file, the last refuted diff, its verdict and how many so far
+    // (#1259: an attempt's review round goes on counting from its attempt).
+    const refutations = (extra.mustReview && r.refutations) || new Map();
+    r.refutations = refutations;
 
     // Inside the worktree by name and by real path: a link (node_modules)
     // can't carry a write out of it.
@@ -1264,12 +1307,12 @@ ${
       if (typeof newText !== "string") throw new Error("new_text is required");
       const full = inside(rel);
       const relPath = posix(full);
-      // #1212: test first -- the code waits for a test she's seen fail.
-      if (ownWork && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason) {
-        throw new Error(
-          `Test first: write or find a test for the behaviour, run it with ${CODING_TEST_TOOL_NAME} and see it fail, then change the code. If the issue has nothing a test can check, say why in self_work__plan's no_test.`,
-        );
-      }
+      // #1212 / #1257: test first, as a warning, never a refusal (refusing
+      // cost her rounds): a code change before she's seen a test fail (one
+      // that was already there counts), written a test file, or said why
+      // nothing can be tested. Her tests still have to pass for a PR.
+      const untested =
+        ownWork && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason && ![...edited].some((f) => TEST_PATH_RE.test(f));
       const refusal = writeRefusal(r, full, relPath);
       if (refusal) throw new Error(refusal);
       const exists = fs.existsSync(full);
@@ -1317,6 +1360,9 @@ ${
         relativePath: relPath,
         diff: proposal.diff.slice(0, 2000),
         plan: r.plan ? planText() : undefined,
+        warning: untested
+          ? `Test first: you changed code without a test for it yet. Write or find a test for the behaviour and run it with ${CODING_TEST_TOOL_NAME}; your change goes up as a PR only once the tests pass after your last edit. If the issue has nothing a test can check, say why in self_work__plan's no_test.`
+          : undefined,
       });
     }
 
@@ -1342,7 +1388,7 @@ ${
     // and the third on one file stops the run and asks me. A note doesn't
     // block.
     async function finish(args) {
-      if (edited.size) {
+      if (edited.size || extra.mustReview) {
         const left = Object.keys(REVIEW_PASSES).filter((p) => !reviewed.has(p));
         if (left.length) {
           throw new Error(`Before you finish, review your diff with self_work__review: ${left.join(", then ")}. Fix what you find.`);
