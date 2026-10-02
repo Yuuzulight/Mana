@@ -29,9 +29,33 @@ const MIN_GAP_MS = 60 * 1000;
 const DEFAULT_SNOOZE_MINUTES = 60;
 const MAX_REASON_CHARS = 40;
 
+// Learning from reactions: each kind keeps an engagement score in -1..1.
+// A reply within REPLY_WINDOW_MS counts as engaged; silence as ignored
+// (implicit, half weight). Every reaction pulls the score LEARN_RATE of the
+// way toward its weight, and scores fade toward neutral with a two-week
+// half-life. The score sets the kind's multiplier, 2^-score (0.5x liked to
+// 2x disliked): it scales the threshold, and a disliked kind also waits up
+// to DISLIKE_COOLDOWN_MS after its last remark. Neutral changes nothing.
+// Urgent/explicit remarks are neither learned from nor throttled.
+// ponytail: one score per kind; per-context buckets (time of day, activity)
+// and Thompson-style exploration from #697 come later.
+const REPLY_WINDOW_MS = 5 * 60 * 1000;
+const LEARN_RATE = 0.25;
+const HALF_LIFE_MS = 14 * 24 * 60 * 60 * 1000;
+const DISLIKE_COOLDOWN_MS = 60 * 60 * 1000;
+const REACTION_WEIGHTS = { engaged: 1, ignored: -0.5, dismissed: -1, notNow: -1, never: -1 };
+
 function defaultSettings() {
-  return { quietHours: { enabled: false, start: "01:00", end: "09:00" }, snoozedUntil: 0, muted: [] };
+  return { quietHours: { enabled: false, start: "01:00", end: "09:00" }, snoozedUntil: 0, muted: [], learned: {} };
 }
+
+// The score as of t, faded toward neutral since it was last updated.
+function decayedScore(entry, t) {
+  if (!entry) return 0;
+  return entry.score * 0.5 ** (Math.max(0, t - entry.at) / HALF_LIFE_MS);
+}
+
+const multiplierFor = (score) => 2 ** -score;
 
 function minutesOfDay(hhmm) {
   const match = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm).trim());
@@ -81,6 +105,11 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
         quietHours: q && typeof q === "object" ? { ...settings.quietHours, ...q, enabled: q.enabled === true } : settings.quietHours,
         snoozedUntil: Number(saved.settings?.snoozedUntil) || 0,
         muted: Array.isArray(saved.settings?.muted) ? saved.settings.muted.filter((r) => typeof r === "string") : [],
+        learned: Object.fromEntries(
+          Object.entries(saved.settings?.learned || {})
+            .filter(([, e]) => Number.isFinite(e?.score) && Number.isFinite(e?.at))
+            .map(([r, e]) => [r, { score: Math.max(-1, Math.min(1, e.score)), at: e.at, lastAt: Number(e.lastAt) || 0 }]),
+        ),
       };
     } catch {
       // Nothing saved yet, or unreadable: start empty; the next change rewrites it.
@@ -98,9 +127,55 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     }
   }
 
+  function learn(reason, signal, t) {
+    const entry = settings.learned[reason];
+    const score = decayedScore(entry, t);
+    settings.learned[reason] = { score: score + LEARN_RATE * (REACTION_WEIGHTS[signal] - score), at: t, lastAt: entry?.lastAt || 0 };
+  }
+
+  const multiplier = (reason, t) => multiplierFor(decayedScore(settings.learned[reason], t));
+
+  // A disliked kind waits longer after its last remark; neutral/liked don't.
+  function coolingDown(reason, t) {
+    const lastAt = settings.learned[reason]?.lastAt || 0;
+    return t - lastAt < DISLIKE_COOLDOWN_MS * Math.max(0, multiplier(reason, t) - 1);
+  }
+
+  // The last learnable remark waits here until I react or the reply window
+  // passes (then it was ignored). In memory only: a restart forgets one.
+  let pending = null;
+  function settle(t) {
+    if (!pending || t - pending.at < REPLY_WINDOW_MS) return false;
+    learn(pending.reason, pending.signal || "ignored", t);
+    pending = null;
+    return true;
+  }
+
+  // signal: engaged (I replied / clicked it) or a negative one (dismissed,
+  // notNow, never), about the last remark. Negative ones count right away
+  // and win over a reply in the same window ("not now" is itself a reply).
+  // Returns whether anything was recorded.
+  function react(signal, t = now()) {
+    if (!(signal in REACTION_WEIGHTS)) throw new Error(`reaction must be one of ${Object.keys(REACTION_WEIGHTS).join(", ")}`);
+    const settled = settle(t);
+    if (!pending) {
+      if (settled) save();
+      return false;
+    }
+    if (signal === "engaged") {
+      pending.signal = "engaged";
+      return true;
+    }
+    learn(pending.reason, signal, t);
+    pending = null;
+    save();
+    return true;
+  }
+
   // Delivers at most one held candidate and returns it (or null).
   function flush() {
     const t = now();
+    const settled = settle(t);
     const count = held.length;
     held = held.filter((c) => c.expiresAt > t);
     const today = new Date(t).toDateString();
@@ -116,10 +191,18 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     const next =
       t - lastSentAt < MIN_GAP_MS || !canDeliver()
         ? null
-        : held.find((c) => (gameHold ? c.explicit : c.urgent || (!quiet && spentToday < DAILY_BUDGET)));
+        : held.find((c) => (gameHold ? c.explicit : c.urgent || (!quiet && spentToday < DAILY_BUDGET && !coolingDown(c.reason, t))));
     if (next) {
       held.splice(held.indexOf(next), 1);
-      if (!next.urgent) spentToday += 1;
+      if (!next.urgent) {
+        spentToday += 1;
+        // ponytail: back-to-back remarks share one reply window, so only the
+        // latest is learned from; an earlier one gets its reply credited.
+        if (pending?.signal) learn(pending.reason, pending.signal, t);
+        pending = { reason: next.reason, at: t, signal: null };
+        const entry = settings.learned[next.reason];
+        settings.learned[next.reason] = entry ? { ...entry, lastAt: t } : { score: 0, at: t, lastAt: t };
+      }
       if (inGameBreak && !next.explicit) breakUsed = true;
       lastSentAt = t;
       lastSent = { reason: next.reason, title: next.payload.title ?? null, text: next.payload.text ?? null, at: t };
@@ -127,7 +210,7 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
         .then(() => deliver(next.payload))
         .catch(() => {});
     }
-    if (held.length !== count) save();
+    if (held.length !== count || settled) save();
     return next ?? null;
   }
 
@@ -135,7 +218,7 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
   function offer({ reason, payload, score = 1, urgent = false, explicit = false, ttlMs = DEFAULT_TTL_MS }) {
     urgent = Boolean(urgent || explicit);
     if (!explicit && settings.muted.includes(reason)) return "dropped";
-    if (!urgent && !(score >= SCORE_THRESHOLD)) return "dropped";
+    if (!urgent && !(score >= Math.min(1, SCORE_THRESHOLD * multiplier(reason, now())))) return "dropped";
     if (held.some((c) => c.reason === reason && c.payload.text === payload.text)) return "held";
     const candidate = { reason, payload, score, urgent, explicit: Boolean(explicit), expiresAt: now() + ttlMs };
     held.push(candidate);
@@ -163,12 +246,20 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
       muted: [...settings.muted],
       away: Boolean(isAway()),
       lastRemark: lastSent,
+      // Read-only: what she has learned per kind (score -1..1, multiplier 0.5..2).
+      learned: Object.fromEntries(
+        Object.keys(settings.learned).map((r) => {
+          const score = decayedScore(settings.learned[r], t);
+          return [r, { score: Math.round(score * 1000) / 1000, multiplier: Math.round(multiplierFor(score) * 1000) / 1000 }];
+        }),
+      ),
     };
   }
 
   // patch: any of { quietHours: { enabled, start, end }, snoozeMinutes
-  // (0 resumes), mute: reason, unmute: reason }. Validates everything before
-  // changing anything.
+  // (0 resumes), mute: reason, unmute: reason, reaction: dismissed|engaged }.
+  // Validates everything before changing anything. Snoozing and muting also
+  // count as reactions to the last remark.
   function updateSettings(patch = {}) {
     const next = { ...settings, quietHours: { ...settings.quietHours }, muted: [...settings.muted] };
     if (patch.quietHours !== undefined) {
@@ -199,12 +290,27 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
       const r = reasonOf(patch.unmute);
       next.muted = next.muted.filter((m) => m !== r);
     }
+    // The launcher reports what happened to the toast: dismissed or engaged.
+    if (patch.reaction !== undefined && !["dismissed", "engaged"].includes(patch.reaction)) {
+      throw new Error("reaction must be dismissed or engaged");
+    }
     settings = next;
+    // Turned back on by hand: a fresh start, not the dislike that muted it.
+    if (patch.unmute !== undefined) delete settings.learned[reasonOf(patch.unmute)];
+    const t = now();
+    if (patch.reaction !== undefined) react(patch.reaction, t);
+    if (patch.snoozeMinutes !== undefined && next.snoozedUntil > t) react("notNow", t);
+    if (patch.mute !== undefined) {
+      // "Don't bring this up again" about the last remark, or any kind by name.
+      const r = reasonOf(patch.mute);
+      if (pending?.reason === r) react("never", t);
+      else learn(r, "never", t);
+    }
     save();
     return getSettings();
   }
 
-  return { offer, flush, persistTo, listHeld, getSettings, updateSettings };
+  return { offer, flush, persistTo, listHeld, getSettings, updateSettings, react };
 }
 
 // The process-wide instance; server.js hands it the gaming watch, its file
@@ -265,5 +371,6 @@ module.exports = {
   listHeld: proactive.listHeld,
   getSettings: proactive.getSettings,
   updateSettings: proactive.updateSettings,
+  react: proactive.react,
   DAILY_BUDGET,
 };
