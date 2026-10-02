@@ -27,6 +27,9 @@ function createAgentActivity({ now = Date.now } = {}) {
       lastTool: null,
       stopRequested: false,
       steps: [],
+      // #1318: bumped when reply text shows between tool rounds, so the chat
+      // starts a new step group after that text.
+      segment: 0,
     };
     runs.set(run.id, run);
     latest = run;
@@ -51,6 +54,7 @@ function createAgentActivity({ now = Date.now } = {}) {
       kind: "tool",
       tool: name,
       ...info,
+      segment: run.segment,
       status: "running",
       startedAt: iso(run.toolStartedAt),
       endedAt: null,
@@ -63,6 +67,12 @@ function createAgentActivity({ now = Date.now } = {}) {
   function current(run) {
     const step = run.steps[run.steps.length - 1];
     return step && !step.endedAt ? step : null;
+  }
+
+  // Reply text between tool rounds: later steps go in a new segment.
+  function textShown(run) {
+    const last = run.steps[run.steps.length - 1];
+    if (last && last.segment === run.segment) run.segment += 1;
   }
 
   // waiting: the step is held in the approval queue.
@@ -138,7 +148,7 @@ function createAgentActivity({ now = Date.now } = {}) {
     return run ? run.steps.map((step) => ({ ...step, detail: step.detail && { ...step.detail } })) : null;
   }
 
-  return { start, finish, toolStarted, toolWaiting, toolEnded, stop, list, listRecent, latestSteps, steps };
+  return { start, finish, toolStarted, toolWaiting, toolEnded, textShown, stop, list, listRecent, latestSteps, steps };
 }
 
 module.exports = { createAgentActivity };

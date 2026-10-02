@@ -107,15 +107,21 @@ test("agent activity records each step with its description, status, times and r
     tool: "dc__start_process",
     description: "Run the tests",
     detail: { command: "npm test", resultPreview: "2 passed" },
+    segment: 0,
     status: "done",
     startedAt: "2026-10-03T00:00:00.000Z",
     endedAt: "2026-10-03T00:00:01.500Z",
   });
   assert.equal(activity.list()[0].description, "Run the tests");
+  // Text between rounds starts a new segment, once however much text.
+  activity.textShown(run);
+  activity.textShown(run);
+  activity.toolStarted(run, "x__y", {});
+  assert.equal(activity.latestSteps().steps[1].segment, 1);
   assert.equal(activity.list()[0].tokens, 7100);
   activity.finish(run);
   assert.deepEqual(activity.list(), []);
   assert.equal(activity.listRecent()[0].model, "Qwen3.5-9B");
-  assert.equal(activity.steps(run.id).length, 1);
+  assert.equal(activity.steps(run.id).length, 2);
   assert.equal(activity.steps("nope"), null);
 });

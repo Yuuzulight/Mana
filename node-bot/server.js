@@ -5397,6 +5397,7 @@ function registerRoutes(app, upload, deps = {}) {
               extraMessages: memoryExtraMessages,
               thinking: () => thinkHarder,
               goal: goalMode ? sessionGoal : null,
+              onRoundText: () => agentActivity.textShown(run),
             },
           );
           if (toolResult.content && toolResult.content.trim()) {
