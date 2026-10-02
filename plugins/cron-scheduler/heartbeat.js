@@ -69,6 +69,8 @@ function parseLine(line) {
   const item = /^\s*[-*]\s+(.*)$/.exec(line);
   if (!item) return null;
   let rest = item[1].trim();
+  // A struck-through line is a check switched off in Settings.
+  if (/^~~.*~~$/.test(rest)) return null;
   const permissions = new Set(["read"]);
   let urgent = false;
   const list = /^\[([^\]]*)\]\s*/.exec(rest);
@@ -113,6 +115,79 @@ function parseHeartbeat(markdown) {
       else if (parsed && !checks.some((c) => c.id === parsed.id)) checks.push(parsed);
     });
   return { checks, errors };
+}
+
+// #699 Settings editor: heartbeat.md's checks as editable items. Struck
+// through ("- ~~every 30m: check X~~") is switched off.
+const SCHEDULE_RE = /^(every\s+\d+\s*[mhd][a-z]*|daily\s+\d{1,2}:\d{2})$/i;
+const MAX_ITEMS = 50;
+const MAX_TEXT = 500;
+
+function itemLine(line) {
+  const off = /^\s*[-*]\s+~~(.*)~~\s*$/.exec(line);
+  const parsed = parseLine(off ? `- ${off[1]}` : line);
+  return parsed && !parsed.error ? { ...parsed, enabled: !off } : null;
+}
+
+function scheduleText(s) {
+  if (s.type === "daily") return `daily ${String(s.hour).padStart(2, "0")}:${String(s.minute).padStart(2, "0")}`;
+  const unit = ["d", "h", "m"].find((u) => s.everyMs % UNIT_MS[u] === 0);
+  return `every ${s.everyMs / UNIT_MS[unit]}${unit}`;
+}
+
+function listItems(markdown) {
+  return String(markdown || "")
+    .split(/\r?\n/)
+    .map(itemLine)
+    .filter(Boolean)
+    .map((c) => ({
+      id: c.id,
+      text: c.text,
+      schedule: scheduleText(c.schedule),
+      permissions: c.permissions.filter((p) => p !== "read"),
+      urgent: c.urgent,
+      enabled: c.enabled,
+    }));
+}
+
+// One editor item -> its heartbeat.md line; throws what's wrong with it.
+// An unchanged item gets the same id back, so it keeps its approval.
+function itemToLine(item, i) {
+  const where = `check ${i + 1}`;
+  const text = String(item?.text ?? "").trim();
+  if (!text) throw new Error(`${where}: the check has no text`);
+  if (text.length > MAX_TEXT || /[\r\n]|~~/.test(text)) {
+    throw new Error(`${where}: the text must be one line of at most ${MAX_TEXT} characters, without ~~`);
+  }
+  const permissions = Array.isArray(item.permissions) ? item.permissions.map((p) => String(p).toLowerCase()) : [];
+  const bad = permissions.find((p) => !GRANTABLE.has(p));
+  if (bad !== undefined) throw new Error(`${where}: "${bad}" isn't a permission a check can have (read, write, network)`);
+  const schedule = String(item.schedule ?? "").trim();
+  if (schedule && !SCHEDULE_RE.test(schedule)) {
+    throw new Error(`${where}: schedule should look like "every 30m", "every 2h" or "daily 09:00"`);
+  }
+  const words = [...new Set(permissions.filter((p) => p !== "read")), ...(item.urgent ? ["urgent"] : [])];
+  const body = `${words.length ? `[${words.join(", ")}] ` : ""}${schedule ? `${schedule}: ` : ""}${text}`;
+  const parsed = parseLine(`- ${body}`);
+  if (parsed.error) throw new Error(`${where}: ${parsed.error}`);
+  if (parsed.text !== text) throw new Error(`${where}: the text can't start with a [list] or a schedule`);
+  return item.enabled === false ? `- ~~${body}~~` : `- ${body}`;
+}
+
+// heartbeat.md with its checks replaced by items, in order. Headings, notes
+// and malformed lines stay where they were; extra items go at the end.
+function replaceItems(markdown, items) {
+  if (!Array.isArray(items)) throw new Error("items must be a list");
+  if (items.length > MAX_ITEMS) throw new Error(`at most ${MAX_ITEMS} checks`);
+  const fresh = items.map(itemToLine);
+  const out = [];
+  for (const line of String(markdown || "").split(/\r?\n/)) {
+    if (!itemLine(line)) out.push(line);
+    else if (fresh.length) out.push(fresh.shift());
+  }
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  out.push(...fresh);
+  return out.length ? `${out.join("\n")}\n` : "";
 }
 
 function checkPrompt(check) {
@@ -416,7 +491,28 @@ function createHeartbeat({
     });
   }
 
-  return { filePath, runDue, approve, listChecks, getState: () => state };
+  function readFile() {
+    try {
+      return fs.readFileSync(filePath, "utf8");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // #699: Settings > Heartbeat. Throws on a bad item before writing.
+  function getItems() {
+    return listItems(readFile());
+  }
+
+  function setItems(items) {
+    const next = replaceItems(readFile(), items);
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(`${filePath}.tmp`, next, "utf8");
+    fs.renameSync(`${filePath}.tmp`, filePath);
+    return listItems(next);
+  }
+
+  return { filePath, runDue, approve, listChecks, getItems, setItems, getState: () => state };
 }
 
-module.exports = { parseHeartbeat, createCheckToolGate, createHeartbeat };
+module.exports = { parseHeartbeat, listItems, replaceItems, createCheckToolGate, createHeartbeat };

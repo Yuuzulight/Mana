@@ -1273,3 +1273,23 @@ test("#1249: a snapshot between attempts only runs in a worktree's own top folde
   assert.match(error, /isn't a worktree's top folder .*so I didn't (stage|take a snapshot of) it/);
   assert.equal(fs.readFileSync(path.join(inner, "keep.txt"), "utf8"), "mine\n");
 });
+
+// #1287: a PR whose tests and review passed leaves a training record.
+test("#1287: a passing PR from her local model is kept as a training record", async () => {
+  const repos = makeRepos();
+  const { createTraceStore } = require("../self-work-traces");
+  const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "mana-traces-"));
+  const traces = createTraceStore({ dir, env: { DISCORD_TOKEN: "super-secret-token-value" } });
+  const { sw } = selfWork(repos, { calls: [fix, runTests, finish], traces });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(sw.status().state, "pr-open");
+  const [rec] = traces.list();
+  assert.equal(rec.pr, 8);
+  assert.equal(rec.source, "local");
+  assert.equal(rec.issue.number, 7);
+  assert.equal(rec.conversations.length, 1);
+  assert.match(rec.diff, /\+\s*return a \+ b;/);
+  assert.equal(rec.tests.command, "node --test test/util.test.js");
+  assert.deepEqual(rec.outcome, { testsPassed: true, reviewPassed: true, merged: false, reverted: false });
+});

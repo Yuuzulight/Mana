@@ -95,7 +95,7 @@ Project goal
      off partway through. Tune the pause length with
      `MANA_SILENCE_BUFFER_MS` (milliseconds) if that feels too short or
      too long for how you talk.
-   - With the Smart Turn model in `windows-native-launcher\assets\turn\`
+   - With the Smart Turn model (fetched at build time) in `windows-native-launcher\assets\turn\`
      (`smart-turn-v3.2-cpu.onnx`, see THIRD_PARTY.md), the native launcher
      also hears whether you sound finished: a clear ending replies after
      about half a second, a thinking pause waits longer. `MANA_SMART_TURN=off`

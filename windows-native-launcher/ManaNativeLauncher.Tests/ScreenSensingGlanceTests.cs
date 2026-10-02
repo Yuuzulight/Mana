@@ -124,4 +124,135 @@ public class ScreenSensingGlanceTests
         await glance.RunOnceAsync();
         Assert.Equal(["Back again."], h.Surfaced);
     }
+
+    // #1286
+    [Fact]
+    public async Task ABlockedWindowIsNeverReadOrCaptured()
+    {
+        var h = new Harness();
+        var glance = new ScreenSensingGlance(
+            new ManaBackendClient(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("no backend call"))),
+            () => true, () => false, () => 0,
+            () => { h.TextReads++; return Task.FromResult("Bitwarden vault - lots of secrets here"); },
+            () => { h.Captures++; return "data:image/jpeg;base64,AAAA"; },
+            h.Surfaced.Add,
+            presenceIdleMs: 90000,
+            blockReason: () => "bitwarden is a private app");
+        await glance.RunOnceAsync();
+        Assert.Equal(0, h.TextReads);
+        Assert.Equal(0, h.Captures);
+        Assert.Empty(h.Surfaced);
+    }
+
+    [Fact]
+    public async Task AnUnchangedScreenIsNotSentAgain()
+    {
+        var h = new Harness { ScreenText = "Visual Studio Code - VoiceLoop.cs - fixing a failing test" };
+        var glance = h.Build();
+        await glance.RunOnceAsync();
+        h.Path = null;
+        await glance.RunOnceAsync();
+        Assert.Null(h.Path);
+
+        h.ScreenText = "Visual Studio Code - ChatView.cs - something else entirely";
+        await glance.RunOnceAsync();
+        Assert.Equal("/screen-sensing/glance", h.Path);
+    }
+}
+
+// #1286
+public class ScreenPrivacyGuardTests
+{
+    private static readonly string[] NoList = [];
+
+    [Theory]
+    [InlineData("KeePassXC", "Passwords.kdbx - KeePassXC")]
+    [InlineData("Bitwarden", "Bitwarden")]
+    [InlineData("LockApp", "")]
+    [InlineData("consent", "User Account Control")]
+    [InlineData("msedge", "New tab - [InPrivate] - Microsoft Edge")]
+    [InlineData("chrome", "New Tab - Google Chrome (Incognito)")]
+    [InlineData("firefox", "Mozilla Firefox Private Browsing")]
+    [InlineData("chrome", "DBS iBanking - Google Chrome")]
+    [InlineData("chrome", "Change password - Google Account")]
+    public void BlocksPrivateWindows(string process, string title) =>
+        Assert.NotNull(ScreenPrivacyGuard.BlockReason(1, process, title, NoList));
+
+    [Fact]
+    public void BlocksWhenNothingIsInFront() =>
+        Assert.NotNull(ScreenPrivacyGuard.BlockReason(IntPtr.Zero, "", "", NoList));
+
+    [Fact]
+    public void AllowsOrdinaryWindows() =>
+        Assert.Null(ScreenPrivacyGuard.BlockReason(1, "Code", "VoiceLoop.cs - Mana - Visual Studio Code", NoList));
+
+    [Fact]
+    public void HonoursTheUserBlocklist()
+    {
+        var list = ScreenPrivacyGuard.ParseList(" signal ; Tax return,");
+        Assert.Equal(["signal", "Tax return"], list);
+        Assert.NotNull(ScreenPrivacyGuard.BlockReason(1, "Signal", "Signal", list));
+        Assert.NotNull(ScreenPrivacyGuard.BlockReason(1, "WINWORD", "tax return 2026.docx - Word", list));
+        Assert.Null(ScreenPrivacyGuard.BlockReason(1, "notepad", "notes.txt - Notepad", list));
+    }
+
+    [Theory]
+    [InlineData("23:00-07:00", 23, 30, true)]
+    [InlineData("23:00-07:00", 3, 0, true)]
+    [InlineData("23:00-07:00", 7, 0, false)]
+    [InlineData("23:00-07:00", 12, 0, false)]
+    [InlineData("13:00-14:00", 13, 15, true)]
+    [InlineData("13:00-14:00", 14, 15, false)]
+    [InlineData("", 3, 0, false)]
+    [InlineData("nonsense", 3, 0, false)]
+    public void QuietHours(string spec, int hour, int minute, bool quiet) =>
+        Assert.Equal(quiet, ScreenPrivacyGuard.InQuietHours(spec, new TimeSpan(hour, minute, 0)));
+}
+
+// #1286
+public class GlanceTriggerTests
+{
+    private static readonly IntPtr Editor = 1, Browser = 2;
+
+    [Fact]
+    public void GlancesOnceAWindowSwitchHasSettled()
+    {
+        var t = new GlanceTrigger(settleMs: 2000, minIntervalMs: 30000, fallbackMs: 600000, nowMs: 0);
+        Assert.False(t.Poll(Editor, "a.cs - Code", 40000));  // just switched
+        Assert.False(t.Poll(Editor, "a.cs - Code", 41000));  // still settling
+        Assert.True(t.Poll(Editor, "a.cs - Code", 42000));
+        Assert.False(t.Poll(Editor, "a.cs - Code", 43000));  // nothing new since
+    }
+
+    [Fact]
+    public void RespectsTheMinimumIntervalAndCoalesces()
+    {
+        var t = new GlanceTrigger(2000, 30000, 600000, 0);
+        t.Poll(Editor, "a.cs - Code", 40000);
+        Assert.True(t.Poll(Editor, "a.cs - Code", 42000));
+        t.Poll(Browser, "Docs - Chrome", 43000);
+        t.Poll(Editor, "b.cs - Code", 50000);
+        Assert.False(t.Poll(Editor, "b.cs - Code", 60000)); // within 30s of the last glance
+        Assert.True(t.Poll(Editor, "b.cs - Code", 72000));  // one glance for both switches
+    }
+
+    [Fact]
+    public void IgnoresCountersAndUnsavedMarkers()
+    {
+        var t = new GlanceTrigger(2000, 30000, 600000, 0);
+        t.Poll(Browser, "(3) Inbox - Gmail", 40000);
+        Assert.True(t.Poll(Browser, "(3) Inbox - Gmail", 42000));
+        Assert.False(t.Poll(Browser, "(4) Inbox - Gmail", 80000));
+        Assert.Equal(GlanceTrigger.MeaningfulTitle("● a.cs - Code"), GlanceTrigger.MeaningfulTitle("a.cs - Code"));
+    }
+
+    [Fact]
+    public void FallsBackToTheSlowTimer()
+    {
+        var t = new GlanceTrigger(2000, 30000, 600000, 0);
+        t.Poll(Editor, "a.cs - Code", 1000);
+        Assert.True(t.Poll(Editor, "a.cs - Code", 30000));
+        Assert.False(t.Poll(Editor, "a.cs - Code", 500000));
+        Assert.True(t.Poll(Editor, "a.cs - Code", 630000));
+    }
 }
