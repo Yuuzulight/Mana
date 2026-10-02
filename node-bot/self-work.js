@@ -1111,7 +1111,7 @@ ${
         diff: proposal.diff.slice(0, 2000),
         plan: r.plan ? planText() : undefined,
         warning: untested
-          ? `Test first: you changed code without a test for it yet. Write or find a test for the behaviour and run it with ${CODING_TEST_TOOL_NAME}; it has to pass before you finish. If the issue has nothing a test can check, say why in self_work__plan's no_test.`
+          ? `Test first: you changed code without a test for it yet. Write or find a test for the behaviour and run it with ${CODING_TEST_TOOL_NAME}; your change goes up as a PR only once the tests pass after your last edit. If the issue has nothing a test can check, say why in self_work__plan's no_test.`
           : undefined,
       });
     }
