@@ -7,6 +7,7 @@
 // chat model in a llama-server of the bench's own (never the backend's).
 //
 //   node bench/self-work-bench.js [--case <id>]... [--verify] [--out <dir>]
+//     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
 //
 // --verify checks the cases themselves instead: the hidden tests fail at
 // the base commit and pass with the fix's files.
@@ -75,6 +76,19 @@ function removeWorktree(repoRoot, wt) {
     fs.rmSync(wt, { recursive: true, force: true });
     git(repoRoot, "worktree", "prune");
   }
+}
+
+// #1231: a generated case is a bug patched into the base (its `mutation`),
+// with the tests that catch it taken out until she's done, committed in the
+// throwaway worktree so a reset to HEAD (her best-of-N) keeps both. Returns
+// what her diff is taken against: that commit, or the base for a real case.
+function applyMutation(wt, c) {
+  if (!c.mutation) return c.base;
+  execFileSync("git", ["apply", "--whitespace=nowarn"], { cwd: wt, input: c.mutation, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  for (const rel of c.hiddenTests) fs.rmSync(path.join(wt, rel), { force: true });
+  git(wt, "add", "-A");
+  git(wt, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-q", "--no-verify", "-m", `bench: ${c.id}`);
+  return git(wt, "rev-parse", "HEAD");
 }
 
 function copyHiddenTests(repoRoot, wt, c) {
@@ -146,6 +160,7 @@ async function runCase(c, deps) {
   tokens.peak = 0;
   const before = { ...tokens };
   try {
+    const start = applyMutation(wt, c);
     // Counted here, so a loop that throws still reports what it did.
     const calls = { total: 0, errors: 0 };
     const counted = (policy) => ({
@@ -176,7 +191,7 @@ async function runCase(c, deps) {
     const started = Date.now();
     const { reply, run, error } = await selfWork.bench({ number: c.issue, title: c.title, body }, wt);
     const wallMs = Date.now() - started;
-    const diff = diffAgainst(wt, c.base);
+    const diff = diffAgainst(wt, start);
     const allowed = new Set([...c.fixFiles, ...c.hiddenTests]);
     copyHiddenTests(repoRoot, wt, c);
     const hidden = runHiddenTests(wt, c);
@@ -220,6 +235,7 @@ function verifyCase(c, { repoRoot, worktreesDir }) {
   const wt = path.join(worktreesDir, `bench-verify-${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
   try {
+    applyMutation(wt, c);
     copyHiddenTests(repoRoot, wt, c);
     const atBase = runHiddenTests(wt, c);
     git(wt, "checkout", c.fix, "--", ...c.fixFiles);
@@ -303,7 +319,7 @@ async function main(argv) {
   const repoRoot = path.dirname(git(__dirname, "rev-parse", "--path-format=absolute", "--git-common-dir"));
   const worktreesDir = path.join(path.dirname(repoRoot), "Mana-worktrees");
   const wanted = opt("--case");
-  const cases = loadCases().filter((c) => !wanted.length || wanted.includes(c.id));
+  const cases = loadCases(opt("--cases")[0] || CASES_DIR).filter((c) => !wanted.length || wanted.includes(c.id));
   if (!cases.length) throw new Error("no such case");
   const outDir = opt("--out")[0] || path.join(os.tmpdir(), "mana-self-work-bench", new Date().toISOString().replace(/[:.]/g, "-"));
   const gate = {
