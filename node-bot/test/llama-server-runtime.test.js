@@ -960,7 +960,7 @@ test("runToolAwareReply repairs a model that leaks a (possibly malformed) tool c
           ok: true,
           json: async () => ({
             choices: [
-              { message: { content: '{{"name": "read_file", "arguments": {"path": "notes.txt"}}' } },
+              { message: { content: '{unparseable truncated JSON: "name": "read_file", "arguments": ' } },
             ],
           }),
         };
@@ -1020,6 +1020,63 @@ test("runToolAwareReply repairs a model that leaks a (possibly malformed) tool c
   assert.equal(result.content, "The file says: file contents here");
   assert.deepEqual(result.toolCalls, [
     { name: "read_file", args: { path: "notes.txt" }, ok: true },
+  ]);
+});
+
+test("#621 runToolAwareReply deterministically recovers malformed tool call text without a second repair request", async () => {
+  const calls = [];
+  let serverUp = false;
+  const fakeFetch = async (url, init) => {
+    if (String(url).endsWith("/health")) return { ok: serverUp };
+    if (String(url).endsWith("/v1/chat/completions")) {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (calls.length === 1) {
+        // Native tool-calling path: model leaks doubled braces, trailing commas, and Windows path backslashes into content
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              { message: { content: '{{"name": "read_file", "arguments": {"path": "C:\\notes\\file.txt",},}}' } },
+            ],
+          }),
+        };
+      }
+      // Second call: the tool result is immediately sent in the conversation without an intermediate repair request!
+      const toolMessage = body.messages.find((m) => m.role === "tool");
+      assert.equal(toolMessage.content, "file contents here");
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "The file says: file contents here" } }],
+        }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "not found" };
+  };
+
+  const runtime = createLlamaServerRuntime({
+    env: makeFakeEnv(),
+    fs: makeFakeFs(),
+    fetch: fakeFetch,
+    spawn: () => {
+      serverUp = true;
+      return makeFakeChild();
+    },
+    sleep: async () => {},
+    registerExitHandlers: false,
+  });
+
+  const policy = makeFakePolicy({
+    executeTool: () => "file contents here",
+  });
+
+  const result = await runtime.runToolAwareReply("what does notes.txt say?", policy);
+
+  assert.equal(calls.length, 2, "native attempt + follow-up after executing the repaired call (zero extra re-asks)");
+  assert.equal(result.content, "The file says: file contents here");
+  assert.deepEqual(result.toolCalls, [
+    { name: "read_file", args: { path: "C:\\notes\\file.txt" }, ok: true },
   ]);
 });
 

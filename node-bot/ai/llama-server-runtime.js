@@ -25,6 +25,7 @@ const { detectGpuVramUsageMb } = require("../model-management");
 const { readActivePointer, settleActiveBuild } = require("../llama-builds");
 const { GAMING_IDLE_MS } = require("../utils/gaming-watch");
 const { MEMORY_TOOL_PREFIX } = require("./memory-tool-source");
+const { repairToolCallText } = require("../utils/repair-tool-call");
 
 // #898: a reply saying she saved, or will remember, something. Measured
 // live: "I already saved that detail into my memory just now" with no
@@ -2093,6 +2094,21 @@ function createLlamaServerRuntime(options = {}) {
 
       if (!requestedToolCalls.length) {
         requestedToolCalls = parseTextToolCalls(visibleContent, toolPolicy.tools);
+      }
+      if (!requestedToolCalls.length && looksLikeFailedToolCallJson(visibleContent)) {
+        // #621: deterministic recovery tried before the re-ask -- fixes code fences,
+        // doubled braces, trailing commas, and unescaped Windows path backslashes in-process
+        const repaired = repairToolCallText(visibleContent, toolPolicy.tools);
+        if (repaired.length) {
+          requestedToolCalls = repaired.map((call, index) => ({
+            id: `repair_text_${Date.now()}_${index}`,
+            type: "function",
+            function: {
+              name: call.name,
+              arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments || {}),
+            },
+          }));
+        }
       }
       if (!requestedToolCalls.length && looksLikeFailedToolCallJson(visibleContent)) {
         // Issue: this method's own header comment documents that some

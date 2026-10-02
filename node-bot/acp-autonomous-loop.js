@@ -2,7 +2,7 @@ const axios = require("axios");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { safeJsonParse } = require("./utils/json-extract");
+const { safeJsonParse, repairToolCallText } = require("./utils/json-extract");
 const { pendingWritesDir } = require("./utils/live-dirs");
 const { scanDir } = require("./tools/dir_scanner");
 const { createAcpTestRunner } = require("./acp-test-runner");
@@ -416,31 +416,17 @@ async function executeAutonomousStep(rawModelReply, sessionId, options = {}) {
     options.createScratchWorkspaceCopy || createScratchWorkspaceCopy;
   const removeScratchCopy =
     options.removeScratchWorkspaceCopy || removeScratchWorkspaceCopy;
-  // 1. Leverage your centralized safe extraction utility
+  // 1. Leverage centralized safe extraction utility and deterministic tool-call repair (#621)
   let actions = safeJsonParse(rawModelReply);
 
-  // Fallback: some model outputs may include JSON with Windows-style backslashes
-  // or slight formatting that the extractor missed. Attempt a permissive regex parse.
+  // Fallback: models emitting code fences, doubled braces, trailing commas, or unescaped backslashes
   if (!actions || !Array.isArray(actions)) {
-    try {
-      const firstBracket = rawModelReply.indexOf("[");
-      const lastBracket = rawModelReply.lastIndexOf("]");
-      if (
-        firstBracket !== -1 &&
-        lastBracket !== -1 &&
-        lastBracket > firstBracket
-      ) {
-        let candidate = rawModelReply.slice(firstBracket, lastBracket + 1);
-        try {
-          actions = JSON.parse(candidate);
-        } catch (e) {
-          // Try escaping stray backslashes (common in Windows paths inside loose JSON)
-          const escaped = candidate.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
-          actions = JSON.parse(escaped);
-        }
-      }
-    } catch (e) {
-      // ignore and treat as conversational below
+    const repaired = repairToolCallText(rawModelReply);
+    if (repaired && repaired.length) {
+      actions = repaired.map((c) => ({
+        tool: c.tool || c.name,
+        args: c.args ?? c.arguments ?? {},
+      }));
     }
   }
 
