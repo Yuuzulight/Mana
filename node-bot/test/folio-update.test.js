@@ -115,6 +115,10 @@ test("the version is Folio's own; which commits and PRs count as green", () => {
   assert.equal(prVerdict([...PR_GREEN, run("CodeQL", "neutral")], "MERGEABLE").wait, "CodeQL (neutral)", "neutral: wait");
   assert.equal(prVerdict([run(LAUNCHER_CHECK, "cancelled"), run("dco", null, "queued")], "MERGEABLE").fail, `${LAUNCHER_CHECK} (cancelled)`);
   assert.match(prVerdict(PR_GREEN, "CONFLICTING").fail, /conflicts/);
+  // A newer run of the same check (dco rerun after a PR edit cancelled the old one) is what counts.
+  const rerun = [...PR_GREEN.map((c, i) => ({ ...c, id: 10 + i })), { ...run("dco", "cancelled"), id: 1 }];
+  assert.deepEqual(prVerdict(rerun, "MERGEABLE"), { merge: true });
+  assert.equal(prVerdict([...rerun, { ...run("dco", "failure"), id: 99 }], "MERGEABLE").fail, "dco (failure)");
 });
 
 test("a newer green Folio commit becomes a PR off a throwaway worktree, not merged yet", async () => {

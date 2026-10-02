@@ -70,7 +70,11 @@ function isGreen(checks) {
 // { fail, url } | { merge: true } | { wait: what it waits on }. Skipped or
 // neutral waits: a workflow whose path filter doesn't apply leaves no check
 // run at all.
-function prVerdict(checks, mergeable) {
+function prVerdict(runs, mergeable) {
+  // A check that ran again (a rerun, or a newer run that cancelled an old one) counts by its latest run.
+  const latest = new Map();
+  for (const c of runs) if (!latest.has(c.name) || (c.id ?? 0) > (latest.get(c.name).id ?? 0)) latest.set(c.name, c);
+  const checks = [...latest.values()];
   const bad = checks.find((c) => c.status === "completed" && FAILED.includes(c.conclusion));
   if (bad) return { fail: `${bad.name} (${bad.conclusion})`, url: bad.url };
   if (mergeable === "CONFLICTING") return { fail: "it conflicts with main" };
@@ -254,7 +258,7 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
         setTried(sha, { state: p.state.toLowerCase() });
         continue;
       }
-      const checks = await ghJson(["api", `repos/{owner}/{repo}/commits/${p.headRefOid}/check-runs?per_page=100`, "--jq", "[.check_runs[] | {name, status, conclusion, url: .html_url}]"]);
+      const checks = await ghJson(["api", `repos/{owner}/{repo}/commits/${p.headRefOid}/check-runs?per_page=100`, "--jq", "[.check_runs[] | {id, name, status, conclusion, url: .html_url}]"]);
       const verdict = prVerdict(checks, p.mergeable);
       if (verdict.fail) {
         setTried(sha, { state: "failed", failed: verdict.fail });
