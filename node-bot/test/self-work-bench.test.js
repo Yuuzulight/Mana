@@ -75,6 +75,8 @@ function fakeModel(calls, tokens) {
 
 const edit = (p, oldText, newText) => ["coding__propose_edit", { path: p, old_text: oldText, new_text: newText, summary: "fix" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
+// #1213: and reviews her diff in three passes before she finishes.
+const reviews = ["correctness", "edge cases", "scope"].map((pass) => ["self_work__review", { pass }]);
 // #1211/#1212: she writes a short plan before her first edit; these cases test the runner, not test-first, so the plan says why.
 const plan = ["self_work__plan", { steps: ["fix add()", "finish"], no_test: "the bench case has its own hidden test" }];
 
@@ -85,15 +87,15 @@ function deps(r, calls) {
 
 test("a case that fixes the bug passes its hidden test, and the worktree is gone after", async () => {
   const r = makeRepo();
-  const result = await runCase(r.c, deps(r, [plan, edit("node-bot/util.js", "a - b", "a + b"), finish]));
+  const result = await runCase(r.c, deps(r, [plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish]));
 
   assert.equal(result.passed, true, result.hiddenTail);
   assert.equal(result.ended, "finished");
-  assert.equal(result.rounds, 3);
-  assert.equal(result.toolCalls, 3);
+  assert.equal(result.rounds, 6);
+  assert.equal(result.toolCalls, 6);
   assert.equal(result.toolErrors, 0);
   assert.deepEqual([result.peakVramMb, result.peakRamPercent, result.failure], [9000, 80, null]);
-  assert.deepEqual(result.tokens, { prompt: 300, completion: 30, peak: 300, textCalls: 0, tps: null });
+  assert.deepEqual(result.tokens, { prompt: 600, completion: 60, peak: 600, textCalls: 0, tps: null });
   assert.deepEqual(result.diff, { files: ["node-bot/util.js"], added: 1, removed: 1 });
   assert.deepEqual(result.outside, []);
   assert.match(result.patch, /\+  return a \+ b;/);
@@ -146,12 +148,12 @@ test("verify: the hidden test fails at the base and passes with the fix's files"
 test("the report has a row per case and each case's diff", async () => {
   const r = makeRepo();
   const out = path.join(r.repo, "..", "report");
-  const result = await runCase(r.c, deps(r, [plan, edit("node-bot/util.js", "a - b", "a + b"), finish]));
+  const result = await runCase(r.c, deps(r, [plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish]));
   const md = writeReport([result], out, { model: "fake.gguf" });
 
   assert.match(md, /Model: fake\.gguf\. 1 cases x 1 repeat\(s\)\./);
   assert.match(md, /\*\*pass@1 100%, pass@1 100%\*\*/);
-  assert.match(md, /\| 1-add-subtracts \| - \| 1 \| pass \| finished \| - \| 3 \| 3 \(0\) \| \d+s \| 300 \/ 30 \/ 300 \| 0 \|/);
+  assert.match(md, /\| 1-add-subtracts \| - \| 1 \| pass \| finished \| - \| 6 \| 6 \(0\) \| \d+s \| 600 \/ 60 \/ 600 \| 0 \|/);
   const json = JSON.parse(fs.readFileSync(path.join(out, "report.json"), "utf8"));
   assert.equal(json.results[0].patch, undefined);
   assert.match(fs.readFileSync(path.join(out, "1-add-subtracts.diff"), "utf8"), /a \+ b/);
@@ -201,4 +203,78 @@ test("each failed run gets one failure kind", () => {
   assert.equal(kind({ diff: { files: ["node-bot/other.js"] }, outside: ["node-bot/other.js"] }), "wrong file");
   assert.equal(kind({ diff: { files: ["node-bot/util.js", "node-bot/x.js"] }, outside: ["node-bot/x.js"] }), "scope creep");
   assert.equal(kind({ diff: { files: ["node-bot/util.js"] } }), "tests fail");
+});
+
+// #1249: a case's id and hidden tests stay inside the repo.
+test("case files with an id or hidden test that climbs out or is absolute are refused", () => {
+  const { loadCases } = require("../bench/self-work-bench");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-bench-cases-"));
+  bases.push(dir);
+  const write = (c) => {
+    for (const f of fs.readdirSync(dir)) fs.rmSync(path.join(dir, f));
+    fs.writeFileSync(path.join(dir, "case.json"), JSON.stringify({ id: "1-ok", hiddenTests: ["node-bot/test/util.test.js"], ...c }));
+  };
+  write({});
+  assert.equal(loadCases(dir)[0].id, "1-ok");
+  for (const bad of [{ id: "../evil" }, { id: "a/b" }, { id: "x..y" }]) {
+    write(bad);
+    assert.throws(() => loadCases(dir), /bad case id/);
+  }
+  for (const hidden of ["../outside.test.js", "node-bot/../../x.js", "/etc/passwd", "C:\\Windows\\x.js", "node-bot\\..\\..\\x.js"]) {
+    write({ hiddenTests: [hidden] });
+    assert.throws(() => loadCases(dir), /must be a relative path inside the repo/, hidden);
+  }
+});
+
+// #1231: a generated case is a bug patched into the base, with the test that
+// catches it out of the tree until she's done.
+function generatedCase(r) {
+  const file = path.join(r.repo, "node-bot", "util.js");
+  const good = fs.readFileSync(file, "utf8");
+  fs.writeFileSync(file, good.replace("a + b", "a - b"));
+  const mutation = `${git(r.repo, "diff", "--", "node-bot/util.js")}\n`;
+  git(r.repo, "checkout", "--", "node-bot/util.js");
+  return { ...r.c, id: "gen-add", base: r.c.fix, mutation };
+}
+
+test("a generated case: the bug is patched in, its test hidden, and her diff is only her fix", async () => {
+  const r = makeRepo();
+  const c = generatedCase(r);
+  const d = deps(r, []);
+  const fixIt = fakeModel([plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish], d.tokens);
+  d.runLoop = async (prompt, policy, opts) => {
+    await assert.rejects(policy.executeTool("self_work__read", { path: "node-bot/test/util.test.js" }));
+    return fixIt(prompt, policy, opts);
+  };
+  const result = await runCase(c, d);
+
+  assert.equal(result.passed, true, result.hiddenTail);
+  assert.deepEqual(result.diff, { files: ["node-bot/util.js"], added: 1, removed: 1 });
+  assert.match(result.patch, /-  return a - b;\n\+  return a \+ b;/);
+  assert.deepEqual(verifyCase(c, { repoRoot: r.repo, worktreesDir: r.worktrees }), { id: c.id, ok: true, failsAtBase: true, passesWithFix: true, tail: "" });
+});
+
+test("a generated case's bug is committed: a reset to HEAD keeps it, and its test stays hidden", async () => {
+  const r = makeRepo();
+  const c = generatedCase(r);
+  const wt = path.join(r.worktrees, `bench-${c.id}`);
+  const d = deps(r, []);
+  d.runLoop = async () => {
+    git(wt, "reset", "-q", "--hard", "HEAD");
+    git(wt, "clean", "-fdq", "-e", "node_modules");
+    assert.match(fs.readFileSync(path.join(wt, "node-bot", "util.js"), "utf8"), /a - b/);
+    assert.equal(fs.existsSync(path.join(wt, "node-bot", "test", "util.test.js")), false);
+    return { content: "Not done yet." };
+  };
+  const result = await runCase(c, d);
+  assert.deepEqual(result.diff.files, []);
+  assert.equal(result.passed, false);
+});
+
+test("a mutation that doesn't apply leaves no worktree behind", async () => {
+  const r = makeRepo();
+  const c = { ...generatedCase(r), mutation: "not a patch\n" };
+  await assert.rejects(runCase(c, deps(r, [])));
+  assert.equal(fs.existsSync(path.join(r.worktrees, `bench-${c.id}`)), false);
+  assert.doesNotMatch(git(r.repo, "worktree", "list"), /bench-gen-add/);
 });

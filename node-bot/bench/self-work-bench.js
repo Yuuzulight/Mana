@@ -10,6 +10,7 @@
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--out <dir>] [--verify]
+//     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
 // live); each runs --repeat times (model output varies); --model and
@@ -43,14 +44,23 @@ function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
 }
 
+// #1249: a case's id names its worktree folder and its hidden tests are
+// written and deleted inside one, so neither may be absolute or climb out.
+const badPath = (p) => typeof p !== "string" || !p || path.posix.isAbsolute(p) || path.win32.isAbsolute(p) || p.split(/[\\/]/).includes("..");
+
 function loadCases(dir = CASES_DIR) {
   return fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
     .sort()
-    .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")))
-    // A live case's hidden tests live in the bench folder.
-    .map((c) => (c.fix ? c : { hiddenFrom: path.join(HIDDEN_DIR, c.id), ...c }));
+    .map((f) => {
+      const c = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+      if (!/^[\w.-]+$/.test(String(c.id)) || String(c.id).includes("..")) throw new Error(`${f}: bad case id ${JSON.stringify(c.id)}`);
+      const bad = (c.hiddenTests || []).find(badPath);
+      if (bad !== undefined) throw new Error(`${f}: hidden test ${JSON.stringify(bad)} must be a relative path inside the repo`);
+      // A live case's hidden tests live in the bench folder.
+      return c.fix ? c : { hiddenFrom: path.join(HIDDEN_DIR, c.id), ...c };
+    });
 }
 
 // A detached worktree at the base commit, with node-bot's packages linked in.
@@ -81,6 +91,19 @@ function removeWorktree(repoRoot, wt) {
     fs.rmSync(wt, { recursive: true, force: true });
     git(repoRoot, "worktree", "prune");
   }
+}
+
+// #1231: a generated case is a bug patched into the base (its `mutation`),
+// with the tests that catch it taken out until she's done, committed in the
+// throwaway worktree so a reset to HEAD (her best-of-N) keeps both. Returns
+// what her diff is taken against: that commit, or the base for a real case.
+function applyMutation(wt, c) {
+  if (!c.mutation) return c.base;
+  execFileSync("git", ["apply", "--whitespace=nowarn"], { cwd: wt, input: c.mutation, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  for (const rel of c.hiddenTests) fs.rmSync(path.join(wt, rel), { force: true });
+  git(wt, "add", "-A");
+  git(wt, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-q", "--no-verify", "-m", `bench: ${c.id}`);
+  return git(wt, "rev-parse", "HEAD");
 }
 
 // From the fix's commit, or for a live case from its hiddenFrom folder.
@@ -154,6 +177,7 @@ async function runCase(c, deps) {
   tokens.peak = 0;
   const before = { ...tokens };
   try {
+    const start = applyMutation(wt, c);
     // Counted here, so a loop that throws still reports what it did.
     const calls = { total: 0, errors: 0, editErrors: 0, samples: [] };
     const counted = (policy) => ({
@@ -193,7 +217,7 @@ async function runCase(c, deps) {
     const wallMs = Date.now() - started;
     const peak = await peaks.stop();
     const contextSize = deps.contextSize ? await deps.contextSize() : null;
-    const diff = diffAgainst(wt, c.base);
+    const diff = diffAgainst(wt, start);
     const allowed = new Set([...c.fixFiles, ...c.hiddenTests]);
     copyHiddenTests(repoRoot, wt, c);
     const hidden = runHiddenTests(wt, c);
@@ -307,6 +331,7 @@ function verifyCase(c, { repoRoot, worktreesDir }) {
   const wt = path.join(worktreesDir, `bench-verify-${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
   try {
+    applyMutation(wt, c);
     copyHiddenTests(repoRoot, wt, c);
     const atBase = runHiddenTests(wt, c);
     if (!c.fix) return { id: c.id, ok: !atBase.passed, failsAtBase: !atBase.passed, passesWithFix: null, tail: atBase.tail };
@@ -506,7 +531,7 @@ async function main(argv) {
   const worktreesDir = path.join(path.dirname(repoRoot), "Mana-worktrees");
   const wanted = opt("--case");
   const kinds = opt("--kind");
-  const cases = loadCases().filter((c) => (!wanted.length || wanted.includes(c.id)) && (!kinds.length || kinds.includes(c.kind)));
+  const cases = loadCases(opt("--cases")[0] || CASES_DIR).filter((c) => (!wanted.length || wanted.includes(c.id)) && (!kinds.length || kinds.includes(c.kind)));
   if (!cases.length) throw new Error("no such case");
   const label = opt("--label")[0] || new Date().toISOString().replace(/[:.]/g, "-");
   const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));

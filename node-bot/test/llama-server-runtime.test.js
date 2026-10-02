@@ -1651,7 +1651,7 @@ test("runToolAwareReply respects a wall-clock time budget across rounds", async 
 // OVERFLOW as a turn answers like llama-server does past its context.
 const OVERFLOW = Symbol("overflow");
 const UNPARSED = Symbol("unparsed");
-function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools }) {
+function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools, finalOverflow = false }) {
   const loopBodies = [];
   const reviewBodies = [];
   const repairBodies = [];
@@ -1671,7 +1671,10 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
         return makeAnswerResponse(JSON.stringify({ tool_calls: [] }));
       }
       loopBodies.push(body);
-      if (body.tool_choice === "none") return makeAnswerResponse("final answer");
+      if (body.tool_choice === "none") {
+        if (finalOverflow) return { ok: false, status: 400, text: async () => "request (17820 tokens) exceeds the available context size (16384 tokens)" };
+        return makeAnswerResponse("final answer");
+      }
       const turn = turns[Math.min(turnIndex++, turns.length - 1)];
       if (turn === OVERFLOW) {
         return { ok: false, status: 400, text: async () => "request (17820 tokens) exceeds the available context size (16384 tokens)" };
@@ -1679,6 +1682,8 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
       if (turn === UNPARSED) {
         return { ok: false, status: 500, text: async () => '{"error":{"code":500,"message":"Failed to parse tool call arguments as JSON: missing closing quote"}}' };
       }
+      // A turn may be the server's whole response ({ json }).
+      if (turn?.json) return { ok: true, json: async () => turn.json };
       const reply = Array.isArray(turn) ? makeToolCallResponse(turn) : makeAnswerResponse(turn);
       if (!promptN) return reply;
       const json = await reply.json();
@@ -1980,6 +1985,92 @@ test("#1209 an XML-form call cut off before its required argument closes doesn't
   const { executed } = await runGoalScript({ tools: [READ_TOOL], turns: ["<tool_call>\n<function=read_file>\n<parameter=path>\nnode-b"], options: { goal: null } });
 
   assert.deepEqual(executed, []);
+});
+
+// #1258: Qwen3-Coder's edits, a large multi-line new_text in the XML form.
+const EDIT_TOOL = {
+  type: "function",
+  function: {
+    name: "coding__propose_edit",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" } },
+      required: ["path", "new_text"],
+    },
+  },
+};
+const BIG_CODE = [
+  "// Reads the XML form: <parameter=KEY>VALUE</parameter> inside <function=NAME>.",
+  'const CLOSE = "</parameter>";',
+  "const END = /<\\/function>\\s*$/;",
+  "function render(items) {",
+  ...Array.from({ length: 80 }, (_, i) => `  if (items.length < ${i} && ${i} > 0) html += "<li>" + items[${i}] + "</li>"; // a < b, c > d`),
+  '  return `<ul>${html}</ul>\\n</parameter>`;',
+  "}",
+].join("\n");
+
+test("#1258 a large multi-line XML value with <, >, </ and code comes through whole", async () => {
+  const call = (newText, close = "</parameter>\n") =>
+    `I'll rewrite it.\n<tool_call>\n<function=coding__propose_edit>\n<parameter=path>\nnode-bot/render.js\n</parameter>\n<parameter=old_text>\nfunction render() {}\n</parameter>\n<parameter=new_text>\n${newText}\n${close}</function>\n</tool_call>`;
+  const { executedArgs } = await runGoalScript({ tools: [EDIT_TOOL], turns: [call(BIG_CODE), "Done."], options: { goal: null } });
+  assert.deepEqual(executedArgs, [{ path: "node-bot/render.js", old_text: "function render() {}", new_text: BIG_CODE }]);
+
+  // The last value without its </parameter>, in a call that closes.
+  const open = await runGoalScript({ tools: [EDIT_TOOL], turns: [call(BIG_CODE, ""), "Done."], options: { goal: null } });
+  assert.equal(open.executedArgs[0]?.new_text, BIG_CODE);
+});
+
+test("#1258 calls end at their </function> with prose after or between them; each keeps its own arguments", async () => {
+  const read = (p) => `<function=read_file>\n<parameter=path>\n${p}\n</parameter>\n</function>`;
+  const run = async (text) => (await runGoalScript({ tools: [READ_TOOL], turns: [text, "Done."], options: { goal: null } })).executedArgs;
+
+  assert.deepEqual(await run(`${read("a.js")}\nLet me read it.`), [{ path: "a.js" }]);
+  assert.deepEqual(await run(`${read("a.js")}\nThen the next one.\n${read("b.js")}\nThat's both.`), [{ path: "a.js" }, { path: "b.js" }]);
+  // One written out in her prose before the real call.
+  assert.deepEqual(
+    await run(`Last time I used ${read("quoted.js")} for this. Now:\n<tool_call>\n${read("real.js")}\n</tool_call>`),
+    [{ path: "quoted.js" }, { path: "real.js" }],
+  );
+});
+
+test("#1258 a call cut off before its </function> doesn't run, even after a </parameter> in its value", async () => {
+  const text = '<tool_call>\n<function=coding__propose_edit>\n<parameter=path>\na.js\n</parameter>\n<parameter=new_text>\nconst close = "\n</parameter>';
+  const { executed } = await runGoalScript({ tools: [EDIT_TOOL], turns: [text, "Done."], options: { goal: null } });
+  assert.deepEqual(executed, []);
+});
+
+test("#1258 a value with a long run of whitespace parses quickly", async () => {
+  const spaces = " ".repeat(40000);
+  const text = `<function=coding__propose_edit>\n<parameter=path>\na.js\n</parameter>\n<parameter=new_text>\nx${spaces}y${spaces}\n</function>`;
+  const started = Date.now();
+  const { executedArgs } = await runGoalScript({ tools: [EDIT_TOOL], turns: [text, "Done."], options: { goal: null } });
+  assert.ok(Date.now() - started < 500, `took ${Date.now() - started}ms`);
+  assert.equal(executedArgs[0].new_text, `x${spaces}y`);
+});
+
+test("#1258 a call without a required argument goes back saying which, and that a cut-off reply was cut off", async () => {
+  const response = (finishReason) => ({
+    json: {
+      choices: [
+        {
+          finish_reason: finishReason,
+          message: {
+            content: "",
+            tool_calls: [{ id: "c1", type: "function", function: { name: "coding__propose_edit", arguments: JSON.stringify({ path: "a.js", old_text: "x" }) } }],
+          },
+        },
+      ],
+    },
+  });
+  const toolText = (bodies) => bodies[1].messages.filter((m) => m.role === "tool").pop().content;
+
+  const cut = await runGoalScript({ tools: [EDIT_TOOL], turns: [response("length"), "Done."], options: { goal: null } });
+  assert.deepEqual(cut.executed, []);
+  assert.match(toolText(cut.loopBodies), /^Error: coding__propose_edit needs new_text, which didn't arrive: your reply hit its token limit and the call was cut off\. Make the call again/);
+
+  const lost = await runGoalScript({ tools: [EDIT_TOOL], turns: [response("tool_calls"), "Done."], options: { goal: null } });
+  assert.deepEqual(lost.executed, []);
+  assert.match(toolText(lost.loopBodies), /^Error: coding__propose_edit needs new_text, which didn't arrive\. Make the call again/);
 });
 
 test("#1209 a tool call llama-server couldn't parse goes back to her, and the run goes on", async () => {
@@ -3371,4 +3462,89 @@ test("live run: overlapping restarts never leave a spawned llama-server that sto
   for (let i = 0; i < 5; i += 1) await tick();
 
   assert.deepEqual(live().map((c) => c.pid), []);
+});
+
+// #1214: her self-work runs' own context, and keeping a long run inside it.
+test("#1214 a reply with its own contextSize runs on a server with it; the next reply goes back to LLAMA_CONTEXT", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_CONTEXT: "16384" }, { detectGpuVramUsage: () => null });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  await runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  await runtime.runLocalAssistantReply("hello again", 64, "default");
+  await runtime.runLocalAssistantReply("and again", 64, "default");
+
+  assert.deepEqual(spawnCalls.map((c) => argAfter(c.args, "-c")), ["16384", "32768", "16384"]);
+});
+
+test("#1214 her context waits for a chat reply in flight, and stays at the default if it doesn't end", async () => {
+  let onSleep = () => {};
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness(
+    { LLAMA_CONTEXT: "16384" },
+    { detectGpuVramUsage: () => null, sleep: async () => (onSleep(), new Promise(setImmediate)) },
+  );
+  const contexts = () => spawnCalls.map((c) => argAfter(c.args, "-c"));
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+
+  // A chat reply that outlasts her wait: she runs at the default.
+  const releaseStuck = holdChat();
+  const stuck = runtime.runLocalAssistantReply("still talking", 64, "default");
+  const hers = runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  while (chatBodies.length < 3) await new Promise(setImmediate);
+  releaseStuck();
+  await Promise.all([stuck, hers]);
+  assert.deepEqual(contexts(), ["16384"]);
+
+  // One that ends while she waits: then she switches.
+  const releaseChat = holdChat();
+  const chat = runtime.runLocalAssistantReply("one more", 64, "default");
+  onSleep = releaseChat;
+  await Promise.all([chat, runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 })]);
+  assert.deepEqual(contexts(), ["16384", "32768"]);
+});
+
+test("#1214 a chat reply that starts during her run keeps her context until it ends", async () => {
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness({ LLAMA_CONTEXT: "16384" }, { detectGpuVramUsage: () => null });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  const releaseHers = holdChat();
+  const hers = runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  while (chatBodies.length < 2) await new Promise(setImmediate);
+  const releaseChat = holdChat();
+  const chat = runtime.runLocalAssistantReply("hi", 64, "default");
+  while (chatBodies.length < 3) await new Promise(setImmediate);
+  releaseHers();
+  await hers;
+  assert.equal(await runtime.getContextSize(), 32768, "no switch back under the chat reply");
+  releaseChat();
+  await chat;
+  assert.equal(await runtime.getContextSize(), 16384);
+  await runtime.runLocalAssistantReply("after", 64, "default");
+  assert.deepEqual(spawnCalls.map((c) => argAfter(c.args, "-c")), ["16384", "32768", "16384"]);
+});
+
+test("#1214 no switch to her context without VRAM for its larger KV cache", async () => {
+  // 16384 -> 32768 at f16 is ~2048MB more KV cache, plus the 20% margin.
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_CONTEXT: "16384" }, { detectGpuVramUsage: () => ({ freeMb: 2000, totalMb: 16000 }) });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  await runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  assert.deepEqual(spawnCalls.map((c) => argAfter(c.args, "-c")), ["16384"]);
+});
+
+test("#1214 goal mode past 60% of the context trims all but the last 4 tool results", async () => {
+  const { loopBodies } = await runGoalScript({
+    turns: [...Array(6).fill(["read_file"]), ["session_goal__finish"]],
+    toolResult: "x".repeat(1000),
+    promptN: 3000,
+  });
+  const results = loopBodies[6].messages.filter((m) => m.role === "tool").map((m) => m.content);
+
+  assert.equal(results.length, 6);
+  for (const r of results.slice(0, 2)) assert.match(r, /^x{200}\n\.\.\.\[older result trimmed to save room/);
+  for (const r of results.slice(2)) assert.equal(r, "x".repeat(1000));
+  const early = loopBodies[0].messages.filter((m) => m.role === "tool");
+  assert.equal(early.length, 0);
+});
+
+test("#1214 a forced final answer past the context ends goal mode with a note, not an error", async () => {
+  const { result } = await runGoalScript({ turns: [["read_file"]], finalOverflow: true, options: { maxRounds: 1 } });
+
+  assert.equal(result.content, "Not done yet: the conversation outgrew the model's context");
 });

@@ -155,3 +155,83 @@ test("#838: POST /editors/review diffs the write and returns the review", async 
   assert.equal(seen.summary, "file_write (overwrite)");
   assert.match(seen.diff, /-return a;\n\+return b;/);
 });
+
+// #1251: every form of REFUTED stays a refutation; concrete: true marks one
+// that names an input, the wrong behaviour and what it breaks.
+const REFUTED_FORMS = [
+  ["one-line", "REFUTED: an empty list returns undefined"],
+  ["BREAKS: security", "VERDICT: REFUTED\nINPUT: a path with ..\\\nWRONG: it writes outside the workspace\nBREAKS: security"],
+  ["cut off", "VERDICT: REFUTED\nINPUT: sum([])\nWRO"],
+  ["BREAKS: style", "VERDICT: REFUTED\nINPUT: x is undefined\nWRONG: it throws\nBREAKS: style"],
+];
+
+test("#1251: any REFUTED reply is a refutation, concrete only when it names its case in full", async () => {
+  const run = (reply) => refuteEdit({ ...edit, runLocalReply: async () => reply, env: ON });
+  assert.deepEqual(await run("VERDICT: REFUTED\nINPUT: sum([])\nWRONG: returns undefined, not 0\nBREAKS: intent"), {
+    verdict: "refuted",
+    failingCase: "sum([]) -> returns undefined, not 0 (breaks intent)",
+    reason: "",
+    concrete: true,
+  });
+  for (const breaks of ["safety", "data-loss", "security", "crash", "correctness"]) {
+    assert.equal((await run(`VERDICT: REFUTED\nINPUT: x\nWRONG: y\nBREAKS: ${breaks}`)).concrete, true, breaks);
+  }
+  for (const [form, reply] of REFUTED_FORMS) {
+    const review = await run(reply);
+    assert.equal(review.verdict, "refuted", form);
+    if (form !== "BREAKS: security") assert.equal(review.concrete, undefined, form);
+  }
+  assert.equal((await run("VERDICT: REFUTED\nINPUT: sum([])\nWRO")).failingCase, "INPUT: sum([]) WRO");
+  assert.equal((await run("VERDICT: HOLDS")).verdict, "holds");
+  assert.deepEqual(await run("VERDICT: NOTE\nNOTE: the name could be clearer"), { verdict: "note", failingCase: "", reason: "the name could be clearer" });
+});
+
+test("#1251: without an intent the prompt is #622's; with one, it's structured and scoped to the intent", async () => {
+  const asked = [];
+  const runLocalReply = async (prompt, maxTokens) => (asked.push({ prompt, maxTokens }), "HOLDS");
+  await refuteEdit({ ...edit, runLocalReply, env: ON });
+  await refuteEdit({ ...edit, intent: "#7: Fix the add helper\nadd() subtracts.", runLocalReply, env: ON });
+  const [plain, scoped] = asked;
+  assert.equal(plain.maxTokens, 200);
+  assert.match(plain.prompt, /Answer with exactly one line\. If you found a failing case: REFUTED: <the input or situation, and what goes wrong>\. If you genuinely cannot find one: HOLDS$/);
+  assert.doesNotMatch(plain.prompt, /NOTE|What the change is for/);
+  assert.equal(scoped.maxTokens, 300);
+  assert.match(scoped.prompt, /What the change is for \[CONTENT UNDER REVIEW\]: #7: Fix the add helper\nadd\(\) subtracts\./);
+  assert.match(scoped.prompt, /outside what the change is for is a NOTE/);
+  assert.match(scoped.prompt, /^BREAKS: \(REFUTED only\) intent, safety or data-loss$/m);
+});
+
+test("#1251: a Zed proposal with any REFUTED reply still needs explicit confirmation", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-adversarial-forms-"));
+  fs.writeFileSync(path.join(tempDir, "app.js"), "module.exports = {};\n");
+  try {
+    const workspaceStore = createEditorWorkspaceStore();
+    workspaceStore.setWorkspace(tempDir, { editor: "zed" });
+    let n = 0;
+    const replies = new Map(REFUTED_FORMS);
+    const app = createApp({
+      editors: createEditorIntegrations({ env: {}, workspaceStore, idFactory: () => `proposal-${(n += 1)}` }),
+      reviewEdit: (proposal) => refuteEdit({ ...proposal, env: ON, runLocalReply: async () => replies.get(proposal.summary) }),
+    });
+    await withServer(app, async (baseUrl) => {
+      for (const [form] of REFUTED_FORMS) {
+        const res = await fetch(`${baseUrl}/editors/workspace/proposals`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: "app.js", proposedContent: "module.exports = { a: 1 };\n", summary: form }),
+        });
+        const { proposal } = await res.json();
+        assert.equal(proposal.adversarialReview.verdict, "refuted", form);
+        const refused = await fetch(`${baseUrl}/editors/workspace/proposals/${proposal.id}/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        assert.equal(refused.status, 400, form);
+      }
+    });
+    assert.equal(fs.readFileSync(path.join(tempDir, "app.js"), "utf8"), "module.exports = {};\n");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
