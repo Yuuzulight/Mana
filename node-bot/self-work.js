@@ -5,9 +5,10 @@
 // push of her own branch and a PR via gh that says "Closes #N". A run never
 // merges a PR or touches main: merging is in her git tools' dangerous tier
 // (#1193), which asks me every time unless I've changed that setting.
-// Writes apply directly in her worktree once they parse and the
-// adversarial reviewer (#788 / #622) doesn't refute them; a refuted write
-// stops the run and asks me. I review everything in the PR.
+// Writes apply directly in her worktree once they parse. Before she can
+// finish, she reviews her own diff in three passes and the adversarial
+// reviewer (#788 / #622) reads it (#1213); a refutation stops the run and
+// asks me. I review everything in the PR.
 //
 // #1194: a run can also bring one of her own open PRs up to date
 // ("update your PR #N"): main merged in, conflicts fixed with the same
@@ -51,8 +52,24 @@ const GUARDRAIL_LABEL = "mana-guardrail";
 const TEST_PATH_RE = /(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i;
 const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
 const MAX_ROUNDS = 20;
+// #1214: an issue run's rounds follow the issue: a floor, more for each
+// thing it asks for (a bullet or numbered line) and each file it names,
+// and a hard ceiling.
+const MIN_ROUNDS = 12;
+const MAX_ROUNDS_CEILING = 40;
+function roundBudget(body) {
+  const text = String(body || "");
+  const asks = (text.match(/^\s*(?:[-*]|\d+\.)\s+/gm) || []).length;
+  const files = new Set(text.match(/[\w./-]+\.(?:js|cs|ts|json|md|ps1|py)\b/g) || []).size;
+  return Math.min(MAX_ROUNDS_CEILING, MIN_ROUNDS + 3 * asks + 2 * files);
+}
+// #1214: her coding runs' own llama-server context (chat keeps
+// LLAMA_CONTEXT); MANA_SELF_WORK_LLAMA_CONTEXT=0 leaves chat's.
+const DEFAULT_SELF_WORK_CONTEXT = 32768;
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
+// #1214: a read without end_line shows this many lines.
+const DEFAULT_READ_LINES = 120;
 const MAX_LIST = 100;
 const MAX_LOG = 30;
 
@@ -98,7 +115,27 @@ function defaultExec(cmd, args, opts = {}) {
 // The worktree's own tools for goal mode. Named like the chat's coding
 // tools so goal mode's completion review (#787) checks for an edit and a
 // passing test run after it, but they write straight into her worktree.
+// #1213: her own review passes over her diff before she may finish.
+const REVIEW_PASSES = {
+  correctness: "Does each change do what the issue asks? Look for a wrong condition, an off-by-one, the wrong variable, a call that doesn't exist.",
+  "edge cases": "Empty, missing or null input; repeated calls; errors on the way; Windows paths and line endings.",
+  scope: "Anything the issue didn't ask for: unrelated edits, leftover debug code, a test changed to pass instead of the code fixed.",
+};
+const MAX_REVIEW_DIFF = 6000;
+
 const TOOL_SCHEMAS = [
+  {
+    type: "function",
+    function: {
+      name: "self_work__review",
+      description: `Review your own diff for one pass: ${Object.keys(REVIEW_PASSES).join(", then ")}. Returns the diff and what to check. All three passes, after your last edit, before you finish.`,
+      parameters: {
+        type: "object",
+        properties: { pass: { type: "string", enum: Object.keys(REVIEW_PASSES) } },
+        required: ["pass"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -143,7 +180,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__read",
-      description: `Read lines of a file in your worktree, with line numbers (at most ${MAX_READ_LINES} lines per call).`,
+      description: `Read lines of a file in your worktree, with line numbers: ${DEFAULT_READ_LINES} lines from start_line unless you give end_line, at most ${MAX_READ_LINES}.`,
       parameters: {
         type: "object",
         properties: {
@@ -258,6 +295,12 @@ function createSelfWork(options = {}) {
   const git = (args, cwd = repoRoot) => run("git", args, cwd);
   const gh = (args, cwd = repoRoot) => run("gh", args, cwd);
 
+  // A worktree's diff against HEAD, new files included.
+  async function worktreeDiff(worktree, ...paths) {
+    await git(["add", "-A", "-N"], worktree);
+    return git(["-c", "core.quotePath=false", "diff", "HEAD", "--", ...paths], worktree);
+  }
+
   // Whose repo this is, for her prompts and the chat-start check:
   // MANA_SELF_WORK_OWNER, else the gh login, else the origin remote's
   // owner. Looked up once (a run awaits it before her loop starts).
@@ -288,7 +331,7 @@ function createSelfWork(options = {}) {
 
   function status() {
     if (!current) return { state: "idle" };
-    const { done, stopRequested, lastTestPassed, halt, ...shown } = current;
+    const { done, stopRequested, lastTestPassed, halt, reviewedDiff, ...shown } = current;
     return { ...shown, log: [...current.log] };
   }
 
@@ -397,7 +440,7 @@ function createSelfWork(options = {}) {
     } catch (e) {
       return { ok: false, error: e.message };
     }
-    const r = newRun({ issue: n, title: issue.title, ...place, flagged });
+    const r = newRun({ issue: n, title: issue.title, ...place, flagged, maxRounds: roundBudget(issue.body) });
     current = r;
     r.done = work(r, issue).catch((e) => end(r, "failed", `I hit a problem and stopped: ${e.message}`));
     return { ok: true, status: status() };
@@ -517,6 +560,10 @@ function createSelfWork(options = {}) {
       return end(r, "not-done", `I couldn't finish #${r.issue}. ${summary}`.trim());
     }
     if (!r.lastTestPassed) return end(r, "tests-failing", `My tests aren't passing after my last change for #${r.issue}, so no PR.`);
+    // #1213: a PR only with the diff my reviewer passed when I finished.
+    if (r.reviewedDiff !== (await worktreeDiff(r.worktree))) {
+      return end(r, "needs-you", `My diff for #${r.issue} isn't the one my reviewer passed when I finished, so no PR. It's in ${r.worktree}.`);
+    }
     const vetted = await vet(r);
     if (vetted.error) return end(r, "needs-you", vetted.error);
     const { touched } = vetted;
@@ -549,7 +596,8 @@ function createSelfWork(options = {}) {
   function loop(r, issue) {
     return runLoop(buildPrompt(r, issue), worktreeTools(r), {
       goal: `Implement issue #${r.issue}: ${r.title}`,
-      maxRounds: MAX_ROUNDS,
+      maxRounds: r.maxRounds,
+      contextSize: Number(env.MANA_SELF_WORK_LLAMA_CONTEXT ?? DEFAULT_SELF_WORK_CONTEXT) || undefined,
       // #1124: how far into the round cap she is, for the Background tasks panel.
       onRound: (round) => {
         r.round = round;
@@ -566,7 +614,7 @@ function createSelfWork(options = {}) {
   // PR. A loop that throws (where a real run would end "failed") comes
   // back as error, with the run as far as it got.
   async function bench(issue, worktree) {
-    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench" });
+    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: roundBudget(issue.body) });
     try {
       return { reply: await loop(r, issue), run: r };
     } catch (e) {
@@ -668,7 +716,7 @@ How to work:
 - Find code with self_work__files and self_work__search, read it with self_work__read, and change it with ${CODING_EDIT_TOOL_NAME}.
 - Run the tests with ${CODING_TEST_TOOL_NAME} and fix what fails.
 - ${r.flagged ? "This PR changes your guardrails, as flagged when it was made; change only what's needed there." : "Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."}
-- When the tests pass, call ${SESSION_GOAL_FINISH_TOOL_NAME}, then reply with a short first-person summary of what you changed.`;
+- When the tests pass, review your diff with self_work__review (correctness, edge cases, scope), then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed.`;
   }
 
   // The end of a run that halted, was stopped, or had a write refuted;
@@ -711,7 +759,7 @@ Issue #${r.issue}: ${r.title}
 ${String(issue.body || "").slice(0, 4000)}
 
 How to work:
-- Find code with self_work__files and self_work__search, and read it with self_work__read.
+- Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
 - If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail; changes to the code wait until then.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
@@ -721,7 +769,8 @@ ${
     ? `- ${ownerName()} flagged this run to allow changes to your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction). Change only what the issue needs there.`
     : "- Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."
 }
-- When the tests pass, call ${SESSION_GOAL_FINISH_TOOL_NAME}, then reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
+- When the tests pass, review your diff with self_work__review (correctness, edge cases, scope) and fix what you find.
+- Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
   }
 
   // extra: { schemas, executors } a run adds (a refresh's reply tool).
@@ -734,6 +783,9 @@ ${
     let progressed = false;
     let lastTestOutcome = null;
     const looked = new Set();
+    // #1213: files she's changed this run, and review passes since her last change.
+    const edited = new Set();
+    const reviewed = new Set();
 
     // Inside the worktree by name and by real path: a link (node_modules)
     // can't carry a write out of it.
@@ -773,7 +825,7 @@ ${
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to read a credential file");
       const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
       const from = Math.max(1, Number(start_line) || 1);
-      const to = Math.min(lines.length, Number(end_line) || from + MAX_READ_LINES - 1, from + MAX_READ_LINES - 1);
+      const to = Math.min(lines.length, Number(end_line) || from + DEFAULT_READ_LINES - 1, from + MAX_READ_LINES - 1);
       const shown = lines.slice(from - 1, to).map((l, i) => `${from + i}: ${l}`).join("\n");
       return `${rel} lines ${from}-${to} of ${lines.length}\n${shown}`;
     }
@@ -829,26 +881,64 @@ ${
         if (oldText) throw new Error(`${relPath} doesn't exist yet: leave old_text empty to create it`);
         next = norm(newText);
       }
-      // Truncation and syntax checks, and the diff the reviewer reads.
+      // Truncation and syntax checks, and the diff she sees.
       const proposal = proposals.createProposal({ relativePath: relPath, originalContent: original, proposedContent: next, summary });
-      const review = reviewEdit ? await reviewEdit(proposal) : null;
-      if (review?.verdict === "refuted") {
-        r.refuted = { path: relPath, failingCase: review.failingCase };
-        log(r, `My reviewer refuted my change to ${relPath}: ${review.failingCase}`);
-        return JSON.stringify({ status: "blocked", error: `refuted by review: ${review.failingCase}` });
-      }
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, next, "utf8");
       r.lastTestPassed = false;
-      if (next !== original) progressed = true;
+      if (next !== original) {
+        progressed = true;
+        // A new change needs reviewing again.
+        reviewed.clear();
+        edited.add(relPath);
+      }
       log(r, `Changed ${relPath}${summary ? `: ${summary}` : ""}`);
       return JSON.stringify({
         status: "ok",
         relativePath: relPath,
-        adversarialReview: review || undefined,
         diff: proposal.diff.slice(0, 2000),
         plan: r.plan ? planText() : undefined,
       });
+    }
+
+    const diffNow = (...paths) => worktreeDiff(root, ...paths);
+
+    async function review({ pass }) {
+      if (!REVIEW_PASSES[pass]) throw new Error(`pass is one of: ${Object.keys(REVIEW_PASSES).join(", ")}`);
+      const diff = await diffNow();
+      if (!diff) throw new Error("there's no change to review yet");
+      reviewed.add(pass);
+      const left = Object.keys(REVIEW_PASSES).filter((p) => !reviewed.has(p));
+      log(r, `Reviewing my diff: ${pass}.`);
+      return `Pass: ${pass}. ${REVIEW_PASSES[pass]}\nFix anything you find with ${CODING_EDIT_TOOL_NAME} (that starts the review over).${left.length ? ` Passes left: ${left.join(", ")}.` : ""}\n\n${diff.length > MAX_REVIEW_DIFF ? `${diff.slice(0, MAX_REVIEW_DIFF)}\n...[diff cut]` : diff}`;
+    }
+
+    // #1213: finishing takes her three passes since her last edit, then the
+    // adversarial reviewer on each changed source file; a refutation stops
+    // the run and asks me. An issue run's reviewer reads every file in her
+    // final diff (files her tests wrote too), and that diff is what a PR
+    // may open with; a refresh's, only her own edits (not main's changes).
+    async function finish(args) {
+      if (edited.size) {
+        const left = Object.keys(REVIEW_PASSES).filter((p) => !reviewed.has(p));
+        if (left.length) {
+          throw new Error(`Before you finish, review your diff with self_work__review: ${left.join(", then ")}. Fix what you find.`);
+        }
+      }
+      const whole = await diffNow();
+      const changed = r.kind === "refresh" ? [...edited] : (await git(["-c", "core.quotePath=false", "diff", "--name-only", "HEAD"], root)).split(/\r?\n/).filter(Boolean);
+      for (const relPath of reviewEdit ? changed : []) {
+        const diff = await diffNow(relPath);
+        const verdict = diff ? await reviewEdit({ relativePath: relPath, diff, summary: `my change to ${relPath} for #${r.issue}` }) : null;
+        if (verdict?.verdict === "refuted") {
+          r.refuted = { path: relPath, failingCase: verdict.failingCase };
+          log(r, `My reviewer refuted my change to ${relPath}: ${verdict.failingCase}`);
+          return JSON.stringify({ status: "blocked", error: `refuted by review: ${verdict.failingCase}` });
+        }
+      }
+      r.reviewedDiff = whole;
+      r.finished = true;
+      return goal.executeTool(SESSION_GOAL_FINISH_TOOL_NAME, args);
     }
 
     async function tests({ path: rel }) {
@@ -888,6 +978,7 @@ ${
 
     const executors = {
       self_work__plan: plan,
+      self_work__review: review,
       self_work__files: files,
       self_work__search: search,
       self_work__read: read,
@@ -902,10 +993,7 @@ ${
     }
 
     function dispatch(name, args) {
-      if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
-        r.finished = true;
-        return goal.executeTool(name, args);
-      }
+      if (name === SESSION_GOAL_FINISH_TOOL_NAME) return finish(args);
       if (!(name in executors)) throw new Error(`unknown tool: ${name}`);
       return executors[name](args || {});
     }
@@ -962,4 +1050,4 @@ ${
   return { start, startIdle, refresh, stop, status, chatToolSource, bench, _current: () => current };
 }
 
-module.exports = { createSelfWork, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
+module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };

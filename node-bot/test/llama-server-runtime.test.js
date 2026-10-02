@@ -1651,7 +1651,7 @@ test("runToolAwareReply respects a wall-clock time budget across rounds", async 
 // OVERFLOW as a turn answers like llama-server does past its context.
 const OVERFLOW = Symbol("overflow");
 const UNPARSED = Symbol("unparsed");
-function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools }) {
+function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], options = {}, toolResult = "ok", promptN = 0, tools, finalOverflow = false }) {
   const loopBodies = [];
   const reviewBodies = [];
   const repairBodies = [];
@@ -1671,7 +1671,10 @@ function runGoalScript({ turns, reviews = [{ complete: true, missing: [] }], opt
         return makeAnswerResponse(JSON.stringify({ tool_calls: [] }));
       }
       loopBodies.push(body);
-      if (body.tool_choice === "none") return makeAnswerResponse("final answer");
+      if (body.tool_choice === "none") {
+        if (finalOverflow) return { ok: false, status: 400, text: async () => "request (17820 tokens) exceeds the available context size (16384 tokens)" };
+        return makeAnswerResponse("final answer");
+      }
       const turn = turns[Math.min(turnIndex++, turns.length - 1)];
       if (turn === OVERFLOW) {
         return { ok: false, status: 400, text: async () => "request (17820 tokens) exceeds the available context size (16384 tokens)" };
@@ -3371,4 +3374,89 @@ test("live run: overlapping restarts never leave a spawned llama-server that sto
   for (let i = 0; i < 5; i += 1) await tick();
 
   assert.deepEqual(live().map((c) => c.pid), []);
+});
+
+// #1214: her self-work runs' own context, and keeping a long run inside it.
+test("#1214 a reply with its own contextSize runs on a server with it; the next reply goes back to LLAMA_CONTEXT", async () => {
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_CONTEXT: "16384" }, { detectGpuVramUsage: () => null });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  await runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  await runtime.runLocalAssistantReply("hello again", 64, "default");
+  await runtime.runLocalAssistantReply("and again", 64, "default");
+
+  assert.deepEqual(spawnCalls.map((c) => argAfter(c.args, "-c")), ["16384", "32768", "16384"]);
+});
+
+test("#1214 her context waits for a chat reply in flight, and stays at the default if it doesn't end", async () => {
+  let onSleep = () => {};
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness(
+    { LLAMA_CONTEXT: "16384" },
+    { detectGpuVramUsage: () => null, sleep: async () => (onSleep(), new Promise(setImmediate)) },
+  );
+  const contexts = () => spawnCalls.map((c) => argAfter(c.args, "-c"));
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+
+  // A chat reply that outlasts her wait: she runs at the default.
+  const releaseStuck = holdChat();
+  const stuck = runtime.runLocalAssistantReply("still talking", 64, "default");
+  const hers = runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  while (chatBodies.length < 3) await new Promise(setImmediate);
+  releaseStuck();
+  await Promise.all([stuck, hers]);
+  assert.deepEqual(contexts(), ["16384"]);
+
+  // One that ends while she waits: then she switches.
+  const releaseChat = holdChat();
+  const chat = runtime.runLocalAssistantReply("one more", 64, "default");
+  onSleep = releaseChat;
+  await Promise.all([chat, runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 })]);
+  assert.deepEqual(contexts(), ["16384", "32768"]);
+});
+
+test("#1214 a chat reply that starts during her run keeps her context until it ends", async () => {
+  const { runtime, spawnCalls, chatBodies, holdChat } = makeSwappingHarness({ LLAMA_CONTEXT: "16384" }, { detectGpuVramUsage: () => null });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  const releaseHers = holdChat();
+  const hers = runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  while (chatBodies.length < 2) await new Promise(setImmediate);
+  const releaseChat = holdChat();
+  const chat = runtime.runLocalAssistantReply("hi", 64, "default");
+  while (chatBodies.length < 3) await new Promise(setImmediate);
+  releaseHers();
+  await hers;
+  assert.equal(await runtime.getContextSize(), 32768, "no switch back under the chat reply");
+  releaseChat();
+  await chat;
+  assert.equal(await runtime.getContextSize(), 16384);
+  await runtime.runLocalAssistantReply("after", 64, "default");
+  assert.deepEqual(spawnCalls.map((c) => argAfter(c.args, "-c")), ["16384", "32768", "16384"]);
+});
+
+test("#1214 no switch to her context without VRAM for its larger KV cache", async () => {
+  // 16384 -> 32768 at f16 is ~2048MB more KV cache, plus the 20% margin.
+  const { runtime, spawnCalls } = makeSwappingHarness({ LLAMA_CONTEXT: "16384" }, { detectGpuVramUsage: () => ({ freeMb: 2000, totalMb: 16000 }) });
+  await runtime.runLocalAssistantReply("hello", 64, "default");
+  await runtime.runToolAwareReply("fix it", makeFakePolicy(), { contextSize: 32768 });
+  assert.deepEqual(spawnCalls.map((c) => argAfter(c.args, "-c")), ["16384"]);
+});
+
+test("#1214 goal mode past 60% of the context trims all but the last 4 tool results", async () => {
+  const { loopBodies } = await runGoalScript({
+    turns: [...Array(6).fill(["read_file"]), ["session_goal__finish"]],
+    toolResult: "x".repeat(1000),
+    promptN: 3000,
+  });
+  const results = loopBodies[6].messages.filter((m) => m.role === "tool").map((m) => m.content);
+
+  assert.equal(results.length, 6);
+  for (const r of results.slice(0, 2)) assert.match(r, /^x{200}\n\.\.\.\[older result trimmed to save room/);
+  for (const r of results.slice(2)) assert.equal(r, "x".repeat(1000));
+  const early = loopBodies[0].messages.filter((m) => m.role === "tool");
+  assert.equal(early.length, 0);
+});
+
+test("#1214 a forced final answer past the context ends goal mode with a note, not an error", async () => {
+  const { result } = await runGoalScript({ turns: [["read_file"]], finalOverflow: true, options: { maxRounds: 1 } });
+
+  assert.equal(result.content, "Not done yet: the conversation outgrew the model's context");
 });

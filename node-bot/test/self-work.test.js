@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 const { execFileSync } = require("node:child_process");
 
-const { createSelfWork, findSecret, testEnv } = require("../self-work");
+const { createSelfWork, findSecret, roundBudget, testEnv } = require("../self-work");
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -99,8 +99,11 @@ const finish = ["session_goal__finish", { reason: "fixed" }];
 // #1211: every issue run plans before its first edit. (#1212's test-first
 // gate has its own test; here the scripted test run comes after the fix.)
 const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"], no_test: "the scripted runs only" }];
+// #1213: and reviews its diff in three passes before it finishes.
+const reviews = ["correctness", "edge cases", "scope"].map((pass) => ["self_work__review", { pass }]);
+const planned = (calls) => [plan, ...calls.flatMap((c) => (c === finish ? [...reviews, finish] : [c]))];
 
-function selfWork(repos, { calls, planned = true, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
+function selfWork(repos, { calls, plans = true, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
   const ghCalls = [];
   const testRuns = [];
   const sw = createSelfWork({
@@ -110,7 +113,7 @@ function selfWork(repos, { calls, planned = true, answer = "I made add() add and
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DISCORD_TOKEN: "super-secret-token-value" },
     protectedPaths: guard,
     reviewEdit: async () => review,
-    runLoop: scriptedLoop(planned ? [plan, ...calls] : calls, answer, seen),
+    runLoop: scriptedLoop(plans ? planned(calls) : calls, answer, seen),
     runTests: async (command, cwd, opts) => {
       testRuns.push({ command, cwd, opts });
       onTest(cwd);
@@ -150,18 +153,18 @@ test("an issue goes from worktree to a pushed branch and a PR, never main", asyn
   assert.doesNotMatch(body, /Co-Authored-By/i);
   assert.doesNotMatch(git(worktree, "log", "-1", "--format=%B"), /Co-Authored-By/i);
   assert.ok(!ghCalls.some((a) => a.includes("merge")), "she never merges");
-  // Goal mode, capped at 20 rounds; tests ran in the worktree, without the backend's keys.
-  assert.equal(seen[0].opts.maxRounds, 20);
+  // Goal mode, capped at the issue's rounds (#1214: a one-line issue gets 12); tests ran in the worktree, without the backend's keys.
+  assert.equal(seen[0].opts.maxRounds, 12);
   // #1124: the round she's on, for the Background tasks panel.
   assert.equal(status.round, 1);
-  assert.equal(status.maxRounds, 20);
+  assert.equal(status.maxRounds, 12);
   assert.match(seen[0].opts.goal, /^Implement issue #7/);
   assert.equal(testRuns[0].command, "node --test test/util.test.js");
   assert.equal(testRuns[0].cwd, path.join(worktree, "node-bot"));
   assert.ok(fs.lstatSync(path.join(worktree, "node-bot", "node_modules")).isSymbolicLink());
 });
 
-test("a refuted write isn't applied and the run stops to ask me", async () => {
+test("#1213: a change the reviewer refutes at the end isn't pushed; the run stops to ask me", async () => {
   const repos = makeRepos();
   const { sw, ghCalls } = selfWork(repos, {
     calls: [fix, runTests, finish],
@@ -172,7 +175,9 @@ test("a refuted write isn't applied and the run stops to ask me", async () => {
   const status = sw.status();
   assert.equal(status.state, "needs-you");
   assert.match(status.step, /add\(1, 1\) returns 3/);
-  assert.match(fs.readFileSync(path.join(status.worktree, "node-bot", "util.js"), "utf8"), /a - b/);
+  // In her worktree for me to look at, never committed.
+  assert.match(fs.readFileSync(path.join(status.worktree, "node-bot", "util.js"), "utf8"), /a \+ b/);
+  assert.equal(git(status.worktree, "log", "-1", "--format=%s"), "init");
   assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
@@ -635,7 +640,7 @@ test("#1211: her first edit waits for a plan, and the plan is checked off in her
   const repos = makeRepos();
   const seen = [];
   const calls = [fix, plan, ["self_work__plan", { done: [1] }], fix];
-  const { sw } = selfWork(repos, { calls, planned: false, seen });
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
   await sw.start(7);
   await sw._current().done;
   const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
@@ -656,7 +661,7 @@ test("#1212: her code change waits for a test she's seen fail; the test itself c
   const seen = [];
   const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
   const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
-  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, runTests, fix], planned: false, passed: false, seen });
+  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, runTests, fix], plans: false, passed: false, seen });
   await sw.start(7);
   await sw._current().done;
   const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
@@ -666,6 +671,48 @@ test("#1212: her code change waits for a test she's seen fail; the test itself c
   assert.equal(JSON.parse(results[3]).passed, false);
   assert.equal(JSON.parse(results[4]).status, "ok");
   assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /a \+ b/);
+});
+
+test("#1213: she finishes only after three passes over her diff since her last edit", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const reviewed = [];
+  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  const calls = [plan, fix, finish, ...reviews, addTest, finish, ...reviews, finish];
+  const { sw } = selfWork(repos, { calls, plans: false, seen, reviewEdit: async (p) => (reviewed.push(p), { verdict: "holds" }) });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.match(results[2], /^Before you finish, review your diff with self_work__review: correctness, then edge cases, then scope/);
+  assert.match(results[3], /^Pass: correctness\. [\s\S]*Passes left: edge cases, scope\.[\s\S]*\+  return a \+ b;/);
+  assert.match(results[7], /^Before you finish/, "her new test file needs reviewing again");
+  assert.match(results[8], /\+\/\/ add\(2, 3\) is 5/, "a new file is in the diff");
+  assert.equal(JSON.parse(results[11]).finished, true);
+  // The reviewer reads each changed file's whole diff, once, at the end.
+  assert.deepEqual(reviewed.map((p) => p.relativePath).sort(), ["node-bot/test/util.test.js", "node-bot/util.js"]);
+  assert.match(reviewed.find((p) => p.relativePath === "node-bot/util.js").diff, /-  return a - b;\n\+  return a \+ b;/);
+});
+
+test("#1213: no PR unless the diff is the one her reviewer passed when she finished", async () => {
+  const repos = makeRepos();
+  const reviewed = [];
+  const worktree = path.join(repos.worktrees, "mana-7");
+  // A file her tests wrote before she finished is reviewed too; one that
+  // lands after she finished means the reviewed diff isn't the final one.
+  const wrote = (name) => () => fs.writeFileSync(path.join(worktree, "node-bot", name), "module.exports = 1;\n");
+  const { sw, ghCalls } = selfWork(repos, {
+    calls: [fix, runTests, wrote("generated.js"), finish, wrote("late.js")],
+    reviewEdit: async (p) => (reviewed.push(p.relativePath), { verdict: "holds" }),
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const status = sw.status();
+  assert.equal(status.state, "needs-you", status.step);
+  assert.match(status.step, /isn't the one my reviewer passed/);
+  assert.deepEqual(reviewed.sort(), ["node-bot/generated.js", "node-bot/util.js"]);
+  assert.equal(status.reviewedDiff, undefined, "the diff stays out of status");
+  assert.ok(!ghCalls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
 test("bench mode runs her loop in the worktree it's given, with no gh, commit or push", async () => {
@@ -683,4 +730,39 @@ test("bench mode runs her loop in the worktree it's given, with no gh, commit or
   assert.equal(git(worktree, "status", "--porcelain"), "M node-bot/util.js");
   assert.equal(git(repos.origin, "branch", "--list"), "* main");
   assert.equal(sw.status().state, "idle");
+});
+
+test("#1214: rounds follow the issue, up to a ceiling", () => {
+  assert.equal(roundBudget("add() subtracts."), 12);
+  assert.equal(roundBudget("In `node-bot/doctor.js`:\n- a GPU row\n- a warning\n1. a message for `foreground.js`"), 12 + 3 * 3 + 2 * 2);
+  assert.equal(roundBudget(Array(30).fill("- one more thing").join("\n")), 40);
+});
+
+test("#1214: her run gets its own context and the issue's rounds, and reads 120 lines unless she asks for more", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const long = Array.from({ length: 300 }, (_, i) => `// line ${i + 1}`).join("\n");
+  const calls = [
+    ["coding__propose_edit", { path: "node-bot/long.js", new_text: long }],
+    ["self_work__read", { path: "node-bot/long.js" }],
+    ["self_work__read", { path: "node-bot/long.js", start_line: 10, end_line: 400 }],
+  ];
+  const { sw } = selfWork(repos, { calls, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
+
+  assert.equal(seen[0].opts.contextSize, 32768);
+  assert.equal(seen[0].opts.maxRounds, 12);
+  assert.equal(sw.status().maxRounds, 12);
+  assert.match(results[1], /^node-bot\/long\.js lines 1-120 of 300\n/);
+  assert.match(results[2], /^node-bot\/long\.js lines 10-259 of 300\n/);
+
+  // MANA_SELF_WORK_LLAMA_CONTEXT=0: chat's context.
+  const offSeen = [];
+  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_LLAMA_CONTEXT: "0" };
+  const off = selfWork(makeRepos(), { calls: [], seen: offSeen, env });
+  await off.sw.start(7);
+  await off.sw._current().done;
+  assert.equal(offSeen[0].opts.contextSize, undefined);
 });

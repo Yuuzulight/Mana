@@ -43,6 +43,11 @@ const MEMORY_SAVE_CLAIM_RE = new RegExp(
   "i",
 );
 
+// #1214: how many of the latest tool results goal mode keeps whole once
+// the prompt passes 60% of the context.
+const KEEP_RECENT_TOOL_RESULTS = 4;
+// #1214: how long her context switch waits for replies in flight to end.
+const CONTEXT_SWITCH_WAIT_MS = 2 * 60 * 1000;
 // #1209: what she's told when llama-server couldn't parse her tool call.
 const TOOL_CALL_UNPARSED_NOTE =
   "Your last tool call couldn't be parsed: its arguments were cut off or weren't valid JSON. Make the call again with shorter arguments (for a code change, replace only the lines that change).";
@@ -164,6 +169,11 @@ function createLlamaServerRuntime(options = {}) {
     lastStartBin: null,
     // #642: prompt size of the latest completion, from its timings.
     lastPromptUsage: null,
+    // #1214: the -c the running server started with, and a reply's own
+    // context size (her self-work runs) while that reply runs.
+    ctx: null,
+    contextOverride: null,
+    contextRestorePending: false,
     // #872: an image turn sets visionWanted (the chat server then keeps
     // its mmproj); visionTimer clears it after MANA_VISION_IDLE_MS. busy
     // counts replies in flight -- an unload waits for it to reach 0.
@@ -783,6 +793,7 @@ function createLlamaServerRuntime(options = {}) {
 
   async function startServer(model, mmproj = null, profile = null) {
     state.lastStartBin = null;
+    state.ctx = configuredContext();
     const bin = findLlamaServerBin();
     state.lastStartBin = bin;
     const port = serverPort();
@@ -926,6 +937,7 @@ function createLlamaServerRuntime(options = {}) {
     if (
       state.model === model &&
       (state.mmproj || null) === (mmproj || null) &&
+      state.ctx === configuredContext() &&
       state.port &&
       (await isHealthy(state.port))
     ) {
@@ -1127,6 +1139,11 @@ function createLlamaServerRuntime(options = {}) {
         state.busy -= 1;
         if (state.busy === 0 && state.gamingSwapPending !== null) setGaming(state.gamingSwapPending);
         if (state.busy === 0 && state.visionUnloadPending) unloadVision();
+        // #1214: her context ended while chat replies were in flight.
+        if (state.busy === 0 && state.contextRestorePending) {
+          state.contextOverride = null;
+          state.contextRestorePending = false;
+        }
       }
     };
   }
@@ -1273,6 +1290,7 @@ function createLlamaServerRuntime(options = {}) {
   // else the -c value buildServerArgs would pass. Never starts a server.
   function configuredContext() {
     if (state.gamingModel) return Number(env.MANA_GAMING_LLAMA_CONTEXT || 8192);
+    if (state.contextOverride) return state.contextOverride;
     return Number(env.LLAMA_CONTEXT || env.LLAMA_CONTEXT_CAP || "4096");
   }
 
@@ -1766,6 +1784,53 @@ function createLlamaServerRuntime(options = {}) {
   // review call checks the draft against the request; anything missing
   // goes back in as the next re-check (at most 2 cycles, budget allowing),
   // else the answer opens with "Not done yet: ...".
+  // #1214: a reply with its own contextSize (her self-work runs) gets a
+  // server with that context while it runs; chat keeps LLAMA_CONTEXT, so
+  // the next reply without one restarts the server back to it. The switch
+  // waits (bounded) until no other reply is in flight, so it never restarts
+  // the server under a chat turn, and needs VRAM for the larger KV cache;
+  // otherwise this reply runs at the default context. Chat turns that start
+  // meanwhile run on her context; the default comes back once the last
+  // reply in flight ends (inTurn).
+  function withContextSize(fn) {
+    return async (prompt, toolPolicy, options = {}) => {
+      const ctx = Number(options?.contextSize) || 0;
+      if (ctx <= configuredContext()) return fn(prompt, toolPolicy, options);
+      for (let waited = 0; state.busy > 0 && waited < CONTEXT_SWITCH_WAIT_MS; waited += 1000) await sleep(1000);
+      if (state.busy > 0 || !contextFits(ctx)) {
+        console.warn(`llama-server: staying at ${configuredContext()} context, not ${ctx} (${state.busy > 0 ? "a reply is still in flight" : "not enough VRAM for its KV cache"})`);
+        return fn(prompt, toolPolicy, options);
+      }
+      state.contextOverride = ctx;
+      state.contextRestorePending = false;
+      try {
+        return await fn(prompt, toolPolicy, options);
+      } finally {
+        if (state.busy === 0) state.contextOverride = null;
+        else state.contextRestorePending = true;
+      }
+    };
+  }
+
+  // KV cache MB for ctx tokens. ponytail: a per-token constant (an 8B GQA
+  // model at f16, halved for a q4/q8 LLAMA_KV_COMPRESS), tunable with
+  // LLAMA_KV_MB_PER_1K_TOKENS; the upgrade is reading it from the GGUF
+  // (layers x KV heads x head size).
+  function kvCacheMb(ctx) {
+    const per1k = Number(env.LLAMA_KV_MB_PER_1K_TOKENS) || (/^q[4-8]/i.test(env.LLAMA_KV_COMPRESS || "") ? 64 : 128);
+    return (ctx / 1024) * per1k;
+  }
+
+  // Restarting at ctx frees the running server's own KV cache and needs
+  // the larger one, with assertVramForSwap's 20% margin.
+  function contextFits(ctx) {
+    if (!vramGuardEnabled) return true;
+    const usage = detectGpuVramUsage();
+    if (!usage || !Number.isFinite(usage.freeMb)) return true;
+    const held = state.port ? kvCacheMb(state.ctx || configuredContext()) : 0;
+    return usage.freeMb >= (kvCacheMb(ctx) - held) * 1.2;
+  }
+
   async function runToolAwareReply(
     prompt,
     toolPolicy,
@@ -1870,6 +1935,17 @@ function createLlamaServerRuntime(options = {}) {
       return json;
     }
 
+    // #1214: all but the last few tool results, cut to their first lines.
+    const trimmed = new WeakSet();
+    function trimOldToolResults() {
+      const results = messages.filter((m) => m.role === "tool");
+      for (const m of results.slice(0, -KEEP_RECENT_TOOL_RESULTS)) {
+        if (trimmed.has(m) || String(m.content).length <= 400) continue;
+        m.content = `${String(m.content).slice(0, 200)}\n...[older result trimmed to save room; call the tool again if you need it]`;
+        trimmed.add(m);
+      }
+    }
+
     const executedToolCalls = [];
     // #787: what each call returned, for the goal review only -- kept out of
     // executedToolCalls, which the caller persists with the turn.
@@ -1949,6 +2025,9 @@ function createLlamaServerRuntime(options = {}) {
     for (let round = 1; round <= roundLimit; round += 1) {
       rounds = round;
       onRound?.(round, roundLimit);
+      // #1214: past 60% of the context, older tool results shrink to a
+      // stub she can fetch again, before the 80% guard ends the run.
+      if (goalMode && promptTokens > promptTokenLimit * 0.75) trimOldToolResults();
       let json;
       try {
         json = await complete(true);
@@ -2081,7 +2160,16 @@ function createLlamaServerRuntime(options = {}) {
         // Force a real answer from whatever's been learned so far instead
         // of looping again (or returning nothing) -- tool_choice: "none"
         // means the model cannot request yet another tool call here.
-        const finalJson = await complete(false);
+        let finalJson;
+        try {
+          finalJson = await complete(false);
+        } catch (e) {
+          // #1214: the forced answer can pass the context too; keep the work.
+          if (!goalMode || !/exceeds the available context/i.test(e.message)) throw e;
+          notDone = "the conversation outgrew the model's context";
+          message = {};
+          break;
+        }
         message = (finalJson && finalJson.choices && finalJson.choices[0] && finalJson.choices[0].message) || {};
         if (recheckMemoryClaim()) message = (await complete(false))?.choices?.[0]?.message || {};
         if (await reviewAndResume()) continue;
@@ -2352,7 +2440,7 @@ function createLlamaServerRuntime(options = {}) {
     runBestOfNReply: inTurn(runBestOfNReply),
     waitForServer: inTurn(waitForServer),
     runLocalAssistantReply: inTurn(runLocalAssistantReply),
-    runToolAwareReply: inTurn(runToolAwareReply),
+    runToolAwareReply: withContextSize(inTurn(runToolAwareReply)),
     runVisionReply: inTurn(runVisionReply),
     getStatus,
     getLastPromptUsage,
