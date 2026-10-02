@@ -414,11 +414,12 @@ function createSelfWork(options = {}) {
   // or "idle" (#1007).
   // allowGuardrails: only honoured from me (the launcher) -- never from
   // the chat or an idle start (#1009).
-  async function start(issueNumber, { by = "me", allowGuardrails = false } = {}) {
+  // sessionId: the chat that started it, told when it ends (#1337).
+  async function start(issueNumber, { by = "me", allowGuardrails = false, sessionId } = {}) {
     if (starting || current?.state === "running") return { ok: false, error: "I'm already working on an issue." };
     starting = true;
     try {
-      return await begin(issueNumber, by, by === "me" && allowGuardrails === true);
+      return await begin(issueNumber, by, by === "me" && allowGuardrails === true, sessionId);
     } finally {
       starting = false;
     }
@@ -462,7 +463,7 @@ function createSelfWork(options = {}) {
     return start(issues[0], { by: "idle" });
   }
 
-  async function begin(issueNumber, by, flagged) {
+  async function begin(issueNumber, by, flagged, sessionId) {
     let why;
     try {
       why = await blocker();
@@ -496,7 +497,7 @@ function createSelfWork(options = {}) {
     } catch (e) {
       return { ok: false, error: e.message };
     }
-    const r = newRun({ issue: n, title: issue.title, ...place, flagged, maxRounds: roundBudget(issue.body) });
+    const r = newRun({ issue: n, title: issue.title, ...place, flagged, maxRounds: roundBudget(issue.body), sessionId });
     current = r;
     r.done = work(r, issue).catch((e) => end(r, "failed", `I hit a problem and stopped: ${e.message}`));
     return { ok: true, status: status() };
@@ -520,7 +521,7 @@ function createSelfWork(options = {}) {
   }
 
   // #1194: "update your PR #N" -- only her own open PR on a mana/ branch.
-  async function refresh(prNumber) {
+  async function refresh(prNumber, { sessionId } = {}) {
     if (starting || current?.state === "running") return { ok: false, error: "I'm already working on something." };
     starting = true;
     try {
@@ -544,7 +545,7 @@ function createSelfWork(options = {}) {
       }
       // A guardrail PR (#1009) was flagged by me when it was made.
       const flagged = (pr.labels || []).some((l) => l.name === GUARDRAIL_LABEL);
-      const r = newRun({ kind: "refresh", pr: n, title: pr.title, ...place, flagged });
+      const r = newRun({ kind: "refresh", pr: n, title: pr.title, ...place, flagged, sessionId });
       current = r;
       r.done = refreshWork(r).catch((e) => end(r, "failed", `I hit a problem and stopped: ${e.message}`));
       return { ok: true, status: status() };
@@ -1561,7 +1562,8 @@ Before it can be a PR:
 
   // #1008: "work on #N" in the chat. Only a number from my own message.
   // #1194: "update your PR #N", the same way.
-  function chatToolSource(userMessage) {
+  // #1337: the result names the background task (taskId, title) for the chat's line.
+  function chatToolSource(userMessage, { sessionId } = {}) {
     const asked = new Set([...String(userMessage || "").matchAll(/#(\d+)/g)].map((m) => Number(m[1])));
     return {
       listToolSchemas: () => [CHAT_START_SCHEMA, ...(gitTools ? [CHAT_REFRESH_SCHEMA] : [])],
@@ -1570,16 +1572,17 @@ Before it can be a PR:
         if (name === CHAT_REFRESH_TOOL) {
           const pr = Number(args?.pr);
           if (!asked.has(pr)) return JSON.stringify({ status: "error", error: `#${pr} isn't in their message.` });
-          const result = await refresh(pr);
+          const result = await refresh(pr, { sessionId });
           if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
-          return JSON.stringify({ status: "ok", updating: pr, worktree: result.status.worktree, branch: result.status.branch });
+          const { worktree, branch, issue, title } = result.status;
+          return JSON.stringify({ status: "ok", updating: pr, worktree, branch, taskId: "self-work", title: `#${issue}: ${title}` });
         }
         const n = Number(args?.issue);
         if (!asked.has(n)) return JSON.stringify({ status: "error", error: `#${n} isn't in their message.` });
-        const result = await start(n, { by: "chat" });
+        const result = await start(n, { by: "chat", sessionId });
         if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
-        const { worktree, branch } = result.status;
-        return JSON.stringify({ status: "ok", started: n, worktree, branch });
+        const { worktree, branch, title } = result.status;
+        return JSON.stringify({ status: "ok", started: n, worktree, branch, taskId: "self-work", title: `#${n}: ${title}` });
       },
     };
   }

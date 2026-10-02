@@ -524,9 +524,13 @@ test("chat: only a number from my message, and only my issue or a labelled one",
   await labelled.sw._current().done;
 
   const mine = selfWork(repos, { calls: [] });
-  const started = await call(mine.sw, "can you take #7?", 7);
+  // #1337: the chat that asked is kept, and the result names the task.
+  const started = await mine.sw.chatToolSource("can you take #7?", { sessionId: "chat-7" }).executeTool("self_work__start", { issue: 7 }).then(JSON.parse);
   assert.equal(started.status, "ok");
   assert.equal(started.branch, "mana/7-fix-the-add-helper");
+  assert.equal(started.taskId, "self-work");
+  assert.equal(started.title, "#7: Fix the add helper");
+  assert.equal(mine.sw.status().sessionId, "chat-7");
   assert.ok(mine.ghCalls.some((a) => a.join(" ") === "issue edit 7 --add-label mana-task"));
   await mine.sw._current().done;
 });

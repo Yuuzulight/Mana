@@ -236,7 +236,7 @@ const { createToolPolicy } = require("./ai/tool-policy");
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
 // shape buildToolPolicy expects.
 const { buildToolPolicy } = require("./ai/tool-source");
-const { stepInfo, trimResult, withStepDescriptions } = require("./ai/step-description");
+const { TOOL_NARRATION_PROMPT, launchedTask, sanitizeDescription, stepInfo, trimResult, withStepDescriptions } = require("./ai/step-description");
 const { resolveToolApprovalMode, wrapWithRiskGate } = require("./ai/tool-risk");
 const { untrustedLinks, untrustedSources } = require("./ai/untrusted-content");
 const { createMemoryToolSource, createMemoryWriteExecutor } = require("./ai/memory-tool-source");
@@ -855,7 +855,8 @@ const acpMemoryStore = createAcpMemoryStore({
     try {
       const maxTokens = Math.max(32, Number(maxSummaryTokens || 128));
       const maxChars = Number(process.env.MANA_ACP_SUMMARY_MAX_CHARS || 4000);
-      const recent = (turns || [])
+      // #1337: background-task notices aren't conversation.
+      const recent = (turns || []).filter((t) => t?.role !== "event")
         .slice(-5)
         .map((t) => `User: ${t.user}\nAssistant: ${t.assistant || ""}`)
         .join("\n\n");
@@ -2634,9 +2635,26 @@ function registerRoutes(app, upload, deps = {}) {
   // Deep research's job list, shared with the Background tasks panel.
   const researchJobs = createResearchJobStore();
   const isGamingNow = deps.isGaming || gamingWatch.isGaming;
+  // #1337: a background task started from a chat has ended: a line in that
+  // chat's history (her next reply sees it) and on /ws/tray for the open chat.
+  function backgroundTaskDone({ sessionId, taskId, title, status }) {
+    if (!sessionId) return;
+    const event = { kind: "background_task", taskId, title: sanitizeDescription(title), status };
+    try {
+      (deps.acpMemoryStore || acpMemoryStore).appendEvent({
+        sessionId,
+        ...event,
+        text: status === "done" ? "Background task completed" : "Background task failed",
+      });
+    } catch (e) {
+      console.warn("Failed to save a background task notice:", e?.message || e);
+    }
+    (deps.notifyTray || notifyTray)({ type: "background_task_done", sessionId, ...event });
+  }
   const capabilityContext = {
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     jobs: researchJobs,
+    onBackgroundTaskDone: backgroundTaskDone,
     // #1124: what GET /background-tasks lists. selfWork is built further
     // down, hence the getter.
     backgroundTaskSources: {
@@ -2922,6 +2940,14 @@ function registerRoutes(app, upload, deps = {}) {
       onEvent: (run, text, notice) => {
         console.log(`[self-work #${run.issue}] ${text}`);
         if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
+        if (notice && run.endedAt) {
+          backgroundTaskDone({
+            sessionId: run.sessionId,
+            taskId: "self-work",
+            title: `#${run.issue}: ${run.title}`,
+            status: ["pr-open", "pr-updated", "up-to-date", "no-change", "stopped"].includes(run.state) ? "done" : "failed",
+          });
+        }
       },
     });
   // #1265: Mana keeps Folio up to date: an hourly job (Folio looked at
@@ -4499,6 +4525,9 @@ function registerRoutes(app, upload, deps = {}) {
       normalizedModelProfile === "default" &&
       isLlamaServerAvailable()
     ) {
+      // #1337: she narrates her tool rounds. Static, so ahead of the skills
+      // index in the cached prefix; only where tools are offered.
+      selectedSystemPrompt = `${selectedSystemPrompt}\n\n${TOOL_NARRATION_PROMPT}`;
       try {
         const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
         if (skillsIndexBlock) {
@@ -5214,7 +5243,7 @@ function registerRoutes(app, upload, deps = {}) {
                 ]
               : []),
             // #1008: "work on #N" -- only a number from my own message.
-            ...(userChat ? [selfWork.chatToolSource(transcript)] : []),
+            ...(userChat ? [selfWork.chatToolSource(transcript, { sessionId })] : []),
             // #1182: git and GitHub, only in my own chat.
             ...(userChat ? [gitTools] : []),
             // #906: my email and calendar, only in my own chat (never a
@@ -5384,9 +5413,25 @@ function registerRoutes(app, upload, deps = {}) {
                 ok,
                 result: ok ? trimResult(result) : undefined,
                 tokens: activeLlamaServerRuntime.getLastPromptUsage?.()?.promptTokens,
+                // #1337: a background task it started gets its own chat line.
+                task: ok ? launchedTask(result) : undefined,
               });
             }
           };
+          // #1337: what she says before a tool round is part of the reply:
+          // streamed as it comes and kept ahead of her answer. A step's
+          // textOffset is the reply's length when its round started. Joined
+          // by single spaces so the offsets hold in the saved turn too (its
+          // text is whitespace-collapsed by acp-memory-store's cleanText).
+          const streamThisPass = Boolean(wrappedOnSentence && !firstPassStreamed);
+          const say = async (text) => {
+            firstPassStreamed = true;
+            const chunker = createSentenceChunker();
+            for (const sentence of [...chunker.push(text), ...chunker.flush()]) {
+              await wrappedOnSentence(sentence);
+            }
+          };
+          let shownText = "";
           const toolResult = await runToolAwareReply(
             promptText,
             mergedToolPolicy,
@@ -5397,7 +5442,12 @@ function registerRoutes(app, upload, deps = {}) {
               extraMessages: memoryExtraMessages,
               thinking: () => thinkHarder,
               goal: goalMode ? sessionGoal : null,
-              onRoundText: () => agentActivity.textShown(run),
+              onRoundText: async (text) => {
+                const clean = stripEmotionTags(text).text.replace(/\s+/g, " ").trim();
+                if (streamThisPass) await say(text);
+                if (clean) shownText = shownText ? `${shownText} ${clean}` : clean;
+                agentActivity.textShown(run, shownText.length);
+              },
             },
           );
           if (toolResult.content && toolResult.content.trim()) {
@@ -5432,14 +5482,8 @@ function registerRoutes(app, upload, deps = {}) {
             // Issue #623: the tool path isn't streamed, so the finished reply
             // goes out sentence by sentence here, each with its own face,
             // instead of as one clip with one face.
-            if (wrappedOnSentence && !firstPassStreamed) {
-              firstPassStreamed = true;
-              const chunker = createSentenceChunker();
-              for (const sentence of [...chunker.push(toolResult.content), ...chunker.flush()]) {
-                await wrappedOnSentence(sentence);
-              }
-            }
-            return toolResult.content;
+            if (streamThisPass) await say(toolResult.content);
+            return shownText ? `${shownText} ${toolResult.content}` : toolResult.content;
           }
           console.warn(
             "Tool-aware reply returned empty content; falling back to the plain reply path",
@@ -5770,6 +5814,8 @@ function registerRoutes(app, upload, deps = {}) {
                 ? cleanLlamaOutput(reply)
                 : reply,
             toolCalls: lastToolCalls,
+            // #1337: the reply's step lines, for the chat when it's reopened.
+            steps: activityRun ? agentActivity.steps(activityRun.id) : null,
             speaker: characterStore.active().name,
           })
           .catch((memErr) =>

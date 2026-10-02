@@ -1771,7 +1771,7 @@ function createAcpMemoryStore(options = {}) {
         );
       }
       if (Array.isArray(existing.turns)) {
-        existing.turns = existing.turns.map((t) => ({
+        existing.turns = existing.turns.map((t) => t?.role === "event" ? t : ({
           ...t,
           user: cleanText(t.user, 4000),
           assistant:
@@ -1977,6 +1977,17 @@ function createAcpMemoryStore(options = {}) {
     };
   }
 
+  // #1337: a notice in a chat's history between turns ({ role: "event",
+  // kind, taskId, title, status, at, text }); only in the recent-turns
+  // block of her prompt, never the summary or search. A chat that doesn't
+  // exist (deleted since) gets nothing.
+  function appendEvent({ sessionId, ...event } = {}) {
+    const session = sessionId ? getSession(cleanText(sessionId, 240)) : null;
+    if (!session) return null;
+    const at = now();
+    return saveSession({ ...session, turns: [...session.turns, { role: "event", ...event, at }], updatedAt: at });
+  }
+
   async function appendTurn(input = {}) {
     const session = ensureSession({ sessionId: input.sessionId });
     const timestamp = now();
@@ -2004,6 +2015,10 @@ function createAcpMemoryStore(options = {}) {
         result: call?.result,
       }));
     }
+
+    // #1337: the reply's steps (already sanitized), for the reopened chat.
+    // ponytail: capped at 200 like a run's own list (agent-activity.js).
+    if (Array.isArray(input.steps) && input.steps.length) turn.steps = input.steps.slice(-200);
 
     if (!turn.user && !turn.assistant) {
       return session;
@@ -2272,13 +2287,16 @@ function createAcpMemoryStore(options = {}) {
     return freshTurns(session)
       .slice(-Math.min(5, maxRecentTurns))
       .map((turn) =>
-        [
-          // A group-mode reaction has no user line of its own.
-          turn.user ? `User: ${turn.user}` : "",
-          turn.assistant ? `${turn.speaker || "Assistant"}: ${turn.assistant}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        // #1337: a background task this chat started has ended.
+        turn.role === "event"
+          ? `System note: background task "${turn.title}" ${turn.status === "done" ? "completed" : "failed"}.`
+          : [
+              // A group-mode reaction has no user line of its own.
+              turn.user ? `User: ${turn.user}` : "",
+              turn.assistant ? `${turn.speaker || "Assistant"}: ${turn.assistant}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
       );
   }
 
@@ -2505,6 +2523,7 @@ function createAcpMemoryStore(options = {}) {
     sessionsDir,
     ensureSession,
     appendTurn,
+    appendEvent,
     buildPromptMemory,
     buildPromptMemoryEntries,
     getSession,

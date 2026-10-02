@@ -4,7 +4,10 @@
 // #1318: each run keeps its steps (description, kind, status, duration,
 // command, trimmed result) for the chat's step lines and Background tasks'
 // transcript; the last few finished runs stay listed as done.
-const MAX_STEPS = 50;
+// #1337: steps are also saved with the reply's chat turn.
+// ponytail: a run keeps its last 200 steps; a longer goal-mode run loses its
+// earliest lines (chat and saved turn alike). Page them if that ever bites.
+const MAX_STEPS = 200;
 const MAX_RECENT = 5;
 
 function createAgentActivity({ now = Date.now } = {}) {
@@ -30,6 +33,8 @@ function createAgentActivity({ now = Date.now } = {}) {
       // #1318: bumped when reply text shows between tool rounds, so the chat
       // starts a new step group after that text.
       segment: 0,
+      // #1337: length of the reply text shown before the current round.
+      textOffset: 0,
     };
     runs.set(run.id, run);
     latest = run;
@@ -55,6 +60,7 @@ function createAgentActivity({ now = Date.now } = {}) {
       tool: name,
       ...info,
       segment: run.segment,
+      textOffset: run.textOffset,
       status: "running",
       startedAt: iso(run.toolStartedAt),
       endedAt: null,
@@ -69,10 +75,12 @@ function createAgentActivity({ now = Date.now } = {}) {
     return step && !step.endedAt ? step : null;
   }
 
-  // Reply text between tool rounds: later steps go in a new segment.
-  function textShown(run) {
+  // Reply text between tool rounds: later steps go in a new segment, placed
+  // at textOffset (the reply's length so far, #1337).
+  function textShown(run, textOffset) {
     const last = run.steps[run.steps.length - 1];
     if (last && last.segment === run.segment) run.segment += 1;
+    if (Number.isFinite(textOffset)) run.textOffset = textOffset;
   }
 
   // waiting: the step is held in the approval queue.
@@ -82,12 +90,14 @@ function createAgentActivity({ now = Date.now } = {}) {
     return step;
   }
 
-  function toolEnded(run, name, { ok = true, result, tokens } = {}) {
+  // task: { taskId, title } when the tool started a background task (#1337).
+  function toolEnded(run, name, { ok = true, result, tokens, task } = {}) {
     const step = current(run);
     if (step) {
       step.status = ok ? "done" : "failed";
       step.endedAt = iso(now());
       if (result) step.detail = { ...step.detail, resultPreview: result };
+      if (task) Object.assign(step, task);
     }
     if (Number.isFinite(tokens)) run.tokens = tokens;
     run.tool = null;

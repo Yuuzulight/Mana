@@ -619,3 +619,28 @@ test("createResearchJobStore returns an empty Map", () => {
   assert.equal(store.size, 0);
   assert.equal(typeof store.set, "function");
 });
+
+// #1337: a research job started from a chat tells that chat when it ends.
+test("a finished research job reports to its chat through onBackgroundTaskDone", async () => {
+  const app = express();
+  app.use(express.json());
+  const done = [];
+  const jobs = createResearchJobStore();
+  deepResearchCapability.registerRoutes(app, {
+    jobs,
+    synthesize: async () => "report",
+    runDeepResearch: async () => ({ report: "report", sources: [] }),
+    makeJobId: () => "job-1337",
+    onBackgroundTaskDone: (event) => done.push(event),
+  });
+  await withServer(app, async (baseUrl) => {
+    await fetch(`${baseUrl}/research/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "what is X?", sessionId: "chat-1" }),
+    });
+    await waitFor(() => done.length === 1);
+  });
+  assert.deepEqual(done, [{ sessionId: "chat-1", taskId: "research:job-1337", title: "Research: what is X?", status: "done" }]);
+  assert.equal(jobs.get("job-1337").sessionId, "chat-1");
+});
