@@ -71,4 +71,7 @@ function safeJsonParse(text) {
   return extractJsonFromText(text);
 }
 
-module.exports = { extractJsonFromText, safeJsonParse };
+const { repairToolCallText } = require("./repair-tool-call");
+
+module.exports = { extractJsonFromText, safeJsonParse, repairToolCallText };
+
