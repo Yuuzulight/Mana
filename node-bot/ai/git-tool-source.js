@@ -1,9 +1,10 @@
 // #1182: git and GitHub for Mana, on par with what Claude Code does for me,
 // with my approval where it matters. #1190: the reads, which never ask.
 //
-// Only real git repos under D:\Mana, D:\GitHub Projects\Folio, or one I
-// approved when she asked (a "git-repo:<path>" approval, remembered like
-// the browser's per-site ones); worktrees of those count. git and gh run
+// Only real git repos under D:\Mana, D:\GitHub Projects\Folio, one whose
+// origin is a GitHub repo of mine (MANA_SELF_WORK_OWNER, else my gh login),
+// or one I approved when she asked (a "git-repo:<path>" approval, remembered
+// like the browser's per-site ones); worktrees of those count. git and gh run
 // from an argument array, never a shell, each with a timeout and an output
 // cap, and refs and paths are checked first, so nothing she passes becomes
 // a flag. gh uses my existing login; she never reads or prints a token.
@@ -162,7 +163,7 @@ const within = (outer, inner) => {
 
 const REPO_PARAM = {
   type: "string",
-  description: "The repo's folder. Default: your own code (D:\\Mana). Also D:\\GitHub Projects\\Folio, or a repo the user lets you use.",
+  description: "The repo's folder. Default: your own code (D:\\Mana). Also D:\\GitHub Projects\\Folio, any repo whose origin is one of the user's own GitHub repos, or a repo the user lets you use.",
 };
 const TOOL_SCHEMAS = [
   {
@@ -314,6 +315,29 @@ function createGitToolSource(options = {}) {
   const git = (args, cwd, timeoutMs = TIMEOUT_MS) => run("git", [...GIT_BASE, ...args], cwd, timeoutMs, args[0]);
   const gh = (args, cwd) => run("gh", args, cwd, NETWORK_TIMEOUT_MS);
 
+  // Whose GitHub repos she may use without asking: MANA_SELF_WORK_OWNER,
+  // else my gh login (looked up once; a failed lookup is tried again next time).
+  let login = null;
+  function trustedOwner() {
+    if (env.MANA_SELF_WORK_OWNER?.trim()) return Promise.resolve(env.MANA_SELF_WORK_OWNER.trim());
+    login ||= gh(["api", "user", "--jq", ".login"]).then(
+      (s) => s.trim(),
+      () => {
+        login = null;
+        return "";
+      },
+    );
+    return login;
+  }
+  // Only origin, only github.com over https or ssh.
+  async function ownedByMe(top) {
+    const url = (await git(["remote", "get-url", "origin"], top).catch(() => "")).trim();
+    const owner = /^(?:https:\/\/github\.com\/|git@github\.com:)([A-Za-z0-9-]+)\/[\w.-]+?(?:\.git)?\/?$/i.exec(url)?.[1];
+    if (!owner) return false;
+    const me = await trustedOwner();
+    return Boolean(me) && owner.toLowerCase() === me.toLowerCase();
+  }
+
   // { top, main, key } for a repo she may use: top is the checkout (or
   // worktree) itself, main the repo that owns its .git.
   async function openRepo(repoArg) {
@@ -328,7 +352,7 @@ function createGitToolSource(options = {}) {
     const id = main.replace(/\\/g, "/").toLowerCase();
     const key = `${REPO_ACTION_TYPE}:${id}`;
     const repo = { top, main, id };
-    if (roots.some((root) => within(root, main)) || onceRepos.has(key) || approvalGate?.isGranted(key)) return repo;
+    if (roots.some((root) => within(root, main)) || onceRepos.has(key) || approvalGate?.isGranted(key) || (await ownedByMe(top))) return repo;
     if (!approvalGate) throw new Error(`${main} isn't one of the repos I may use`);
     approvalGate.registerExecutor(key, async () => {
       onceRepos.add(key);
