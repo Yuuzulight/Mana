@@ -209,6 +209,39 @@ test("mobile synthesis requires auth and returns wav audio", async () => {
   });
 });
 
+test("mobile synthesis passes a known emotion through and ignores unknown ones", async () => {
+  const calls = [];
+  const app = createApp(
+    makeMobileDeps({
+      synthesizeReply: async (text, opts) => {
+        calls.push(opts);
+        return Buffer.from("fake-wav");
+      },
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const token = await unlock(baseUrl);
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const happy = await fetch(`${baseUrl}/mobile/synthesize`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "yay", emotion: "happy" }),
+    });
+    assert.equal(happy.status, 200);
+
+    const bogus = await fetch(`${baseUrl}/mobile/synthesize`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "hm", emotion: "not-an-emotion" }),
+    });
+    assert.equal(bogus.status, 200);
+
+    assert.deepEqual(calls, [{ emotion: "happy" }, { emotion: undefined }]);
+  });
+});
+
 test("mobile unlock rate limits repeated wrong passcodes and clears on success", async () => {
   const app = createApp(
     makeMobileDeps({

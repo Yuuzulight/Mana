@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { hasAdminKey, isLocalRestartRequest } = require("./admin-key");
 const { createMobileAuth } = require("./mobile-auth");
 const { uploadDestination } = require("./utils/live-dirs");
+const { EMOTION_TAGS } = require("./utils/emotion-tags");
 const { createMobileMemoryStore } = require("./mobile-memory-store");
 const { verifyTotpCode: defaultVerifyTotpCode } = require("./totp");
 const {
@@ -381,7 +382,11 @@ function registerMobileRoutes(app, deps = {}) {
     try {
       const text = requireString(req.body?.text, "text");
 
-      const audio = await synthesizeReply(text);
+      // Part of #909: the phone sends the sentence's emotion tag too, same as
+      // the desktop /synthesize; unknown values are ignored.
+      const emotion = EMOTION_TAGS.includes(req.body?.emotion) ? req.body.emotion : undefined;
+
+      const audio = await synthesizeReply(text, { emotion });
       res.setHeader("Content-Type", "audio/wav");
       return res.send(audio);
     } catch (error) {
