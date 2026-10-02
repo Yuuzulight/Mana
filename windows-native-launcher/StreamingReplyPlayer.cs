@@ -21,9 +21,11 @@ internal sealed class StreamingReplyPlayer
     private readonly Action<bool> setTalking; // true once the first chunk starts, false once talking stops (naturally or interrupted)
     private readonly Action<bool>? setToolRunning; // #661: true on a "tool" start event, false on its end
     private readonly Action<string, string?, TimeSpan>? onSentencePlaying; // each sentence's text, #623 emotion tag (null if untagged) and audio length, as its audio starts
+    private readonly Action<AgentSteps>? onSteps; // #1337: the reply's steps so far, from its "tool" events, in stream order with its sentences
 
-    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string, string?, TimeSpan>? onSentencePlaying = null)
+    public StreamingReplyPlayer(ManaBackendClient backendClient, Func<byte[], Task<bool>> playAsync, Action<bool> setTalking, Action<bool>? setToolRunning = null, Action<string, string?, TimeSpan>? onSentencePlaying = null, Action<AgentSteps>? onSteps = null)
     {
+        this.onSteps = onSteps;
         this.backendClient = backendClient;
         this.playAsync = playAsync;
         this.setTalking = setTalking;
@@ -136,6 +138,9 @@ internal sealed class StreamingReplyPlayer
 
     private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string, string?>? onSentence, ChannelWriter<(string Text, string? Emotion, string? Character)> writer, Action<ReplyStreamEvent> onFinal, Action<ReplyStreamEvent>? onNoted)
     {
+        // #1337: steps with a textOffset; older ones are left to the poll.
+        var runId = Guid.NewGuid().ToString("N");
+        var steps = new List<AgentStep>();
         try
         {
             await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source))
@@ -152,6 +157,19 @@ internal sealed class StreamingReplyPlayer
                 else if (evt.Type == "tool")
                 {
                     setToolRunning?.Invoke(evt.Phase == "start");
+                    if (evt.Step is { TextOffset: not null } step && onSteps is not null)
+                    {
+                        var at = steps.FindIndex(s => s.Id == step.Id);
+                        if (at < 0)
+                        {
+                            steps.Add(step);
+                        }
+                        else
+                        {
+                            steps[at] = step;
+                        }
+                        onSteps(new AgentSteps(runId, true, steps.ToList()));
+                    }
                 }
                 else if (evt.Type == "noted" && !string.IsNullOrWhiteSpace(evt.Text))
                 {
@@ -165,6 +183,10 @@ internal sealed class StreamingReplyPlayer
             // (reading concurrently from the other side of the channel) is
             // never left waiting forever on a stream that failed mid-flight.
             writer.Complete();
+            if (steps.Count > 0)
+            {
+                onSteps?.Invoke(new AgentSteps(runId, false, steps.ToList()));
+            }
         }
     }
 

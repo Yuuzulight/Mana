@@ -312,7 +312,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
             onSelfWork: payload => RunOnUi(() => ShowSelfWorkNotice(chatLog, payload)),
             backendClient: backendClient,
             // #1158: where a download I approved went.
-            onBrowserDownload: payload => RunOnUi(() => chatLog.AppendManaMessage(payload.Text)));
+            onBrowserDownload: payload => RunOnUi(() => chatLog.AppendManaMessage(payload.Text)),
+            // #1337: "Background task completed · <title>" in the chat that started it.
+            onBackgroundTaskDone: payload => RunOnUi(() =>
+            {
+                if (payload.TaskId is { } taskId && payload.SessionId is not null && payload.SessionId == voiceLoop.CurrentSessionId)
+                {
+                    chatLog.AppendTaskNotice(new ManaTaskNotice(taskId, payload.Title, payload.Status, null));
+                }
+            }));
         // #689: a second launcher started -- show this one's window instead.
         showRequests = SingleInstance.ListenForShow(() => RunOnUi(ShowSessionList));
         updateRequests = SingleInstance.ListenForUpdate(false, () => RunOnUi(() => ApplyUpdate(now: false)));

@@ -551,4 +551,27 @@ public class StreamingReplyPlayerTests
         Assert.Equal(new int?[] { 1, 2 }, seen);
         Assert.Null(player.SynthesizingSentence);
     }
+
+    // #1337: "tool" events with the whole step reach the chat in order; a
+    // step without a textOffset (older backend) is left to the poll.
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_ReportsStepsFromToolEvents()
+    {
+        const string ndjson = """
+            {"type":"tool","name":"coding__run_command","phase":"start","id":"s1","kind":"command","status":"running","segment":0,"textOffset":6}
+            {"type":"tool","name":"x","phase":"start","id":"old","kind":"tool","status":"running","segment":0}
+            {"type":"tool","name":"coding__run_command","phase":"end","id":"s1","kind":"command","status":"done","segment":0,"textOffset":6}
+            {"type":"final","reply":"Done.","changed":true}
+
+            """;
+        var reports = new List<AgentSteps>();
+        var player = new StreamingReplyPlayer(BuildFakeClient(ndjson, []), _ => Task.FromResult(true), _ => { }, onSteps: reports.Add);
+
+        await player.StreamReplyAndPlayAsync("run it");
+
+        Assert.Equal(new[] { "running", "done", "done" }, reports.Select(r => r.Steps.Single().Status));
+        Assert.Equal(new[] { true, true, false }, reports.Select(r => r.Running));
+        Assert.Equal(6, reports[0].Steps[0].TextOffset);
+        Assert.Single(reports.Select(r => r.RunId).Distinct());
+    }
 }

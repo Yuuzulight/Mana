@@ -107,6 +107,9 @@ internal sealed partial class SessionListForm : Form
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
         chatView = chatLog;
+        // #1337: a sub-agent's or finished task's line in the chat.
+        chatView.OpenTask = (id, title, running) =>
+            new TaskTranscriptForm(backendClient, new ManaBackgroundTask { Id = id, Title = title }, running).Show(this);
         messageBoxFont = new Font("Segoe UI", 10.5F);
 
         Text = "Mana";

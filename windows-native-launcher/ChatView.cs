@@ -188,22 +188,40 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
     {
         messages.Clear();
-        stepMessages.Clear(); // #1318: re-added after the history on the next poll
-        stepsRunId = null;
+        polledSteps.Clear(); // #1318: re-added after the history on the next poll
+        streamedSteps.Clear();
         selected = -1;
         ClearTextSelection();
+        var now = DateTimeOffset.UtcNow;
         foreach (var turn in turns)
         {
+            if (turn.Notice is { } notice)
+            {
+                messages.Add(TaskNoticeMessage(notice));
+                continue;
+            }
             if (!string.IsNullOrWhiteSpace(turn.User))
             {
                 var user = new Message(fromUser: true);
                 user.Blocks.AddRange(UserBlocks(turn.User));
                 messages.Add(user);
             }
-            if (!string.IsNullOrWhiteSpace(turn.Assistant))
+            if (string.IsNullOrWhiteSpace(turn.Assistant))
             {
-                var reply = new Message(fromUser: false) { FinalText = turn.Assistant };
-                reply.Blocks.AddRange(ChatMarkdownParser.Parse(turn.Assistant));
+                continue;
+            }
+            // #1337: her saved steps where they showed live.
+            foreach (var (text, group) in ChatStepGroups.Interleave(turn.Assistant, turn.Steps))
+            {
+                var reply = new Message(fromUser: false) { FinalText = text, Steps = group };
+                if (group is null)
+                {
+                    reply.Blocks.AddRange(ChatMarkdownParser.Parse(text!));
+                }
+                else
+                {
+                    SetStepBlocks(reply, now);
+                }
                 messages.Add(reply);
             }
         }
@@ -292,35 +310,53 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         });
     }
 
-    // #1318: the reply's step groups, each placed after the reply text of
-    // its segment: a group not shown yet goes at the end, which is right
-    // after that segment's text while it's streaming in. Groups without a
-    // segment are ChatStepsStrip's. A new run starts a new set.
-    // ponytail: placement trusts the 1s poll to see a segment's first step
-    // before the next segment's text arrives; a tool round shorter than
-    // that lands its line after that text instead.
-    private string? stepsRunId;
-    private readonly Dictionary<int, Message> stepMessages = new();
+    // #1318: the reply's step groups, each placed after the reply text
+    // before it: a group not shown yet goes at the end, which is right after
+    // that text while it's streaming in. Groups with neither a segment nor a
+    // textOffset are ChatStepsStrip's. A new run starts a new set.
+    // #1337: steps with a textOffset come from the reply stream's own "tool"
+    // events (ShowStreamSteps), in order with its sentences, so they land
+    // exactly. The poll (ShowSteps) only places older backends' steps, where
+    // a tool round shorter than the poll can land after the next text.
+    private readonly StepPlacement polledSteps = new();
+    private readonly StepPlacement streamedSteps = new();
 
-    public void ShowSteps(AgentSteps activity) => RunOnUiThread(() =>
+    private sealed class StepPlacement
     {
-        if (activity.RunId != stepsRunId)
+        public string? RunId;
+        public readonly Dictionary<string, Message> Lines = new(); // by each group's first step
+
+        public void Clear()
         {
-            stepsRunId = activity.RunId;
-            stepMessages.Clear();
+            RunId = null;
+            Lines.Clear();
+        }
+    }
+
+    public void ShowSteps(AgentSteps activity) =>
+        PlaceSteps(polledSteps, activity with { Steps = activity.Steps.Where(s => s.TextOffset is null).ToList() });
+
+    public void ShowStreamSteps(AgentSteps activity) => PlaceSteps(streamedSteps, activity);
+
+    private void PlaceSteps(StepPlacement placement, AgentSteps activity) => RunOnUiThread(() =>
+    {
+        if (activity.RunId != placement.RunId)
+        {
+            placement.Clear();
+            placement.RunId = activity.RunId;
         }
         var now = DateTimeOffset.UtcNow;
         var changed = false;
         foreach (var group in ChatStepGroups.Group(activity))
         {
-            if (group.Segment is not { } segment)
+            if (group.Segment is null && group.Steps[0].TextOffset is null)
             {
                 continue;
             }
-            if (!stepMessages.TryGetValue(segment, out var message))
+            if (!placement.Lines.TryGetValue(group.Steps[0].Id, out var message))
             {
                 message = new Message(fromUser: false);
-                stepMessages[segment] = message;
+                placement.Lines[group.Steps[0].Id] = message;
                 messages.Add(message);
                 AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
             }
@@ -332,6 +368,24 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             Relayout(forceScroll: false);
         }
     });
+
+    // #1337: clicking a sub-agent's or finished task's line opens its
+    // transcript: (task id, title, whether it may still be running).
+    public Action<string, string, Func<bool>>? OpenTask { get; set; }
+
+    // Tasks a notice said ended, so their transcript stops refreshing.
+    private readonly HashSet<string> endedTasks = new();
+
+    // #1337: a background task started from this chat ended (the tray socket).
+    public void AppendTaskNotice(ManaTaskNotice notice) => RunOnUiThread(() => Add(TaskNoticeMessage(notice), forceScroll: false));
+
+    private Message TaskNoticeMessage(ManaTaskNotice notice)
+    {
+        endedTasks.Add(notice.TaskId);
+        var message = new Message(fromUser: false) { Steps = ChatStepGroups.TaskNotice(notice.TaskId, notice.Title, notice.Status, notice.Text) };
+        SetStepBlocks(message, DateTimeOffset.UtcNow);
+        return message;
+    }
 
     private static bool SetStepBlocks(Message message, DateTimeOffset now)
     {
@@ -1022,6 +1076,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             return;
         }
         // #1318: clicking a step line opens or closes its steps.
+        if (e.Button == MouseButtons.Left && HitTest(e.Location) is var taskHit and >= 0 && messages[taskHit].Steps is { TaskId: { } taskId } task)
+        {
+            OpenTask?.Invoke(taskId, task.Steps[0].Title ?? task.Line, () => !endedTasks.Contains(taskId));
+            return;
+        }
         if (e.Button == MouseButtons.Left && HitTest(e.Location) is var stepHit and >= 0 && messages[stepHit].Steps is not null)
         {
             messages[stepHit].StepsOpen = !messages[stepHit].StepsOpen;

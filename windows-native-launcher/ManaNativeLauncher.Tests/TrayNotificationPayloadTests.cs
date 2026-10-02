@@ -97,4 +97,13 @@ public class TrayNotificationPayloadTests
         Assert.Equal("evil-mana", on!.Id);
         Assert.Null(off!.Id);
     }
+
+    // #1337
+    [Fact]
+    public void TryParse_ReadsABackgroundTaskEnding()
+    {
+        var payload = TrayNotificationPayload.TryParse(Json("""{"type":"background_task_done","sessionId":"c1","taskId":"t1","title":"Draft M6","status":"failed"}"""));
+
+        Assert.Equal(("background_task_done", "c1", "t1", "Draft M6", "failed"), (payload!.Type, payload.SessionId, payload.TaskId, payload.Title, payload.Status));
+    }
 }

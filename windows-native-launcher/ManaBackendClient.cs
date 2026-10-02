@@ -800,11 +800,25 @@ internal sealed class ManaBackendClient
         {
             foreach (var turnElement in turnsElement.EnumerateArray())
             {
+                // #1337: a background task of this chat ended.
+                if (StepStr(turnElement, "role") == "event")
+                {
+                    if (StepStr(turnElement, "kind") == "background_task" && StepStr(turnElement, "taskId") is { } taskId)
+                    {
+                        turns.Add(new ManaSessionTurn
+                        {
+                            At = StepStr(turnElement, "at"),
+                            Notice = new ManaTaskNotice(taskId, StepStr(turnElement, "title"), StepStr(turnElement, "status"), StepStr(turnElement, "text")),
+                        });
+                    }
+                    continue;
+                }
                 turns.Add(new ManaSessionTurn
                 {
                     At = turnElement.TryGetProperty("at", out var atElement) ? atElement.GetString() : null,
                     User = turnElement.TryGetProperty("user", out var userElement) ? userElement.GetString() : null,
                     Assistant = turnElement.TryGetProperty("assistant", out var assistantElement) ? assistantElement.GetString() : null,
+                    Steps = ParseAgentSteps(turnElement), // #1337: absent on older turns
                 });
             }
         }
@@ -2452,36 +2466,52 @@ internal sealed class ManaBackendClient
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var document = await JsonDocument.ParseAsync(stream);
         var root = document.RootElement;
-        static string? Str(JsonElement e, string name) =>
-            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var running = root.TryGetProperty("running", out var r) && r.ValueKind == JsonValueKind.True;
+        return new AgentSteps(StepStr(root, "runId"), running, ParseAgentSteps(root));
+    }
+
+    private static string? StepStr(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    // #1318/#1337: an object's "steps" array (the activity, a saved reply).
+    internal static List<AgentStep> ParseAgentSteps(JsonElement parent)
+    {
+        var steps = new List<AgentStep>();
+        if (parent.TryGetProperty("steps", out var stepsElement) && stepsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var s in stepsElement.EnumerateArray().Where(s => s.ValueKind == JsonValueKind.Object))
+            {
+                steps.Add(ParseAgentStep(s, steps.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            }
+        }
+        return steps;
+    }
+
+    // The contract's Step; every field but the id may be missing.
+    internal static AgentStep ParseAgentStep(JsonElement s, string fallbackId)
+    {
         static int? Int(JsonElement e, string name) =>
             e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
         static DateTimeOffset? Time(JsonElement e, string name) =>
-            DateTimeOffset.TryParse(Str(e, name), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? t : null;
-        var steps = new List<AgentStep>();
-        if (root.TryGetProperty("steps", out var stepsElement) && stepsElement.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var s in stepsElement.EnumerateArray())
-            {
-                var hasDetail = s.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.Object;
-                steps.Add(new AgentStep(
-                    Str(s, "id") ?? steps.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    Str(s, "kind") ?? "tool",
-                    Str(s, "description"),
-                    Str(s, "status") ?? "",
-                    Time(s, "startedAt"),
-                    Time(s, "endedAt"),
-                    Str(s, "file"),
-                    Int(s, "added"),
-                    Int(s, "removed"),
-                    hasDetail ? Str(detail, "command") : null,
-                    hasDetail ? Str(detail, "resultPreview") : null,
-                    Str(s, "tool"),
-                    Int(s, "segment")));
-            }
-        }
-        var running = root.TryGetProperty("running", out var r) && r.ValueKind == JsonValueKind.True;
-        return new AgentSteps(Str(root, "runId"), running, steps);
+            DateTimeOffset.TryParse(StepStr(e, name), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? t : null;
+        var hasDetail = s.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.Object;
+        return new AgentStep(
+            StepStr(s, "id") ?? fallbackId,
+            StepStr(s, "kind") ?? "tool",
+            StepStr(s, "description"),
+            StepStr(s, "status") ?? "",
+            Time(s, "startedAt"),
+            Time(s, "endedAt"),
+            StepStr(s, "file"),
+            Int(s, "added"),
+            Int(s, "removed"),
+            hasDetail ? StepStr(detail, "command") : null,
+            hasDetail ? StepStr(detail, "resultPreview") : null,
+            StepStr(s, "tool"),
+            Int(s, "segment"),
+            Int(s, "textOffset"),
+            StepStr(s, "taskId"),
+            StepStr(s, "title"));
     }
 
     // #646: admin-gated (checkAdminAuth) like the proposal approve route.
@@ -2883,6 +2913,8 @@ internal sealed class ManaBackendClient
             Kind = root.TryGetProperty("kind", out var kindProp) && kindProp.ValueKind == JsonValueKind.String ? kindProp.GetString() : null,
             Id = root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null,
             Date = root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind == JsonValueKind.String ? dateProp.GetString() : null,
+            // #1337: a "tool" event carries the whole step (none before #1318).
+            Step = root.GetProperty("type").GetString() == "tool" && StepStr(root, "id") is { } stepId ? ParseAgentStep(root, stepId) : null,
         };
     }
 }
@@ -3048,7 +3080,15 @@ internal sealed class ManaSessionTurn
     public string? At { get; init; }
     public string? User { get; init; }
     public string? Assistant { get; init; }
+    // #1337: the reply's steps, placed at their textOffsets.
+    public IReadOnlyList<AgentStep> Steps { get; init; } = [];
+    // #1337: set instead of User/Assistant on a "background task ended" event.
+    public ManaTaskNotice? Notice { get; init; }
 }
+
+// #1337: a background task started from a chat ended (its history's event,
+// or the tray socket's background_task_done).
+internal sealed record ManaTaskNotice(string TaskId, string? Title, string? Status, string? Text);
 
 // #529: GET /plugins (one entry per capability, flattened out of its
 // category grouping).
@@ -3233,6 +3273,8 @@ internal sealed class ReplyStreamEvent
     public string? Kind { get; init; }
     public string? Id { get; init; }
     public string? Date { get; init; }
+    // #1337: on "tool", the step it started or updated.
+    public AgentStep? Step { get; init; }
 }
 
 // #914: GET /characters/relationships -- one character's notes and milestones.
