@@ -225,7 +225,8 @@ test("#1282 \"not now\" snoozes for 60 minutes by default; 0 resumes", async () 
   state.t += 60 * MINUTE;
   assert.equal(later(), "a");
   p.updateSettings({ snoozeMinutes: 10 });
-  assert.equal(say("b", { score: 0.9 }), "held");
+  // #697: another kind -- "test" was just told "not now" and now waits longer.
+  assert.equal(say("b", { score: 0.9, reason: "other" }), "held");
   p.updateSettings({ snoozeMinutes: 0 });
   assert.equal(p.getSettings().snoozedUntil, null);
   assert.equal(later(), "b");
@@ -322,4 +323,134 @@ test("#1282 the chat tool snoozes, mutes and sets quiet hours", async () => {
   const s = await run({ quiet_hours_enabled: true, quiet_start: "00:30", unmute: "briefing" });
   assert.deepEqual([s.quietHours, s.muted], [{ enabled: true, start: "00:30", end: "09:00" }, []]);
   await assert.rejects(tools.executeTool("proactive__settings", { quiet_end: "nope" }), /HH:MM/);
+});
+
+// Learning from reactions: deliver a remark of `reason`, react (or not),
+// then let the reply window pass so it settles.
+let n = 0;
+// A long gap keeps many cycles under the daily budget and past any cooldown.
+const LONG = 6 * 60 * MINUTE;
+function cycle({ state, p }, reason, reaction, gap = 10 * MINUTE) {
+  state.t += gap;
+  assert.equal(p.offer({ reason, payload: { text: `remark ${n++}` }, score: 1 }), "delivered");
+  if (reaction) p.react(reaction);
+  state.t += 6 * MINUTE;
+  p.flush();
+}
+const scoreOf = (p, reason) => p.getSettings().learned[reason]?.score;
+
+test("#697 replying soon after a remark makes that kind welcome: a lower bar, down to 0.5x", () => {
+  const s = setup();
+  for (let i = 0; i < 5; i++) cycle(s, "news", "engaged");
+  const { score, multiplier } = s.p.getSettings().learned.news;
+  assert.ok(score > 0.7 && multiplier < 0.65, `score ${score}, multiplier ${multiplier}`);
+  s.state.t += 10 * MINUTE;
+  assert.equal(s.p.offer({ reason: "news", payload: { text: "small" }, score: 0.3 }), "delivered");
+  assert.equal(s.p.offer({ reason: "other", payload: { text: "small" }, score: 0.3 }), "dropped");
+  for (let i = 0; i < 20; i++) cycle(s, "news", "engaged", LONG);
+  assert.ok(s.p.getSettings().learned.news.multiplier >= 0.5);
+});
+
+test("#697 silence counts half as much as a dismissal; a reply after the window doesn't count", () => {
+  const s = setup();
+  cycle(s, "ignored", null);
+  assert.equal(scoreOf(s.p, "ignored"), -0.125);
+  cycle(s, "dismissed", "dismissed");
+  assert.equal(scoreOf(s.p, "dismissed"), -0.25);
+  assert.equal(s.p.react("engaged"), false); // window already passed: nothing to react to
+  assert.equal(scoreOf(s.p, "dismissed"), -0.25);
+});
+
+test("#697 'not now' beats a reply in the same window and counts against the last remark's kind", () => {
+  const s = setup();
+  s.state.t += MINUTE;
+  s.p.offer({ reason: "check-in", payload: { text: "how's it going" }, score: 0.9 });
+  s.p.react("engaged"); // the "not now" message itself is a reply
+  s.p.updateSettings({ snoozeMinutes: null }); // the default hour
+  assert.equal(scoreOf(s.p, "check-in"), -0.25);
+  s.state.t += 6 * MINUTE;
+  s.p.flush();
+  assert.equal(scoreOf(s.p, "check-in"), -0.25); // not counted twice
+});
+
+test("#697 a disliked kind needs a higher bar and waits longer; bounded at 2x and an hour", async () => {
+  const s = setup();
+  for (let i = 0; i < 4; i++) cycle(s, "trivia", "dismissed", LONG);
+  const { multiplier } = s.p.getSettings().learned.trivia;
+  assert.ok(multiplier > 1.5 && multiplier <= 2, `multiplier ${multiplier}`);
+  s.state.t += MINUTE;
+  assert.equal(s.p.offer({ reason: "trivia", payload: { text: "meh" }, score: 0.7 }), "dropped"); // 0.7 < 0.5 * 1.6
+  assert.equal(s.p.offer({ reason: "trivia", payload: { text: "fact" }, score: 0.9 }), "held"); // cooling down
+  assert.equal(s.p.offer({ reason: "weather", payload: { text: "rain" }, score: 0.9 }), "delivered"); // others aren't
+  s.state.t += 20 * MINUTE;
+  assert.equal(s.p.flush(), null); // 27 of ~35 minutes
+  s.state.t += 15 * MINUTE;
+  assert.equal(s.p.flush()?.payload.text, "fact");
+  for (let i = 0; i < 20; i++) cycle(s, "trivia", "dismissed", LONG);
+  assert.equal(s.p.getSettings().learned.trivia.multiplier <= 2, true);
+  s.state.t += 61 * MINUTE;
+  assert.equal(s.p.offer({ reason: "trivia", payload: { text: "still allowed" }, score: 1 }), "delivered");
+});
+
+test("#697 reminders and urgent remarks are never throttled or learned from", () => {
+  const s = setup();
+  for (let i = 0; i < 6; i++) cycle(s, "reminder", "dismissed", LONG);
+  const before = scoreOf(s.p, "reminder");
+  s.state.t += MINUTE;
+  assert.equal(s.p.offer({ reason: "reminder", payload: { text: "raid" }, score: 0.1, explicit: true }), "delivered");
+  assert.equal(s.p.react("dismissed"), false);
+  assert.equal(scoreOf(s.p, "reminder"), before);
+});
+
+test("#697 muting is a 'never' for that kind, and a well-liked kind still stays muted", () => {
+  const s = setup();
+  for (let i = 0; i < 5; i++) cycle(s, "briefing", "engaged");
+  const liked = scoreOf(s.p, "briefing");
+  s.state.t += 10 * MINUTE;
+  s.p.offer({ reason: "briefing", payload: { text: "morning" }, score: 0.9 });
+  s.p.updateSettings({ mute: "briefing" });
+  assert.ok(scoreOf(s.p, "briefing") < liked);
+  s.state.t += 10 * MINUTE;
+  assert.equal(s.p.offer({ reason: "briefing", payload: { text: "again" }, score: 1 }), "dropped");
+});
+
+test("#697 learned scores fade toward neutral with a two-week half-life", () => {
+  const s = setup();
+  cycle(s, "news", "dismissed");
+  assert.equal(scoreOf(s.p, "news"), -0.25);
+  s.state.t += 14 * DAY;
+  assert.equal(scoreOf(s.p, "news"), -0.125);
+});
+
+test("#697 learned scores survive a restart and show read-only in GET; POST takes a toast reaction", async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "proactive-")), "proactive-held.json");
+  const express = require("express");
+  const { registerRoutes } = require("../proactive");
+  let server;
+  try {
+    const before = setup();
+    before.p.persistTo(file);
+    cycle(before, "news", "engaged");
+    const after = setup();
+    after.state.t = before.state.t;
+    after.p.persistTo(file);
+    assert.equal(scoreOf(after.p, "news"), 0.25);
+
+    after.state.t += 10 * MINUTE;
+    after.p.offer({ reason: "news", payload: { text: "fresh" }, score: 0.9 });
+    const app = express();
+    app.use(express.json());
+    registerRoutes(app, after.p);
+    server = app.listen(0);
+    const base = `http://127.0.0.1:${server.address().port}/proactive/settings`;
+    const post = (body) => fetch(base, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal((await post({ reaction: "never" })).status, 400);
+    assert.equal((await post({ learned: { news: { score: 1 } } })).status, 200); // read-only: ignored
+    const got = await (await post({ reaction: "dismissed" })).json();
+    assert.ok(got.learned.news.score < 0 && got.learned.news.multiplier > 1, JSON.stringify(got.learned));
+    assert.deepEqual((await (await fetch(base)).json()).learned.news, got.learned.news);
+  } finally {
+    server?.close();
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  }
 });
