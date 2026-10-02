@@ -2073,6 +2073,31 @@ test("#1258 a call without a required argument goes back saying which, and that 
   assert.match(toolText(lost.loopBodies), /^Error: coding__propose_edit needs new_text, which didn't arrive\. Make the call again/);
 });
 
+test("#621 native tool_calls whose arguments don't parse never run with {}, even with no required parameters", async () => {
+  const LIST_TOOL = { type: "function", function: { name: "list_files", parameters: { type: "object", properties: { dir: { type: "string" } } } } };
+  const response = (args, finishReason) => ({
+    json: {
+      choices: [
+        { finish_reason: finishReason, message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "list_files", arguments: args } }] } },
+      ],
+    },
+  });
+  const run = (args, finishReason = "tool_calls") =>
+    runGoalScript({ tools: [LIST_TOOL], turns: [response(args, finishReason), "Done."], options: { goal: null } });
+  const toolText = (bodies) => bodies[1].messages.filter((m) => m.role === "tool").pop().content;
+
+  const cut = await run('{"dir": "node-b', "length");
+  assert.deepEqual(cut.executed, []);
+  assert.match(toolText(cut.loopBodies), /^Error: list_files's arguments weren't valid JSON: your reply hit its token limit and the call was cut off\. Make the call again/);
+
+  const array = await run("[1, 2]");
+  assert.deepEqual(array.executed, []);
+  assert.match(toolText(array.loopBodies), /^Error: list_files's arguments weren't a JSON object\. Make the call again/);
+
+  // No arguments at all is still an empty call.
+  assert.deepEqual((await run("")).executed, ["list_files"]);
+});
+
 test("#1209 a tool call llama-server couldn't parse goes back to her, and the run goes on", async () => {
   const { result, loopBodies, executed } = await runGoalScript({ turns: [UNPARSED, ["read_file"], ["session_goal__finish"]] });
 
