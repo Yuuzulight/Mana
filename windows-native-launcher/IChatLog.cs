@@ -10,6 +10,9 @@ internal interface IChatLog
 
     // #679: a typed message with images attached (data URLs).
     void AppendUserMessage(string text, IReadOnlyList<string> images) => AppendUserMessage(text);
+
+    // #1325: a typed message with images and/or documents attached.
+    void AppendUserMessage(string text, IReadOnlyList<string> images, IReadOnlyList<string>? documents) => AppendUserMessage(text, images);
     void AppendReplySentence(string text);
 
     // #914: speaker is the character saying it (group mode has two), or

@@ -3,9 +3,31 @@ const documentReader = require("./document-reader");
 function registerDocumentReaderRoutes(app, deps) {
   const { fetchPage } = deps;
 
+  app.post("/documents/extract", async (req, res) => {
+    try {
+      const result = await documentReader.extractAndPrepareForChat(req.body?.filePath, {
+        ocrWorker: deps?.ocrWorker,
+      });
+      return res.json(result);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.post("/documents/ingest/file", async (req, res) => {
+    try {
+      const result = await documentReader.ingestDocument(req.body?.filePath);
+      return res.json(result);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  });
+
   app.post("/documents/ingest/pdf", async (req, res) => {
     try {
-      const result = await documentReader.ingestPdf(req.body?.filePath);
+      const result = await documentReader.ingestPdf(req.body?.filePath, {
+        ocrWorker: deps?.ocrWorker,
+      });
       return res.json(result);
     } catch (e) {
       return res.status(400).json({ error: e.message });
@@ -46,7 +68,7 @@ module.exports = {
   category: "Knowledge",
   defaultEnabled: true,
   description:
-    "Ingest local PDFs or a specific web page into Mana's existing memory retriever, so she can recall and cite them in replies.",
+    "Ingest local documents (PDF, Word, Excel, PowerPoint, CSV, Text, Markdown) or web pages into Mana's existing memory retriever, so she can recall and cite them in replies.",
   registerRoutes: registerDocumentReaderRoutes,
   getHealth: () => ({
     status: "configured",

@@ -295,3 +295,58 @@ test("POST /reply/stream marks a spoken turn in replyMeta.voice", async () => {
   });
   assert.deepEqual(seen, [true, false]);
 });
+
+test("POST /reply/stream: #1325 attached documents are extracted locally and included in prompt context", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-stream-doc-test-"));
+  const sampleDocPath = path.join(tempDir, "sample.txt");
+  fs.writeFileSync(sampleDocPath, "This is extracted document content from sample.txt.");
+
+  let receivedPrompt = "";
+  const app = createApp({
+    buildAssistantReply: async (transcript) => {
+      receivedPrompt = transcript;
+      return "I reviewed the document.";
+    },
+  });
+
+  try {
+    await withServer(app, async (baseUrl) => {
+      const { events } = await postNdjson(baseUrl, "/reply/stream", {
+        text: "summarize this file",
+        documents: [sampleDocPath],
+      });
+      assert.equal(events.at(-1).type, "final");
+      assert.equal(events.at(-1).reply, "I reviewed the document.");
+    });
+    assert.match(receivedPrompt, /Attached document: sample\.txt/);
+    assert.match(receivedPrompt, /This is extracted document content from sample\.txt\./);
+    assert.match(receivedPrompt, /summarize this file/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
+
+test("POST /reply/stream: #1325 an unreadable document gives a clear reason so Mana can explain it", async () => {
+  let receivedPrompt = "";
+  const app = createApp({
+    buildAssistantReply: async (transcript) => {
+      receivedPrompt = transcript;
+      return "I couldn't read the file.";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { events } = await postNdjson(baseUrl, "/reply/stream", {
+      text: "what is this?",
+      documents: ["C:\\nonexistent\\missing-file.docx"],
+    });
+    assert.equal(events.at(-1).type, "final");
+  });
+  assert.match(receivedPrompt, /Attached document "missing-file\.docx" could not be read/);
+  assert.match(receivedPrompt, /File not found/);
+});
+

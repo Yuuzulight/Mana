@@ -1392,11 +1392,13 @@ internal sealed class VoiceLoop : IDisposable
     // #679: images pasted into the chat box go with the text (which may
     // then be empty) to the vision reply, skipping the barge-in
     // classification a text-only interruption gets.
-    public async Task<bool> SubmitTypedCommandAsync(string text, IReadOnlyList<string>? images = null)
+    // #1325: documents attached to the chat box are passed for local extraction/chunking.
+    public async Task<bool> SubmitTypedCommandAsync(string text, IReadOnlyList<string>? images = null, IReadOnlyList<string>? documents = null)
     {
         var trimmed = text.Trim();
         var hasImages = images is { Count: > 0 };
-        if (trimmed.Length == 0 && !hasImages)
+        var hasDocuments = documents is { Count: > 0 };
+        if (trimmed.Length == 0 && !hasImages && !hasDocuments)
         {
             return false;
         }
@@ -1441,11 +1443,18 @@ internal sealed class VoiceLoop : IDisposable
         }
 
         awake = true;
-        if (hasImages)
+        if (hasImages || hasDocuments)
         {
-            Console.WriteLine($"VoiceLoop: sending {images!.Count} image(s), {images.Sum(i => i.Length) / 1024} KB.");
-            chatLog?.AppendUserMessage(trimmed, images);
-            await SpeakReplyAsync(trimmed, images: images, source: "typed");
+            if (hasImages)
+            {
+                Console.WriteLine($"VoiceLoop: sending {images!.Count} image(s), {images.Sum(i => i.Length) / 1024} KB.");
+            }
+            if (hasDocuments)
+            {
+                Console.WriteLine($"VoiceLoop: sending {documents!.Count} document(s).");
+            }
+            chatLog?.AppendUserMessage(trimmed, images ?? Array.Empty<string>(), documents);
+            await SpeakReplyAsync(trimmed, images: images, documents: documents, source: "typed");
             return true;
         }
         await DispatchCommandAsync(trimmed, wasInterruption, held: null, nested: false, typed: true);
@@ -1895,13 +1904,14 @@ internal sealed class VoiceLoop : IDisposable
     // #661: every reply goes through here, so this is where the avatar
     // shows Thinking (until she starts speaking -- speech outranks it),
     // and the short Done beat once a reply finishes naturally.
-    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? source = null)
+    // #1325: documents are forwarded to streamingReplyPlayer.
+    private async Task<bool> SpeakReplyAsync(string commandText, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? source = null, IReadOnlyList<string>? documents = null)
     {
         lastError = null; // #687: a new reply clears the status line's error
         avatarOverlay.SetActivity(AvatarState.Thinking, true);
         try
         {
-            var reply = SpeakReplyCoreAsync(commandText, screenText, image, images, source);
+            var reply = SpeakReplyCoreAsync(commandText, screenText, image, images, source, documents);
             currentReply = reply; // #665: a ducked interruption waits on this after stopping her
             var completed = await reply;
             if (completed)
@@ -1932,7 +1942,7 @@ internal sealed class VoiceLoop : IDisposable
     internal static string NotedLine(string? kind, string text, string? date) =>
         kind == "milestone" ? $"I'll remember this: \"{text}\"{(date is null ? "" : $" ({date})")}" : $"Noted: \"{text}\"";
 
-    private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, string? source)
+    private async Task<bool> SpeakReplyCoreAsync(string commandText, string screenText, string? image, IReadOnlyList<string>? images, string? source, IReadOnlyList<string>? documents = null)
     {
         string? reply;
         bool changed;
@@ -1943,7 +1953,7 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source, ShowNoted);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source, ShowNoted, documents);
             if (stopMana)
             {
                 stopManaThinking = false;

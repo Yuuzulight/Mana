@@ -860,6 +860,100 @@ class PdfDoc {
     const e = mul(st.tm, g.ctm);
     st.last = [e[2] * g.rise + e[4], e[3] * g.rise + e[5]];
   }
+
+  // Extracts embedded images from a page's resources (for OCR fallback)
+  pageImages({ page, resources }) {
+    const res = this.resolve(page.Resources ?? resources) ?? {};
+    const xobjects = this.resolve(res.XObject) ?? {};
+    const images = [];
+    for (const key of Object.keys(xobjects)) {
+      const xo = this.resolve(xobjects[key]);
+      if (xo instanceof Stream && xo.dict?.Subtype === "Image") {
+        const d = xo.dict;
+        const width = this.resolve(d.Width);
+        const height = this.resolve(d.Height);
+        const filter = this.resolve(d.Filter);
+        const cs = this.resolve(d.ColorSpace);
+        const bpc = this.resolve(d.BitsPerComponent) || 8;
+        if (filter === "DCTDecode" && Buffer.isBuffer(xo.data)) {
+          // Direct JPEG stream
+          images.push(xo.data);
+        } else {
+          try {
+            const raw = this.decode(xo);
+            if (width > 0 && height > 0 && Buffer.isBuffer(raw)) {
+              const isRgb = cs !== "DeviceGray" && (!Array.isArray(cs) || cs[0] !== "DeviceGray");
+              const bmp = rawPixelsToBmp(raw, width, height, isRgb);
+              if (bmp) images.push(bmp);
+            }
+          } catch (e) {
+            // Ignore corrupted stream
+          }
+        }
+      }
+    }
+    return images;
+  }
+}
+
+function rawPixelsToBmp(raw, width, height, isRgb) {
+  const bytesPerPixel = isRgb ? 3 : 1;
+  const rowLen = Math.floor((3 * width + 3) / 4) * 4;
+  const dataSize = rowLen * height;
+  const fileSize = 54 + dataSize;
+  const buf = Buffer.alloc(fileSize);
+
+  // File header (14 bytes)
+  buf.write("BM", 0);
+  buf.writeUInt32LE(fileSize, 2);
+  buf.writeUInt32LE(54, 10);
+
+  // Info header (40 bytes)
+  buf.writeUInt32LE(40, 14);
+  buf.writeInt32LE(width, 18);
+  buf.writeInt32LE(-height, 22); // top-down
+  buf.writeUInt16LE(1, 26); // planes
+  buf.writeUInt16LE(24, 28); // 24-bit
+  buf.writeUInt32LE(0, 30); // BI_RGB
+  buf.writeUInt32LE(dataSize, 34);
+
+  let dst = 54;
+  let src = 0;
+  for (let y = 0; y < height; y++) {
+    const rowStart = dst;
+    for (let x = 0; x < width; x++) {
+      if (isRgb) {
+        const r = raw[src++] || 0;
+        const g = raw[src++] || 0;
+        const b = raw[src++] || 0;
+        buf[dst++] = b;
+        buf[dst++] = g;
+        buf[dst++] = r;
+      } else {
+        const v = raw[src++] || 0;
+        buf[dst++] = v;
+        buf[dst++] = v;
+        buf[dst++] = v;
+      }
+    }
+    while (dst < rowStart + rowLen) {
+      buf[dst++] = 0;
+    }
+  }
+  return buf;
+}
+
+// Extracts images from a PDF buffer
+function extractPdfImages(buffer) {
+  if (!Buffer.isBuffer(buffer)) throw new TypeError("extractPdfImages expects a Buffer");
+  if (buffer.length > MAX_INPUT_BYTES) throw new PdfLimitError(`over ${MAX_INPUT_BYTES / 1024 / 1024}MB`);
+  const doc = new PdfDoc(buffer);
+  if (doc.trailer?.Encrypt) throw new Error("This PDF is encrypted; encrypted PDFs aren't supported");
+  const allImages = [];
+  for (const p of doc.pages()) {
+    allImages.push(...doc.pageImages(p));
+  }
+  return allImages;
 }
 
 // Returns { text, pages } where pages holds each page's text in order.
@@ -875,4 +969,45 @@ function extractPdfText(buffer) {
   return { text: pages.join("\n\n"), pages };
 }
 
-module.exports = { extractPdfText };
+// Async extraction with OCR fallback for scanned PDFs
+async function extractPdfTextWithOcr(buffer, options = {}) {
+  if (!Buffer.isBuffer(buffer)) throw new TypeError("extractPdfTextWithOcr expects a Buffer");
+  if (buffer.length > MAX_INPUT_BYTES) throw new PdfLimitError(`over ${MAX_INPUT_BYTES / 1024 / 1024}MB`);
+  const doc = new PdfDoc(buffer);
+  if (doc.trailer?.Encrypt) throw new Error("This PDF is encrypted; encrypted PDFs aren't supported");
+  const pages = doc.pages().map((p) => doc.pageText(p));
+  if (pages.some(Boolean)) {
+    return { text: pages.join("\n\n"), pages, ocr: false };
+  }
+
+  const runOcr = options.runOcr || (options.ocrWorker ? async (img) => {
+    const res = await options.ocrWorker.recognize(img);
+    return res?.data?.text || "";
+  } : null);
+
+  if (typeof runOcr === "function") {
+    const ocrPages = [];
+    for (const p of doc.pages()) {
+      const pageImgs = doc.pageImages(p);
+      const pageTexts = [];
+      for (const img of pageImgs) {
+        try {
+          const txt = await runOcr(img);
+          if (txt && String(txt).trim()) pageTexts.push(String(txt).trim());
+        } catch (e) {
+          // Ignore individual image OCR error
+        }
+      }
+      if (pageTexts.length) ocrPages.push(pageTexts.join("\n"));
+    }
+    if (ocrPages.some(Boolean)) {
+      return { text: ocrPages.join("\n\n"), pages: ocrPages, ocr: true };
+    }
+    throw new Error("This PDF has no extractable text (it appears to be a scanned image, but OCR could not recognize any text)");
+  }
+
+  throw new Error("This PDF has no extractable text (it may be a scanned image; OCR isn't supported)");
+}
+
+module.exports = { extractPdfText, extractPdfTextWithOcr, extractPdfImages, rawPixelsToBmp };
+

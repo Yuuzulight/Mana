@@ -96,11 +96,14 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // current turn, for telling which edits it produced.
     public DateTime? LastUserMessageAt { get; private set; }
 
-    public void AppendUserMessage(string text) => AppendUserMessage(text, Array.Empty<string>());
+    public void AppendUserMessage(string text) => AppendUserMessage(text, Array.Empty<string>(), null);
+
+    public void AppendUserMessage(string text, IReadOnlyList<string> images) => AppendUserMessage(text, images, null);
 
     // #679: images show as thumbnails above the text; an image-only
     // message has no text line.
-    public void AppendUserMessage(string text, IReadOnlyList<string> images) => RunOnUiThread(() =>
+    // #1325: documents show as attached document cards with name and size.
+    public void AppendUserMessage(string text, IReadOnlyList<string> images, IReadOnlyList<string>? documents) => RunOnUiThread(() =>
     {
         LastUserMessageAt = DateTime.UtcNow;
         var message = new Message(fromUser: true);
@@ -111,7 +114,28 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 message.Images.Add(thumb);
             }
         }
-        if (text.Length > 0 || message.Images.Count == 0)
+        if (documents is { Count: > 0 })
+        {
+            foreach (var doc in documents)
+            {
+                var docName = Path.GetFileName(doc);
+                string sizeStr = "";
+                try
+                {
+                    if (File.Exists(doc))
+                    {
+                        sizeStr = $" ({ImageAttachmentStrip.FormatFileSize(new FileInfo(doc).Length)})";
+                    }
+                }
+                catch
+                {
+                }
+                message.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Paragraph, new[] {
+                    new MarkdownRun($"📎 {docName}{sizeStr}", true, false, false)
+                }));
+            }
+        }
+        if (text.Length > 0 || (message.Images.Count == 0 && (documents == null || documents.Count == 0)))
         {
             message.Blocks.AddRange(UserBlocks(text));
         }

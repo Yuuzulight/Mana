@@ -547,6 +547,37 @@ internal sealed partial class SessionListForm : Form
         mic.Click += (_, _) => voiceLoop.Wake();
         railToolTip.SetToolTip(mic, "Talk to Mana: the next thing you say is for her");
 
+        // #1325: Attach button (paperclip) for documents and images
+        var attach = new Button
+        {
+            Dock = DockStyle.Right,
+            Width = 44,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Panel2,
+            ForeColor = DarkTheme.Accent,
+            AccessibleName = "Attach files",
+        };
+        attach.FlatAppearance.BorderSize = 0;
+        GlassSurface.MakeGlassButton(attach);
+        attach.Paint += (_, e) => DrawPaperclipIcon(e.Graphics, attach.ClientRectangle, attach.ForeColor);
+        attach.Click += (_, _) =>
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = "Attach Files",
+                Multiselect = true,
+                Filter = "Supported Files (*.pdf;*.docx;*.xlsx;*.pptx;*.csv;*.txt;*.md;*.png;*.jpg;*.jpeg;*.webp;*.bmp)|*.pdf;*.docx;*.xlsx;*.pptx;*.csv;*.txt;*.md;*.png;*.jpg;*.jpeg;*.webp;*.bmp|" +
+                         "Documents (*.pdf;*.docx;*.xlsx;*.pptx;*.csv;*.txt;*.md)|*.pdf;*.docx;*.xlsx;*.pptx;*.csv;*.txt;*.md|" +
+                         "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp)|*.png;*.jpg;*.jpeg;*.webp;*.bmp|" +
+                         "All Files (*.*)|*.*",
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK && dialog.FileNames is { Length: > 0 } selected)
+            {
+                AttachFiles(selected);
+            }
+        };
+        railToolTip.SetToolTip(attach, "Attach documents or images (PDF, Word, Excel, PowerPoint, CSV, text, images)");
+
         // #675: deep thinking, sticky until clicked off. While on, every
         // turn (typed or spoken) asks node-bot to think harder. A toggle
         // (CheckBox drawn as a button) so its on/off state is also exposed to
@@ -609,14 +640,14 @@ internal sealed partial class SessionListForm : Form
             var text = box.Text;
             if (attachments.Count > 0)
             {
-                // #679: a message with images doesn't join the queue; while
+                // #679 / #1325: a message with attachments doesn't join the queue; while
                 // Mana is busy (or messages are queued) it stays in the box
                 // for another Send.
                 if (messageQueue.Count > 0)
                 {
                     return;
                 }
-                var sending = voiceLoop.SubmitTypedCommandAsync(text, attachments.Images);
+                var sending = voiceLoop.SubmitTypedCommandAsync(text, attachments.Images, attachments.Documents);
                 if (sending.IsCompleted && !sending.Result)
                 {
                     return;
@@ -637,13 +668,13 @@ internal sealed partial class SessionListForm : Form
                 messageQueueTimer.Start();
             }
         }
-        // #679: Ctrl+V with an image (or copied image files) on the
-        // clipboard, or image files dropped on the box, attach them.
+        // #679 / #1325: Ctrl+V with an image or document (or copied files) on the
+        // clipboard, or files dropped on the box, attach them.
         void AttachFiles(IEnumerable<string> paths)
         {
-            foreach (var path in paths.Where(ImageAttachmentStrip.IsImageFile))
+            foreach (var path in paths.Where(ImageAttachmentStrip.IsSupportedFile))
             {
-                if (attachments.Count >= ImageAttachmentStrip.MaxImages)
+                if (attachments.Count >= ImageAttachmentStrip.MaxItems)
                 {
                     break;
                 }
@@ -651,13 +682,13 @@ internal sealed partial class SessionListForm : Form
             }
         }
         static string[] DroppedFiles(IDataObject? data) =>
-            data?.GetData(DataFormats.FileDrop) is string[] files ? files.Where(ImageAttachmentStrip.IsImageFile).ToArray() : Array.Empty<string>();
+            data?.GetData(DataFormats.FileDrop) is string[] files ? files.Where(ImageAttachmentStrip.IsSupportedFile).ToArray() : Array.Empty<string>();
         box.AllowDrop = true;
         box.DragEnter += (_, e) => e.Effect = DroppedFiles(e.Data).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
         box.DragDrop += (_, e) => AttachFiles(DroppedFiles(e.Data));
-        // True if the clipboard held images (then the text box's own paste is
+        // True if the clipboard held images or files (then the text box's own paste is
         // skipped). Another app holding the clipboard open makes it throw.
-        bool PasteImages()
+        bool PasteAttachments()
         {
             try
             {
@@ -682,7 +713,7 @@ internal sealed partial class SessionListForm : Form
         }
         box.KeyDown += async (_, e) =>
         {
-            if (e.KeyCode == Keys.V && e.Control && !e.Alt && PasteImages())
+            if (e.KeyCode == Keys.V && e.Control && !e.Alt && PasteAttachments())
             {
                 e.SuppressKeyPress = true;
             }
@@ -772,8 +803,10 @@ internal sealed partial class SessionListForm : Form
         }
         box.TextChanged += (_, _) => FitComposer();
         box.SizeChanged += (_, _) => FitComposer(); // wrapping follows the width
-        // Docked last-added first: Send at the far right, then Think, the mic, then the box.
+        // Docked last-added first: Send at the far right, then Think, mic, attach, then the box.
         panel.Controls.Add(field);
+        panel.Controls.Add(Gap());
+        panel.Controls.Add(attach);
         panel.Controls.Add(Gap());
         panel.Controls.Add(mic);
         panel.Controls.Add(Gap());
@@ -906,6 +939,28 @@ internal sealed partial class SessionListForm : Form
         }
         g.DrawArc(pen, x + 3.5f, y + 3, 11, 11, 0, 180);
         g.DrawLine(pen, x + 9, y + 14, x + 9, y + 16.5f);
+    }
+
+    // #1325: Paperclip icon for attaching documents and images, centered in bounds.
+    private static void DrawPaperclipIcon(Graphics g, Rectangle bounds, Color color)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var state = g.Save();
+        var cx = bounds.Left + bounds.Width / 2f;
+        var cy = bounds.Top + bounds.Height / 2f;
+        g.TranslateTransform(cx, cy);
+        g.RotateTransform(-45);
+        using var pen = new Pen(color, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var path = new GraphicsPath();
+        path.AddLine(1f, -4f, 1f, 3.5f);
+        path.AddArc(-2.5f, 1f, 3.5f, 5f, 0, 180);
+        path.AddLine(-2.5f, 3.5f, -2.5f, -5.5f);
+        path.AddArc(-2.5f, -8f, 6.5f, 5f, 180, 180);
+        path.AddLine(4f, -5.5f, 4f, 5.5f);
+        path.AddArc(-4.5f, 2.5f, 8.5f, 6f, 0, 180);
+        path.AddLine(-4.5f, 5.5f, -4.5f, -3f);
+        g.DrawPath(pen, path);
+        g.Restore(state);
     }
 
     // #1121: My shell's "Send to Mana" and #844: mini message box under Mana --

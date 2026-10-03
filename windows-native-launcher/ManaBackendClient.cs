@@ -361,7 +361,8 @@ internal sealed class ManaBackendClient
     // #963/#911: source is "voice" (a spoken turn, which may run desktop
     // actions mid-game) or "typed" (gets the longer mid-game wiki wait).
     // Null sends nothing.
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null)
+    // #1325: documents is a list of local file paths for document attachments (PDF, DOCX, XLSX, PPTX, CSV, TXT, MD).
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, IReadOnlyList<string>? documents = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
@@ -379,6 +380,10 @@ internal sealed class ManaBackendClient
         if (source is not null)
         {
             fields["source"] = source;
+        }
+        if (documents is { Count: > 0 })
+        {
+            fields["documents"] = documents;
         }
         if (images is { Count: > 0 })
         {
