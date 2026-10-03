@@ -145,6 +145,37 @@ function createModelSettingsStore(options = {}) {
     return getBrainSettings();
   }
 
+  // Optional local-first escalation: Mana keeps the local GGUF as the main
+  // brain, and only uses this OpenAI-compatible endpoint when a local reply
+  // path returns no usable answer. Kept separate from brain so enabling it
+  // does not silently turn normal chat into remote-first mode.
+  function getFallbackSettings() {
+    const settings = readAll();
+    const fallback = settings.fallback && typeof settings.fallback === "object" ? settings.fallback : {};
+    return {
+      enabled: fallback.enabled === true,
+      baseUrl: typeof fallback.baseUrl === "string" ? fallback.baseUrl : "",
+      apiKey: readApiKey(fallback),
+      model: typeof fallback.model === "string" ? fallback.model : "",
+    };
+  }
+
+  function setFallbackSettings(partial = {}) {
+    const settings = readAll();
+    const next = settings.fallback && typeof settings.fallback === "object" ? { ...settings.fallback } : {};
+    if (partial.enabled !== undefined) next.enabled = partial.enabled === true;
+    if (partial.baseUrl !== undefined) next.baseUrl = String(partial.baseUrl || "").trim();
+    if (partial.apiKey !== undefined) {
+      delete next.apiKey;
+      delete next.apiKeyProtected;
+      Object.assign(next, apiKeyFields(String(partial.apiKey || "").trim()));
+    }
+    if (partial.model !== undefined) next.model = String(partial.model || "").trim();
+    settings.fallback = next;
+    writeAll(settings);
+    return getFallbackSettings();
+  }
+
   // Which vision GGUF + mmproj pair Mana's "eyes" use. Empty strings mean
   // "keep auto-detecting under tools/llama/gguf-models" (see
   // findVisionModel/findVisionMmproj in ai/llama-server-runtime.js), same
@@ -191,6 +222,8 @@ function createModelSettingsStore(options = {}) {
     setModelPath,
     getBrainSettings,
     setBrainSettings,
+    getFallbackSettings,
+    setFallbackSettings,
     getVisionSettings,
     setVisionSettings,
   };

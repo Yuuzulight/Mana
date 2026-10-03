@@ -255,6 +255,43 @@ test("model status route reports active profile and configured profiles", async 
   });
 });
 
+test("cloud fallback route persists fallback settings through model management", async () => {
+  const calls = [];
+  const app = createApp({
+    modelManagement: {
+      getModelStatus: () => ({ ok: true }),
+      setFallbackSettings: (settings) => {
+        calls.push(settings);
+        return { fallback: { ...settings, hasApiKey: Boolean(settings.apiKey), apiKey: undefined } };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/models/cloud-fallback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        model: "gpt-test",
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls[0], {
+      enabled: true,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      model: "gpt-test",
+    });
+    assert.equal(payload.fallback.hasApiKey, true);
+    assert.equal(payload.fallback.apiKey, undefined);
+  });
+});
+
 test("gguf-metadata route rejects a missing or invalid path before ever parsing", async () => {
   const app = createApp({
     modelManagement: { isValidGgufFile: () => false },

@@ -450,6 +450,22 @@ function openAiModel() {
   if (override && override.model) return override.model;
   return process.env.OPENAI_MODEL || "codex-gpt-5.5";
 }
+function openAiFallbackConfig() {
+  const fallback = modelSettingsStore.getFallbackSettings();
+  if (!fallback.enabled) return null;
+  const config = {
+    apiKey: fallback.apiKey || process.env.OPENAI_API_KEY || null,
+    baseUrl: fallback.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com",
+    model: fallback.model || process.env.OPENAI_MODEL || "codex-gpt-5.5",
+  };
+  return shouldUseRemoteAiCore({
+    apiKey: config.apiKey,
+    allowRemoteAi: MANA_ALLOW_REMOTE_AI,
+    baseUrl: config.baseUrl,
+  })
+    ? config
+    : null;
+}
 const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
 
 // Threads the dynamic Settings-driven apiKey/baseUrl through to every
@@ -4180,8 +4196,17 @@ function registerRoutes(app, upload, deps = {}) {
     // together with no single session in scope, so they're left untracked
     // rather than polluting a "default" bucket with unrelated global usage.
     sessionId = null,
+    remoteConfig = null,
   ) {
-    if (!shouldUseRemoteAi()) {
+    const apiKey = remoteConfig?.apiKey ?? openAiApiKey();
+    const baseUrlValue = remoteConfig?.baseUrl ?? openAiBaseUrl();
+    const model = remoteConfig?.model ?? openAiModel();
+    if (
+      !shouldUseRemoteAi({
+        apiKey,
+        baseUrl: baseUrlValue,
+      })
+    ) {
       return null; // no key configured; fall back to local
     }
 
@@ -4201,12 +4226,12 @@ function registerRoutes(app, upload, deps = {}) {
 
     const systemPrompt = systemPromptOverride || activeDefaultPrompt();
 
-    const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
+    const baseUrl = baseUrlValue.replace(/\/+$/, "");
     const url = new URL(baseUrl + "/v1/chat/completions");
     const transport = url.protocol === "https:" ? https : http;
 
     const body = JSON.stringify({
-      model: openAiModel(),
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: prompt },
@@ -4228,7 +4253,7 @@ function registerRoutes(app, upload, deps = {}) {
           // own llama-server, etc.) don't require auth at all -- only send
           // the header when there's actually a key configured, rather than
           // sending a literal "Bearer null" to a server that might choke on it.
-          ...(openAiApiKey() ? { Authorization: `Bearer ${openAiApiKey()}` } : {}),
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
       };
 
@@ -5659,6 +5684,27 @@ function registerRoutes(app, upload, deps = {}) {
 
     // Fall back to local llama
     let reply = untag(await replyMaybeWithBestOfN(finalPrompt));
+    if (!(typeof reply === "string" && reply.trim())) {
+      const fallbackConfig = openAiFallbackConfig();
+      if (fallbackConfig) {
+        try {
+          const fallbackReply = untag(await runOpenAIReply(
+            finalPrompt,
+            effectiveMaxTokens,
+            selectedSystemPrompt + flatMemorySuffix,
+            sessionId,
+            fallbackConfig,
+          ));
+          if (fallbackReply) {
+            console.warn("Mana: local reply was empty, answered with cloud fallback.");
+            if (replyMeta) replyMeta.cloudFallback = true;
+            reply = fallbackReply;
+          }
+        } catch (e) {
+          console.warn("Cloud fallback failed after empty local reply:", e?.message || e);
+        }
+      }
+    }
 
     // Conversational rut detection (issue #159), general reply path: the
     // Best-of-N branch above already prefers a less-repetitive candidate
