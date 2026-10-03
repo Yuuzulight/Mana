@@ -490,3 +490,38 @@ test("the reader view gets the whole page with its images as data: URLs, through
   // The private host was refused before any request.
   assert.ok(!requested.includes("https://internal.example/c.png"));
 });
+
+test("buildWebContextForPrompt collects sourcesOut with index, title, url and text", async () => {
+  await withMockedDnsLookup(async () => [{ address: "93.184.216.34", family: 4 }], async () => {
+    await withMockedFetch(async (url) => {
+      if (String(url).includes("/search?")) {
+        return jsonResponse({
+          results: [
+            {
+              title: "Example Title",
+              url: "https://example.com/item",
+              content: "Snippet content here",
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    }, async () => {
+      const sources = [];
+      const context = await buildWebContextForPrompt(
+        "search the web for example info",
+        process.env,
+        null,
+        true,
+        sources,
+      );
+      assert.match(context, /\[1\] Example Title/);
+      assert.match(context, /cite claims with numbered markers like \[1\]/);
+      assert.equal(sources.length, 1);
+      assert.equal(sources[0].index, 1);
+      assert.equal(sources[0].title, "Example Title");
+      assert.equal(sources[0].url, "https://example.com/item");
+      assert.equal(sources[0].text, "Snippet content here");
+    });
+  });
+});

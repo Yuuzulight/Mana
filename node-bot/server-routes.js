@@ -14,6 +14,7 @@ const { createZedIntegration } = require("./zed-integration");
 const Diff = require("diff");
 const { runPluginInputHooks } = require("./capabilities/registry");
 const { pendingWritesDir } = require("./utils/live-dirs");
+const { verifyAndFilterCitations } = require("./utils/citation-check");
 
 const RESTART_LOCAL_ONLY_ERROR = "restart is only available from this PC";
 
@@ -447,6 +448,7 @@ function registerCoreRoutes(app, upload, deps) {
       // Tries each plugin's contributePromptContext in capabilities-array
       // order, first non-empty result wins (issue #108) -- each plugin's own
       // builder decides relevance, this just picks the first that answers.
+      const webSources = [];
       const marketText = includeContext
         ? await contributePluginPromptContext(capabilities, input.text, {
             marketDataClient,
@@ -458,6 +460,7 @@ function registerCoreRoutes(app, upload, deps) {
             // #963: only a turn that says it was typed gets the longer
             // mid-game wiki wait; a spoken or unlabelled one keeps 5 s.
             typed: req.body?.source === "typed",
+            sources: webSources,
           })
         : "";
       const assistantMode = optionalString(
@@ -488,8 +491,16 @@ function registerCoreRoutes(app, upload, deps) {
         presetId,
         replyMeta,
       );
+      let finalReply = reply;
+      let finalSources = null;
+      if (webSources.length > 0) {
+        const verified = verifyAndFilterCitations(reply, webSources);
+        finalReply = verified.text;
+        finalSources = verified.sources.length > 0 ? verified.sources : null;
+      }
       return res.json({
-        reply,
+        reply: finalReply,
+        ...(finalSources ? { sources: finalSources } : {}),
         ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
         ttsConfigured: TTS_PROVIDER !== "none",
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
@@ -622,6 +633,7 @@ function registerCoreRoutes(app, upload, deps) {
         "ffxivWorld",
         UNIVERSALIS_DEFAULT_WORLD,
       );
+      const webSources = [];
       const marketText = includeContext
         ? await contributePluginPromptContext(capabilities, input.text, {
             marketDataClient,
@@ -633,6 +645,7 @@ function registerCoreRoutes(app, upload, deps) {
             // #963: only a turn that says it was typed gets the longer
             // mid-game wiki wait; a spoken or unlabelled one keeps 5 s.
             typed: req.body?.source === "typed",
+            sources: webSources,
           })
         : "";
       const assistantMode = optionalString(req.body?.assistantMode, "assistantMode", null);
@@ -693,9 +706,18 @@ function registerCoreRoutes(app, upload, deps) {
         ),
       );
 
+      let finalReply = reply;
+      let finalSources = null;
+      if (webSources.length > 0) {
+        const verified = verifyAndFilterCitations(reply, webSources);
+        finalReply = verified.text;
+        finalSources = verified.sources.length > 0 ? verified.sources : null;
+      }
+
       writeEvent({
         type: "final",
-        reply,
+        reply: finalReply,
+        ...(finalSources ? { sources: finalSources } : {}),
         ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
         ttsConfigured: TTS_PROVIDER !== "none",
         changed: !replyMeta.streamedMatchesFinal,
@@ -822,7 +844,8 @@ function registerCoreRoutes(app, upload, deps) {
 
   app.post("/synthesize", async (req, res) => {
     try {
-      const text = requireString(req.body?.text, "text");
+      const rawText = requireString(req.body?.text, "text");
+      const text = rawText.replace(/\[\d+\](?:\([^)]*\))?/g, "").trim();
       if (TTS_PROVIDER === "none") {
         return res.status(400).json({ error: "TTS not configured" });
       }

@@ -70,3 +70,67 @@ test("normalizeUrl treats fragment and trailing slash as the same page", () => {
     normalizeUrl("https://example.test/a"),
   );
 });
+
+test("an unsupported claim citing a source is caught", () => {
+  const sourcesWithText = [
+    {
+      index: 1,
+      url: "https://example.test/eiffel",
+      title: "Eiffel Tower",
+      text: "The Eiffel Tower is located on the Champ de Mars in Paris, France.",
+    },
+  ];
+
+  const supported = checkCitations(
+    "The Eiffel Tower is in Paris [1].",
+    sourcesWithText,
+  );
+  assert.equal(supported.ok, true);
+  assert.deepEqual(supported.unsupportedCitations, []);
+
+  const unsupported = checkCitations(
+    "Bananas are made of solid steel and radioactive isotopes [1].",
+    sourcesWithText,
+  );
+  assert.equal(unsupported.ok, false);
+  assert.equal(unsupported.unsupportedCitations.length, 1);
+  assert.equal(unsupported.unsupportedCitations[0].index, 1);
+});
+
+test("verifyAndFilterCitations keeps supported citations as links and strips unsupported or invalid ones", () => {
+  const { verifyAndFilterCitations } = require("../utils/citation-check");
+  const sources = [
+    {
+      index: 1,
+      url: "https://example.test/eiffel",
+      title: "Eiffel Tower",
+      text: "The Eiffel Tower is located on the Champ de Mars in Paris, France.",
+    },
+    {
+      index: 2,
+      url: "https://example.test/biology",
+      title: "Cell Biology",
+      text: "Mitochondria are membrane-bound cell organelles that generate chemical energy.",
+    },
+    {
+      index: 3,
+      url: "https://example.test/broken",
+      title: "Broken",
+      readFailed: true,
+    },
+  ];
+
+  const reply =
+    "Paris is home to the Eiffel Tower [1]. The sky is purple and made of gelatin [2]. Aliens built the pyramids [3]. Here is another phantom claim [99].";
+
+  const result = verifyAndFilterCitations(reply, sources);
+
+  assert.equal(
+    result.text,
+    "Paris is home to the Eiffel Tower [1](https://example.test/eiffel). The sky is purple and made of gelatin. Aliens built the pyramids. Here is another phantom claim.",
+  );
+  assert.deepEqual(result.citedIndexes, [1]);
+  assert.deepEqual(result.sources, [
+    { index: 1, title: "Eiffel Tower", url: "https://example.test/eiffel" },
+  ]);
+});

@@ -63,14 +63,134 @@ function checkCitations(report, sources = []) {
     (i) => !usedIndexes.has(i) && !byIndex.get(i)?.readFailed,
   );
 
+  // Issue #1329: Citations are checked against fetched text.
+  // Unsupported claims don't get a citation.
+  const unsupportedCitations = [];
+  const matches = [...text.matchAll(/\[(\d{1,3})\](?:\([^)]*\))?/g)];
+  for (const match of matches) {
+    const idx = Number(match[1]);
+    const src = byIndex.get(idx);
+    if (src && !src.readFailed && (src.text || src.snippet)) {
+      const claim = extractClaimText(text, match.index, match[0].length);
+      if (!isClaimSupported(claim, src)) {
+        unsupportedCitations.push({ index: idx, claim });
+      }
+    }
+  }
+
   return {
-    ok: unknownIndexes.length === 0 && unreadIndexes.length === 0 && unfetchedUrls.length === 0,
+    ok:
+      unknownIndexes.length === 0 &&
+      unreadIndexes.length === 0 &&
+      unfetchedUrls.length === 0 &&
+      unsupportedCitations.length === 0,
     citedIndexes,
     unknownIndexes,
     unreadIndexes,
     unfetchedUrls,
     unusedIndexes,
+    unsupportedCitations,
   };
 }
 
-module.exports = { checkCitations, normalizeUrl };
+const STOP_WORDS = new Set([
+  "the", "and", "that", "have", "for", "not", "with", "you", "this", "but",
+  "his", "from", "they", "say", "her", "she", "will", "one", "all", "would",
+  "there", "their", "what", "out", "about", "who", "get", "which", "when",
+  "make", "can", "like", "time", "just", "him", "know", "take", "people",
+  "into", "year", "your", "good", "some", "could", "them", "see", "other",
+  "than", "then", "now", "look", "only", "come", "its", "over", "think",
+  "also", "back", "after", "use", "two", "how", "our", "work", "first",
+  "well", "way", "even", "new", "want", "because", "any", "these", "give",
+  "day", "most", "us", "are", "was", "were", "been", "has", "had", "does",
+  "did", "may", "might", "must", "should", "shall",
+]);
+
+function extractClaimText(fullText, matchIndex, matchLength) {
+  const before = fullText.slice(0, matchIndex);
+  const lastDelim = Math.max(
+    before.lastIndexOf("."),
+    before.lastIndexOf("!"),
+    before.lastIndexOf("?"),
+    before.lastIndexOf("\n"),
+  );
+  const start = lastDelim >= 0 ? lastDelim + 1 : 0;
+  const after = fullText.slice(matchIndex + matchLength);
+  const nextDelimRel = after.search(/[.!?\n]/);
+  const end = nextDelimRel >= 0 ? matchIndex + matchLength + nextDelimRel : fullText.length;
+  return fullText.slice(start, end).replace(/\[\d+\](?:\([^)]*\))?/g, "").trim();
+}
+
+function isClaimSupported(claim, source) {
+  if (!source) return false;
+  if (source.readFailed) return false;
+  const sourceCorpus = [source.title, source.snippet, source.text]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!sourceCorpus.trim()) return true;
+
+  const words = (claim.toLowerCase().match(/\b[a-z0-9_-]{3,}\b/g) || []).filter(
+    (w) => !STOP_WORDS.has(w),
+  );
+  if (words.length === 0) return true;
+
+  const matched = words.filter((w) => sourceCorpus.includes(w));
+  if (matched.length === 0) return false;
+  if (words.length >= 3 && matched.length / words.length < 0.2) return false;
+  return true;
+}
+
+// Issue #1329: filters out citations that are unknown, unread, or unsupported,
+// formats verified citations as markdown links [N](url), and returns the
+// verified sources list.
+function verifyAndFilterCitations(text, sources = []) {
+  const raw = String(text || "");
+  const byIndex = new Map();
+  for (const source of sources) {
+    if (!source) continue;
+    byIndex.set(Number(source.index), source);
+  }
+
+  const validCitedIndexes = new Set();
+  const regex = /\[(\d{1,3})\](?:\([^)]*\))?/g;
+  let filtered = raw.replace(regex, (match, indexStr, offset) => {
+    const index = Number(indexStr);
+    const source = byIndex.get(index);
+    if (!source || source.readFailed) {
+      return "";
+    }
+    const claim = extractClaimText(raw, offset, match.length);
+    if (!isClaimSupported(claim, source)) {
+      return "";
+    }
+    validCitedIndexes.add(index);
+    return source.url ? `[${index}](${source.url})` : `[${index}]`;
+  });
+
+  filtered = filtered
+    .replace(/[ \t]+([.,!?;:])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ");
+
+  const verifiedSources = sources
+    .filter((s) => s && validCitedIndexes.has(Number(s.index)))
+    .map((s) => ({
+      index: Number(s.index),
+      title: s.title || s.url || `Source ${s.index}`,
+      url: s.url,
+    }));
+
+  return {
+    text: filtered,
+    sources: verifiedSources,
+    citedIndexes: [...validCitedIndexes].sort((a, b) => a - b),
+  };
+}
+
+module.exports = {
+  checkCitations,
+  extractClaimText,
+  isClaimSupported,
+  normalizeUrl,
+  verifyAndFilterCitations,
+};

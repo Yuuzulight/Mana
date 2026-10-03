@@ -605,4 +605,40 @@ public class StreamingReplyPlayerTests
         // Ensure reasoning tokens were never synthesized into speech
         Assert.Equal(new[] { "synth:Here is the result." }, synthLog);
     }
+
+    // #1329: Spoken replies don't read citation markers aloud, and FinalSources captures verified web sources
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_StripsCitationsFromSynthesisAndRecordsFinalSources()
+    {
+        const string ndjson = """
+            {"type":"sentence","text":"Paris is the capital of France [1]."}
+            {"type":"sentence","text":"It has many famous museums [2](https://example.com/museums)."}
+            {"type":"final","reply":"Paris is the capital of France [1](https://example.com/paris). It has many famous museums [2](https://example.com/museums).","sources":[{"index":1,"title":"Paris Guide","url":"https://example.com/paris"},{"index":2,"title":"Museums","url":"https://example.com/museums"}],"changed":false}
+
+            """;
+        var sentences = new List<string>();
+        var synthLog = new List<string>();
+        var player = new StreamingReplyPlayer(BuildFakeClient(ndjson, synthLog), _ => Task.FromResult(true), _ => { });
+
+        var (reply, changed, _, interrupted, _) = await player.StreamReplyAndPlayAsync(
+            "where is Paris?",
+            onSentence: (text, _) => sentences.Add(text));
+
+        Assert.NotNull(reply);
+        Assert.Contains("[1](https://example.com/paris)", reply);
+        Assert.False(changed);
+        Assert.False(interrupted);
+
+        // FinalSources parsed from final event
+        Assert.NotNull(player.FinalSources);
+        Assert.Equal(2, player.FinalSources.Count);
+        Assert.Equal(1, player.FinalSources[0].Index);
+        Assert.Equal("Paris Guide", player.FinalSources[0].Title);
+        Assert.Equal("https://example.com/paris", player.FinalSources[0].Url);
+
+        // TTS synthesis received cleaned text with markers stripped
+        Assert.Equal(2, synthLog.Count);
+        Assert.Equal("synth:Paris is the capital of France.", synthLog[0]);
+        Assert.Equal("synth:It has many famous museums.", synthLog[1]);
+    }
 }

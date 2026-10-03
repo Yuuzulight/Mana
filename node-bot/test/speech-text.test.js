@@ -135,3 +135,14 @@ test("applyPronunciationLexicon with no entries returns the text unchanged", () 
   assert.equal(applyPronunciationLexicon("Qwen said hi", []), "Qwen said hi");
   assert.equal(applyPronunciationLexicon("Qwen said hi", undefined), "Qwen said hi");
 });
+
+test("normalizeSpeechText strips inline citation markers", () => {
+  assert.equal(
+    normalizeSpeechText("According to the page [1], Paris is in France [2]."),
+    "According to the page, Paris is in France.",
+  );
+  assert.equal(
+    normalizeSpeechText("Here is a link [1](https://example.com/info)."),
+    "Here is a link.",
+  );
+});

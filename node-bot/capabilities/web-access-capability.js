@@ -91,7 +91,13 @@ const webAccessCapability = {
   // detection. #908: context.game is the game I'm playing, if its wiki is known.
   // #963: context.typed gives a typed turn the longer wiki wait.
   contributePromptContext: (text, context = {}) =>
-    buildWebContextForPrompt(text, process.env, context.game || null, context.typed === true),
+    buildWebContextForPrompt(
+      text,
+      process.env,
+      context.game || null,
+      context.typed === true,
+      context.sources || null,
+    ),
   getHealth: () => ({
     status: isWebAccessEnabled() ? "configured" : "disabled",
     configured: isWebAccessEnabled(),

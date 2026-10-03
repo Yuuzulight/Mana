@@ -47,6 +47,9 @@ internal sealed class StreamingReplyPlayer
 
     // #687: the sentence of the reply now playing out that's being
     // synthesized (1-based), or null -- for the chat's status line. The
+    // #1329: on "final", verified web sources cited in the reply.
+    public IReadOnlyList<WebSourceCitation>? FinalSources { get; private set; }
+
     // one-ahead lookahead means at most one synthesis is in flight.
     public int? SynthesizingSentence => synthesizing == 0 ? null : synthesizing;
 
@@ -119,6 +122,7 @@ internal sealed class StreamingReplyPlayer
         FinalEmotion = finalEvent.Emotion;
         FinalDeepThinking = finalEvent.DeepThinking;
         FinalThought = finalEvent.Thought;
+        FinalSources = finalEvent.Sources;
         return (finalEvent.Reply ?? string.Empty, finalEvent.Changed, finalEvent.Expression, false, pending);
     }
 
@@ -134,7 +138,7 @@ internal sealed class StreamingReplyPlayer
         var channel = Channel.CreateUnbounded<(string Text, string? Emotion, string? Character)>();
         foreach (var sentence in sentences)
         {
-            channel.Writer.TryWrite((sentence, null, null));
+            channel.Writer.TryWrite((ManaBackendClient.StripCitationMarkers(sentence), null, null));
         }
         channel.Writer.Complete();
         return PlayStreamedSentencesAsync(channel.Reader);
@@ -314,7 +318,8 @@ internal sealed class StreamingReplyPlayer
         synthesizing = ++synthesized;
         try
         {
-            return (next.Text, next.Emotion, next.Character, await backendClient.SynthesizeAsync(next.Text, next.Emotion, next.Character).ConfigureAwait(false));
+            var spokenText = ManaBackendClient.StripCitationMarkers(next.Text);
+            return (next.Text, next.Emotion, next.Character, await backendClient.SynthesizeAsync(spokenText, next.Emotion, next.Character).ConfigureAwait(false));
         }
         finally
         {

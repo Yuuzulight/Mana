@@ -379,7 +379,7 @@ function textLooksLikeGameQuestion(text) {
 // Searches only the game's wiki sites and reads the top hit, kept short for
 // a voice answer mid-game. Null when the wiki has nothing, so the turn falls
 // back to the normal paths.
-async function buildGameWikiContext(text, game, env, typed) {
+async function buildGameWikiContext(text, game, env, typed, sourcesOut = null) {
   if (isLocalOnly(env)) return null; // implicit lookup: stay quiet, not a failure note every turn
   const onWiki = (url) => {
     try {
@@ -400,13 +400,23 @@ async function buildGameWikiContext(text, game, env, typed) {
     console.warn(`${game.name} wiki page skipped:`, e.message);
     return null;
   });
+  if (Array.isArray(sourcesOut)) {
+    hits.forEach((r, i) => {
+      sourcesOut.push({
+        index: i + 1,
+        title: r.title,
+        url: r.url,
+        text: (r.snippet || "") + (i === 0 && page?.text ? "\n" + page.text : ""),
+      });
+    });
+  }
   return [
-    `I'm playing ${game.name} and asking${typed ? "" : " by voice"}: answer in one or two short sentences from the wiki results below, and say so if they don't cover it. If the answer depends on what's on my screen and you have vision__look, look first.`,
+    `I'm playing ${game.name} and asking${typed ? "" : " by voice"}: answer in one or two short sentences from the wiki results below, citing claims with numbered markers like [1], and say so if they don't cover it. If the answer depends on what's on my screen and you have vision__look, look first.`,
     "",
     wrapUntrusted(
       GAME_WIKI_SOURCE,
       [
-        ...hits.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`),
+        ...hits.map((r, i) => `[${i + 1}] ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`),
         page ? `\nTop result page text:\n${page.text}` : null,
       ].filter((line) => line !== null).join("\n"),
     ),
@@ -414,8 +424,9 @@ async function buildGameWikiContext(text, game, env, typed) {
 }
 
 // game: { name, sites } for the game I'm playing (#908), or null. typed:
-// the turn was typed, not spoken (#963).
-async function buildWebContextForPrompt(text, env = process.env, game = null, typed = false) {
+// the turn was typed, not spoken (#963). sourcesOut: array to collect
+// cited web sources for inline verification (#1329).
+async function buildWebContextForPrompt(text, env = process.env, game = null, typed = false, sourcesOut = null) {
   if (!isWebAccessEnabled(env)) {
     return "";
   }
@@ -425,6 +436,14 @@ async function buildWebContextForPrompt(text, env = process.env, game = null, ty
   if (url) {
     try {
       const page = await fetchPage(url);
+      if (Array.isArray(sourcesOut)) {
+        sourcesOut.push({
+          index: 1,
+          title: page.title || url,
+          url: page.url,
+          text: page.text,
+        });
+      }
       const lines = [
         `URL: ${page.url}`,
         page.title ? `Title: ${page.title}` : null,
@@ -436,7 +455,10 @@ async function buildWebContextForPrompt(text, env = process.env, game = null, ty
       const escalate = page.needsBrowser
         ? `[This page needs a browser (${page.needsBrowser}). If you have browser_automation__navigate, open it there instead.]\n\n`
         : "";
-      return `Page Mana was asked to read:\n${wrapUntrusted("web page", lines.join("\n"))}\n\n${escalate}`;
+      const instruction = page.needsBrowser
+        ? ""
+        : "When answering from the web page above, cite claims with numbered markers like [1]. Only cite facts directly supported by the text.\n\n";
+      return `Page Mana was asked to read:\n${wrapUntrusted("web page", lines.join("\n"))}\n\n${escalate}${instruction}`;
     } catch (e) {
       return `[Mana tried to open ${url} but it failed: ${e.message}]\n\n`;
     }
@@ -444,7 +466,7 @@ async function buildWebContextForPrompt(text, env = process.env, game = null, ty
 
   if (game && textLooksLikeGameQuestion(clean)) {
     try {
-      const context = await buildGameWikiContext(clean, game, env, typed);
+      const context = await buildGameWikiContext(clean, game, env, typed, sourcesOut);
       if (context) return context;
     } catch (e) {
       // Not a note on every mid-game question: an explicit search below reports its own failure.
@@ -458,8 +480,16 @@ async function buildWebContextForPrompt(text, env = process.env, game = null, ty
       if (!entry) {
         return "";
       }
-      const lookup = [`Title: ${entry.title}`, `URL: ${entry.url}`, "", entry.extract].join("\n");
-      return `Wikipedia lookup:\n${wrapUntrusted("Wikipedia", lookup)}\n\n`;
+      if (Array.isArray(sourcesOut)) {
+        sourcesOut.push({
+          index: 1,
+          title: entry.title,
+          url: entry.url,
+          text: entry.extract,
+        });
+      }
+      const lookup = [`[1] ${entry.title}`, `URL: ${entry.url}`, "", entry.extract].join("\n");
+      return `Wikipedia lookup:\n${wrapUntrusted("Wikipedia", lookup)}\n\nWhen answering from Wikipedia, cite claims with numbered markers like [1]. Only cite facts directly supported by the text.\n\n`;
     } catch (e) {
       return `[Mana tried a Wikipedia lookup but it failed: ${e.message}]\n\n`;
     }
@@ -471,10 +501,20 @@ async function buildWebContextForPrompt(text, env = process.env, game = null, ty
       if (!results.length) {
         return "";
       }
+      if (Array.isArray(sourcesOut)) {
+        results.forEach((r, i) => {
+          sourcesOut.push({
+            index: i + 1,
+            title: r.title,
+            url: r.url,
+            text: r.snippet || "",
+          });
+        });
+      }
       const lines = results.map(
-        (r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`,
+        (r, i) => `[${i + 1}] ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`,
       );
-      return `Web search results:\n${wrapUntrusted("web search", lines.join("\n"))}\n\n`;
+      return `Web search results:\n${wrapUntrusted("web search", lines.join("\n"))}\n\nWhen answering from the web search results, cite claims with numbered markers like [1], matching the source number. Only cite facts directly supported by the source text.\n\n`;
     } catch (e) {
       return `[Mana tried a web search but it failed: ${e.message}]\n\n`;
     }

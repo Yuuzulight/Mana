@@ -150,6 +150,9 @@ function applyTildeStretch(text) {
 function normalizeSpeechText(text, lexiconEntries) {
   let result = String(text || "");
 
+  // Issue #1329: Spoken replies don't read citation markers aloud (e.g. [1] or [1](url)).
+  result = result.replace(/\[\d+\](?:\([^)]*\))?/g, "");
+
   // Code fences first, before anything else -- code content could
   // otherwise trip the kaomoji/tilde/emoji passes below on symbols that
   // just happen to appear in source code, not in Mana's own prose.
