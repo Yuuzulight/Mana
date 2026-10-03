@@ -248,6 +248,23 @@ internal static class ForeignWindow
         return pid == Environment.ProcessId;
     }
 
+    // #849: types unicode text directly into the focused window using SendInput
+    public static void SendTextUnicode(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        var inputs = new Input[text.Length * 2];
+        for (var i = 0; i < text.Length; i++)
+        {
+            inputs[i * 2] = new Input { Type = 1, U = new InputUnion { Ki = new KeybdInput { Vk = 0, Scan = (ushort)text[i], Flags = 4u } } }; // KEYEVENTF_UNICODE
+            inputs[i * 2 + 1] = new Input { Type = 1, U = new InputUnion { Ki = new KeybdInput { Vk = 0, Scan = (ushort)text[i], Flags = 6u } } }; // KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+        }
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+    }
+
     // Waits (up to 1s) for the hotkey's own Ctrl/Alt/Shift/Win to be let
     // go -- otherwise Ctrl+C would arrive as Ctrl+Alt+C -- then sends
     // Ctrl+<key>.

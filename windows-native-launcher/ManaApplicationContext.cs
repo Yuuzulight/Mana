@@ -5,6 +5,7 @@ using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Mana.NativeLauncher.Dictation;
 
 namespace Mana.NativeLauncher;
 
@@ -27,6 +28,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
     private readonly WakeWordClassifier? wakeWordClassifier;
     private readonly AudioPlayer audioPlayer;
     private readonly VoiceLoop voiceLoop;
+    private readonly DictationService dictationService;
     private readonly ClipBuffer clipBuffer = new();
     private readonly System.Windows.Forms.Timer? clipCaptureTimer;
     private readonly System.Windows.Forms.Timer? glanceTimer; // #690
@@ -191,6 +193,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         chatLog.ManaMessageAppended += text => chatBubbles.ShowTextRemark(text);
         voiceLoop = new VoiceLoop(sileroVad, backendClient, audioPlayer, avatarOverlay, chatLog, chatLog, screenContextReader, () => gamingModeActive, clipBuffer, wakeWordClassifier, captionOverlay, chatBubbles, isAudioBusy: () => settings.HoldSpeechDuringAudio && audioDetector.IsAudioBusy());
         voiceLoop.SetPresetId(settings.ActivePresetId); // #681
+        // #849: dictate anywhere
+        dictationService = new DictationService(backendClient, () => voiceLoop)
+        {
+            IsEnabled = settings.DictateAnywhere
+        };
+        if (settings.DictateHoldThresholdMs is { } thresh && thresh > 0)
+        {
+            dictationService.StateMachine.ThresholdMs = thresh;
+        }
         // #914 group mode: her sister's mouth closes when the reply ends, and
         // her avatar shows and hides with Mana's.
         voiceLoop.TalkingEnded += () => RunOnUi(() => partnerOverlay?.LipSyncDriver.Reset());
@@ -526,6 +537,18 @@ internal sealed class ManaApplicationContext : ApplicationContext
             }
         };
         menu.Items.Add(gamingModeItem);
+        // #849: Dictate anywhere (Right Ctrl hold)
+        var dictateAnywhereItem = new ToolStripMenuItem("Dictate anywhere (Right Ctrl hold)") { CheckOnClick = true };
+        dictateAnywhereItem.Checked = dictationService.IsEnabled;
+        menu.Opening += (_, _) => dictateAnywhereItem.Checked = dictationService.IsEnabled;
+        dictateAnywhereItem.Click += (_, _) =>
+        {
+            dictationService.IsEnabled = dictateAnywhereItem.Checked;
+            var latest = ManaSettingsStore.Load();
+            latest.DictateAnywhere = dictationService.IsEnabled;
+            latest.Save();
+        };
+        menu.Items.Add(dictateAnywhereItem);
         // #662: back to an avatar that ignores the mouse entirely (she
         // already does while a game runs -- Q3).
         var clickThroughItem = new ToolStripMenuItem("Click-through avatar") { CheckOnClick = true, Checked = avatarOverlay.ClickThrough };
@@ -1532,6 +1555,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         captionOverlay.Close();
         chatBubbles.Close();
         voiceLoop.Dispose();
+        dictationService.Dispose();
         audioPlayer.Dispose();
         sileroVad?.Dispose();
         wakeWordClassifier?.Dispose();
