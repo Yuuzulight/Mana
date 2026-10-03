@@ -5963,6 +5963,7 @@ function registerRoutes(app, upload, deps = {}) {
     normalizeUploadedAudio:
       deps.normalizeUploadedAudio || normalizeUploadedAudio,
     readScreenText: deps.readScreenText || readScreenText,
+    getScreenOcrWorker: deps.getScreenOcrWorker || getScreenOcrWorker,
     recordChatTurn:
       deps.recordChatTurn ||
       ((sessionId, userText, assistantText) => {

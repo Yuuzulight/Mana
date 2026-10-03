@@ -1,15 +1,12 @@
-// Local PDF/URL ingestion into Mana's existing memory retriever (see
-// node-bot/tools/retriever-index.js) -- lets Mana "read" a PDF or a
-// specific web page and recall it later via the same TF/embedding search
-// her chat replies already use for background memory and research
-// reports. This intentionally reuses that retriever end-to-end instead of
-// standing up a separate document store: once a file lands in
-// data/documents/ and gets indexed, it's automatically part of what every
-// chat reply already searches -- no extra wiring needed on the reply path.
 const fs = require("fs");
 const path = require("path");
 const retrieverIndex = require("../../node-bot/tools/retriever-index");
-const { extractPdfText } = require("./pdf-text");
+const { extractPdfText, extractPdfTextWithOcr } = require("./pdf-text");
+const {
+  extractDocument,
+  chunkDocument,
+  DEFAULT_MAX_PROMPT_CHARS,
+} = require("./document-extract");
 
 const DOCS_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "documents");
 const MAX_PDF_BYTES = 25 * 1024 * 1024; // 25MB local-file ceiling
@@ -45,15 +42,47 @@ function safeDocId(label) {
   return `${base}-${Date.now()}`;
 }
 
-// Writes ingested text to data/documents/<id>.txt and folds it into the
-// retriever index via a single-file incremental scan.
-async function ingestText({ title, sourceType, sourceLabel, text }) {
+// Writes ingested text to data/documents/<id>.txt (or chunked files if chunk: true)
+// and folds it into the retriever index via incremental scan.
+async function ingestText({ title, sourceType, sourceLabel, text, chunk = false }) {
   const trimmed = String(text || "").trim();
   if (!trimmed) {
     throw new Error("No text content to ingest");
   }
   ensureDocsDir();
   const id = safeDocId(title || sourceLabel);
+
+  // If chunk: true and text exceeds the per-file cap, chunk it across multiple files (#1325)
+  if (chunk && trimmed.length > MAX_INGEST_CHARS) {
+    const chunks = chunkDocument(trimmed, {
+      maxChars: MAX_INGEST_CHARS,
+      chunkSize: 18000,
+      overlap: 500,
+    });
+    const writtenPaths = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkPath = path.join(DOCS_DIR, `${id}-chunk-${i + 1}.txt`);
+      const header = `Title: ${title || sourceLabel} (Part ${i + 1} of ${chunks.length})\nSource: ${sourceType}${
+        sourceLabel ? ` (${sourceLabel})` : ""
+      }\nIngested: ${new Date().toISOString()}\n\n`;
+      const body = (header + chunks[i]).slice(0, MAX_INGEST_CHARS);
+      await fs.promises.writeFile(chunkPath, body, "utf8");
+      writtenPaths.push(chunkPath);
+    }
+
+    await retrieverIndex.incrementalScan({ roots: writtenPaths });
+    return {
+      id,
+      title: title || sourceLabel,
+      sourceType,
+      path: writtenPaths[0],
+      paths: writtenPaths,
+      chars: trimmed.length,
+      chunks: chunks.length,
+    };
+  }
+
   const filePath = path.join(DOCS_DIR, `${id}.txt`);
   const header = `Title: ${title || sourceLabel}\nSource: ${sourceType}${
     sourceLabel ? ` (${sourceLabel})` : ""
@@ -70,7 +99,7 @@ async function ingestText({ title, sourceType, sourceLabel, text }) {
   };
 }
 
-async function ingestPdf(filePath) {
+async function ingestPdf(filePath, options = {}) {
   const resolved = String(filePath || "").trim();
   if (!resolved.toLowerCase().endsWith(".pdf")) {
     throw new Error("filePath must point to a .pdf file");
@@ -90,18 +119,35 @@ async function ingestPdf(filePath) {
     );
   }
   const buffer = await fs.promises.readFile(resolved);
+  const pdfResult = await extractPdfTextWithOcr(buffer, options);
   return ingestText({
     title: path.basename(resolved, ".pdf"),
     sourceType: "pdf",
     sourceLabel: resolved,
-    text: extractPdfText(buffer).text,
+    text: pdfResult.text,
   });
 }
 
-// URL ingestion delegates the fetch to node-bot's web-access.js fetchPage
-// (passed in as a dependency) so it inherits the same SSRF guard
-// (private/loopback rejection, redirect re-validation, http/https only)
-// instead of duplicating that logic here.
+// Unified document ingestion for PDF, Word, Excel, PowerPoint, CSV, Text, Markdown
+async function ingestDocument(filePath, options = {}) {
+  const resolved = String(filePath || "").trim();
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`File not found: ${resolved}`);
+  }
+  const ext = (path.extname(resolved) || "").toLowerCase();
+  const baseTitle = path.basename(resolved, ext);
+
+  const doc = await extractDocument(resolved, options);
+  return ingestText({
+    title: baseTitle,
+    sourceType: doc.type,
+    sourceLabel: resolved,
+    text: doc.text,
+    chunk: options.chunk ?? true,
+  });
+}
+
+// Ingest URL via fetchPage
 async function ingestUrl(url, { fetchPage } = {}) {
   if (typeof fetchPage !== "function") {
     throw new Error("fetchPage dependency is required to ingest a URL");
@@ -115,6 +161,66 @@ async function ingestUrl(url, { fetchPage } = {}) {
   });
 }
 
+// Prepares an attached document for a chat turn (#1325)
+// Small docs are inlined directly into the prompt context.
+// Large docs are chunked into the retriever index instead of stuffed into the prompt.
+// Unreadable docs report a clear reason so Mana can tell the user why.
+async function extractAndPrepareForChat(filePath, options = {}) {
+  const fileName = path.basename(filePath);
+  const maxPromptChars = options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS;
+
+  try {
+    const doc = await extractDocument(filePath, options);
+    const chars = doc.text.length;
+
+    if (chars <= maxPromptChars) {
+      return {
+        ok: true,
+        chunked: false,
+        text: doc.text,
+        chars,
+        fileName,
+        filePath,
+        type: doc.type,
+        tables: doc.tables,
+        sheets: doc.sheets,
+        slides: doc.slides,
+        fileSize: doc.fileSize,
+      };
+    }
+
+    // Large file: chunk into the retriever index
+    const ingestRes = await ingestText({
+      title: fileName,
+      sourceType: doc.type,
+      sourceLabel: filePath,
+      text: doc.text,
+      chunk: true,
+    });
+
+    const excerpt = doc.text.slice(0, 1500).trim();
+    return {
+      ok: true,
+      chunked: true,
+      chunksCount: ingestRes.chunks || 1,
+      excerpt,
+      chars,
+      fileName,
+      filePath,
+      type: doc.type,
+      fileSize: doc.fileSize,
+      documentId: ingestRes.id,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err.message || String(err),
+      fileName,
+      filePath,
+    };
+  }
+}
+
 function listDocuments() {
   ensureDocsDir();
   return fs
@@ -122,9 +228,6 @@ function listDocuments() {
     .filter((name) => name.endsWith(".txt"))
     .map((name) => {
       const filePath = path.join(DOCS_DIR, name);
-      // A document removed between readdirSync and here (a concurrent
-      // DELETE) is simply gone -- skip it rather than throwing, which
-      // turned GET /documents into an HTML 500 (flaky Heavy CI on 5fc618f).
       const stat = fs.statSync(filePath, { throwIfNoEntry: false });
       if (!stat) return null;
       return {
@@ -142,21 +245,39 @@ async function removeDocument(id) {
   if (!safeId) {
     throw new Error("id is required");
   }
-  const filePath = path.join(DOCS_DIR, `${safeId}.txt`);
-  if (!fs.existsSync(filePath)) {
+
+  // Find exact match or chunked matches (${safeId}-chunk-*.txt)
+  ensureDocsDir();
+  const allFiles = fs.readdirSync(DOCS_DIR);
+  const matching = allFiles.filter(
+    (name) => name === `${safeId}.txt` || name.startsWith(`${safeId}-chunk-`),
+  );
+
+  if (matching.length === 0) {
     throw new Error(`Document not found: ${id}`);
   }
-  await fs.promises.unlink(filePath);
+
+  for (const name of matching) {
+    const filePath = path.join(DOCS_DIR, name);
+    if (fs.existsSync(filePath)) {
+      await fs.promises.unlink(filePath);
+    }
+  }
+
   await retrieverIndex.incrementalScan({ roots: [DOCS_DIR] });
-  return { removed: safeId };
+  return { removed: safeId, filesRemoved: matching.length };
 }
 
 module.exports = {
   DOCS_DIR,
   ingestPdf,
+  ingestDocument,
+  ingestFile: ingestDocument,
   ingestUrl,
   ingestText,
+  extractAndPrepareForChat,
   isValidPdfFile,
   listDocuments,
   removeDocument,
 };
+

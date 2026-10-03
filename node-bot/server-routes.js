@@ -82,6 +82,7 @@ function registerCoreRoutes(app, upload, deps) {
     characters = null, // #914
     buildGroupReaction = null, // #914
     moodStore = null, // #700
+    getScreenOcrWorker = null,
   } = deps;
 
   // #914 group mode (design on the issue): each of my messages gets at most
@@ -166,6 +167,44 @@ function registerCoreRoutes(app, upload, deps) {
     }
     console.log(`Image turn: text-only chat model, vision model described ${images.length} image(s)`);
     return { text: joinPromptParts(`[Image: ${description}]`, text), images: [] };
+  }
+
+  // #1325: attached documents (PDF, Word, Excel, PowerPoint, CSV, Text, Markdown)
+  // are extracted locally. Small documents are inlined into prompt context with
+  // formatted text/tables. Large documents are chunked into the retriever index.
+  // Unreadable files insert a clear notice so Mana explains why she can't read it.
+  async function prepareDocumentTurn(text, documents) {
+    if (!documents || documents.length === 0) {
+      return text;
+    }
+    const documentReader = require("../plugins/document-reader/document-reader");
+    let ocrWorker = null;
+    if (typeof getScreenOcrWorker === "function") {
+      try {
+        ocrWorker = await getScreenOcrWorker();
+      } catch (_) {}
+    }
+
+    const notes = [];
+    for (const docPath of documents) {
+      const res = await documentReader.extractAndPrepareForChat(docPath, { ocrWorker });
+      if (!res.ok) {
+        notes.push(
+          `[Attached document "${res.fileName}" could not be read: ${res.error}. Explain clearly to the user why you cannot read this file.]`,
+        );
+      } else if (res.chunked) {
+        notes.push(
+          `[Attached document "${res.fileName}" (${res.type.toUpperCase()}, ${res.chars} characters) is a large document. It has been chunked across ${res.chunksCount} parts and indexed into your local knowledge retriever so you can search and cite it.\n\nBeginning overview:\n${res.excerpt}\n...\nUse your retriever/memory search if you need more details from other sections.]`,
+        );
+      } else {
+        notes.push(
+          `[Attached document: ${res.fileName} (${res.type.toUpperCase()}, ${res.chars} characters)]\n\n${res.text}`,
+        );
+      }
+    }
+
+    const userPrompt = text ? text : "(shared attached document(s))";
+    return joinPromptParts(...notes, userPrompt);
   }
 
   app.post("/admin/restart", (req, res) => {
@@ -325,13 +364,22 @@ function registerCoreRoutes(app, upload, deps) {
   app.post("/reply", async (req, res) => {
     messageNumber += 1; // #914: a new message ends any pending group reaction
     try {
-      // An attached image joins the chat turn (see prepareImageTurn);
-      // text becomes optional because the image can carry the question.
+      // An attached image or document joins the chat turn (#679, #1325);
+      // text becomes optional because the attachment can carry the question.
       const image =
         typeof req.body?.image === "string" && req.body.image.trim()
           ? req.body.image.trim()
           : null;
-      const transcript = image
+      const rawDocuments = Array.isArray(req.body?.documents)
+        ? req.body.documents
+        : typeof req.body?.document === "string"
+          ? [req.body.document]
+          : [];
+      const documents = rawDocuments
+        .filter((d) => (typeof d === "string" && d.trim()) || (d && typeof d === "object" && d.path))
+        .map((d) => (typeof d === "string" ? d.trim() : d.path.trim()));
+
+      const transcript = image || documents.length > 0
         ? optionalString(req.body?.text, "text", "")
         : requireString(req.body?.text, "text");
 
@@ -358,6 +406,10 @@ function registerCoreRoutes(app, upload, deps) {
       );
       if (input.reply) {
         return res.json({ reply: input.reply, ttsConfigured: TTS_PROVIDER !== "none" });
+      }
+
+      if (documents.length > 0) {
+        input.text = await prepareDocumentTurn(input.text, documents);
       }
 
       if (image) {
@@ -480,7 +532,17 @@ function registerCoreRoutes(app, upload, deps) {
         : image
           ? [image]
           : [];
-      const transcript = images.length
+      const rawDocuments = Array.isArray(req.body?.documents)
+        ? req.body.documents
+        : typeof req.body?.document === "string"
+          ? [req.body.document]
+          : [];
+      const documents = rawDocuments
+        .filter((d) => (typeof d === "string" && d.trim()) || (d && typeof d === "object" && d.path))
+        .map((d) => (typeof d === "string" ? d.trim() : d.path.trim()));
+
+      const hasAttachments = images.length > 0 || documents.length > 0;
+      const transcript = hasAttachments
         ? optionalString(req.body?.text, "text", "")
         : requireString(req.body?.text, "text");
 
@@ -518,6 +580,10 @@ function registerCoreRoutes(app, upload, deps) {
           ...(active ? { character: active.id, characterName: active.name } : {}),
         });
         return res.end();
+      }
+
+      if (documents.length > 0) {
+        input.text = await prepareDocumentTurn(input.text, documents);
       }
 
       if (images.length) {
