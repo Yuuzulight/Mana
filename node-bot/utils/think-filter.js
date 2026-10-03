@@ -22,9 +22,10 @@ function trailingPartial(text, tag) {
   return 0;
 }
 
-function createThinkFilter() {
+function createThinkFilter({ onThought } = {}) {
   let buffer = "";
   let inside = false;
+  let thoughtBuffer = "";
 
   return {
     // Returns only text that is definitely outside a think block. Anything
@@ -38,10 +39,20 @@ function createThinkFilter() {
           const end = buffer.indexOf(CLOSE);
           if (end === -1) {
             // Hold only a possible partial closing tag; the rest is
-            // reasoning and can be discarded rather than grown forever.
+            // reasoning tokens to capture.
             const keep = trailingPartial(buffer, CLOSE);
+            const chunk = keep ? buffer.slice(0, buffer.length - keep) : buffer;
+            if (chunk) {
+              thoughtBuffer += chunk;
+              onThought?.(chunk);
+            }
             buffer = keep ? buffer.slice(-keep) : "";
             break;
+          }
+          const chunk = buffer.slice(0, end);
+          if (chunk) {
+            thoughtBuffer += chunk;
+            onThought?.(chunk);
           }
           buffer = buffer.slice(end + CLOSE.length);
           inside = false;
@@ -63,13 +74,24 @@ function createThinkFilter() {
       return out;
     },
     // End of stream: release anything held back that turned out not to be a
-    // tag. Text still inside an unclosed think block is dropped -- a model
-    // that never closes the block was never going to have that spoken.
+    // tag. Text still inside an unclosed think block is captured as thought
+    // (for display) but dropped from spoken output.
     flush() {
-      const rest = inside ? "" : buffer;
+      if (inside) {
+        if (buffer) {
+          thoughtBuffer += buffer;
+          onThought?.(buffer);
+        }
+        buffer = "";
+        inside = false;
+        return "";
+      }
+      const rest = buffer;
       buffer = "";
-      inside = false;
       return rest;
+    },
+    getThought() {
+      return thoughtBuffer;
     },
   };
 }

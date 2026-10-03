@@ -207,6 +207,43 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         Add(message, forceScroll: false);
     });
 
+    // #1354: live reasoning/thought token streaming and final consolidated thought
+    public void AppendReplyThought(string text, string? speaker = null) => RunOnUiThread(() =>
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+        Message current;
+        if (messages.Count > 0 && !messages[^1].FromUser && messages[^1].Steps is null && (speaker is null || messages[^1].Speaker == speaker) && messages[^1].FinalText is null)
+        {
+            current = messages[^1];
+        }
+        else
+        {
+            current = new Message(fromUser: false) { Name = speaker };
+            Add(current, forceScroll: false);
+        }
+        current.Thought = (current.Thought ?? "") + text;
+        current.Invalidate();
+        Relayout(forceScroll: false);
+    });
+
+    public void SetReplyThought(string thought, string? speaker = null) => RunOnUiThread(() =>
+    {
+        if (string.IsNullOrWhiteSpace(thought))
+        {
+            return;
+        }
+        if (messages.Count > 0 && !messages[^1].FromUser && messages[^1].Steps is null && (speaker is null || messages[^1].Speaker == speaker))
+        {
+            var current = messages[^1];
+            current.Thought = thought;
+            current.Invalidate();
+            Relayout(forceScroll: false);
+        }
+    });
+
     // #687: a reopened or switched-to session's stored turns, replacing the
     // conversation shown. Artifacts stay inline here.
     public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
@@ -235,11 +272,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 continue;
             }
             // #1337: her saved steps where they showed live.
+            var first = true;
             foreach (var (text, group) in ChatStepGroups.Interleave(turn.Assistant, turn.Steps))
             {
-                var reply = new Message(fromUser: false) { FinalText = text, Steps = group };
+                var reply = new Message(fromUser: false)
+                {
+                    FinalText = text,
+                    Steps = group,
+                    Thought = first && group is null ? turn.Thought : null,
+                };
                 if (group is null)
                 {
+                    first = false;
                     reply.Blocks.AddRange(ChatMarkdownParser.Parse(text!));
                 }
                 else
@@ -642,6 +686,74 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var widest = 0;
         message.Cells.Clear();
         message.ImageBounds.Clear();
+        message.ThoughtHeaderBounds = Rectangle.Empty;
+        message.ThoughtLines.Clear();
+
+        if (!string.IsNullOrWhiteSpace(message.Thought))
+        {
+            var thoughtLabel = message.ThoughtOpen ? "▾ 💭 Thought Process" : "▸ 💭 Thought Process";
+            var labelW = Measure(thoughtLabel, labelFont) + 16;
+            var labelH = labelFont.Height + 6;
+            message.ThoughtHeaderBounds = new Rectangle(0, y, labelW, labelH);
+            y += labelH + 4;
+            widest = Math.Max(widest, labelW);
+
+            if (message.ThoughtOpen)
+            {
+                var thoughtBlocks = ChatMarkdownParser.Parse(message.Thought);
+                for (var b = 0; b < thoughtBlocks.Count; b++)
+                {
+                    var block = thoughtBlocks[b];
+                    if (b > 0)
+                    {
+                        y += BlockGap;
+                        flat.Append('\n');
+                    }
+                    if (block.Type == MarkdownBlockType.CodeBlock)
+                    {
+                        var sourceLines = string.Concat(block.Runs.Select(r => r.Text)).Replace("\r", "").Split('\n');
+                        for (var li = 0; li < sourceLines.Length; li++)
+                        {
+                            if (li > 0)
+                            {
+                                flat.Append('\n');
+                            }
+                            foreach (var piece in BreakToWidth(sourceLines[li].Length == 0 ? " " : sourceLines[li], s => Measure(s, codeFont), maxWidth - 12 - QuoteIndent))
+                            {
+                                var w = Measure(piece, codeFont);
+                                message.ThoughtLines.Add(new Line(y, codeFont.Height + 2, true, new List<Fragment> { new(piece, codeFont, QuoteIndent + 6, w, true, flat.Length) }, true));
+                                flat.Append(piece);
+                                widest = Math.Max(widest, QuoteIndent + w + 12);
+                                y += codeFont.Height + 2;
+                            }
+                        }
+                        continue;
+                    }
+
+                    var indent = 0;
+                    var runs = block.Runs.ToList();
+                    if (block.Type == MarkdownBlockType.BulletItem)
+                    {
+                        runs.Insert(0, new MarkdownRun("•  ", false, false, false));
+                        indent = Measure("•  ", bodyFont);
+                    }
+                    var left = QuoteIndent;
+                    var lineHeight = bodyFont.Height;
+                    foreach (var fragments in Wrap(runs, null, left, maxWidth - left, indent))
+                    {
+                        message.ThoughtLines.Add(new Line(y, lineHeight, false, fragments, true));
+                        widest = Math.Max(widest, fragments[^1].X + fragments[^1].Width);
+                        y += lineHeight + 2;
+                    }
+                }
+                if (message.Blocks.Count > 0)
+                {
+                    y += BlockGap;
+                    flat.Append('\n');
+                }
+            }
+        }
+
         if (message.Images.Count > 0)
         {
             var x = 0;
@@ -1012,6 +1124,41 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
 
             var origin = new Point(bubble.X + PadX, bubble.Y + PadY);
+            if (!string.IsNullOrWhiteSpace(message.Thought))
+            {
+                var headerRect = message.ThoughtHeaderBounds with { X = message.ThoughtHeaderBounds.X + origin.X, Y = message.ThoughtHeaderBounds.Y + origin.Y };
+                using var pillBrush = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 30 : 40, DarkTheme.Muted));
+                using var pillPen = new Pen(Color.FromArgb(DarkTheme.IsLight ? 60 : 70, DarkTheme.Border));
+                g.FillRectangle(pillBrush, headerRect);
+                g.DrawRectangle(pillPen, headerRect.X, headerRect.Y, headerRect.Width - 1, headerRect.Height - 1);
+                var labelText = message.ThoughtOpen ? "▾ 💭 Thought Process" : "▸ 💭 Thought Process";
+                TextRenderer.DrawText(g, labelText, labelFont, new Point(headerRect.X + 8, headerRect.Y + 3), DarkTheme.Muted, TextFlags);
+
+                if (message.ThoughtOpen)
+                {
+                    foreach (var line in message.ThoughtLines)
+                    {
+                        if (line.Code)
+                        {
+                            using var codeBack = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 110 : 60, DarkTheme.IsLight ? Color.White : Color.Black));
+                            g.FillRectangle(codeBack, origin.X + QuoteIndent, origin.Y + line.Y - 1, message.ContentWidth - QuoteIndent, line.Height);
+                        }
+                        if (line.Quote)
+                        {
+                            using var bar = new SolidBrush(Color.FromArgb(120, DarkTheme.Muted));
+                            g.FillRectangle(bar, origin.X, origin.Y + line.Y - 1, 2, line.Height + 2);
+                        }
+                        foreach (var fragment in line.Fragments)
+                        {
+                            PaintSelection(g, i, fragment, origin.X, origin.Y + line.Y - 1, line.Height);
+                            var y = origin.Y + line.Y + (line.Height - fragment.Font.Height) / 2;
+                            TextRenderer.DrawText(g, fragment.Text, fragment.Font, new Point(origin.X + fragment.X, y),
+                                fragment.IsCode ? DarkTheme.CodeText : DarkTheme.Muted, TextFlags);
+                        }
+                    }
+                }
+            }
+
             for (var k = 0; k < message.Images.Count; k++)
             {
                 var rect = message.ImageBounds[k];
@@ -1085,6 +1232,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     // ---- Input ----------------------------------------------------------
 
+    internal void SimulateClick(Point point) =>
+        OnMouseDown(new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0));
+
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
@@ -1100,6 +1250,20 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 _ = RunActionAsync(actionMsg, actionIndex);
             }
             return;
+        }
+        // #1354: clicking thought header toggles ThoughtOpen
+        if (e.Button == MouseButtons.Left && HitTest(e.Location) is var thHit and >= 0 && !string.IsNullOrWhiteSpace(messages[thHit].Thought))
+        {
+            var thMsg = messages[thHit];
+            var hx = e.X - thMsg.Bounds.X - PadX;
+            var hy = e.Y + (scrolling ? scrollBar.Value : 0) - thMsg.Bounds.Y - PadY;
+            if (thMsg.ThoughtHeaderBounds.Contains(hx, hy))
+            {
+                thMsg.ThoughtOpen = !thMsg.ThoughtOpen;
+                thMsg.Invalidate();
+                Relayout(forceScroll: false);
+                return;
+            }
         }
         // #1318: clicking a step line opens or closes its steps.
         if (e.Button == MouseButtons.Left && HitTest(e.Location) is var taskHit and >= 0 && messages[taskHit].Steps is { TaskId: { } taskId } task)
@@ -1141,7 +1305,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             hoveredLink = link;
             linkTip.SetToolTip(this, link); // shows where a link really goes before it's clicked
         }
-        Cursor = ActionAt(e.Location) is not null || link is not null ? Cursors.Hand
+        var isThoughtHeader = false;
+        if (HitTest(e.Location) is var thMoveHit and >= 0 && !string.IsNullOrWhiteSpace(messages[thMoveHit].Thought))
+        {
+            var thMsg = messages[thMoveHit];
+            var hx = e.X - thMsg.Bounds.X - PadX;
+            var hy = e.Y + (scrolling ? scrollBar.Value : 0) - thMsg.Bounds.Y - PadY;
+            if (thMsg.ThoughtHeaderBounds.Contains(hx, hy))
+            {
+                isThoughtHeader = true;
+            }
+        }
+        Cursor = isThoughtHeader || ActionAt(e.Location) is not null || link is not null ? Cursors.Hand
             : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
         if (!pressed || (e.Button & MouseButtons.Left) == 0 || messages.Count == 0)
         {
@@ -1190,7 +1365,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var m = messages[index];
         var x = point.X - m.Bounds.X - PadX;
         var y = point.Y + (scrolling ? scrollBar.Value : 0) - m.Bounds.Y - PadY;
-        foreach (var line in m.Lines)
+        var allLines = m.ThoughtOpen ? m.ThoughtLines.Concat(m.Lines) : m.Lines;
+        foreach (var line in allLines)
         {
             if (y < line.Y || y >= line.Y + line.Height)
             {
@@ -1757,6 +1933,12 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public StepGroup? Steps { get; set; }
         public bool StepsOpen { get; set; }
 
+        // #1354: reasoning tokens / thought deliberation dropdown
+        public string? Thought { get; set; }
+        public bool ThoughtOpen { get; set; }
+        public Rectangle ThoughtHeaderBounds { get; set; }
+        public List<Line> ThoughtLines { get; set; } = new();
+
         public void Invalidate() => LaidOutWidth = -1;
 
         public string PlainText
@@ -1767,6 +1949,14 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 if (Images.Count > 0)
                 {
                     text.Append(Images.Count == 1 ? "[image]" : $"[{Images.Count} images]");
+                }
+                if (ThoughtOpen && !string.IsNullOrWhiteSpace(Thought))
+                {
+                    if (text.Length > 0)
+                    {
+                        text.AppendLine();
+                    }
+                    text.Append($"[Thought Process: {Thought.Trim()}]");
                 }
                 foreach (var block in Blocks)
                 {

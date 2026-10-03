@@ -62,8 +62,8 @@ async function* readSseDeltas(resp, onTimings = null) {
 // Order matters: think-block suppression runs BEFORE sentence cutting, so
 // reasoning never reaches TTS. The other way round would speak the model's
 // deliberation before its closing tag arrived.
-async function streamSentences(resp, { onSentence = null, maxSentenceChars, onTimings = null } = {}) {
-  const thinkFilter = createThinkFilter();
+async function streamSentences(resp, { onSentence = null, onThought = null, onThoughtDone = null, maxSentenceChars, onTimings = null } = {}) {
+  const thinkFilter = createThinkFilter({ onThought });
   const chunker = createSentenceChunker({ maxChars: maxSentenceChars });
   const emit = typeof onSentence === "function" ? onSentence : () => {};
   let full = "";
@@ -85,6 +85,11 @@ async function streamSentences(resp, { onSentence = null, maxSentenceChars, onTi
   const tail = thinkFilter.flush();
   if (tail) await deliver(chunker.push(tail));
   await deliver(chunker.flush());
+
+  const thought = thinkFilter.getThought();
+  if (thought && typeof onThoughtDone === "function") {
+    onThoughtDone(thought);
+  }
 
   return full;
 }

@@ -64,3 +64,32 @@ test("text that merely looks like the start of a tag is released at flush", () =
   out += filter.flush();
   assert.equal(out, "compare a < b and");
 });
+
+test("captures thought tokens through onThought and getThought", () => {
+  const chunks = [];
+  const filter = createThinkFilter({
+    onThought: (chunk) => chunks.push(chunk),
+  });
+
+  const visible = filter.push("Answer: <think>step 1; step 2;</think>42");
+  filter.flush();
+
+  assert.equal(visible, "Answer: 42");
+  assert.equal(chunks.join(""), "step 1; step 2;");
+  assert.equal(filter.getThought(), "step 1; step 2;");
+});
+
+test("captures unclosed thought tokens at flush", () => {
+  const chunks = [];
+  const filter = createThinkFilter({
+    onThought: (chunk) => chunks.push(chunk),
+  });
+
+  const visible = filter.push("Prefix <think>internal deliberation running long...");
+  filter.flush();
+
+  assert.equal(visible, "Prefix ");
+  assert.equal(chunks.join(""), "internal deliberation running long...");
+  assert.equal(filter.getThought(), "internal deliberation running long...");
+});
+

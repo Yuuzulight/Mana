@@ -350,3 +350,34 @@ test("POST /reply/stream: #1325 an unreadable document gives a clear reason so M
   assert.match(receivedPrompt, /File not found/);
 });
 
+test("POST /reply/stream: #1354 reasoning tokens stream as thought events and are included on final", async () => {
+  const app = createApp({
+    buildAssistantReply: async (transcript, screen, userPatch, profile, sessionId, assistantMode, presetId, replyMeta, onSentence) => {
+      replyMeta.onThought?.("Thinking about the request...");
+      replyMeta.onThought?.(" Conclusion reached.");
+      await onSentence?.("Here is your answer.");
+      return "Here is your answer.";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { events } = await postNdjson(baseUrl, "/reply/stream", {
+      text: "tell me something",
+    });
+    const thoughtEvents = events.filter((e) => e.type === "thought");
+    assert.equal(thoughtEvents.length, 2);
+    assert.equal(thoughtEvents[0].text, "Thinking about the request...");
+    assert.equal(thoughtEvents[1].text, " Conclusion reached.");
+
+    const sentenceEvents = events.filter((e) => e.type === "sentence");
+    assert.equal(sentenceEvents.length, 1);
+    assert.equal(sentenceEvents[0].text, "Here is your answer.");
+
+    const finalEvent = events.at(-1);
+    assert.equal(finalEvent.type, "final");
+    assert.equal(finalEvent.reply, "Here is your answer.");
+    assert.equal(finalEvent.thought, "Thinking about the request... Conclusion reached.");
+  });
+});
+
+

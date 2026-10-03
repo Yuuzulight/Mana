@@ -490,6 +490,7 @@ function registerCoreRoutes(app, upload, deps) {
       );
       return res.json({
         reply,
+        ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
         ttsConfigured: TTS_PROVIDER !== "none",
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
       });
@@ -644,6 +645,12 @@ function registerCoreRoutes(app, upload, deps) {
         onToolCall: (call) => writeEvent({ ...call, type: "tool" }),
         // #914: a relationship note she just made, for its chat line.
         onNoted: (noted) => writeEvent({ type: "noted", ...noted }),
+        // #1354: reasoning tokens streamed separately so TTS never speaks them,
+        // but the launcher can show a collapsed thought dropdown.
+        onThought: (chunk) => {
+          replyMeta.thought = (replyMeta.thought || "") + chunk;
+          writeEvent({ type: "thought", text: chunk });
+        },
         // #675: the client's "think harder" (deep-thinking toggle): true
         // thinks this turn, false ends Mana's own deep thinking (Q12b).
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
@@ -689,6 +696,7 @@ function registerCoreRoutes(app, upload, deps) {
       writeEvent({
         type: "final",
         reply,
+        ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
         ttsConfigured: TTS_PROVIDER !== "none",
         changed: !replyMeta.streamedMatchesFinal,
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),

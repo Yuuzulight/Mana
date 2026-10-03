@@ -889,6 +889,7 @@ internal sealed class ManaBackendClient
                     At = turnElement.TryGetProperty("at", out var atElement) ? atElement.GetString() : null,
                     User = turnElement.TryGetProperty("user", out var userElement) ? userElement.GetString() : null,
                     Assistant = turnElement.TryGetProperty("assistant", out var assistantElement) ? assistantElement.GetString() : null,
+                    Thought = turnElement.TryGetProperty("thought", out var thoughtElement) ? thoughtElement.GetString() : null,
                     Steps = ParseAgentSteps(turnElement), // #1337: absent on older turns
                 });
             }
@@ -3005,6 +3006,8 @@ internal sealed class ManaBackendClient
             Kind = root.TryGetProperty("kind", out var kindProp) && kindProp.ValueKind == JsonValueKind.String ? kindProp.GetString() : null,
             Id = root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null,
             Date = root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind == JsonValueKind.String ? dateProp.GetString() : null,
+            // #1354: reasoning tokens / thought deliberation.
+            Thought = root.TryGetProperty("thought", out var thProp) && thProp.ValueKind == JsonValueKind.String ? thProp.GetString() : null,
             // #1337: a "tool" event carries the whole step (none before #1318).
             Step = root.GetProperty("type").GetString() == "tool" && StepStr(root, "id") is { } stepId ? ParseAgentStep(root, stepId) : null,
         };
@@ -3172,6 +3175,8 @@ internal sealed class ManaSessionTurn
     public string? At { get; init; }
     public string? User { get; init; }
     public string? Assistant { get; init; }
+    // #1354: reasoning tokens / thought deliberation.
+    public string? Thought { get; init; }
     // #1337: the reply's steps, placed at their textOffsets.
     public IReadOnlyList<AgentStep> Steps { get; init; } = [];
     // #1337: set instead of User/Assistant on a "background task ended" event.
@@ -3345,6 +3350,8 @@ internal sealed class ReplyStreamEvent
     public string Type { get; init; } = "";
     public string? Text { get; init; }
     public string? Reply { get; init; }
+    // #1354: reasoning tokens / thought deliberation.
+    public string? Thought { get; init; }
     public bool Changed { get; init; }
     public string? Expression { get; init; }
     // #623: node-bot's emotion tag -- a "sentence" event's face, or on
