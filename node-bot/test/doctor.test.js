@@ -5,7 +5,12 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createApp } = require("../server");
-const { runDoctorChecks, runDoctorChecksAsync } = require("../doctor");
+const {
+  runDoctorChecks,
+  runDoctorChecksAsync,
+  checkVramBudgets,
+  checkCodingSession,
+} = require("../doctor");
 const { withServer, withRawServer, useTestAdminToken } = require("./helpers");
 
 // Every route but a few public ones needs an admin key (admin-key.js).
@@ -43,7 +48,8 @@ test("doctor checks return structured pass warn and fail results", () => {
     // Issue #48: mobile-2fa always reports "pass" (it's opt-in, so not
     // having enabled it is a valid state, not a warning) -- one more pass
     // than before that check existed.
-    assert.equal(result.summary.pass, 7);
+    // Issue #1343: vram-budgets and coding-session report pass with defaults.
+    assert.equal(result.summary.pass, 9);
     assert.equal(result.summary.warn, 10);
     assert.equal(result.summary.fail, 1);
 
@@ -61,6 +67,8 @@ test("doctor checks return structured pass warn and fail results", () => {
         "mcp-server",
         "gpu",
         "recommended-model-profile",
+        "vram-budgets",
+        "coding-session",
         "mobile-auth",
         "mobile-2fa",
         "remote-exposure",
@@ -819,3 +827,59 @@ test("Doctor warns when a non-English speech language meets an English-only Whis
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("checkVramBudgets reports headroom, host RAM parking, constrained, and gaming lock", () => {
+  const gpu = { name: "NVIDIA GeForce RTX 5080", cuda: true, vramMb: 16303 };
+
+  // Headroom >= 9000 MB: ready for 14B coder
+  const pass9g = checkVramBudgets({ gpu, vramUsage: { usedMb: 3000, freeMb: 13303 } });
+  assert.equal(pass9g.status, "pass");
+  assert.equal(pass9g.details.codingEngineReady, true);
+  assert.match(pass9g.message, /ready for instant on-demand 14B Coder engine/);
+
+  // Headroom between 4000 and 8999 MB: everyday resident active, 14B parks resident in RAM
+  const pass4g = checkVramBudgets({ gpu, vramUsage: { usedMb: 10000, freeMb: 6303 } });
+  assert.equal(pass4g.status, "pass");
+  assert.equal(pass4g.details.requiresHostRamParking, true);
+  assert.match(pass4g.message, /everyday resident model active/);
+
+  // Headroom < 4000 MB: constrained warn
+  const warnLow = checkVramBudgets({ gpu, vramUsage: { usedMb: 14000, freeMb: 2303 } });
+  assert.equal(warnLow.status, "warn");
+  assert.equal(warnLow.details.codingEngineReady, false);
+  assert.match(warnLow.message, /VRAM constrained/);
+
+  // Gaming active: locks out 14B coder
+  const warnGaming = checkVramBudgets({
+    gpu,
+    vramUsage: { usedMb: 12000, freeMb: 4303 },
+    gamingWatch: { isGaming: () => true },
+  });
+  assert.equal(warnGaming.status, "warn");
+  assert.equal(warnGaming.details.codingEngineLocked, true);
+  assert.match(warnGaming.message, /Gaming mode active/);
+
+  // No CUDA GPU: reports pass (not applicable)
+  const noCuda = checkVramBudgets({ gpu: null });
+  assert.equal(noCuda.status, "pass");
+  assert.match(noCuda.message, /No CUDA GPU detected/);
+});
+
+test("checkCodingSession reports everyday mode and active sticky coding mode", () => {
+  // Inactive / everyday
+  const idle = checkCodingSession(null);
+  assert.equal(idle.status, "pass");
+  assert.equal(idle.details.active, false);
+  assert.match(idle.message, /Everyday mode active/);
+
+  // Active sticky coding session
+  const active = checkCodingSession({
+    isCodingSessionActive: () => true,
+    remainingMs: () => 12 * 60 * 1000,
+  });
+  assert.equal(active.status, "pass");
+  assert.equal(active.details.active, true);
+  assert.match(active.message, /Coding mode active/);
+  assert.match(active.message, /12m remaining/);
+});
+

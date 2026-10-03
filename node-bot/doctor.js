@@ -141,6 +141,114 @@ function checkRecommendedModelProfile(modelManagement) {
   );
 }
 
+// Issue #1343: VRAM budget check for Tri-Mode architecture:
+// - Everyday resident 9B + LoRAs + Qwen3TTS (~12.0 GB, ~4.3 GB free headroom)
+// - Engineering session on-demand 14B Coder (~13.9 GB, ~2.4 GB free headroom, requires ~9.0 GB VRAM)
+// - Gaming guard (locks out 14B coder while gaming is active)
+function checkVramBudgets({ gpu, vramUsage, gamingWatch } = {}) {
+  if (!gpu || !gpu.cuda) {
+    return makeCheck(
+      "vram-budgets",
+      "VRAM telemetry",
+      "pass",
+      "No CUDA GPU detected; VRAM budget checks not applicable.",
+      { gpu: gpu || null },
+    );
+  }
+
+  const totalMb = gpu.vramMb || 0;
+  const usedMb = vramUsage?.usedMb ?? null;
+  const freeMb = vramUsage?.freeMb ?? (usedMb !== null && totalMb ? totalMb - usedMb : null);
+
+  const isGaming = typeof gamingWatch?.isGaming === "function" && gamingWatch.isGaming();
+  if (isGaming) {
+    const freeGbStr = freeMb !== null ? `${(freeMb / 1024).toFixed(1)} GB free` : "gaming active";
+    return makeCheck(
+      "vram-budgets",
+      "VRAM telemetry",
+      "warn",
+      `Gaming mode active: 14B Coder engine is locked out to protect gaming VRAM (${freeGbStr}).`,
+      { totalMb, usedMb, freeMb, gaming: true, codingEngineLocked: true },
+    );
+  }
+
+  if (freeMb !== null) {
+    const freeGb = freeMb / 1024;
+    if (freeMb >= 9000) {
+      return makeCheck(
+        "vram-budgets",
+        "VRAM telemetry",
+        "pass",
+        `VRAM headroom (${freeGb.toFixed(1)} GB free): ready for instant on-demand 14B Coder engine (~9.0 GB required).`,
+        { totalMb, usedMb, freeMb, codingEngineReady: true },
+      );
+    }
+    if (freeMb >= 4000) {
+      return makeCheck(
+        "vram-budgets",
+        "VRAM telemetry",
+        "pass",
+        `VRAM headroom (${freeGb.toFixed(1)} GB free): everyday resident model active. On-demand 14B coder session will park resident model in host RAM.`,
+        { totalMb, usedMb, freeMb, codingEngineReady: true, requiresHostRamParking: true },
+      );
+    }
+    return makeCheck(
+      "vram-budgets",
+      "VRAM telemetry",
+      "warn",
+      `VRAM constrained (${freeGb.toFixed(1)} GB free): tight VRAM headroom; heavy tasks may cause paging.`,
+      { totalMb, usedMb, freeMb, codingEngineReady: false },
+    );
+  }
+
+  return makeCheck(
+    "vram-budgets",
+    "VRAM telemetry",
+    "pass",
+    `${gpu.name} (${(totalMb / 1024).toFixed(1)} GB total VRAM).`,
+    { totalMb, gpu },
+  );
+}
+
+// Issue #1343: sticky coding session status in Doctor output
+function checkCodingSession(stickyCodingSession) {
+  if (!stickyCodingSession) {
+    return makeCheck(
+      "coding-session",
+      "Coding session",
+      "pass",
+      "Everyday mode active (default 9B multi-LoRA resident brain).",
+      { active: false },
+    );
+  }
+
+  const active = typeof stickyCodingSession.isCodingSessionActive === "function"
+    ? stickyCodingSession.isCodingSessionActive()
+    : Boolean(stickyCodingSession.active);
+
+  if (active) {
+    const remainingMs = typeof stickyCodingSession.remainingMs === "function"
+      ? stickyCodingSession.remainingMs()
+      : null;
+    const remainingStr = remainingMs ? ` (${Math.round(remainingMs / 60000)}m remaining until idle timeout)` : "";
+    return makeCheck(
+      "coding-session",
+      "Coding session",
+      "pass",
+      `Coding mode active: sticky session locked to Qwen2.5-Coder-14B${remainingStr}.`,
+      { active: true, remainingMs },
+    );
+  }
+
+  return makeCheck(
+    "coding-session",
+    "Coding session",
+    "pass",
+    "Everyday mode active (default 9B multi-LoRA resident brain).",
+    { active: false },
+  );
+}
+
 function checkRequiredFile(id, label, filePath, missingConfigMessage) {
   if (!filePath) {
     return makeCheck(id, label, "warn", missingConfigMessage);
@@ -865,6 +973,12 @@ function runDoctorChecks(options = {}) {
     checkMcpServer(env),
     checkGpu(options.gpu !== undefined ? options.gpu : getGpu()),
     checkRecommendedModelProfile(modelManagement),
+    checkVramBudgets({
+      gpu: options.gpu !== undefined ? options.gpu : getGpu(),
+      vramUsage: options.vramUsage !== undefined ? options.vramUsage : modelManagement.getVramUsage?.(),
+      gamingWatch: options.gamingWatch,
+    }),
+    checkCodingSession(options.stickyCodingSession),
     checkMobileAuth(env),
     checkMobile2fa(env),
     checkRemoteExposure(env),
@@ -946,6 +1060,8 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_BIND_HOST,
   buildDoctorResult,
+  checkCodingSession,
+  checkVramBudgets,
   getBindHost,
   isLoopbackBindHost,
   runDoctorChecks,

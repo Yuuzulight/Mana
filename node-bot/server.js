@@ -2843,6 +2843,8 @@ function registerRoutes(app, upload, deps = {}) {
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
         whisperLanguage: whisperLanguage(),
+        gamingWatch,
+        stickyCodingSession: codingSessionManager,
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -2866,6 +2868,8 @@ function registerRoutes(app, upload, deps = {}) {
       memoryVault: memoryVaultStatus(),
       findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
       whisperLanguage: whisperLanguage(),
+      gamingWatch,
+      stickyCodingSession: codingSessionManager,
     }),
   });
   if (!(process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT))) {

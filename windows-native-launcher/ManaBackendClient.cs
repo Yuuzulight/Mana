@@ -129,6 +129,72 @@ internal sealed class ManaBackendClient
         };
     }
 
+    // #1343: Tri-mode dedicated engineering engine session API
+    public record CodingSessionStatus(bool Active, bool IsGaming, string? Game);
+
+    public async Task<CodingSessionStatus> GetCodingSessionStatusAsync(string? sessionId = null)
+    {
+        try
+        {
+            var url = string.IsNullOrEmpty(sessionId)
+                ? "/coding-session/status"
+                : $"/coding-session/status?sessionId={Uri.EscapeDataString(sessionId)}";
+            using var response = await http.GetAsync(url);
+            if (!response.IsSuccessStatusCode) return new CodingSessionStatus(false, false, null);
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+            var root = document.RootElement;
+            var active = root.TryGetProperty("active", out var a) && a.GetBoolean();
+            var isGaming = root.TryGetProperty("isGaming", out var g) && g.GetBoolean();
+            var game = root.TryGetProperty("game", out var gm) && gm.ValueKind == JsonValueKind.String ? gm.GetString() : null;
+            return new CodingSessionStatus(active, isGaming, game);
+        }
+        catch
+        {
+            return new CodingSessionStatus(false, false, null);
+        }
+    }
+
+    public async Task<bool> StartCodingSessionAsync(string? sessionId = null)
+    {
+        try
+        {
+            var content = new StringContent(
+                JsonSerializer.Serialize(new { sessionId }),
+                Encoding.UTF8,
+                "application/json");
+            using var response = await http.PostAsync("/coding-session/start", content);
+            if (!response.IsSuccessStatusCode) return false;
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+            return document.RootElement.TryGetProperty("ok", out var ok) && ok.GetBoolean();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public async Task<bool> StopCodingSessionAsync(string? sessionId = null, string reason = "user_exit")
+    {
+        try
+        {
+            var content = new StringContent(
+                JsonSerializer.Serialize(new { sessionId, reason }),
+                Encoding.UTF8,
+                "application/json");
+            using var response = await http.PostAsync("/coding-session/stop", content);
+            if (!response.IsSuccessStatusCode) return false;
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+            return document.RootElement.TryGetProperty("ok", out var ok) && ok.GetBoolean();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // #526: unlike GetPerformanceStatusAsync, this does NOT call
     // EnsureSuccessStatusCode unconditionally -- node-bot's own /doctor
     // handler returns 503 (not 200) precisely when it found real
