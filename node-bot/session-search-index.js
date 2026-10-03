@@ -220,7 +220,10 @@ function createSessionSearchIndex(options = {}) {
       for (const row of candidates) {
         const meta = metaLookup.get(row.rowid);
         if (!meta) continue;
-        if (sessionId && meta.sessionId !== sessionId) continue;
+        if (sessionId) {
+          if (Array.isArray(sessionId) && !sessionId.includes(meta.sessionId)) continue;
+          if (!Array.isArray(sessionId) && meta.sessionId !== sessionId) continue;
+        }
         results.push({
           sessionId: meta.sessionId,
           role: "turn",
@@ -325,8 +328,13 @@ function createSessionSearchIndex(options = {}) {
       params.push(String(query));
     }
     if (sessionId) {
-      conditions.push("sessionId = ?");
-      params.push(String(sessionId));
+      if (Array.isArray(sessionId)) {
+        conditions.push(`sessionId IN (${sessionId.map(() => "?").join(",")})`);
+        params.push(...sessionId.map(String));
+      } else {
+        conditions.push("sessionId = ?");
+        params.push(String(sessionId));
+      }
     }
     if (Array.isArray(roleFilter) && roleFilter.length) {
       conditions.push(`role IN (${roleFilter.map(() => "?").join(",")})`);

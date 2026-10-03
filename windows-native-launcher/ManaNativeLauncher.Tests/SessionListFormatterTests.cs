@@ -97,4 +97,11 @@ public class SessionListFormatterTests
         Assert.Equal("Dec 1, 2025", SessionListFormatter.FormatRelative(new System.DateTimeOffset(new System.DateTime(2025, 12, 1, 9, 0, 0, System.DateTimeKind.Local)).ToString("o"), Now));
         Assert.Equal("", SessionListFormatter.FormatRelative("not a date", Now));
     }
+
+    [Fact]
+    public void FormatDisplayName_PrefixesBranchedSessionsWithBranchSymbol()
+    {
+        var session = new ManaSession { SessionId = "s1-fork", Name = "Branched topic", ForkedFrom = "s1" };
+        Assert.Equal("↳ Branched topic", SessionListFormatter.FormatDisplayName(session));
+    }
 }

@@ -53,6 +53,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private readonly Font labelFont = new("Segoe UI", 8.5F, FontStyle.Bold);
     private readonly ToolTip linkTip = new();
     private string? hoveredLink;
+    private int hoveredIndex = -1;
     private int contentHeight;
     private int selected = -1;
     private (int Msg, int Offset)? anchor;
@@ -67,6 +68,12 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // reopened session's history at launch, voice turns) must still land.
     private readonly int uiThreadId = Environment.CurrentManagedThreadId;
     private readonly System.Threading.SynchronizationContext? uiContext;
+
+    // #1322: Chat branching, message editing, reply regeneration, and version stepping
+    public event Action<int, string>? OnEditMessage;
+    public event Action<int>? OnRegenerateReply;
+    public event Action<int>? OnBranchFromMessage;
+    public event Action<int, int>? OnSwitchTurnVersion;
 
     public ChatView()
     {
@@ -86,7 +93,36 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var menu = new ContextMenuStrip();
         var copyItem = menu.Items.Add("Copy", null, (_, _) => CopySelected());
         menu.Items.Add("Copy conversation", null, (_, _) => CopyConversation());
-        menu.Opening += (_, _) => copyItem.Enabled = selected >= 0 || HasTextSelection;
+        menu.Items.Add(new ToolStripSeparator());
+        var editItem = menu.Items.Add("Edit message (E / F2)", null, (_, _) =>
+        {
+            if (selected >= 0 && selected < messages.Count && messages[selected].FromUser && messages[selected].TurnIndex >= 0)
+            {
+                OnEditMessage?.Invoke(messages[selected].TurnIndex, messages[selected].PlainText);
+            }
+        });
+        var regenItem = menu.Items.Add("Regenerate reply (R)", null, (_, _) =>
+        {
+            if (selected >= 0 && selected < messages.Count && !messages[selected].FromUser && messages[selected].TurnIndex >= 0)
+            {
+                OnRegenerateReply?.Invoke(messages[selected].TurnIndex);
+            }
+        });
+        var branchItem = menu.Items.Add("Branch from here (B)", null, (_, _) =>
+        {
+            if (selected >= 0 && selected < messages.Count && messages[selected].TurnIndex >= 0)
+            {
+                OnBranchFromMessage?.Invoke(messages[selected].TurnIndex);
+            }
+        });
+        menu.Opening += (_, _) =>
+        {
+            copyItem.Enabled = selected >= 0 || HasTextSelection;
+            var hasMsg = selected >= 0 && selected < messages.Count && messages[selected].TurnIndex >= 0;
+            editItem.Visible = hasMsg && messages[selected].FromUser;
+            regenItem.Visible = hasMsg && !messages[selected].FromUser;
+            branchItem.Visible = hasMsg;
+        };
         ContextMenuStrip = menu;
     }
 
@@ -106,7 +142,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     public void AppendUserMessage(string text, IReadOnlyList<string> images, IReadOnlyList<string>? documents) => RunOnUiThread(() =>
     {
         LastUserMessageAt = DateTime.UtcNow;
-        var message = new Message(fromUser: true);
+        var turnIndex = messages.Count(m => m.FromUser);
+        var message = new Message(fromUser: true) { TurnIndex = turnIndex };
         foreach (var image in images)
         {
             if (DecodeThumbnail(image) is { } thumb)
@@ -202,7 +239,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 return;
             }
         }
-        var message = new Message(fromUser: false) { Name = speaker };
+        var lastUser = messages.FindLast(m => m.FromUser);
+        var message = new Message(fromUser: false) { Name = speaker, TurnIndex = lastUser?.TurnIndex ?? -1 };
         message.Blocks.AddRange(blocks);
         Add(message, forceScroll: false);
     });
@@ -221,7 +259,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         else
         {
-            current = new Message(fromUser: false) { Name = speaker };
+            var lastUser = messages.FindLast(m => m.FromUser);
+            current = new Message(fromUser: false) { Name = speaker, TurnIndex = lastUser?.TurnIndex ?? -1 };
             Add(current, forceScroll: false);
         }
         current.Thought = (current.Thought ?? "") + text;
@@ -254,8 +293,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         selected = -1;
         ClearTextSelection();
         var now = DateTimeOffset.UtcNow;
-        foreach (var turn in turns)
+        for (var i = 0; i < turns.Count; i++)
         {
+            var turn = turns[i];
+            var turnIdx = turn.TurnIndex >= 0 ? turn.TurnIndex : i;
             if (turn.Notice is { } notice)
             {
                 messages.Add(TaskNoticeMessage(notice));
@@ -263,7 +304,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             if (!string.IsNullOrWhiteSpace(turn.User))
             {
-                var user = new Message(fromUser: true);
+                var user = new Message(fromUser: true) { TurnIndex = turnIdx };
                 user.Blocks.AddRange(UserBlocks(turn.User));
                 messages.Add(user);
             }
@@ -280,6 +321,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                     FinalText = text,
                     Steps = group,
                     Thought = first && group is null ? turn.Thought : null,
+                    TurnIndex = turnIdx,
+                    Versions = turn.Versions,
+                    VersionIndex = turn.VersionIndex
                 };
                 if (group is null)
                 {
@@ -366,11 +410,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var message = messages.Count > 0 && !messages[^1].FromUser && messages[^1].FinalText is null && messages[^1].Steps is null
             ? messages[^1]
             : null;
+        var lastUserMsg = messages.FindLast(m => m.FromUser);
         if (message is null)
         {
-            message = new Message(fromUser: false);
+            message = new Message(fromUser: false) { TurnIndex = lastUserMsg?.TurnIndex ?? -1 };
             messages.Add(message);
             AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
+        }
+        else if (lastUserMsg != null && message.TurnIndex < 0)
+        {
+            message.TurnIndex = lastUserMsg.TurnIndex;
         }
         message.Blocks.Clear();
         message.Blocks.AddRange(blocks);
@@ -674,6 +723,77 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             var labelHeight = message.Steps is null ? labelFont.Height + LabelGap : 0;
             message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, 60, labelHeight);
             message.Bounds = new Rectangle(x, y + labelHeight, bubbleWidth, message.ContentHeight + PadY * 2);
+
+            // #1322: Action and version stepper button layout
+            message.EditBtnBounds = Rectangle.Empty;
+            message.RegenerateBtnBounds = Rectangle.Empty;
+            message.BranchBtnBounds = Rectangle.Empty;
+            message.VersionPrevBounds = Rectangle.Empty;
+            message.VersionNextBounds = Rectangle.Empty;
+            message.VersionLabelBounds = Rectangle.Empty;
+
+            if (message.Steps is null && message.TurnIndex >= 0)
+            {
+                var btnHeight = labelFont.Height + 2;
+                if (message.FromUser)
+                {
+                    var curX = message.LabelBounds.Left - 6;
+
+                    var branchW = 46;
+                    curX -= branchW;
+                    message.BranchBtnBounds = new Rectangle(curX, y, branchW, btnHeight);
+                    curX -= 4;
+
+                    var editW = 34;
+                    curX -= editW;
+                    message.EditBtnBounds = new Rectangle(curX, y, editW, btnHeight);
+                    curX -= 6;
+
+                    if (message.Versions != null && message.Versions.Count > 1)
+                    {
+                        var nextW = 16;
+                        curX -= nextW;
+                        message.VersionNextBounds = new Rectangle(curX, y, nextW, btnHeight);
+
+                        var lblText = $"{message.VersionIndex + 1}/{message.Versions.Count}";
+                        var lblW = TextRenderer.MeasureText(lblText, labelFont).Width + 4;
+                        curX -= lblW;
+                        message.VersionLabelBounds = new Rectangle(curX, y, lblW, btnHeight);
+
+                        var prevW = 16;
+                        curX -= prevW;
+                        message.VersionPrevBounds = new Rectangle(curX, y, prevW, btnHeight);
+                    }
+                }
+                else
+                {
+                    var curX = message.LabelBounds.Right + 8;
+
+                    if (message.Versions != null && message.Versions.Count > 1)
+                    {
+                        var prevW = 16;
+                        message.VersionPrevBounds = new Rectangle(curX, y, prevW, btnHeight);
+                        curX += prevW;
+
+                        var lblText = $"{message.VersionIndex + 1}/{message.Versions.Count}";
+                        var lblW = TextRenderer.MeasureText(lblText, labelFont).Width + 4;
+                        message.VersionLabelBounds = new Rectangle(curX, y, lblW, btnHeight);
+                        curX += lblW;
+
+                        var nextW = 16;
+                        message.VersionNextBounds = new Rectangle(curX, y, nextW, btnHeight);
+                        curX += nextW + 6;
+                    }
+
+                    var regenW = 68;
+                    message.RegenerateBtnBounds = new Rectangle(curX, y, regenW, btnHeight);
+                    curX += regenW + 4;
+
+                    var branchW = 46;
+                    message.BranchBtnBounds = new Rectangle(curX, y, branchW, btnHeight);
+                }
+            }
+
             y = message.Bounds.Bottom + MessageGap;
         }
         contentHeight = y;
@@ -1138,6 +1258,56 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             TextRenderer.DrawText(g, message.Speaker, labelFont, label, DarkTheme.Muted,
                 TextFlags | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
 
+            // #1322: Draw version stepper controls if multiple versions exist
+            if (message.Versions != null && message.Versions.Count > 1)
+            {
+                var prevR = message.VersionPrevBounds with { Y = message.VersionPrevBounds.Y - scroll };
+                var nextR = message.VersionNextBounds with { Y = message.VersionNextBounds.Y - scroll };
+                var lblR = message.VersionLabelBounds with { Y = message.VersionLabelBounds.Y - scroll };
+
+                var prevEnabled = message.VersionIndex > 0;
+                var nextEnabled = message.VersionIndex < message.Versions.Count - 1;
+
+                using var btnBrush = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 25 : 35, DarkTheme.Muted));
+                g.FillRectangle(btnBrush, prevR);
+                g.FillRectangle(btnBrush, nextR);
+
+                TextRenderer.DrawText(g, "<", labelFont, prevR, prevEnabled ? DarkTheme.Text : DarkTheme.Muted, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                TextRenderer.DrawText(g, $"{message.VersionIndex + 1}/{message.Versions.Count}", labelFont, lblR, DarkTheme.Muted, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                TextRenderer.DrawText(g, ">", labelFont, nextR, nextEnabled ? DarkTheme.Text : DarkTheme.Muted, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+
+            // #1322: Draw action buttons if hovered or selected
+            var showActions = (hoveredIndex == i || selected == i) && message.TurnIndex >= 0 && message.Steps is null;
+            if (showActions)
+            {
+                using var btnBrush = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 35 : 45, DarkTheme.Muted));
+                using var borderPen = new Pen(Color.FromArgb(70, DarkTheme.Border));
+
+                if (message.FromUser && !message.EditBtnBounds.IsEmpty)
+                {
+                    var editR = message.EditBtnBounds with { Y = message.EditBtnBounds.Y - scroll };
+                    g.FillRectangle(btnBrush, editR);
+                    g.DrawRectangle(borderPen, editR.X, editR.Y, editR.Width - 1, editR.Height - 1);
+                    TextRenderer.DrawText(g, "Edit", labelFont, editR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                }
+                else if (!message.FromUser && !message.RegenerateBtnBounds.IsEmpty)
+                {
+                    var regenR = message.RegenerateBtnBounds with { Y = message.RegenerateBtnBounds.Y - scroll };
+                    g.FillRectangle(btnBrush, regenR);
+                    g.DrawRectangle(borderPen, regenR.X, regenR.Y, regenR.Width - 1, regenR.Height - 1);
+                    TextRenderer.DrawText(g, "Regenerate", labelFont, regenR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                }
+
+                if (!message.BranchBtnBounds.IsEmpty)
+                {
+                    var branchR = message.BranchBtnBounds with { Y = message.BranchBtnBounds.Y - scroll };
+                    g.FillRectangle(btnBrush, branchR);
+                    g.DrawRectangle(borderPen, branchR.X, branchR.Y, branchR.Width - 1, branchR.Height - 1);
+                    TextRenderer.DrawText(g, "Branch", labelFont, branchR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                }
+            }
+
             var fill = message.FromUser ? DarkTheme.UserBubble : DarkTheme.ManaBubble;
             if (DarkTheme.IsGlass)
             {
@@ -1265,6 +1435,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     internal void SimulateClick(Point point) =>
         OnMouseDown(new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0));
 
+    internal void SimulateKeyDown(KeyEventArgs e) => OnKeyDown(e);
+
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
@@ -1280,6 +1452,50 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 _ = RunActionAsync(actionMsg, actionIndex);
             }
             return;
+        }
+        // #1322: clicking edit, regenerate, branch, or version buttons
+        if (e.Button == MouseButtons.Left)
+        {
+            var scroll = scrolling ? scrollBar.Value : 0;
+            var p = new Point(e.X, e.Y + scroll);
+            for (var i = 0; i < messages.Count; i++)
+            {
+                var m = messages[i];
+                if (m.TurnIndex >= 0 && m.Steps is null)
+                {
+                    if (!m.EditBtnBounds.IsEmpty && m.EditBtnBounds.Contains(p))
+                    {
+                        OnEditMessage?.Invoke(m.TurnIndex, m.PlainText);
+                        return;
+                    }
+                    if (!m.RegenerateBtnBounds.IsEmpty && m.RegenerateBtnBounds.Contains(p))
+                    {
+                        OnRegenerateReply?.Invoke(m.TurnIndex);
+                        return;
+                    }
+                    if (!m.BranchBtnBounds.IsEmpty && m.BranchBtnBounds.Contains(p))
+                    {
+                        OnBranchFromMessage?.Invoke(m.TurnIndex);
+                        return;
+                    }
+                    if (!m.VersionPrevBounds.IsEmpty && m.VersionPrevBounds.Contains(p))
+                    {
+                        if (m.Versions != null && m.VersionIndex > 0)
+                        {
+                            OnSwitchTurnVersion?.Invoke(m.TurnIndex, m.VersionIndex - 1);
+                        }
+                        return;
+                    }
+                    if (!m.VersionNextBounds.IsEmpty && m.VersionNextBounds.Contains(p))
+                    {
+                        if (m.Versions != null && m.VersionIndex < m.Versions.Count - 1)
+                        {
+                            OnSwitchTurnVersion?.Invoke(m.TurnIndex, m.VersionIndex + 1);
+                        }
+                        return;
+                    }
+                }
+            }
         }
         // #1354: clicking thought header toggles ThoughtOpen
         if (e.Button == MouseButtons.Left && HitTest(e.Location) is var thHit and >= 0 && !string.IsNullOrWhiteSpace(messages[thHit].Thought))
@@ -1324,6 +1540,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (hoveredIndex != -1)
+        {
+            hoveredIndex = -1;
+            Invalidate();
+        }
+    }
+
     // A press that moves a few pixels becomes a text drag-selection, which
     // can run within one bubble or across several.
     protected override void OnMouseMove(MouseEventArgs e)
@@ -1346,7 +1572,38 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 isThoughtHeader = true;
             }
         }
-        Cursor = isThoughtHeader || ActionAt(e.Location) is not null || link is not null ? Cursors.Hand
+        var scroll = scrolling ? scrollBar.Value : 0;
+        var p = new Point(e.X, e.Y + scroll);
+        var newHovered = -1;
+        var isActionButton = false;
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var m = messages[i];
+            if (m.Bounds.Contains(p) || m.LabelBounds.Contains(p) ||
+                (!m.EditBtnBounds.IsEmpty && m.EditBtnBounds.Contains(p)) ||
+                (!m.RegenerateBtnBounds.IsEmpty && m.RegenerateBtnBounds.Contains(p)) ||
+                (!m.BranchBtnBounds.IsEmpty && m.BranchBtnBounds.Contains(p)) ||
+                (!m.VersionPrevBounds.IsEmpty && m.VersionPrevBounds.Contains(p)) ||
+                (!m.VersionNextBounds.IsEmpty && m.VersionNextBounds.Contains(p)))
+            {
+                newHovered = i;
+                if ((!m.EditBtnBounds.IsEmpty && m.EditBtnBounds.Contains(p)) ||
+                    (!m.RegenerateBtnBounds.IsEmpty && m.RegenerateBtnBounds.Contains(p)) ||
+                    (!m.BranchBtnBounds.IsEmpty && m.BranchBtnBounds.Contains(p)) ||
+                    (!m.VersionPrevBounds.IsEmpty && m.VersionPrevBounds.Contains(p)) ||
+                    (!m.VersionNextBounds.IsEmpty && m.VersionNextBounds.Contains(p)))
+                {
+                    isActionButton = true;
+                }
+                break;
+            }
+        }
+        if (newHovered != hoveredIndex)
+        {
+            hoveredIndex = newHovered;
+            Invalidate();
+        }
+        Cursor = isActionButton || isThoughtHeader || ActionAt(e.Location) is not null || link is not null ? Cursors.Hand
             : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
         if (!pressed || (e.Button & MouseButtons.Left) == 0 || messages.Count == 0)
         {
@@ -1703,9 +1960,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     internal int HitTest(Point point)
     {
         var scroll = scrolling ? scrollBar.Value : 0;
+        var y = point.Y + scroll;
         for (var i = 0; i < messages.Count; i++)
         {
-            if (messages[i].Bounds.Contains(point.X, point.Y + scroll))
+            if (messages[i].Bounds.Contains(point.X, y) || messages[i].LabelBounds.Contains(point.X, y))
             {
                 return i;
             }
@@ -1733,7 +1991,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             : mana.FirstOrDefault(i => messages[i].PlainText.Contains(sentence.Trim(), StringComparison.OrdinalIgnoreCase), mana[0]);
     }
 
-    private void Select(int index)
+    internal void Select(int index)
     {
         selected = index;
         if (index >= 0)
@@ -1762,7 +2020,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     }
 
     protected override bool IsInputKey(Keys keyData) =>
-        keyData is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Escape or Keys.Enter or (Keys.Alt | Keys.Down) || base.IsInputKey(keyData);
+        keyData is Keys.Up or Keys.Down or Keys.Left or Keys.Right or Keys.Home or Keys.End or Keys.Escape or Keys.Enter or Keys.E or Keys.F2 or Keys.R or Keys.B or (Keys.Alt | Keys.Down) || base.IsInputKey(keyData);
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -1795,6 +2053,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             case Keys.Enter when selected >= 0 && messages[selected].Actions.Count > 0:
                 _ = RunActionAsync(selected, 0);
+                e.Handled = true;
+                break;
+            case Keys.E or Keys.F2 when selected >= 0 && selected < messages.Count && messages[selected].FromUser && messages[selected].TurnIndex >= 0:
+                OnEditMessage?.Invoke(messages[selected].TurnIndex, messages[selected].PlainText);
+                e.Handled = true;
+                break;
+            case Keys.R when selected >= 0 && selected < messages.Count && !messages[selected].FromUser && messages[selected].TurnIndex >= 0:
+                OnRegenerateReply?.Invoke(messages[selected].TurnIndex);
+                e.Handled = true;
+                break;
+            case Keys.B when selected >= 0 && selected < messages.Count && messages[selected].TurnIndex >= 0:
+                OnBranchFromMessage?.Invoke(messages[selected].TurnIndex);
+                e.Handled = true;
+                break;
+            case Keys.Left when selected >= 0 && selected < messages.Count && messages[selected].Versions is { Count: > 1 } v && messages[selected].VersionIndex > 0:
+                OnSwitchTurnVersion?.Invoke(messages[selected].TurnIndex, messages[selected].VersionIndex - 1);
+                e.Handled = true;
+                break;
+            case Keys.Right when selected >= 0 && selected < messages.Count && messages[selected].Versions is { Count: > 1 } v && messages[selected].VersionIndex < v.Count - 1:
+                OnSwitchTurnVersion?.Invoke(messages[selected].TurnIndex, messages[selected].VersionIndex + 1);
                 e.Handled = true;
                 break;
             case Keys.Up:
@@ -1971,6 +2249,17 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
         // #1329: verified web sources cited in the reply
         public List<WebSourceCitation>? Sources { get; set; }
+
+        // #1322: chat branching and version stepping
+        public int TurnIndex { get; set; } = -1;
+        public IReadOnlyList<string>? Versions { get; set; }
+        public int VersionIndex { get; set; }
+        public Rectangle EditBtnBounds { get; set; }
+        public Rectangle RegenerateBtnBounds { get; set; }
+        public Rectangle BranchBtnBounds { get; set; }
+        public Rectangle VersionPrevBounds { get; set; }
+        public Rectangle VersionNextBounds { get; set; }
+        public Rectangle VersionLabelBounds { get; set; }
 
         public void Invalidate() => LaidOutWidth = -1;
 

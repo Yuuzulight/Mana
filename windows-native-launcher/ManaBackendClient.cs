@@ -791,6 +791,8 @@ internal sealed class ManaBackendClient
                     Name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null,
                     Goal = element.TryGetProperty("goal", out var goalElement) ? goalElement.GetString() : null,
                     UpdatedAt = element.TryGetProperty("updatedAt", out var updatedElement) ? updatedElement.GetString() : null,
+                    ForkedFrom = element.TryGetProperty("forkedFrom", out var forkedElement) ? forkedElement.GetString() : null,
+                    BranchTurnIndex = element.TryGetProperty("branchTurnIndex", out var btElement) && btElement.ValueKind == JsonValueKind.Number ? btElement.GetInt32() : null,
                 });
             }
         }
@@ -878,6 +880,7 @@ internal sealed class ManaBackendClient
         var turns = new List<ManaSessionTurn>();
         if (root.TryGetProperty("turns", out var turnsElement) && turnsElement.ValueKind == JsonValueKind.Array)
         {
+            var turnIndex = 0;
             foreach (var turnElement in turnsElement.EnumerateArray())
             {
                 // #1337: a background task of this chat ended.
@@ -887,19 +890,38 @@ internal sealed class ManaBackendClient
                     {
                         turns.Add(new ManaSessionTurn
                         {
+                            TurnIndex = turnIndex++,
                             At = StepStr(turnElement, "at"),
                             Notice = new ManaTaskNotice(taskId, StepStr(turnElement, "title"), StepStr(turnElement, "status"), StepStr(turnElement, "text")),
                         });
                     }
                     continue;
                 }
+                var versionsList = new List<string>();
+                if (turnElement.TryGetProperty("versions", out var versElement) && versElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var v in versElement.EnumerateArray())
+                    {
+                        if (v.TryGetProperty("assistant", out var aStr) && aStr.GetString() is { } str)
+                        {
+                            versionsList.Add(str);
+                        }
+                    }
+                }
+                var versionIndex = turnElement.TryGetProperty("versionIndex", out var viElement) && viElement.ValueKind == JsonValueKind.Number
+                    ? viElement.GetInt32()
+                    : 0;
+
                 turns.Add(new ManaSessionTurn
                 {
+                    TurnIndex = turnIndex++,
                     At = turnElement.TryGetProperty("at", out var atElement) ? atElement.GetString() : null,
                     User = turnElement.TryGetProperty("user", out var userElement) ? userElement.GetString() : null,
                     Assistant = turnElement.TryGetProperty("assistant", out var assistantElement) ? assistantElement.GetString() : null,
                     Thought = turnElement.TryGetProperty("thought", out var thoughtElement) ? thoughtElement.GetString() : null,
                     Steps = ParseAgentSteps(turnElement), // #1337: absent on older turns
+                    Versions = versionsList,
+                    VersionIndex = versionIndex,
                 });
             }
         }
@@ -912,6 +934,47 @@ internal sealed class ManaBackendClient
             RecentTurns = recentTurns,
             TotalTurnCount = turns.Count,
         };
+    }
+
+    // #1322: branch from an existing session up to an optional turnIndex
+    public async Task<ManaSession?> ForkSessionAsync(string sessionId, int? turnIndex = null, string? name = null)
+    {
+        var body = new Dictionary<string, object?>();
+        if (turnIndex.HasValue) body["turnIndex"] = turnIndex.Value;
+        if (!string.IsNullOrWhiteSpace(name)) body["name"] = name;
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/fork", content);
+        if (!response.IsSuccessStatusCode) return null;
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var doc = await JsonDocument.ParseAsync(stream);
+        var root = doc.RootElement;
+        return new ManaSession
+        {
+            SessionId = root.TryGetProperty("sessionId", out var id) ? id.GetString() ?? "" : "",
+            Name = root.TryGetProperty("name", out var n) ? n.GetString() : null,
+            Goal = root.TryGetProperty("goal", out var g) ? g.GetString() : null,
+            ForkedFrom = root.TryGetProperty("forkedFrom", out var f) ? f.GetString() : null,
+            BranchTurnIndex = root.TryGetProperty("branchTurnIndex", out var bt) && bt.ValueKind == JsonValueKind.Number ? bt.GetInt32() : null,
+            UpdatedAt = root.TryGetProperty("updatedAt", out var u) ? u.GetString() : null,
+        };
+    }
+
+    // #1322: truncate session turns when editing a past turn or re-running from a point
+    public async Task<bool> TruncateSessionTurnsAsync(string sessionId, int turnIndex)
+    {
+        var body = new Dictionary<string, object?> { ["turnIndex"] = turnIndex };
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/truncate", content);
+        return response.IsSuccessStatusCode;
+    }
+
+    // #1322: step between assistant versions for a turn
+    public async Task<bool> SetTurnVersionAsync(string sessionId, int turnIndex, int versionIndex)
+    {
+        var body = new Dictionary<string, object?> { ["versionIndex"] = versionIndex };
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = await http.PatchAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/turns/{turnIndex}/version", content);
+        return response.IsSuccessStatusCode;
     }
 
     // #1142: a saved chat's artifacts from turns saved before `before`,
@@ -3176,6 +3239,9 @@ internal sealed class ManaSession
     public string? Name { get; init; }
     public string? Goal { get; init; }
     public string? UpdatedAt { get; init; }
+    // #1322: branched session metadata
+    public string? ForkedFrom { get; init; }
+    public int? BranchTurnIndex { get; init; }
 }
 
 // #586: GET /sessions/:id's full stored shape, trimmed to what the
@@ -3214,6 +3280,7 @@ internal sealed record ManaSavedArtifactList(List<ManaSavedArtifact>? Artifacts)
 
 internal sealed class ManaSessionTurn
 {
+    public int TurnIndex { get; init; }
     public string? At { get; init; }
     public string? User { get; init; }
     public string? Assistant { get; init; }
@@ -3223,6 +3290,9 @@ internal sealed class ManaSessionTurn
     public IReadOnlyList<AgentStep> Steps { get; init; } = [];
     // #1337: set instead of User/Assistant on a "background task ended" event.
     public ManaTaskNotice? Notice { get; init; }
+    // #1322: versions of assistant reply
+    public IReadOnlyList<string> Versions { get; init; } = Array.Empty<string>();
+    public int VersionIndex { get; init; }
 }
 
 // #1337: a background task started from a chat ended (its history's event,

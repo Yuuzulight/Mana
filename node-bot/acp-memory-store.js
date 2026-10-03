@@ -529,6 +529,7 @@ function createAcpMemoryStore(options = {}) {
   // need snapshotting, so its absence is a silent no-op rather than a
   // required dependency threaded through every existing construction site.
   const snapshotStore = options.snapshotStore || null;
+  const getApprovalGate = typeof options.approvalGate === "function" ? options.approvalGate : () => options.approvalGate || null;
 
   if (snapshotStore) {
     snapshotStore.registerRestorer("memory-session", async (sessionId, session) => {
@@ -1905,6 +1906,29 @@ function createAcpMemoryStore(options = {}) {
       throw new Error("fork target session already exists");
     }
 
+    const branchIndex =
+      typeof input.turnIndex === "number" && !isNaN(input.turnIndex)
+        ? Math.max(0, Math.min((source.turns?.length || 1) - 1, input.turnIndex))
+        : null;
+
+    const turns =
+      branchIndex !== null
+        ? (source.turns || []).slice(0, branchIndex + 1)
+        : Array.isArray(source.turns)
+        ? [...source.turns]
+        : [];
+
+    const summary =
+      branchIndex !== null
+        ? truncateKeepingRecent(
+            turns
+              .map((t) => summarizeTurn(t.user, t.assistant, maxSummaryChars, t.speaker))
+              .filter(Boolean)
+              .join("\n"),
+            maxSummaryChars,
+          )
+        : source.summary;
+
     const timestamp = now();
     return saveSession({
       ...source,
@@ -1912,11 +1936,128 @@ function createAcpMemoryStore(options = {}) {
       name: input.name ? cleanText(input.name, 80) : `${source.name || source.sessionId} (fork)`,
       // Kept so a fork's origin stays answerable after the fact.
       forkedFrom: source.sessionId,
+      branchTurnIndex: branchIndex,
       forkedAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
-      turns: Array.isArray(source.turns) ? [...source.turns] : [],
+      summary,
+      turns,
     });
+  }
+
+  // #1322: truncate session to keepTurnCount turns (e.g. when editing an earlier
+  // message or regenerating). Cleans up memory writes and approval grants from
+  // discarded turns so they are not repeated.
+  function truncateTurns(sessionId, keepTurnCount) {
+    const session = getSession(cleanText(sessionId, 240));
+    if (!session) return null;
+    const safeCount = Math.max(0, Math.min(session.turns?.length || 0, Number(keepTurnCount) || 0));
+    const discarded = (session.turns || []).slice(safeCount);
+    const earliestDiscardedAt = discarded[0]?.at;
+
+    session.turns = (session.turns || []).slice(0, safeCount);
+    session.summary = truncateKeepingRecent(
+      session.turns
+        .map((t) => summarizeTurn(t.user, t.assistant, maxSummaryChars, t.speaker))
+        .filter(Boolean)
+        .join("\n"),
+      maxSummaryChars,
+    );
+    session.updatedAt = now();
+
+    // Memory writes from discarded branch are pruned
+    if (earliestDiscardedAt) {
+      try {
+        const facts = loadFacts();
+        let changed = false;
+        const kept = [];
+        for (const fact of facts) {
+          if (
+            fact.origin?.sessionId === session.sessionId &&
+            fact.origin?.turnAt &&
+            fact.origin.turnAt >= earliestDiscardedAt
+          ) {
+            changed = true;
+            continue;
+          }
+          kept.push(fact);
+        }
+        if (changed) {
+          saveFacts(kept, {
+            op: "truncate",
+            key: session.sessionId,
+            origin: { sessionId: session.sessionId, turnAt: earliestDiscardedAt },
+          });
+        }
+      } catch (e) {
+        console.warn("Failed to prune facts on truncateTurns:", e?.message || e);
+      }
+    }
+
+    const gate = getApprovalGate();
+    if (gate && typeof gate.clearSessionGrants === "function") {
+      gate.clearSessionGrants();
+    }
+
+    return saveSession(session);
+  }
+
+  // #1322: step between assistant versions for a turn
+  function setTurnVersion(sessionId, turnIndex, versionIndex) {
+    const session = getSession(cleanText(sessionId, 240));
+    if (!session) return null;
+    const idx = Number(turnIndex);
+    const vIdx = Number(versionIndex);
+    const turn = session.turns?.[idx];
+    if (!turn || !Array.isArray(turn.versions) || !turn.versions[vIdx]) {
+      return null;
+    }
+    turn.versionIndex = vIdx;
+    const v = turn.versions[vIdx];
+    turn.assistant = v.assistant;
+    if (v.thought !== undefined) turn.thought = v.thought;
+    if (v.toolCalls !== undefined) turn.toolCalls = v.toolCalls;
+    if (v.steps !== undefined) turn.steps = v.steps;
+    if (v.sources !== undefined) turn.sources = v.sources;
+    session.updatedAt = now();
+    return saveSession(session);
+  }
+
+  function addTurnVersion(sessionId, turnIndex, versionData) {
+    const session = getSession(cleanText(sessionId, 240));
+    if (!session) return null;
+    const idx = Number(turnIndex);
+    const turn = session.turns?.[idx];
+    if (!turn) return null;
+    if (!Array.isArray(turn.versions) || !turn.versions.length) {
+      turn.versions = [
+        {
+          assistant: turn.assistant,
+          thought: turn.thought,
+          toolCalls: turn.toolCalls,
+          steps: turn.steps,
+          sources: turn.sources,
+          at: turn.at,
+        },
+      ];
+    }
+    const newVersion = {
+      assistant: versionData.assistant,
+      thought: versionData.thought,
+      toolCalls: versionData.toolCalls,
+      steps: versionData.steps,
+      sources: versionData.sources,
+      at: now(),
+    };
+    turn.versions.push(newVersion);
+    turn.versionIndex = turn.versions.length - 1;
+    turn.assistant = newVersion.assistant;
+    turn.thought = newVersion.thought;
+    turn.toolCalls = newVersion.toolCalls;
+    turn.steps = newVersion.steps;
+    turn.sources = newVersion.sources;
+    session.updatedAt = now();
+    return saveSession(session);
   }
 
   function deleteSession(sessionId) {
@@ -1944,6 +2085,8 @@ function createAcpMemoryStore(options = {}) {
             sessionId: parsed.sessionId,
             name: parsed.name || null,
             goal: parsed.goal || null,
+            forkedFrom: parsed.forkedFrom || null,
+            branchTurnIndex: typeof parsed.branchTurnIndex === "number" ? parsed.branchTurnIndex : null,
             createdAt: parsed.createdAt || null,
             updatedAt: parsed.updatedAt || null,
             turnCount: Array.isArray(parsed.turns) ? parsed.turns.length : 0,
@@ -1998,6 +2141,10 @@ function createAcpMemoryStore(options = {}) {
 
   async function appendTurn(input = {}) {
     const session = ensureSession({ sessionId: input.sessionId });
+    if (input.regenerate && session.turns?.length > 0) {
+      const turnIdx = typeof input.turnIndex === "number" ? input.turnIndex : session.turns.length - 1;
+      return addTurnVersion(session.sessionId, turnIdx, input);
+    }
     const timestamp = now();
     const turn = {
       at: timestamp,
@@ -2029,6 +2176,18 @@ function createAcpMemoryStore(options = {}) {
     // #1337: the reply's steps (already sanitized), for the reopened chat.
     // ponytail: capped at 200 like a run's own list (agent-activity.js).
     if (Array.isArray(input.steps) && input.steps.length) turn.steps = input.steps.slice(-200);
+
+    // #1322: initialize versions on every turn
+    turn.versions = [
+      {
+        assistant: turn.assistant,
+        thought: turn.thought,
+        toolCalls: turn.toolCalls,
+        steps: turn.steps,
+        at: turn.at,
+      },
+    ];
+    turn.versionIndex = 0;
 
     if (!turn.user && !turn.assistant) {
       return session;
@@ -2482,8 +2641,16 @@ function createAcpMemoryStore(options = {}) {
         // fine without it.
       }
     }
+    let sessionFilter = effective?.sessionId;
+    if (sessionFilter && typeof sessionFilter === "string") {
+      const current = getSession(sessionFilter);
+      if (current?.forkedFrom) {
+        sessionFilter = [current.sessionId, current.forkedFrom];
+      }
+    }
     let results = sessionSearchIndex.search({
       ...effective,
+      sessionId: sessionFilter,
       queryEmbedding,
       queryModel: embeddingModelIdFn(),
     });
@@ -2525,7 +2692,18 @@ function createAcpMemoryStore(options = {}) {
   // #687: keyword-only content filter for the chat list (no embedder or
   // reranker, so typing never touches the GPU); null when there is no index.
   function sessionIdsMatching(text) {
-    return sessionSearchIndex ? sessionSearchIndex.sessionIdsMatching(text) : null;
+    if (!sessionSearchIndex) return null;
+    const baseIds = sessionSearchIndex.sessionIdsMatching(text);
+    if (!baseIds || !baseIds.size) return baseIds;
+    // #1322: include branched sessions whose ancestor matched
+    const all = listSessions();
+    const result = new Set(baseIds);
+    for (const s of all) {
+      if (s.forkedFrom && baseIds.has(s.forkedFrom)) {
+        result.add(s.sessionId);
+      }
+    }
+    return result;
   }
 
   return {
@@ -2542,6 +2720,9 @@ function createAcpMemoryStore(options = {}) {
     renameSession,
     setSessionGoal,
     forkSession,
+    truncateTurns,
+    setTurnVersion,
+    addTurnVersion,
     deleteSession,
     lookupEntity,
     describeEntities,

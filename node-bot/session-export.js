@@ -25,7 +25,14 @@ function toShareGPTConversation(session) {
     }
     if (turn.assistant) conversations.push({ from: "gpt", value: turn.assistant });
   }
-  return { id: session.sessionId, conversations };
+  const result = { id: session.sessionId, conversations };
+  if (session.forkedFrom) {
+    result.forkedFrom = session.forkedFrom;
+    if (typeof session.branchTurnIndex === "number") {
+      result.branchTurnIndex = session.branchTurnIndex;
+    }
+  }
+  return result;
 }
 
 function exportSessionAsShareGPTJSONL(session) {
@@ -73,7 +80,12 @@ function toolCallMarkdown(call) {
 
 function exportSessionAsMarkdown(session, { includeTools = false, includeThoughts = false, now = new Date() } = {}) {
   const parts = [`# ${String(session.name || session.sessionId || "Chat").replace(/\s+/g, " ").trim()}`];
-  parts.push(`_Exported ${now.toISOString().slice(0, 10)}_`);
+  const meta = [`_Exported ${now.toISOString().slice(0, 10)}_`];
+  if (session.forkedFrom) {
+    const turnNote = typeof session.branchTurnIndex === "number" ? ` at turn ${session.branchTurnIndex + 1}` : "";
+    meta.push(`_Branched from ${session.forkedFrom}${turnNote}_`);
+  }
+  parts.push(meta.join(" • "));
   for (const turn of session.turns || []) {
     if (turn.user) parts.push(`### You\n\n${turn.user}`);
     if (!turn.assistant) continue;

@@ -153,6 +153,12 @@ function createApprovalGate(options = {}) {
     if (list.includes(key)) writeJson(filePath, list.filter((k) => k !== key));
   }
 
+  // #1322: clear in-memory session grants when a branch is discarded or truncated
+  // so any action needing approval asks again.
+  function clearSessionGrants() {
+    sessionGrants.clear();
+  }
+
   // #1154: the remembered answers (always and never), for Settings to list
   // and revoke. Session grants end on restart anyway.
   function listRemembered() {
@@ -394,6 +400,7 @@ function createApprovalGate(options = {}) {
     resetDenials,
     isAlwaysAllowed,
     isGranted,
+    clearSessionGrants,
     listRemembered,
     forget,
     getToolApprovalMode,
