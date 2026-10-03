@@ -2094,6 +2094,28 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task ExportSessionAsync_PassesFormatAndInclusionFlagsInQuery()
+    {
+        string? query = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            query = request.RequestUri!.Query;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("# Chat\n", Encoding.UTF8, "text/markdown"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var md = await client.ExportSessionAsync("s1", "markdown", includeTools: true, includeThoughts: true);
+
+        Assert.Contains("format=markdown", query);
+        Assert.Contains("tools=1", query);
+        Assert.Contains("thoughts=1", query);
+        Assert.Equal("# Chat\n", md);
+    }
+
+    [Fact]
     public async Task GetPluginsAsync_FlattensTheCategoryGroupingIntoOneList()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

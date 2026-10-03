@@ -992,13 +992,20 @@ internal sealed class ManaBackendClient
         return true;
     }
 
-    // Raw ShareGPT-style JSONL text -- the caller (SessionListForm) is
-    // what actually writes it to disk via a native save dialog, matching
-    // windows-launcher's own split (node-bot just returns the text; the
-    // client owns the save UI).
-    public async Task<string> ExportSessionAsync(string sessionId)
+    // #153: Raw ShareGPT-style JSONL text.
+    // #1323: or readable Markdown (?format=markdown), with optional tool calls and reasoning.
+    public async Task<string> ExportSessionAsync(string sessionId, string format = "jsonl", bool includeTools = false, bool includeThoughts = false)
     {
-        using var response = await http.GetAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/export");
+        var url = $"/sessions/{Uri.EscapeDataString(sessionId)}/export?format={Uri.EscapeDataString(format)}";
+        if (includeTools)
+        {
+            url += "&tools=1";
+        }
+        if (includeThoughts)
+        {
+            url += "&thoughts=1";
+        }
+        using var response = await http.GetAsync(url);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsStringAsync();
     }
