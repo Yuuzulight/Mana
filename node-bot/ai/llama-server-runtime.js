@@ -204,6 +204,10 @@ function createLlamaServerRuntime(options = {}) {
     // is a swap (true/false) waiting for the reply in flight.
     gamingModel: false,
     gamingSwapPending: null,
+    // #1343: multi-LoRA dynamic adapters
+    hasLoraAdapters: false,
+    activeLoraAdapter: null,
+    loraIds: {},
   };
 
   // Debounce: back-to-back requests for different profiles (e.g. one coding
@@ -359,6 +363,76 @@ function createLlamaServerRuntime(options = {}) {
       searchDir: toolsDir,
       profile,
     });
+  }
+
+  // Issue #1343: Tri-mode dynamic multi-LoRA adapters
+  function findLoraAdapters() {
+    const explicitCompanion = env.MANA_COMPANION_LORA;
+    const explicitAssistant = env.MANA_ASSISTANT_LORA;
+    const loraDir = path.join(toolsDir, "llama", "gguf-models", "loras");
+    const companionPath = explicitCompanion || path.join(loraDir, "mana-companion.gguf");
+    const assistantPath = explicitAssistant || path.join(loraDir, "mana-assistant.gguf");
+    const hasCompanion = Boolean(companionPath && fs.existsSync(companionPath));
+    const hasAssistant = Boolean(assistantPath && fs.existsSync(assistantPath));
+    if (!hasCompanion && !hasAssistant) return null;
+    return {
+      companionPath: hasCompanion ? companionPath : null,
+      assistantPath: hasAssistant ? assistantPath : null,
+    };
+  }
+
+  async function refreshLoraAdapters() {
+    if (!state.port) return;
+    try {
+      const res = await fetchImpl(`http://127.0.0.1:${state.port}/lora-adapters`);
+      if (res && res.ok) {
+        const list = await res.json();
+        if (Array.isArray(list) && list.length > 0) {
+          state.hasLoraAdapters = true;
+          state.loraIds = {};
+          for (const item of list) {
+            const p = String(item.path || "").toLowerCase();
+            if (p.includes("companion")) {
+              state.loraIds.companion = item.id;
+            } else if (p.includes("assistant")) {
+              state.loraIds.assistant = item.id;
+            }
+          }
+          await applyLoraAdapter("companion");
+        }
+      }
+    } catch (e) {
+      // Dynamic LoRA lookup best-effort
+    }
+  }
+
+  async function applyLoraAdapter(name = "companion") {
+    if (!state.port || !state.hasLoraAdapters) return false;
+    if (state.activeLoraAdapter === name) return true;
+    try {
+      const companionScale = name === "companion" ? 1.0 : 0.0;
+      const assistantScale = name === "assistant" ? 1.0 : 0.0;
+      const payload = [];
+      if (state.loraIds?.companion !== undefined) {
+        payload.push({ id: state.loraIds.companion, scale: companionScale });
+      }
+      if (state.loraIds?.assistant !== undefined) {
+        payload.push({ id: state.loraIds.assistant, scale: assistantScale });
+      }
+      if (payload.length === 0) return false;
+      const res = await fetchImpl(`http://127.0.0.1:${state.port}/lora-adapters`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res && res.ok) {
+        state.activeLoraAdapter = name;
+        return true;
+      }
+    } catch (e) {
+      // Dynamic LoRA scale application best-effort
+    }
+    return false;
   }
 
   function isMmprojFile(filePath) {
@@ -807,6 +881,19 @@ function createLlamaServerRuntime(options = {}) {
       args.push("-c", String(contextCap));
     }
 
+    // #1343: Tri-mode dynamic multi-LoRA adapters
+    // When resident brain runs with Qwen 9B base, dynamically load companion and assistant LoRAs
+    const loras = findLoraAdapters();
+    if (loras && supportsFlag(bin, "--lora-init-without-apply")) {
+      const loraSpecs = [];
+      if (loras.companionPath) loraSpecs.push(`${loras.companionPath}:0.0`);
+      if (loras.assistantPath) loraSpecs.push(`${loras.assistantPath}:0.0`);
+      if (loraSpecs.length > 0) {
+        args.push("--lora-init-without-apply");
+        args.push("--lora-scaled", loraSpecs.join(","));
+      }
+    }
+
     return args;
   }
 
@@ -901,6 +988,7 @@ function createLlamaServerRuntime(options = {}) {
 
     state.model = model;
     state.mmproj = mmproj;
+    await refreshLoraAdapters();
     registerExit();
     console.log(
       `llama-server ready on port ${port} (model: ${model}${mmproj ? `, mmproj: ${mmproj}` : ""})`,
@@ -1368,6 +1456,12 @@ function createLlamaServerRuntime(options = {}) {
     }
     const startedAt = nowMs();
     await ensureServer(profile, extraMessages?.images);
+
+    // #1343: Tri-mode dynamic multi-LoRA routing
+    if (state.hasLoraAdapters) {
+      const targetAdapter = (task === "tools" || extraMessages?.tools?.length) ? "assistant" : "companion";
+      await applyLoraAdapter(targetAdapter);
+    }
 
     // #675: per-profile/per-task sampler preset and thinking.
     const sampling = buildSamplingParams({ profile, task, maxTokens, thinking: thinkingOverride, env });
@@ -1899,6 +1993,11 @@ function createLlamaServerRuntime(options = {}) {
     }
     const startedAt = nowMs();
     await ensureServer(profile, extraMessages?.images);
+
+    // #1343: Tool execution routes to assistant LoRA
+    if (state.hasLoraAdapters) {
+      await applyLoraAdapter("assistant");
+    }
 
     const goalText = String(goal || "").trim();
     const goalMode = Boolean(goalText);
@@ -2520,6 +2619,10 @@ function createLlamaServerRuntime(options = {}) {
     get systemPrompt() {
       return systemPromptOf();
     },
+    applyLoraAdapter: inTurn(applyLoraAdapter),
+    findLoraAdapters,
+    getActiveLoraAdapter: () => state.activeLoraAdapter || null,
+    hasLoraAdapters: () => Boolean(state.hasLoraAdapters),
     unloadVision,
   };
 }

@@ -469,6 +469,43 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
         menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
         menu.Items.Add(new ToolStripSeparator());
+        // #1343: Tri-mode dedicated engineering engine toggle
+        var codingModeItem = new ToolStripMenuItem("Coding mode (14B engine)") { CheckOnClick = true };
+        menu.Opening += async (_, _) =>
+        {
+            try
+            {
+                var status = await backendClient.GetCodingSessionStatusAsync();
+                codingModeItem.Checked = status.Active;
+                codingModeItem.Enabled = !status.IsGaming;
+                if (status.IsGaming)
+                {
+                    codingModeItem.Text = "Coding mode (locked out while gaming)";
+                }
+                else
+                {
+                    codingModeItem.Text = status.Active ? "Coding mode (14B engine active)" : "Coding mode (14B engine)";
+                }
+            }
+            catch
+            {
+                // Best effort tray menu update
+            }
+        };
+        codingModeItem.Click += async (_, _) =>
+        {
+            if (codingModeItem.Checked)
+            {
+                var started = await backendClient.StartCodingSessionAsync();
+                codingModeItem.Checked = started;
+            }
+            else
+            {
+                await backendClient.StopCodingSessionAsync();
+                codingModeItem.Checked = false;
+            }
+        };
+        menu.Items.Add(codingModeItem);
         var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
         menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
         gamingModeItem.Click += (_, _) =>

@@ -73,6 +73,43 @@ public class ManaBackendClientTests
         Assert.Equal("POST /characters/group {\"on\":false}", requests[^1]);
     }
 
+    // #1343: Tri-mode coding session status and control
+    [Fact]
+    public async Task CodingSession_StatusAndControls()
+    {
+        var requests = new List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.PathAndQuery}");
+            if (request.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"active\":true,\"isGaming\":false,\"game\":null}", Encoding.UTF8, "application/json"),
+                };
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var status = await client.GetCodingSessionStatusAsync("test-session");
+        Assert.True(status.Active);
+        Assert.False(status.IsGaming);
+        Assert.Null(status.Game);
+        Assert.Equal("GET /coding-session/status?sessionId=test-session", requests[^1]);
+
+        var started = await client.StartCodingSessionAsync("test-session");
+        Assert.True(started);
+        Assert.Equal("POST /coding-session/start", requests[^1]);
+
+        var stopped = await client.StopCodingSessionAsync("test-session", "user_exit");
+        Assert.True(stopped);
+        Assert.Equal("POST /coding-session/stop", requests[^1]);
+    }
+
     [Fact]
     public async Task SetTtsOverrideAsync_PostsTheProviderOrNull()
     {
