@@ -223,6 +223,9 @@ async function buildAssistantReply(
       }
     }
 
+    const projectBlock = sessionId ? context.activeProjectsStore?.promptBlockForSession(sessionId) || '' : '';
+    if (projectBlock) selectedSystemPrompt += `\n\n${projectBlock}`;
+
     // Small server log for selected mode
     try {
       console.log(

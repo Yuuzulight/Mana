@@ -298,6 +298,7 @@ const { createEditorIntegrations } = require("./zed-integration");
 const { createModelManagement } = require("./model-management");
 const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
+const { createProjectsStore } = require("./projects-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
@@ -2503,6 +2504,8 @@ function registerRoutes(app, upload, deps = {}) {
       ttsProvider: TTS_PROVIDER,
       whisperModel: whisperDiscovery.findWhisperModel({ env: deps.env || process.env }),
     });
+  const activeProjectsStore =
+    deps.projectsStore || createProjectsStore({ dataDir: path.join(__dirname, "data") });
 
   // llama-server normally starts lazily on the first chat reply. Desktop
   // clients that want a startup loading screen to actually mean something
@@ -2927,6 +2930,34 @@ function registerRoutes(app, upload, deps = {}) {
     readGgufMetadata: deps.readGgufMetadata || readGgufMetadata,
     llamaBuilds: deps.llamaBuilds || llamaBuilds,
     checkAdminAuth,
+  });
+
+  app.get("/projects", (req, res) => {
+    return res.json({ projects: activeProjectsStore.listProjects() });
+  });
+  app.post("/projects", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      return res.json(activeProjectsStore.upsertProject(req.body || {}));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+  app.delete("/projects/:id", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json({ deleted: activeProjectsStore.deleteProject(req.params.id) });
+  });
+  app.put("/sessions/:id/project", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const project = activeProjectsStore.assignSession(req.params.id, req.body?.projectId || null);
+      return res.json({ sessionId: req.params.id, project });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+  app.get("/sessions/:id/project", (req, res) => {
+    return res.json({ sessionId: req.params.id, project: activeProjectsStore.projectForSession(req.params.id) });
   });
 
   // Issue #418: transient, human-facing "what's browser automation doing
@@ -3709,6 +3740,7 @@ function registerRoutes(app, upload, deps = {}) {
     get activeMoodStore() { return activeMoodStore; },
     get activePluginSettingsStore() { return activePluginSettingsStore; },
     get activePresetsStore() { return activePresetsStore; },
+    get activeProjectsStore() { return activeProjectsStore; },
     get activeSkillsStore() { return activeSkillsStore; },
     get activeToolCallLog() { return activeToolCallLog; },
     get activeToolPolicy() { return activeToolPolicy; },
