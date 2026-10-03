@@ -1079,6 +1079,23 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1331: Settings' "+ Add" -- a fact (or, with a trigger, a standing
+    // reminder) in the user's own words.
+    public async Task CreateMemoryFactAsync(string key, string text, string? trigger = null)
+    {
+        var payload = JsonSerializer.Serialize(string.IsNullOrWhiteSpace(trigger) ? (object)new { key, text } : new { key, text, trigger });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/memory/facts", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1331: really removes the fact (not an archive); its vault note goes too.
+    public async Task DeleteMemoryFactAsync(string key)
+    {
+        using var response = await http.DeleteAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}");
+        response.EnsureSuccessStatusCode();
+    }
+
     // #663: makes a pending (auto-picked-up) fact active.
     public async Task ConfirmMemoryFactAsync(string key)
     {

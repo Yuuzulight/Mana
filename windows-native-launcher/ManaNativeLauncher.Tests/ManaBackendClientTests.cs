@@ -2315,6 +2315,49 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task CreateMemoryFactAsync_PostsKeyTextAndOptionalTrigger()
+    {
+        var seen = new List<(string Method, string Path, string Body)>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            seen.Add((request.Method.Method, request.RequestUri!.AbsolutePath, request.Content!.ReadAsStringAsync().Result));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.CreateMemoryFactAsync("pet", "I have a cat");
+        await client.CreateMemoryFactAsync("raid", "raid is Friday", "my static");
+
+        Assert.Equal(("POST", "/admin/memory/facts", "{\"key\":\"pet\",\"text\":\"I have a cat\"}"), seen[0]);
+        Assert.Equal("{\"key\":\"raid\",\"text\":\"raid is Friday\",\"trigger\":\"my static\"}", seen[1].Body);
+    }
+
+    [Fact]
+    public async Task DeleteMemoryFactAsync_SendsADeleteToTheFactEndpoint()
+    {
+        string? method = null;
+        string? path = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            method = request.Method.Method;
+            path = request.RequestUri!.AbsolutePath;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        await client.DeleteMemoryFactAsync("favorite-color");
+
+        Assert.Equal("DELETE", method);
+        Assert.Equal("/admin/memory/facts/favorite-color", path);
+    }
+
+    [Fact]
     public async Task ConfirmMemoryFactAsync_PostsToTheConfirmEndpoint()
     {
         string? path = null;

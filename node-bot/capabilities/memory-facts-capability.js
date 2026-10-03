@@ -32,8 +32,59 @@ function registerMemoryFactsRoutes(app, context = {}) {
     if (!checkAdminAuth(req, res)) return;
     try {
       // Issue #673: trust is derived (factTrust), shown alongside each fact.
-      const facts = acpMemoryStore.listFacts().map((fact) => ({ ...fact, trust: factTrust(fact) }));
+      // #1331: a deleted fact is "stale" -- gone from the list.
+      const facts = acpMemoryStore
+        .listFacts()
+        .filter((fact) => fact.status !== "stale")
+        .map((fact) => ({ ...fact, trust: factTrust(fact) }));
       return res.json({ ok: true, facts });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // #1331: add a fact by hand from the launcher. Body {key, text, trigger?};
+  // the user's own words, so it's active at once. 400 on a blank key/text or
+  // when the key already has a live fact (edit that one instead).
+  app.post("/admin/memory/facts", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const key = typeof req.body?.key === "string" ? req.body.key.trim() : "";
+      const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+      const trigger = typeof req.body?.trigger === "string" ? req.body.trigger.trim() : "";
+      if (!key) return res.status(400).json({ ok: false, error: "key can't be empty" });
+      if (!text) return res.status(400).json({ ok: false, error: "text can't be empty" });
+      const lowerKey = key.toLowerCase();
+      const taken = acpMemoryStore
+        .listFacts()
+        .some((f) => ["active", "pending"].includes(f.status) && f.key.toLowerCase() === lowerKey);
+      if (taken) return res.status(400).json({ ok: false, error: "a fact with that key already exists" });
+      const result = acpMemoryStore.rememberFact({
+        key,
+        text,
+        action: "insert",
+        source: "human",
+        origin: { kind: "user_stated" },
+        ...(trigger ? { trigger, triggerUserWords: trigger } : {}),
+      });
+      return res.json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // #1331: really remove a fact (live or archived) -- unlike archive it
+  // doesn't stay in Archived/; the vault sync drops its note.
+  app.delete("/admin/memory/facts/:key", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const result = acpMemoryStore.rememberFact({
+        key: req.params.key,
+        action: "remove",
+        source: "human",
+        origin: { kind: "user_stated" },
+      });
+      return res.status(result.found ? 200 : 404).json({ ...result, ok: result.found });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }
@@ -55,7 +106,7 @@ function registerMemoryFactsRoutes(app, context = {}) {
       const edges = allEdges.filter((edge) => shown.has(edge.a) && shown.has(edge.b));
 
       const facts = [];
-      for (const fact of acpMemoryStore.listFacts()) {
+      for (const fact of acpMemoryStore.listFacts().filter((f) => f.status !== "stale")) {
         facts.push({
           key: fact.key,
           text: fact.text,
