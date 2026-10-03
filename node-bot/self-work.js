@@ -152,6 +152,11 @@ const REVIEW_PASSES = {
   "edge cases": "Empty, missing or null input; repeated calls; errors on the way; Windows paths and line endings.",
   scope: "Anything the issue didn't ask for: unrelated edits, leftover debug code, a test changed to pass instead of the code fixed.",
 };
+// MANA_SELF_WORK_REVIEW_PASSES=5 adds these two; any edit still starts the review over.
+const EXTRA_REVIEW_PASSES = {
+  tests: "Does a test fail without this change and pass with it? Is anything the issue asks for still untested, or a test asserting too little?",
+  regressions: "What else calls or depends on what you changed? Could it break existing behaviour, other platforms, or other tabs and routes?",
+};
 const MAX_REVIEW_DIFF = 6000;
 
 const TOOL_SCHEMAS = [
@@ -159,10 +164,10 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__review",
-      description: `Review your own diff for one pass: ${Object.keys(REVIEW_PASSES).join(", then ")}. Returns the diff and what to check. All three passes, after your last edit, before you finish.`,
+      description: `Review your own diff for one pass: ${Object.keys({ ...REVIEW_PASSES, ...EXTRA_REVIEW_PASSES }).join(", then ")}. Returns the diff and what to check. Every pass you are told about, after your last edit, before you finish.`,
       parameters: {
         type: "object",
-        properties: { pass: { type: "string", enum: Object.keys(REVIEW_PASSES) } },
+        properties: { pass: { type: "string", enum: Object.keys({ ...REVIEW_PASSES, ...EXTRA_REVIEW_PASSES }) } },
         required: ["pass"],
       },
     },
@@ -313,6 +318,8 @@ function createSelfWork(options = {}) {
   const isGaming = options.isGaming || (() => false);
   const ramPercent = options.ramPercent || systemRamPercent;
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  // Three review passes by default; 5 adds tests and regressions.
+  const reviewPasses = Number(env.MANA_SELF_WORK_REVIEW_PASSES) >= 5 ? { ...REVIEW_PASSES, ...EXTRA_REVIEW_PASSES } : REVIEW_PASSES;
   const maxOpenPrs = Math.max(1, Number(env.MANA_SELF_WORK_MAX_OPEN_PRS) || DEFAULT_MAX_OPEN_PRS);
   const onEvent = options.onEvent || ((run, text) => console.log(`[self-work #${run.issue}] ${text}`));
   const proposals = createEditProposalStore();
@@ -1413,13 +1420,13 @@ Before it can be a PR:
     const diffNow = (...paths) => worktreeDiff(root, ...paths);
 
     async function review({ pass }) {
-      if (!REVIEW_PASSES[pass]) throw new Error(`pass is one of: ${Object.keys(REVIEW_PASSES).join(", ")}`);
+      if (!reviewPasses[pass]) throw new Error(`pass is one of: ${Object.keys(reviewPasses).join(", ")}`);
       const diff = await diffNow();
       if (!diff) throw new Error("there's no change to review yet");
       reviewed.add(pass);
-      const left = Object.keys(REVIEW_PASSES).filter((p) => !reviewed.has(p));
+      const left = Object.keys(reviewPasses).filter((p) => !reviewed.has(p));
       log(r, `Reviewing my diff: ${pass}.`);
-      return `Pass: ${pass}. ${REVIEW_PASSES[pass]}\nFix anything you find with ${CODING_EDIT_TOOL_NAME} (that starts the review over).${left.length ? ` Passes left: ${left.join(", ")}.` : ""}\n\n${diff.length > MAX_REVIEW_DIFF ? `${diff.slice(0, MAX_REVIEW_DIFF)}\n...[diff cut]` : diff}`;
+      return `Pass: ${pass}. ${reviewPasses[pass]}\nFix anything you find with ${CODING_EDIT_TOOL_NAME} (that starts the review over).${left.length ? ` Passes left: ${left.join(", ")}.` : ""}\n\n${diff.length > MAX_REVIEW_DIFF ? `${diff.slice(0, MAX_REVIEW_DIFF)}\n...[diff cut]` : diff}`;
     }
 
     // #1213: finishing takes her three passes since her last edit, then the
@@ -1433,7 +1440,7 @@ Before it can be a PR:
     // block.
     async function finish(args) {
       if (edited.size || extra.mustReview) {
-        const left = Object.keys(REVIEW_PASSES).filter((p) => !reviewed.has(p));
+        const left = Object.keys(reviewPasses).filter((p) => !reviewed.has(p));
         if (left.length) {
           throw new Error(`Before you finish, review your diff with self_work__review: ${left.join(", then ")}. Fix what you find.`);
         }

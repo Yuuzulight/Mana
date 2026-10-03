@@ -1200,6 +1200,29 @@ test("#1213: she finishes only after three passes over her diff since her last e
   assert.match(reviewed.find((p) => p.relativePath === "node-bot/util.js").diff, /-  return a - b;\n\+  return a \+ b;/);
 });
 
+test("MANA_SELF_WORK_REVIEW_PASSES=5 adds tests and regressions, and any edit starts all five over", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const fivePasses = [...reviews, ["self_work__review", { pass: "tests" }], ["self_work__review", { pass: "regressions" }]];
+  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  const calls = [plan, fix, finish, ...fivePasses.slice(0, 3), addTest, finish, ...fivePasses, finish];
+  const { sw } = selfWork(repos, {
+    calls,
+    plans: false,
+    seen,
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_ATTEMPTS: "1", MANA_SELF_WORK_REVIEW_PASSES: "5" },
+    reviewEdit: async () => ({ verdict: "holds" }),
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.match(results[2], /correctness, then edge cases, then scope, then tests, then regressions/);
+  assert.match(results[3], /Passes left: edge cases, scope, tests, regressions\./);
+  assert.match(results[7], /^Before you finish[\s\S]*correctness, then edge cases, then scope, then tests, then regressions/, "the edit reset all five");
+  assert.equal(JSON.parse(results.at(-1)).finished, true);
+});
+
 test("#1213: no PR unless the diff is the one her reviewer passed when she finished", async () => {
   const repos = makeRepos();
   const reviewed = [];
