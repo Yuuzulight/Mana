@@ -1953,7 +1953,23 @@ internal sealed class VoiceLoop : IDisposable
         {
             var stopMana = stopManaThinking;
             bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
-            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(commandText, EnsureSessionId(), (text, speaker) => chatLog?.AppendReplySentence(text, speaker), screenText, image, images, currentPresetId, thinkHarder, source, ShowNoted, documents);
+            (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(
+                commandText,
+                EnsureSessionId(),
+                (text, speaker) => chatLog?.AppendReplySentence(text, speaker),
+                screenText,
+                image,
+                images,
+                currentPresetId,
+                thinkHarder,
+                source,
+                ShowNoted,
+                documents,
+                onThought: text => chatLog?.AppendReplyThought(text));
+            if (!interrupted && !string.IsNullOrEmpty(streamingReplyPlayer.FinalThought))
+            {
+                chatLog?.SetReplyThought(streamingReplyPlayer.FinalThought);
+            }
             if (stopMana)
             {
                 stopManaThinking = false;

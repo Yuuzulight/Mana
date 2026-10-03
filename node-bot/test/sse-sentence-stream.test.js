@@ -116,3 +116,24 @@ test("onTimings receives the timings object a frame carries", async () => {
   assert.equal(full, "Hi.");
   assert.deepEqual(seenTimings, [timings]);
 });
+
+test("onThought and onThoughtDone capture reasoning tokens while keeping sentences clean", async () => {
+  const thoughtChunks = [];
+  let doneThought = null;
+  const sentences = [];
+
+  const full = await streamSentences(
+    sseBody(["<think>analyzing question; finding answer;</think>", "The answer is 42. "]),
+    {
+      onSentence: (s) => sentences.push(s),
+      onThought: (t) => thoughtChunks.push(t),
+      onThoughtDone: (t) => (doneThought = t),
+    },
+  );
+
+  assert.equal(full, "The answer is 42.");
+  assert.deepEqual(sentences, ["The answer is 42."]);
+  assert.equal(thoughtChunks.join(""), "analyzing question; finding answer;");
+  assert.equal(doneThought, "analyzing question; finding answer;");
+});
+

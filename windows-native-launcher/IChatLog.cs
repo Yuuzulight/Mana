@@ -19,6 +19,10 @@ internal interface IChatLog
     // null for the current reply's.
     void AppendReplySentence(string text, string? speaker) => AppendReplySentence(text);
 
+    // #1354: live reasoning/thought token streaming and final consolidated thought
+    void AppendReplyThought(string text, string? speaker = null) { }
+    void SetReplyThought(string thought, string? speaker = null) { }
+
     // #914: a line saying she noted something about us (speaker: who), with
     // an Undo button whose run returns the note shown in its place.
     void AppendNoted(string? speaker, string text, Func<Task<string?>> undo) { }

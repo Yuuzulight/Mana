@@ -5577,6 +5577,10 @@ function registerRoutes(app, upload, deps = {}) {
             overrideSystemPrompt: selectedSystemPrompt,
             extraMessages: memoryExtraMessages,
             onSentence: wrappedOnSentence,
+            onThought: replyMeta?.onThought,
+            onThoughtDone: (thought) => {
+              if (replyMeta) replyMeta.thought = thought;
+            },
             thinking: thinkHarder,
           });
         } catch (e) {
@@ -5585,6 +5589,11 @@ function registerRoutes(app, upload, deps = {}) {
             e && e.message ? e.message : e,
           );
         }
+      }
+      if (memoryExtraMessages && replyMeta) {
+        memoryExtraMessages.onThoughtDone = (thought) => {
+          replyMeta.thought = thought;
+        };
       }
       return runLocalAssistantReply(
         promptText,
@@ -5883,6 +5892,7 @@ function registerRoutes(app, upload, deps = {}) {
               typeof cleanLlamaOutput === "function"
                 ? cleanLlamaOutput(reply)
                 : reply,
+            thought: replyMeta?.thought || null,
             toolCalls: lastToolCalls,
             // #1337: the reply's step lines, for the chat when it's reopened.
             steps: activityRun ? agentActivity.steps(activityRun.id) : null,

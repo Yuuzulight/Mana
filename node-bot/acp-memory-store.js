@@ -1996,6 +1996,8 @@ function createAcpMemoryStore(options = {}) {
       user: cleanText(redactSensitive(input.user), 4000),
       assistant: cleanText(redactSensitive(input.assistant), 4000),
     };
+    // #1354: reasoning tokens / thought deliberation.
+    if (input.thought) turn.thought = cleanText(input.thought, 10000);
     // #914: which character said it (group mode, switching), for the
     // history's labels; turns from before carry none.
     const speaker = cleanText(input.speaker, 60);

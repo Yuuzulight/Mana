@@ -574,4 +574,35 @@ public class StreamingReplyPlayerTests
         Assert.Equal(6, reports[0].Steps[0].TextOffset);
         Assert.Single(reports.Select(r => r.RunId).Distinct());
     }
+
+    // #1354: reasoning tokens stream via onThought and attach to FinalThought without triggering TTS
+    [Fact]
+    public async Task StreamReplyAndPlayAsync_PassesThroughThoughtAndRecordsFinalThought()
+    {
+        const string ndjson = """
+            {"type":"thought","text":"Thinking step 1."}
+            {"type":"thought","text":" Thinking step 2."}
+            {"type":"sentence","text":"Here is the result."}
+            {"type":"final","reply":"Here is the result.","thought":"Thinking step 1. Thinking step 2.","changed":false}
+
+            """;
+        var thoughts = new List<string>();
+        var sentences = new List<string>();
+        var synthLog = new List<string>();
+        var player = new StreamingReplyPlayer(BuildFakeClient(ndjson, synthLog), _ => Task.FromResult(true), _ => { });
+
+        var (reply, changed, _, interrupted, _) = await player.StreamReplyAndPlayAsync(
+            "test command",
+            onSentence: (text, _) => sentences.Add(text),
+            onThought: text => thoughts.Add(text));
+
+        Assert.Equal("Here is the result.", reply);
+        Assert.False(changed);
+        Assert.False(interrupted);
+        Assert.Equal(new[] { "Thinking step 1.", " Thinking step 2." }, thoughts);
+        Assert.Equal("Thinking step 1. Thinking step 2.", player.FinalThought);
+        Assert.Equal(new[] { "Here is the result." }, sentences);
+        // Ensure reasoning tokens were never synthesized into speech
+        Assert.Equal(new[] { "synth:Here is the result." }, synthLog);
+    }
 }

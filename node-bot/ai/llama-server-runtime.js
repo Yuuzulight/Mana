@@ -1481,11 +1481,14 @@ function createLlamaServerRuntime(options = {}) {
         `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
       );
     }
-    const json = await resp.json();
-    logPromptCache("llama-server", json && json.timings);
+    const rawContent = json?.choices?.[0]?.message?.content;
+    const thought = extractThinking(rawContent);
+    if (thought && typeof extraMessages?.onThoughtDone === "function") {
+      extraMessages.onThoughtDone(thought);
+    }
     // Reasoning models may wrap deliberation in <think> blocks; keep only
     // the reply (a reply that was all thinking counts as empty).
-    const content = stripThinking(json?.choices?.[0]?.message?.content);
+    const content = stripThinking(rawContent);
     if (!content) {
       // #675: thinking can use up the reply (reasoning, no content) -- one
       // retry with thinking off so the user still gets an answer.
@@ -1523,6 +1526,8 @@ function createLlamaServerRuntime(options = {}) {
       overrideSystemPrompt = null,
       extraMessages = null,
       onSentence = null,
+      onThought = null,
+      onThoughtDone = null,
       maxSentenceChars,
       thinking,
     } = {},
@@ -1556,6 +1561,8 @@ function createLlamaServerRuntime(options = {}) {
     let lastTimings = null;
     const full = await streamSentences(resp, {
       onSentence,
+      onThought,
+      onThoughtDone,
       maxSentenceChars,
       onTimings: (timings) => {
         lastTimings = timings;
@@ -1627,6 +1634,12 @@ function createLlamaServerRuntime(options = {}) {
   // unclosed one running to the end (thinking cut off by its budget).
   function stripThinking(content) {
     return String(content || "").replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, "").trim();
+  }
+
+  // #1354: reasoning tokens extracted from inside <think>...</think> blocks.
+  function extractThinking(content) {
+    const matches = [...String(content || "").matchAll(/<think>([\s\S]*?)(?:<\/think>|$)/gi)];
+    return matches.map((m) => m[1]).join("\n\n").trim();
   }
 
   // #787: qwen2.5-coder never uses the <tool_call> tags its template asks

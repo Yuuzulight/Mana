@@ -304,4 +304,74 @@ public class ChatViewTests
 
         Assert.Equal(new[] { "go", "On it.", "Ran a command  ›", "Done." }, view.Messages.Select(m => m.PlainText));
     }
+
+    // #1354: reasoning tokens stream before reply sentences into a collapsed dropdown
+    [Fact]
+    public void ReasoningTokens_StreamedThought_CreatesDropdownAndAppendsSentence()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("solve this");
+        view.AppendReplyThought("Let me consider the steps.");
+        view.AppendReplyThought(" First step is clear.");
+        view.AppendReplySentence("The answer is 42.");
+
+        Assert.Equal(2, view.Messages.Count);
+        var reply = view.Messages[1];
+        Assert.Equal("The answer is 42.", reply.PlainText);
+        Assert.Equal("Let me consider the steps. First step is clear.", reply.Thought);
+        Assert.False(reply.ThoughtOpen);
+        Assert.True(reply.ThoughtHeaderBounds.Width > 0);
+        Assert.True(reply.ThoughtHeaderBounds.Height > 0);
+    }
+
+    // #1354: clicking the thought header dropdown toggles it open and closed
+    [Fact]
+    public void ReasoningTokens_ClickDropdown_TogglesThoughtOpen()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("think");
+        view.AppendReplyThought("Reasoning about the problem.");
+        view.AppendReplySentence("Ready.");
+
+        var reply = view.Messages[1];
+        Assert.False(reply.ThoughtOpen);
+
+        // Click inside the header pill
+        var clickPoint = new Point(
+            reply.Bounds.X + 16 + reply.ThoughtHeaderBounds.X + reply.ThoughtHeaderBounds.Width / 2,
+            reply.Bounds.Y + 8 + reply.ThoughtHeaderBounds.Y + reply.ThoughtHeaderBounds.Height / 2);
+        view.SimulateClick(clickPoint);
+
+        Assert.True(reply.ThoughtOpen);
+        Assert.NotEmpty(reply.ThoughtLines);
+        Assert.Contains("Reasoning about the problem.", reply.PlainText);
+
+        // Click again to collapse
+        view.SimulateClick(clickPoint);
+        Assert.False(reply.ThoughtOpen);
+        Assert.Equal("Ready.", reply.PlainText);
+    }
+
+    // #1354: reopened chat history preserves stored thoughts
+    [Fact]
+    public void ReasoningTokens_ShowHistory_PreservesThought()
+    {
+        using var view = NewView();
+        view.ShowHistory(new[]
+        {
+            new ManaSessionTurn
+            {
+                User = "why is sky blue?",
+                Assistant = "Rayleigh scattering.",
+                Thought = "Deliberating physics explanation.",
+            }
+        });
+
+        Assert.Equal(2, view.Messages.Count);
+        var reply = view.Messages[1];
+        Assert.Equal("Rayleigh scattering.", reply.PlainText);
+        Assert.Equal("Deliberating physics explanation.", reply.Thought);
+        Assert.False(reply.ThoughtOpen);
+        Assert.True(reply.ThoughtHeaderBounds.Width > 0);
+    }
 }
