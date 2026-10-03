@@ -319,9 +319,18 @@ internal sealed class ManaBackendClient
     // #909: emotion is the sentence's tag, which Qwen3-TTS turns into her
     // speaking rate; null leaves the voice as it is.
     // #914: character (a reply event's) speaks in her own voice; null, the active one's.
+    // #1329: spoken replies don't read citation markers aloud.
+    public static string StripCitationMarkers(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text;
+        var stripped = System.Text.RegularExpressions.Regex.Replace(text, @"\[\d+\](?:\([^)]*\))?", "");
+        return System.Text.RegularExpressions.Regex.Replace(stripped, @"\s+([.,!?;:])", "$1").Trim();
+    }
+
     public async Task<byte[]> SynthesizeAsync(string text, string? emotion = null, string? character = null)
     {
-        var payload = JsonSerializer.Serialize(new { text, emotion, character });
+        var cleanText = StripCitationMarkers(text);
+        var payload = JsonSerializer.Serialize(new { text = cleanText, emotion, character });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/synthesize", content);
         response.EnsureSuccessStatusCode();
@@ -3034,6 +3043,15 @@ internal sealed class ManaBackendClient
             Thought = root.TryGetProperty("thought", out var thProp) && thProp.ValueKind == JsonValueKind.String ? thProp.GetString() : null,
             // #1337: a "tool" event carries the whole step (none before #1318).
             Step = root.GetProperty("type").GetString() == "tool" && StepStr(root, "id") is { } stepId ? ParseAgentStep(root, stepId) : null,
+            // #1329: on "final", verified web sources cited in the reply.
+            Sources = root.TryGetProperty("sources", out var sourcesProp) && sourcesProp.ValueKind == JsonValueKind.Array
+                ? sourcesProp.EnumerateArray()
+                    .Select(s => new WebSourceCitation(
+                        s.TryGetProperty("index", out var idx) ? idx.GetInt32() : 0,
+                        s.TryGetProperty("title", out var title) ? title.GetString() ?? "" : "",
+                        s.TryGetProperty("url", out var url) ? url.GetString() ?? "" : ""))
+                    .ToList()
+                : null,
         };
     }
 }
@@ -3398,7 +3416,12 @@ internal sealed class ReplyStreamEvent
     public string? Date { get; init; }
     // #1337: on "tool", the step it started or updated.
     public AgentStep? Step { get; init; }
+    // #1329: on "final", verified web sources cited in the reply.
+    public IReadOnlyList<WebSourceCitation>? Sources { get; init; }
 }
+
+// #1329: a verified web source citation cited in chat answers.
+internal sealed record WebSourceCitation(int Index, string Title, string Url);
 
 // #914: GET /characters/relationships -- one character's notes and milestones.
 internal sealed record ManaCharacterRelationship(string Id, string Name, IReadOnlyList<ManaRelationshipItem> Notes, IReadOnlyList<ManaRelationshipItem> Milestones);

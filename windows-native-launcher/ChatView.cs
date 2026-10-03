@@ -305,12 +305,27 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // lose the line breaks between them and a long table or code block is
     // cut mid-line, so Mana's bubble is re-parsed from the real text. As in
     // Electron, the reply's artifact (a big or ```html/```mermaid block)
-    // moves out of the bubble behind an "Open" button.
-    public void ReportReply(string replyText) => RunOnUiThread(() =>
+    public void ReportReply(string replyText) => ReportReply(replyText, null);
+
+    // #1329: ReportReply with verified web sources citations.
+    public void ReportReply(string replyText, IReadOnlyList<WebSourceCitation>? sources) => RunOnUiThread(() =>
     {
         var addArtifact = Artifacts;
         var artifact = addArtifact is null ? null : ArtifactDetector.Extract(replyText);
-        var blocks = ChatMarkdownParser.Parse(artifact is { } found ? replyText.Replace(found.MatchedText, "").Trim() : replyText);
+        var blocks = ChatMarkdownParser.Parse(artifact is { } found ? replyText.Replace(found.MatchedText, "").Trim() : replyText).ToList();
+        if (sources is { Count: > 0 })
+        {
+            blocks.Add(new MarkdownBlock(MarkdownBlockType.Header, new[] { new MarkdownRun("Sources", Bold: true, Italic: false, Code: false) }, Level: 3));
+            foreach (var s in sources)
+            {
+                var runs = new List<MarkdownRun>
+                {
+                    new($"[{s.Index}] ", Bold: true, Italic: false, Code: false),
+                    new(string.IsNullOrWhiteSpace(s.Title) ? s.Url : s.Title, Bold: false, Italic: false, Code: false, Link: s.Url)
+                };
+                blocks.Add(new MarkdownBlock(MarkdownBlockType.BulletItem, runs));
+            }
+        }
         if (blocks.Count == 0 && artifact is null)
         {
             return;
@@ -325,12 +340,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (last is not null && messages.IndexOf(last) > lastUser)
             {
                 last.FinalText = replyText;
+                last.Sources = sources?.ToList();
+                if (sources is { Count: > 0 })
+                {
+                    last.Blocks.Add(new MarkdownBlock(MarkdownBlockType.Header, new[] { new MarkdownRun("Sources", Bold: true, Italic: false, Code: false) }, Level: 3));
+                    foreach (var s in sources)
+                    {
+                        var runs = new List<MarkdownRun>
+                        {
+                            new($"[{s.Index}] ", Bold: true, Italic: false, Code: false),
+                            new(string.IsNullOrWhiteSpace(s.Title) ? s.Url : s.Title, Bold: false, Italic: false, Code: false, Link: s.Url)
+                        };
+                        last.Blocks.Add(new MarkdownBlock(MarkdownBlockType.BulletItem, runs));
+                    }
+                }
                 if (artifact is { } split)
                 {
                     last.Actions.Add(ArtifactAction(split, addArtifact!(split)));
-                    last.Invalidate();
-                    Relayout(forceScroll: false);
                 }
+                last.Invalidate();
+                Relayout(forceScroll: false);
             }
             return;
         }
@@ -346,6 +375,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         message.Blocks.Clear();
         message.Blocks.AddRange(blocks);
         message.FinalText = replyText;
+        message.Sources = sources?.ToList();
         if (artifact is { } a)
         {
             message.Actions.Add(ArtifactAction(a, addArtifact!(a)));
@@ -1938,6 +1968,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public bool ThoughtOpen { get; set; }
         public Rectangle ThoughtHeaderBounds { get; set; }
         public List<Line> ThoughtLines { get; set; } = new();
+
+        // #1329: verified web sources cited in the reply
+        public List<WebSourceCitation>? Sources { get; set; }
 
         public void Invalidate() => LaidOutWidth = -1;
 

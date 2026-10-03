@@ -374,4 +374,34 @@ public class ChatViewTests
         Assert.False(reply.ThoughtOpen);
         Assert.True(reply.ThoughtHeaderBounds.Width > 0);
     }
+
+    // #1329: Answers using web search or pages carry a sources list with clickable links
+    [Fact]
+    public void ReportReply_WithSources_RendersSourcesListWithClickableLinks()
+    {
+        using var view = NewView();
+        var sources = new[]
+        {
+            new WebSourceCitation(1, "Eiffel Tower - Paris", "https://example.com/eiffel"),
+            new WebSourceCitation(2, "Louvre Museum", "https://example.com/louvre")
+        };
+
+        view.ReportReply("Paris is known for landmarks like the Eiffel Tower [1](https://example.com/eiffel).", sources);
+
+        Assert.Single(view.Messages);
+        var message = view.Messages[0];
+        Assert.NotNull(message.Sources);
+        Assert.Equal(2, message.Sources.Count);
+
+        // PlainText includes sources list
+        Assert.Contains("Sources", message.PlainText);
+        Assert.Contains("Eiffel Tower - Paris", message.PlainText);
+        Assert.Contains("Louvre Museum", message.PlainText);
+
+        // Lines contain clickable fragments with the URLs
+        var linkFragments = message.Lines.SelectMany(l => l.Fragments).Where(f => f.Link is not null).ToList();
+        Assert.NotEmpty(linkFragments);
+        Assert.Contains(linkFragments, f => f.Link == "https://example.com/eiffel");
+        Assert.Contains(linkFragments, f => f.Link == "https://example.com/louvre");
+    }
 }

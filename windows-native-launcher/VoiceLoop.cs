@@ -2026,8 +2026,8 @@ internal sealed class VoiceLoop : IDisposable
         // #528: reported once per successful (non-interrupted) reply,
         // regardless of whether it streamed or fell back to the
         // non-streamed path below -- reply is the true final text
-        // either way by this point.
-        artifactSink?.ReportReply(reply ?? "");
+        // either way by this point. #1329: FinalSources carries verified web sources.
+        artifactSink?.ReportReply(reply ?? "", streamingReplyPlayer.FinalSources);
 
         if (!changed)
         {
