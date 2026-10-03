@@ -3658,4 +3658,83 @@ public class ManaBackendClientTests
         Assert.Equal("/research/job-1/cancel", path);
         Assert.Equal("POST", method);
     }
+
+    // #1336: Privacy and data management tests
+    [Fact]
+    public async Task ExportAllDataAsync_GetsExportZipBytes()
+    {
+        string? path = null;
+        string? method = null;
+        var fakeZip = new byte[] { 0x50, 0x4b, 0x03, 0x04, 0x01, 0x02 };
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(fakeZip),
+            };
+            response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/zip");
+            return response;
+        });
+        var client = new ManaBackendClient(handler);
+
+        var result = await client.ExportAllDataAsync();
+
+        Assert.Equal("/privacy/export-all", path);
+        Assert.Equal("GET", method);
+        Assert.Equal(fakeZip, result);
+    }
+
+    [Fact]
+    public async Task DeleteAllDataAsync_PostsConfirmation()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true,\"deleted\":[\"chats\",\"memory\",\"vault\",\"voice\",\"cache-logs\"]}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var ok = await client.DeleteAllDataAsync("delete-everything");
+
+        Assert.Equal("/privacy/delete-all", path);
+        Assert.Equal("POST", method);
+        Assert.Contains("delete-everything", body);
+        Assert.True(ok);
+    }
+
+    [Fact]
+    public async Task DeleteDataCategoryAsync_PostsCategoryAndConfirmation()
+    {
+        string? path = null;
+        string? method = null;
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            method = request.Method.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true,\"deleted\":[\"voice\"]}", Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+
+        var ok = await client.DeleteDataCategoryAsync("voice", "delete-voice");
+
+        Assert.Equal("/privacy/delete/voice", path);
+        Assert.Equal("POST", method);
+        Assert.Contains("delete-voice", body);
+        Assert.True(ok);
+    }
 }

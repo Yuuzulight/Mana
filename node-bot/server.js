@@ -140,6 +140,7 @@ const {
   retrieverAdminCapability,
 } = require("./capabilities/retriever-admin-capability");
 const { skillsCapability } = require("./capabilities/skills-capability");
+const { privacyDataCapability } = require("./capabilities/privacy-data-capability");
 const { createSkillsStore } = require("./skills-store");
 const { createApprovalGate } = require("./approval-gate");
 const { judgeActionRisk } = require("./ai/guardian-precheck");
@@ -2565,6 +2566,8 @@ function registerRoutes(app, upload, deps = {}) {
     cloudSyncCapability,
     scheduledExportCapability,
     structuredConnectorsCapability,
+    // #1336: Export all my data and delete all of it
+    privacyDataCapability,
   ];
   const activePresetsStore = deps.presetsStore || presetsStore;
   const activePersonalityStore = deps.personalityStore || personalityStore;

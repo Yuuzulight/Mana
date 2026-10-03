@@ -1082,6 +1082,32 @@ internal sealed class ManaBackendClient
         return await response.Content.ReadAsStringAsync();
     }
 
+    // #1336: Export everything as one zip file with a readme.
+    public async Task<byte[]> ExportAllDataAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await http.GetAsync("/privacy/export-all", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+    }
+
+    // #1336: Delete all data (typed confirmation "delete-everything").
+    public async Task<bool> DeleteAllDataAsync(string confirmation, CancellationToken cancellationToken = default)
+    {
+        var json = JsonSerializer.Serialize(new { confirmation });
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/privacy/delete-all", content, cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
+    // #1336: Per-category delete (e.g. "voice", "chats", "memory", "vault", "cache-logs").
+    public async Task<bool> DeleteDataCategoryAsync(string category, string confirmation, CancellationToken cancellationToken = default)
+    {
+        var json = JsonSerializer.Serialize(new { confirmation });
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/privacy/delete/{Uri.EscapeDataString(category)}", content, cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
     // #529: GET /plugins groups capabilities by category -- this
     // flattens that into one list, which is all the settings panel
     // needs (the grouping is a display nicety this lean version skips).
