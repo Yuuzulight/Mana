@@ -24,107 +24,24 @@ function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
     return parts.join("\n");
   }
 
-async function runOpenAIReply(
-    prompt,
-    maxTokens = context.LLAMA_MAX_TOKENS,
-    systemPromptOverride = null,
-    // Issue #421: only passed by call sites that have a REAL per-user
-    // session in scope -- the main chat-turn reply path, and
-    // acp-memory-store.js's automatic per-session summarization. The
-    // background reviewer/connections jobs fold every session's summaries
-    // together with no single session in scope, so they're left untracked
-    // rather than polluting a "default" bucket with unrelated global usage.
-    sessionId = null,
-  ) {
-    if (!context.shouldUseRemoteAi()) {
-      return null; // no key configured; fall back to local
-    }
-
+async function runOpenAIReply(prompt, maxTokens = context.LLAMA_MAX_TOKENS, systemPromptOverride = null, sessionId = null, remoteConfig = null) {
+    const config = remoteConfig || { apiKey: context.openAiApiKey(), baseUrl: context.openAiBaseUrl(), model: context.openAiModel() };
+    if (!context.shouldUseRemoteAi(config)) return null;
     if (sessionId) {
       const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
-      if (
-        Number.isFinite(stopThreshold) &&
-        stopThreshold > 0 &&
-        context.sessionTokenUsage.getUsage(sessionId).totalTokens >= stopThreshold
-      ) {
-        console.warn(
-          `Remote AI call blocked for session ${sessionId}: token stop threshold (${stopThreshold}) reached.`,
-        );
-        return null; // falls back to local, same as remote AI being disabled
-      }
+      if (Number.isFinite(stopThreshold) && stopThreshold > 0 && context.sessionTokenUsage.getUsage(sessionId).totalTokens >= stopThreshold) return null;
     }
-
-    const systemPrompt = systemPromptOverride || context.activeDefaultPrompt();
-
-    const baseUrl = context.openAiBaseUrl().replace(/\/+$/, "");
-    const url = new URL(baseUrl + "/v1/chat/completions");
-    const transport = url.protocol === "https:" ? context.https : context.http;
-
-    const body = JSON.stringify({
-      model: context.openAiModel(),
+    const result = await require('./remote-chat').requestChatCompletion({
+      ...config,
+      maxTokens,
+      timeoutMs: process.env.MANA_REMOTE_AI_TIMEOUT_MS,
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt },
+        { role: 'system', content: systemPromptOverride || context.activeDefaultPrompt() },
+        { role: 'user', content: prompt },
       ],
-      max_tokens: maxTokens,
-      temperature: 0.7,
     });
-
-    return new Promise((resolve) => {
-      const options = {
-        hostname: url.hostname,
-        port: url.port || (url.protocol === "https:" ? 443 : 80),
-        path: url.pathname + url.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-          // Many self-hosted OpenAI-compatible servers (Ollama, llama.cpp's
-          // own llama-server, etc.) don't require auth at all -- only send
-          // the header when there's actually a key configured, rather than
-          // sending a literal "Bearer null" to a server that might choke on it.
-          ...(context.openAiApiKey() ? { Authorization: `Bearer ${context.openAiApiKey()}` } : {}),
-        },
-      };
-
-      const req = transport.request(options, (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          try {
-            const raw = Buffer.concat(chunks).toString("utf8");
-            const j = JSON.parse(raw);
-            const text =
-              j?.choices?.[0]?.message?.content ||
-              j?.choices?.[0]?.text ||
-              null;
-            if (sessionId && j?.usage) {
-              context.sessionTokenUsage.recordUsage(sessionId, j.usage);
-            }
-            if (text) {
-              resolve(text.trim());
-            } else {
-              console.warn(
-                "OpenAI proxy returned unexpected shape:",
-                raw.slice(0, 300),
-              );
-              resolve(null);
-            }
-          } catch (e) {
-            console.warn("OpenAI proxy parse error:", e.message);
-            resolve(null);
-          }
-        });
-      });
-
-      req.on("error", (e) => {
-        console.warn("OpenAI proxy request error:", e.message);
-        resolve(null);
-      });
-
-      req.write(body);
-      req.end();
-    });
+    if (sessionId && result?.usage) context.sessionTokenUsage.recordUsage(sessionId, result.usage);
+    return result?.content || null;
   }
 
 function pickAssistantMode(transcript, normalizedModelProfile) {
@@ -1509,7 +1426,21 @@ async function buildAssistantReply(
     }
 
     // Fall back to local llama
-    let reply = untag(await replyMaybeWithBestOfN(finalPrompt));
+    let reply;
+    let localError;
+    try { reply = untag(await replyMaybeWithBestOfN(finalPrompt)); }
+    catch (error) { localError = error; }
+    if (!(typeof reply === 'string' && reply.trim())) {
+      const fallbackConfig = context.openAiFallbackConfig?.();
+      if (fallbackConfig) {
+        const fallbackReply = untag(await runOpenAIReply(finalPrompt, effectiveMaxTokens, selectedSystemPrompt + flatMemorySuffix, sessionId, fallbackConfig));
+        if (fallbackReply) {
+          if (replyMeta) replyMeta.cloudFallback = true;
+          reply = fallbackReply;
+        }
+      }
+      if (!reply && localError) throw localError;
+    }
 
     // Conversational rut detection (issue #159), general reply path: the
     // Best-of-N branch above already prefers a less-repetitive candidate

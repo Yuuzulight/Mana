@@ -17,6 +17,7 @@ const {
 function fakeModelSettingsStore(initialPath = null) {
   let modelPath = initialPath;
   let brain = { type: "local", baseUrl: "", apiKey: "", model: "" };
+  let fallback = { enabled: false, baseUrl: "", apiKey: "", model: "" };
   let vision = { modelPath: "", mmprojPath: "" };
   let loadIntoVram = null;
   return {
@@ -31,6 +32,11 @@ function fakeModelSettingsStore(initialPath = null) {
     setBrainSettings: (partial = {}) => {
       brain = { ...brain, ...partial };
       return { ...brain };
+    },
+    getFallbackSettings: () => ({ ...fallback }),
+    setFallbackSettings: (partial = {}) => {
+      fallback = { ...fallback, ...partial };
+      return { ...fallback };
     },
     getVisionSettings: () => ({ ...vision }),
     setVisionSettings: (partial = {}) => {
@@ -178,6 +184,50 @@ test("getModelStatus never echoes back a stored apiKey", () => {
   assert.equal(JSON.stringify(status).includes("sk-super-secret"), false);
 });
 
+test("setFallbackSettings enables local-first cloud fallback without echoing the API key", () => {
+  const manager = createModelManagement({
+    env: { MANA_ALLOW_REMOTE_AI: "1" },
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  const status = manager.setFallbackSettings({
+    enabled: true,
+    baseUrl: "https://api.openai.com/v1",
+    apiKey: "sk-fallback-secret",
+    model: "gpt-test",
+  });
+
+  assert.equal(status.remoteAiEnabled, false);
+  assert.equal(status.cloudFallbackEnabled, true);
+  assert.equal(status.fallback.enabled, true);
+  assert.equal(status.fallback.active, true);
+  assert.equal(status.fallback.baseUrl, "https://api.openai.com/v1");
+  assert.equal(status.fallback.model, "gpt-test");
+  assert.equal(status.fallback.apiKey, undefined);
+  assert.equal(status.fallback.hasApiKey, true);
+  assert.equal(JSON.stringify(status).includes("sk-fallback-secret"), false);
+});
+
+test("setFallbackSettings refuses a cloud endpoint in local-only mode, but not a LAN one", () => {
+  const store = fakeModelSettingsStore();
+  const manager = createModelManagement({ env: {}, localGgufs: [], modelSettingsStore: store });
+  const prior = process.env.MANA_LOCAL_ONLY;
+  process.env.MANA_LOCAL_ONLY = "1";
+  try {
+    assert.throws(
+      () => manager.setFallbackSettings({ enabled: true, baseUrl: "https://api.openai.com/v1" }),
+      /Local-only mode is on .*cloud fallback at api\.openai\.com/,
+    );
+    assert.equal(store.getFallbackSettings().enabled, false);
+    manager.setFallbackSettings({ enabled: true, baseUrl: "http://192.168.1.20:11434/v1" });
+    assert.equal(store.getFallbackSettings().baseUrl, "http://192.168.1.20:11434/v1");
+  } finally {
+    if (prior === undefined) delete process.env.MANA_LOCAL_ONLY;
+    else process.env.MANA_LOCAL_ONLY = prior;
+  }
+});
+
 test("setBrainSettings rejects an invalid type or baseUrl", () => {
   const manager = createModelManagement({
     env: {},
@@ -195,6 +245,27 @@ test("setBrainSettings rejects an invalid type or baseUrl", () => {
   );
   assert.throws(
     () => manager.setBrainSettings({ baseUrl: "file:///etc/passwd" }),
+    /must be http:\/\/ or https:\/\//,
+  );
+});
+
+test("setFallbackSettings rejects invalid values", () => {
+  const manager = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: fakeModelSettingsStore(),
+  });
+
+  assert.throws(
+    () => manager.setFallbackSettings({ enabled: "yes" }),
+    /enabled must be true or false/,
+  );
+  assert.throws(
+    () => manager.setFallbackSettings({ baseUrl: "not a url" }),
+    /not a valid URL/,
+  );
+  assert.throws(
+    () => manager.setFallbackSettings({ baseUrl: "file:///etc/passwd" }),
     /must be http:\/\/ or https:\/\//,
   );
 });

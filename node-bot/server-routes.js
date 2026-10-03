@@ -209,6 +209,24 @@ function registerModelRoutes(app, deps) {
     }
   });
 
+  // Local-first cloud fallback: separate from /models/brain-provider so a
+  // user can keep the local GGUF as Mana's normal brain and only escalate a
+  // failed local reply to an OpenAI-compatible endpoint.
+  app.post("/models/cloud-fallback", (req, res) => {
+    try {
+      return res.json(
+        modelManagement.setFallbackSettings({
+          enabled: req.body?.enabled,
+          baseUrl: req.body?.baseUrl,
+          apiKey: req.body?.apiKey,
+          model: req.body?.model,
+        }),
+      );
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
   // Presets for the brain-provider dropdown (Settings' "Use Remote AI" UI).
   app.get("/models/brain-providers", (req, res) => {
     return res.json(modelManagement.getKnownBrainProviders());

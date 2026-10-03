@@ -476,6 +476,16 @@ function createModelManagement(options = {}) {
     };
   }
 
+  function effectiveFallbackConfig() {
+    const fallback = modelSettingsStore.getFallbackSettings();
+    return {
+      enabled: fallback.enabled === true,
+      apiKey: fallback.apiKey || env.OPENAI_API_KEY || null,
+      baseUrl: fallback.baseUrl || env.OPENAI_BASE_URL || "https://api.openai.com",
+      model: fallback.model || env.OPENAI_MODEL || "codex-gpt-5.5",
+    };
+  }
+
   function getModelStatus() {
     const localGgufs = collectLocalGgufs();
     const profiles = {};
@@ -489,6 +499,14 @@ function createModelManagement(options = {}) {
       allowRemoteAi: env.MANA_ALLOW_REMOTE_AI || "",
       baseUrl,
     });
+    const fallback = effectiveFallbackConfig();
+    const cloudFallbackEnabled =
+      fallback.enabled &&
+      shouldUseRemoteAi({
+        apiKey: fallback.apiKey,
+        allowRemoteAi: env.MANA_ALLOW_REMOTE_AI || "",
+        baseUrl: fallback.baseUrl,
+      });
 
     const liveVramUsage = getLiveVramUsage();
     return {
@@ -496,7 +514,10 @@ function createModelManagement(options = {}) {
       remoteAiEnabled,
       remoteAiWarning: remoteAiEnabled
         ? "Remote AI is enabled. Mana may use paid or proxy chat replies."
+        : cloudFallbackEnabled
+          ? "Cloud fallback is enabled. Mana stays local first and may escalate failed replies to a paid or proxy model."
         : null,
+      cloudFallbackEnabled,
       profiles,
       recommendation: getRecommendedModelProfile(),
       // Issue #320: live usage (changes constantly), separate from
@@ -511,6 +532,10 @@ function createModelManagement(options = {}) {
       brain: (() => {
         const { apiKey, ...rest } = modelSettingsStore.getBrainSettings();
         return { ...rest, hasApiKey: Boolean(apiKey) };
+      })(),
+      fallback: (() => {
+        const { apiKey, ...rest } = modelSettingsStore.getFallbackSettings();
+        return { ...rest, hasApiKey: Boolean(apiKey), active: cloudFallbackEnabled };
       })(),
       vision: modelSettingsStore.getVisionSettings(),
       loadIntoVram: modelSettingsStore.isLoadIntoVram(env),
@@ -620,6 +645,29 @@ function createModelManagement(options = {}) {
     return getModelStatus();
   }
 
+  function setFallbackSettings(partial = {}) {
+    if (partial.baseUrl) {
+      let parsed;
+      try {
+        parsed = new URL(partial.baseUrl);
+      } catch (e) {
+        throw new Error(`baseUrl is not a valid URL: ${partial.baseUrl}`);
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`baseUrl must be http:// or https://: ${partial.baseUrl}`);
+      }
+    }
+    if (partial.enabled !== undefined && typeof partial.enabled !== "boolean") {
+      throw new Error("enabled must be true or false");
+    }
+    if (isLocalOnly()) {
+      const next = { ...modelSettingsStore.getFallbackSettings(), ...partial };
+      if (next.enabled === true) assertLocalUrl(next.baseUrl, "cloud fallback at");
+    }
+    modelSettingsStore.setFallbackSettings(partial);
+    return getModelStatus();
+  }
+
   // Vision GGUF + mmproj override (see findVisionModel/findVisionMmproj in
   // ai/llama-server-runtime.js) -- empty string clears back to
   // auto-detection under tools/llama/gguf-models.
@@ -701,6 +749,7 @@ function createModelManagement(options = {}) {
     scanForModels,
     setActiveProfile,
     setBrainSettings,
+    setFallbackSettings,
     setLoadIntoVram,
     setModelPath,
     setVisionSettings,

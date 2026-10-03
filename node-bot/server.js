@@ -453,6 +453,23 @@ function openAiModel() {
   if (override && override.model) return override.model;
   return process.env.OPENAI_MODEL || "codex-gpt-5.5";
 }
+function openAiFallbackConfig() {
+  if (require('./local-only').isLocalOnly()) return null;
+  const fallback = modelSettingsStore.getFallbackSettings();
+  if (!fallback.enabled) return null;
+  const config = {
+    apiKey: fallback.apiKey || process.env.OPENAI_API_KEY || null,
+    baseUrl: fallback.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com",
+    model: fallback.model || process.env.OPENAI_MODEL || "codex-gpt-5.5",
+  };
+  return shouldUseRemoteAiCore({
+    apiKey: config.apiKey,
+    allowRemoteAi: MANA_ALLOW_REMOTE_AI,
+    baseUrl: config.baseUrl,
+  })
+    ? config
+    : null;
+}
 const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
 
 // Threads the dynamic Settings-driven apiKey/baseUrl through to every
@@ -3747,6 +3764,7 @@ function registerRoutes(app, upload, deps = {}) {
     get openAiApiKey() { return openAiApiKey; },
     get openAiBaseUrl() { return openAiBaseUrl; },
     get openAiModel() { return openAiModel; },
+    get openAiFallbackConfig() { return openAiFallbackConfig; },
     get path() { return path; },
     get perfMetrics() { return perfMetrics; },
     get persona() { return persona; },
