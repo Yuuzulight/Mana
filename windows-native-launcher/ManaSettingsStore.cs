@@ -118,6 +118,11 @@ internal sealed class ManaSettingsStore
     public bool? Captions { get; set; }
     public bool CaptionsShown() => Captions ?? !ChatBubbles;
 
+    // #849: hold a key to dictate anywhere and type cleaned transcript into focused window
+    public bool DictateAnywhere { get; set; }
+    public string? DictateKey { get; set; }
+    public int? DictateHoldThresholdMs { get; set; }
+
     // #684: Electron's "minimized Mana" -- the avatar steps aside while the
     // chat window is open and comes back when it's closed or minimized.
     // Off keeps her always showing. Tray menu.

@@ -375,6 +375,33 @@ internal sealed class VoiceLoop : IDisposable
         }
     }
 
+    // #849: pauses voice loop audio processing while dictate-anywhere records speech
+    public IDisposable PauseForDictation()
+    {
+        lock (stateLock)
+        {
+            listenPausedUntilMs = long.MaxValue;
+            return new DictationPauseToken(this);
+        }
+    }
+
+    private sealed class DictationPauseToken(VoiceLoop loop) : IDisposable
+    {
+        private VoiceLoop? loop = loop;
+
+        public void Dispose()
+        {
+            var l = Interlocked.Exchange(ref loop, null);
+            if (l is not null)
+            {
+                lock (l.stateLock)
+                {
+                    l.listenPausedUntilMs = 0;
+                }
+            }
+        }
+    }
+
     public void Start()
     {
         if (capture is not null || disposed)
