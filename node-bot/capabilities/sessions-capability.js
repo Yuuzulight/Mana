@@ -4,7 +4,7 @@ const {
   requireString,
   sendValidationError,
 } = require("../request-validation");
-const { exportSessionAsShareGPTJSONL } = require("../session-export");
+const { exportSessionAsShareGPTJSONL, exportSessionAsMarkdown } = require("../session-export");
 const { artifactsOf } = require("../artifact-history");
 
 const KEY = "sessions";
@@ -116,6 +116,16 @@ function registerSessionsRoutes(app, context = {}) {
       const session = acpMemoryStore.getSession(sessionId);
       if (!session) {
         return res.status(404).json({ error: "session not found" });
+      }
+      // #1323: ?format=markdown (with tools=1 / thoughts=1 to keep tool calls
+      // and the hidden reasoning); JSONL stays the default.
+      if (req.query?.format === "markdown") {
+        const markdown = exportSessionAsMarkdown(session, {
+          includeTools: req.query.tools === "1",
+          includeThoughts: req.query.thoughts === "1",
+        });
+        res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+        return res.send(markdown);
       }
       const jsonl = exportSessionAsShareGPTJSONL(session);
       res.setHeader("Content-Type", "application/x-ndjson");

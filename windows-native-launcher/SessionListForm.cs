@@ -183,6 +183,7 @@ internal sealed partial class SessionListForm : Form
         contextMenu.Items.Add("Set goal...", null, async (_, _) => await SetGoalForSelectedAsync());
         contextMenu.Items.Add("Delete...", null, async (_, _) => await DeleteSelectedAsync());
         contextMenu.Items.Add("Export...", null, async (_, _) => await ExportSelectedAsync());
+        contextMenu.Items.Add("Copy as Markdown", null, async (_, _) => await CopySelectedAsMarkdownAsync());
         contextMenu.Items.Add("Open memory...", null, async (_, _) => await OpenMemoryForSelectedAsync());
         list.ContextMenuStrip = contextMenu;
         DarkTheme.ApplyListView(list);
@@ -1626,6 +1627,30 @@ internal sealed partial class SessionListForm : Form
         memoryForm.ShowDialog(this);
     }
 
+    // #1323: copy a chat directly as Markdown to paste into another app or notes.
+    private async Task CopySelectedAsMarkdownAsync()
+    {
+        if (list.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var sessionId = (string)list.SelectedItems[0].Tag!;
+        try
+        {
+            var markdown = await backendClient.ExportSessionAsync(sessionId, "markdown");
+            if (!string.IsNullOrEmpty(markdown))
+            {
+                Clipboard.SetText(markdown);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SessionListForm: copy as markdown failed. {ex.Message}");
+        }
+    }
+
+    // #1323: export chat as Markdown, HTML (drawn with Folio) or JSONL,
+    // with options to include tool calls and reasoning.
     private async Task ExportSelectedAsync()
     {
         if (list.SelectedItems.Count == 0)
@@ -1634,30 +1659,54 @@ internal sealed partial class SessionListForm : Form
         }
         var sessionId = (string)list.SelectedItems[0].Tag!;
 
-        string jsonl;
+        using var optionsDialog = new ExportChatDialog();
+        if (optionsDialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var format = optionsDialog.SelectedFormat;
+        var includeTools = optionsDialog.IncludeTools;
+        var includeThoughts = optionsDialog.IncludeThoughts;
+
+        var (ext, filter) = format switch
+        {
+            "html" => ("html", "HTML page (*.html)|*.html|All files (*.*)|*.*"),
+            "jsonl" => ("jsonl", "JSON Lines (*.jsonl)|*.jsonl|All files (*.*)|*.*"),
+            _ => ("md", "Markdown (*.md)|*.md|All files (*.*)|*.*"),
+        };
+
+        using var saveDialog = new SaveFileDialog
+        {
+            FileName = $"{sessionId}.{ext}",
+            Filter = filter,
+        };
+        if (saveDialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
         try
         {
-            jsonl = await backendClient.ExportSessionAsync(sessionId);
+            string content;
+            if (format == "html")
+            {
+                var markdown = await backendClient.ExportSessionAsync(sessionId, "markdown", includeTools, includeThoughts);
+                content = MarkdownHtml.ToHtml(markdown, src => src);
+            }
+            else
+            {
+                content = await backendClient.ExportSessionAsync(sessionId, format, includeTools, includeThoughts);
+            }
+            await File.WriteAllTextAsync(saveDialog.FileName, content);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"SessionListForm: export failed. {ex.Message}");
-            return;
-        }
-
-        if (IsDisposed)
-        {
-            return;
-        }
-
-        using var dialog = new SaveFileDialog
-        {
-            FileName = $"{sessionId}.jsonl",
-            Filter = "JSON Lines (*.jsonl)|*.jsonl|All files (*.*)|*.*",
-        };
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-        {
-            await File.WriteAllTextAsync(dialog.FileName, jsonl);
+            if (!IsDisposed)
+            {
+                MessageBox.Show(this, $"Export failed: {ex.Message}", "Export Chat", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
     }
 

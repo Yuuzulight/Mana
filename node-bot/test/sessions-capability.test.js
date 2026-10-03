@@ -270,3 +270,28 @@ test("#687: GET /sessions?q= keeps only content matches and echoes the query", a
     assert.deepEqual(payload, { sessions: [], query: "deploy" });
   });
 });
+
+test("sessions export returns Markdown on ?format=markdown, with tool calls only when asked (#1323)", async () => {
+  const app = express();
+  app.use(express.json());
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({
+      getSession: () => ({
+        sessionId: "md",
+        turns: [{ user: "hi", assistant: "hello", toolCalls: [{ name: "clock", ok: true, args: {}, result: "noon" }] }],
+      }),
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const plain = await fetch(`${baseUrl}/sessions/md/export?format=markdown`);
+    assert.equal(plain.status, 200);
+    assert.match(plain.headers.get("content-type") || "", /text\/markdown/);
+    const plainBody = await plain.text();
+    assert.match(plainBody, /### You\n\nhi/);
+    assert.doesNotMatch(plainBody, /clock/);
+
+    const withTools = await (await fetch(`${baseUrl}/sessions/md/export?format=markdown&tools=1`)).text();
+    assert.match(withTools, /\*\*Tool:\*\* `clock`/);
+  });
+});

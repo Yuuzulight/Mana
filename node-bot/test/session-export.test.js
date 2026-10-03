@@ -91,3 +91,58 @@ test("a session with no turns exports an empty conversations array", () => {
   const session = { sessionId: "empty-session", turns: [] };
   assert.deepEqual(toShareGPTConversation(session), { id: "empty-session", conversations: [] });
 });
+
+// #1323: Markdown export.
+const { exportSessionAsMarkdown } = require("../session-export");
+
+const markdownSession = {
+  sessionId: "s1",
+  name: "Raid plans",
+  turns: [
+    {
+      user: "what's the plan",
+      assistant: "We go Friday. ```js const a = 1; const b = 2;``` Done.",
+      artifact: { language: "js", content: "const a = 1;\nconst b = 2;" },
+      thought: "They asked about the raid.\nCheck the calendar.",
+      toolCalls: [{ name: "calendar_lookup", ok: true, args: { day: "Fri" }, result: "free" }],
+    },
+  ],
+};
+const exportedOn = new Date("2026-10-03T00:00:00Z");
+
+test("markdown export titles the chat, labels who spoke, and restores a collapsed code block", () => {
+  const md = exportSessionAsMarkdown(markdownSession, { now: exportedOn });
+  assert.match(md, /^# Raid plans\n\n_Exported 2026-10-03_/);
+  assert.match(md, /### You\n\nwhat's the plan/);
+  assert.match(md, /### Mana\n\nWe go Friday\. ```js\nconst a = 1;\nconst b = 2;\n``` Done\./);
+});
+
+test("markdown export leaves out tool calls and reasoning unless asked for", () => {
+  const plain = exportSessionAsMarkdown(markdownSession, { now: exportedOn });
+  assert.doesNotMatch(plain, /calendar_lookup|Thought process|Check the calendar/);
+
+  const full = exportSessionAsMarkdown(markdownSession, { includeTools: true, includeThoughts: true, now: exportedOn });
+  assert.match(full, /_Thought process_\n\n> They asked about the raid\.\n> Check the calendar\./);
+  assert.match(full, /\*\*Tool:\*\* `calendar_lookup`/);
+  assert.match(full, /"day": "Fri"/);
+});
+
+test("markdown export uses the speaker's name and a fence longer than backticks inside the code", () => {
+  const md = exportSessionAsMarkdown(
+    {
+      sessionId: "s2",
+      turns: [
+        {
+          user: "show me",
+          speaker: "Aoi",
+          assistant: "```md x```",
+          artifact: { language: "md", content: "use ``` to fence" },
+        },
+      ],
+    },
+    { now: exportedOn },
+  );
+  assert.match(md, /^# s2\n/);
+  assert.match(md, /### Aoi/);
+  assert.match(md, /````md\nuse ``` to fence\n````/);
+});
