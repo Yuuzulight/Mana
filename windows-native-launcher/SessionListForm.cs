@@ -98,6 +98,8 @@ internal sealed partial class SessionListForm : Form
     private readonly Button listRetryButton = new() { Text = "Retry", Dock = DockStyle.Right, Width = 56 };
     private string? listError;
     private Func<Task>? listRetry;
+    private int? pendingEditTurnIndex;
+    private TextBox? messageInputBox;
 
     public SessionListForm(ManaBackendClient backendClient, VoiceLoop voiceLoop, ChatView chatLog, AvatarOverlayForm avatarOverlay, BackendLogBuffer backendLog, ArtifactViewerForm artifacts)
     {
@@ -110,6 +112,55 @@ internal sealed partial class SessionListForm : Form
         // #1337: a sub-agent's or finished task's line in the chat.
         chatView.OpenTask = (id, title, running) =>
             new TaskTranscriptForm(backendClient, new ManaBackgroundTask { Id = id, Title = title }, running).Show(this);
+
+        // #1322: Chat branching, message editing, reply regeneration, and version stepping
+        chatView.OnEditMessage += (turnIndex, text) =>
+        {
+            if (messageInputBox != null)
+            {
+                messageInputBox.Text = text;
+                messageInputBox.SelectionStart = messageInputBox.Text.Length;
+                messageInputBox.Focus();
+            }
+            pendingEditTurnIndex = turnIndex;
+        };
+
+        chatView.OnRegenerateReply += async (turnIndex) =>
+        {
+            if (string.IsNullOrEmpty(activeSessionId)) return;
+            var detail = await backendClient.GetSessionDetailAsync(activeSessionId, HistoryTurns);
+            if (detail?.RecentTurns != null && turnIndex >= 0 && turnIndex < detail.RecentTurns.Count)
+            {
+                var userPrompt = detail.RecentTurns[turnIndex].User;
+                if (!string.IsNullOrWhiteSpace(userPrompt))
+                {
+                    await backendClient.TruncateSessionTurnsAsync(activeSessionId, turnIndex);
+                    await LoadHistoryAsync(activeSessionId);
+                    await voiceLoop.SubmitTypedCommandAsync(userPrompt);
+                }
+            }
+        };
+
+        chatView.OnBranchFromMessage += async (turnIndex) =>
+        {
+            var targetSession = activeSessionId ?? "default";
+            var forked = await backendClient.ForkSessionAsync(targetSession, turnIndex + 1);
+            if (forked != null)
+            {
+                await RefreshAsync();
+                SwitchTo(forked.SessionId);
+            }
+        };
+
+        chatView.OnSwitchTurnVersion += async (turnIndex, versionIndex) =>
+        {
+            if (string.IsNullOrEmpty(activeSessionId)) return;
+            var ok = await backendClient.SetTurnVersionAsync(activeSessionId, turnIndex, versionIndex);
+            if (ok)
+            {
+                await LoadHistoryAsync(activeSessionId);
+            }
+        };
         messageBoxFont = new Font("Segoe UI", 10.5F);
 
         Text = "Mana";
@@ -518,6 +569,7 @@ internal sealed partial class SessionListForm : Form
             AccessibleDescription = MessageBoxHint,
             ScrollBars = ScrollBars.None,
         };
+        messageInputBox = box;
         railToolTip.SetToolTip(box, MessageBoxHint);
         var send = new Button
         {
@@ -639,6 +691,16 @@ internal sealed partial class SessionListForm : Form
         async Task SendAsync()
         {
             var text = box.Text;
+            if (pendingEditTurnIndex.HasValue)
+            {
+                var editTurn = pendingEditTurnIndex.Value;
+                pendingEditTurnIndex = null;
+                if (!string.IsNullOrEmpty(activeSessionId))
+                {
+                    await backendClient.TruncateSessionTurnsAsync(activeSessionId, editTurn);
+                    await LoadHistoryAsync(activeSessionId);
+                }
+            }
             if (attachments.Count > 0)
             {
                 // #679 / #1325: a message with attachments doesn't join the queue; while

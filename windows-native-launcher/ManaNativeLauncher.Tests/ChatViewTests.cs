@@ -404,4 +404,140 @@ public class ChatViewTests
         Assert.Contains(linkFragments, f => f.Link == "https://example.com/eiffel");
         Assert.Contains(linkFragments, f => f.Link == "https://example.com/louvre");
     }
+
+    // #1322: ShowHistory populates TurnIndex, versions, and calculates button bounds
+    [Fact]
+    public void ShowHistory_PopulatesTurnIndexAndVersions()
+    {
+        using var view = NewView();
+        view.ShowHistory(new[]
+        {
+            new ManaSessionTurn
+            {
+                TurnIndex = 0,
+                User = "What is the capital of France?",
+                Assistant = "Paris",
+                Versions = new[] { "Paris", "The capital is Paris." },
+                VersionIndex = 0,
+            }
+        });
+
+        Assert.Equal(2, view.Messages.Count);
+        var userMsg = view.Messages[0];
+        var assistantMsg = view.Messages[1];
+
+        Assert.Equal(0, userMsg.TurnIndex);
+        Assert.Equal(0, assistantMsg.TurnIndex);
+        Assert.NotNull(assistantMsg.Versions);
+        Assert.Equal(2, assistantMsg.Versions.Count);
+        Assert.Equal(0, assistantMsg.VersionIndex);
+        Assert.False(userMsg.EditBtnBounds.IsEmpty);
+        Assert.False(userMsg.BranchBtnBounds.IsEmpty);
+        Assert.False(assistantMsg.RegenerateBtnBounds.IsEmpty);
+        Assert.False(assistantMsg.BranchBtnBounds.IsEmpty);
+        Assert.False(assistantMsg.VersionNextBounds.IsEmpty);
+    }
+
+    // #1322: Clicking action buttons triggers corresponding events
+    [Fact]
+    public void ClickActionButtons_TriggersCorrespondingEvents()
+    {
+        using var view = NewView();
+        view.ShowHistory(new[]
+        {
+            new ManaSessionTurn
+            {
+                TurnIndex = 0,
+                User = "Hello",
+                Assistant = "Hi there",
+                Versions = new[] { "Hi there", "Hello!" },
+                VersionIndex = 0,
+            }
+        });
+
+        int? editedTurn = null;
+        string? editedText = null;
+        view.OnEditMessage += (turn, text) => { editedTurn = turn; editedText = text; };
+
+        int? branchedTurn = null;
+        view.OnBranchFromMessage += turn => branchedTurn = turn;
+
+        int? regenTurn = null;
+        view.OnRegenerateReply += turn => regenTurn = turn;
+
+        int? switchedTurn = null;
+        int? switchedVersion = null;
+        view.OnSwitchTurnVersion += (turn, ver) => { switchedTurn = turn; switchedVersion = ver; };
+
+        var userMsg = view.Messages[0];
+        var assistantMsg = view.Messages[1];
+
+        // Click Edit on user message
+        view.SimulateClick(new Point(userMsg.EditBtnBounds.X + 2, userMsg.EditBtnBounds.Y + 2));
+        Assert.Equal(0, editedTurn);
+        Assert.Equal("Hello", editedText);
+
+        // Click Branch on user message
+        view.SimulateClick(new Point(userMsg.BranchBtnBounds.X + 2, userMsg.BranchBtnBounds.Y + 2));
+        Assert.Equal(0, branchedTurn);
+
+        // Click Regenerate on assistant message
+        view.SimulateClick(new Point(assistantMsg.RegenerateBtnBounds.X + 2, assistantMsg.RegenerateBtnBounds.Y + 2));
+        Assert.Equal(0, regenTurn);
+
+        // Click Next version on assistant message
+        view.SimulateClick(new Point(assistantMsg.VersionNextBounds.X + 2, assistantMsg.VersionNextBounds.Y + 2));
+        Assert.Equal(0, switchedTurn);
+        Assert.Equal(1, switchedVersion);
+    }
+
+    // #1322: Keyboard shortcuts (E, R, B, Left, Right) trigger events
+    [Fact]
+    public void KeyboardShortcuts_TriggersCorrespondingEvents()
+    {
+        using var view = NewView();
+        view.ShowHistory(new[]
+        {
+            new ManaSessionTurn
+            {
+                TurnIndex = 0,
+                User = "Hello",
+                Assistant = "Hi there",
+                Versions = new[] { "Hi there", "Hello!" },
+                VersionIndex = 0,
+            }
+        });
+
+        int? editedTurn = null;
+        string? editedText = null;
+        view.OnEditMessage += (turn, text) => { editedTurn = turn; editedText = text; };
+
+        int? branchedTurn = null;
+        view.OnBranchFromMessage += turn => branchedTurn = turn;
+
+        int? regenTurn = null;
+        view.OnRegenerateReply += turn => regenTurn = turn;
+
+        int? switchedTurn = null;
+        int? switchedVersion = null;
+        view.OnSwitchTurnVersion += (turn, ver) => { switchedTurn = turn; switchedVersion = ver; };
+
+        // Select message 0 (user)
+        view.Select(0);
+        view.SimulateKeyDown(new KeyEventArgs(Keys.E));
+        Assert.Equal(0, editedTurn);
+        Assert.Equal("Hello", editedText);
+
+        view.SimulateKeyDown(new KeyEventArgs(Keys.B));
+        Assert.Equal(0, branchedTurn);
+
+        // Select message 1 (assistant)
+        view.Select(1);
+        view.SimulateKeyDown(new KeyEventArgs(Keys.R));
+        Assert.Equal(0, regenTurn);
+
+        view.SimulateKeyDown(new KeyEventArgs(Keys.Right));
+        Assert.Equal(0, switchedTurn);
+        Assert.Equal(1, switchedVersion);
+    }
 }

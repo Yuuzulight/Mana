@@ -841,6 +841,7 @@ const acpMemoryStore = createAcpMemoryStore({
   computeEmbeddingsFn: require("./tools/retriever-index").computeEmbeddings,
   embeddingModelIdFn: require("./tools/retriever-index").embeddingModelId,
   rerankFn: reranker.rerank,
+  approvalGate: () => approvalGate,
   // tokenEstimator will call the local Python retriever service /tokenize endpoint when available
   tokenEstimator: async (text) => {
     try {

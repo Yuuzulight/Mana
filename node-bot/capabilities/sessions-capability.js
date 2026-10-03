@@ -196,6 +196,79 @@ function registerSessionsRoutes(app, context = {}) {
       return res.status(500).json({ error: String(e) });
     }
   });
+
+  // #1322: branch from an existing session (optionally up to a specific turnIndex)
+  app.post("/sessions/:id/fork", (req, res) => {
+    try {
+      const sessionId = requireString(req.params?.id, "sessionId");
+      const turnIndex = req.body?.turnIndex !== undefined ? Number(req.body.turnIndex) : undefined;
+      const name = optionalString(req.body?.name, "name");
+      const targetSessionId = optionalString(
+        req.body?.targetSessionId || req.body?.sessionId,
+        "targetSessionId",
+      );
+      const forked = acpMemoryStore.forkSession(sessionId, {
+        turnIndex: isNaN(turnIndex) ? undefined : turnIndex,
+        name: name || undefined,
+        sessionId: targetSessionId || undefined,
+      });
+      if (!forked) {
+        return res.status(404).json({ error: "session not found" });
+      }
+      return res.json(forked);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // #1322: truncate session turns when editing a previous turn or re-running from a point
+  app.post("/sessions/:id/truncate", (req, res) => {
+    try {
+      const sessionId = requireString(req.params?.id, "sessionId");
+      const turnIndex = Number(req.body?.turnIndex);
+      if (isNaN(turnIndex)) {
+        throw new ValidationError("turnIndex is required");
+      }
+      const truncated = acpMemoryStore.truncateTurns(sessionId, turnIndex);
+      if (!truncated) {
+        return res.status(404).json({ error: "session not found" });
+      }
+      return res.json(truncated);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // #1322: switch active assistant version for a turn
+  app.patch("/sessions/:id/turns/:turnIndex/version", (req, res) => {
+    try {
+      const sessionId = requireString(req.params?.id, "sessionId");
+      const turnIndex = Number(req.params?.turnIndex);
+      const versionIndex = Number(req.body?.versionIndex);
+      if (isNaN(turnIndex) || isNaN(versionIndex)) {
+        throw new ValidationError("turnIndex and versionIndex must be numbers");
+      }
+      const updated = acpMemoryStore.setTurnVersion(sessionId, turnIndex, versionIndex);
+      if (!updated) {
+        return res.status(404).json({ error: "session or turn not found" });
+      }
+      return res.json(updated);
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return sendValidationError(res, e);
+      }
+      console.error(e);
+      return res.status(500).json({ error: String(e) });
+    }
+  });
 }
 
 const sessionsCapability = {

@@ -295,3 +295,86 @@ test("sessions export returns Markdown on ?format=markdown, with tool calls only
     assert.match(withTools, /\*\*Tool:\*\* `clock`/);
   });
 });
+
+test("#1322: sessions capability fork branches a session up to a turnIndex", async () => {
+  const app = express();
+  app.use(express.json());
+  let forkCalledWith = null;
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({
+      forkSession: (sessionId, opts) => {
+        forkCalledWith = { sessionId, opts };
+        return { sessionId: "branched-1", forkedFrom: sessionId, branchTurnIndex: opts.turnIndex };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/sessions/orig/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ turnIndex: 1, name: "Branched Chat" }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.sessionId, "branched-1");
+    assert.equal(data.forkedFrom, "orig");
+    assert.equal(data.branchTurnIndex, 1);
+    assert.deepEqual(forkCalledWith, { sessionId: "orig", opts: { turnIndex: 1, name: "Branched Chat", sessionId: undefined } });
+  });
+});
+
+test("#1322: sessions capability truncate truncates turns", async () => {
+  const app = express();
+  app.use(express.json());
+  let truncateCalled = null;
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({
+      truncateTurns: (sessionId, turnIndex) => {
+        truncateCalled = { sessionId, turnIndex };
+        return { sessionId, turns: [] };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/sessions/s1/truncate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ turnIndex: 2 }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(truncateCalled, { sessionId: "s1", turnIndex: 2 });
+
+    const bad = await fetch(`${baseUrl}/sessions/s1/truncate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(bad.status, 400);
+  });
+});
+
+test("#1322: sessions capability patch turn version switches active version", async () => {
+  const app = express();
+  app.use(express.json());
+  let versionCalled = null;
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({
+      setTurnVersion: (sessionId, turnIndex, versionIndex) => {
+        versionCalled = { sessionId, turnIndex, versionIndex };
+        return { sessionId, versionIndex };
+      },
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/sessions/s1/turns/0/version`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ versionIndex: 1 }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(versionCalled, { sessionId: "s1", turnIndex: 0, versionIndex: 1 });
+  });
+});

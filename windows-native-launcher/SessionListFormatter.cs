@@ -9,8 +9,12 @@ namespace Mana.NativeLauncher;
 internal static class SessionListFormatter
 {
     // Ports session-sidebar.js's renderSessionList: session.name || session.sessionId.
-    public static string FormatDisplayName(ManaSession session) =>
-        string.IsNullOrEmpty(session.Name) ? session.SessionId : session.Name;
+    // #1322: prefixed with a branch marker if forked from another session.
+    public static string FormatDisplayName(ManaSession session)
+    {
+        var raw = string.IsNullOrEmpty(session.Name) ? session.SessionId : session.Name;
+        return string.IsNullOrEmpty(session.ForkedFrom) ? raw : $"↳ {raw}";
+    }
 
     public static string FormatUpdatedAt(string? iso)
     {

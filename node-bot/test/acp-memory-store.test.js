@@ -1833,6 +1833,90 @@ test("a fork appears in listSessions and can be resumed by id (issue #350)", asy
   assert.equal(store.getSession(fork.sessionId).forkedFrom, "coding-1");
 });
 
+test("a fork with turnIndex copies only turns up to that point (#1322)", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({ sessionId: "branch-me", user: "turn 0", assistant: "reply 0" });
+  await store.appendTurn({ sessionId: "branch-me", user: "turn 1", assistant: "reply 1" });
+  await store.appendTurn({ sessionId: "branch-me", user: "turn 2", assistant: "reply 2" });
+
+  const fork = store.forkSession("branch-me", { turnIndex: 1, name: "Fork from turn 1" });
+  assert.equal(fork.turns.length, 2);
+  assert.equal(fork.forkedFrom, "branch-me");
+  assert.equal(fork.branchTurnIndex, 1);
+  assert.equal(fork.name, "Fork from turn 1");
+
+  const listed = store.listSessions().find((s) => s.sessionId === fork.sessionId);
+  assert.equal(listed.forkedFrom, "branch-me");
+  assert.equal(listed.branchTurnIndex, 1);
+});
+
+test("truncateTurns removes discarded turns, prunes their memory facts, and resets approval grants (#1322)", async () => {
+  let grantsReset = false;
+  const fakeApprovalGate = {
+    clearSessionGrants: () => {
+      grantsReset = true;
+    },
+  };
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), approvalGate: fakeApprovalGate });
+  await store.appendTurn({ sessionId: "edit-chat", user: "keep me", assistant: "ok" });
+  const turn0At = store.getSession("edit-chat").turns[0].at;
+
+  // Add fact during turn 0
+  store.rememberFact({
+    sessionId: "edit-chat",
+    key: "favorite_color",
+    text: "blue",
+    origin: { kind: "user_stated", turnAt: turn0At },
+  });
+
+  // Turn 1
+  await store.appendTurn({ sessionId: "edit-chat", user: "discard me", assistant: "will be discarded" });
+  const turn1At = store.getSession("edit-chat").turns[1].at;
+
+  // Add fact during turn 1
+  store.rememberFact({
+    sessionId: "edit-chat",
+    key: "favorite_food",
+    text: "pizza",
+    origin: { kind: "user_stated", turnAt: turn1At },
+  });
+
+  assert.equal(store.listFacts().length, 2);
+
+  // Truncate to turn 1 (keep 1 turn: turn 0)
+  const truncated = store.truncateTurns("edit-chat", 1);
+  assert.equal(truncated.turns.length, 1);
+  assert.equal(truncated.turns[0].user, "keep me");
+  assert.equal(grantsReset, true);
+
+  // The fact from discarded turn 1 is pruned, but turn 0's fact remains!
+  const facts = store.listFacts();
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].key, "favorite_color");
+});
+
+test("turn versions support adding and stepping between assistant replies (#1322)", async () => {
+  const store = createAcpMemoryStore({ dataDir: createTempDir() });
+  await store.appendTurn({ sessionId: "vers-chat", user: "tell me a joke", assistant: "take 1" });
+
+  const session = store.getSession("vers-chat");
+  assert.equal(session.turns[0].versions.length, 1);
+  assert.equal(session.turns[0].versionIndex, 0);
+
+  // Regenerate turn 0
+  await store.appendTurn({ sessionId: "vers-chat", regenerate: true, turnIndex: 0, assistant: "take 2" });
+  const updated = store.getSession("vers-chat");
+  assert.equal(updated.turns[0].versions.length, 2);
+  assert.equal(updated.turns[0].versionIndex, 1);
+  assert.equal(updated.turns[0].assistant, "take 2");
+
+  // Step back to version 0
+  store.setTurnVersion("vers-chat", 0, 0);
+  const steppedBack = store.getSession("vers-chat");
+  assert.equal(steppedBack.turns[0].versionIndex, 0);
+  assert.equal(steppedBack.turns[0].assistant, "take 1");
+});
+
 test("the newest turn survives the recency window as a floor (issue #385)", async () => {
   const dataDir = createTempDir();
   const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();

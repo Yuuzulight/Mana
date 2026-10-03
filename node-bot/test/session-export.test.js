@@ -146,3 +146,25 @@ test("markdown export uses the speaker's name and a fence longer than backticks 
   assert.match(md, /### Aoi/);
   assert.match(md, /````md\nuse ``` to fence\n````/);
 });
+
+test("#1322: export handles branched sessions in ShareGPT and Markdown", () => {
+  const branchedSession = {
+    sessionId: "s1-fork-123",
+    name: "Branched raid plans",
+    forkedFrom: "s1",
+    branchTurnIndex: 0,
+    turns: [
+      { user: "plan a", assistant: "lets do a" },
+      { user: "plan b", assistant: "lets do b" },
+    ],
+  };
+
+  const shareGpt = toShareGPTConversation(branchedSession);
+  assert.equal(shareGpt.id, "s1-fork-123");
+  assert.equal(shareGpt.forkedFrom, "s1");
+  assert.equal(shareGpt.branchTurnIndex, 0);
+
+  const md = exportSessionAsMarkdown(branchedSession, { now: exportedOn });
+  assert.match(md, /# Branched raid plans/);
+  assert.match(md, /_Branched from s1 at turn 1_/);
+});
