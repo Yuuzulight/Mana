@@ -60,8 +60,11 @@ tools/vector_store/
 tools/whisper/models/
 mana-younger-sister-voice-test.wav
 tools/whisper/test.wav
-tts-language-tests*/
 tools/whisper/models/*.bin
+tools/lora-training/adapters/**/*.safetensors
+tools/lora-training/adapters/**/*.bin
+tools/lora-training/adapters/**/tokenizer.json
+tools/lora-training/.venv/
 
 # Live2D runtime (proprietary, fetched by npm run fetch-live2d-core) and personal avatar model
 windows-launcher/assets/live2d/
