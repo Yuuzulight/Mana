@@ -1,0 +1,22 @@
+{
+  "id": "1357-memory-facts-ui-backend",
+  "kind": "node-feature",
+  "pr": 1357,
+  "issue": 1331,
+  "base": "070a7c40082fe7435ca4223b1e6cdefd0a88a875",
+  "fix": "9c8b0606ee09fdba60dedebbfbe9073d81c238b5",
+  "title": "Memory facts should be addable, searchable, and deletable from the launcher",
+  "body": "Add backend support for creating, deleting, and searching memory facts, including standing reminders and vault-sync cleanup for deleted facts, so the launcher can manage memory without hand-editing files.",
+  "fixFiles": [
+    "node-bot/acp-memory-store.js",
+    "node-bot/capabilities/memory-facts-capability.js",
+    "windows-native-launcher/ManaBackendClient.cs",
+    "windows-native-launcher/SettingsPanel.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/memory-facts-capability.test.js"
+  ],
+  "testCommand": "node --test test/memory-facts-capability.test.js",
+  "interface": "memory facts capability exposes POST and DELETE routes and updates the fact store/vault sync consistently.",
+  "why": "Memory maintenance is central to Mana being self-sustaining."
+}

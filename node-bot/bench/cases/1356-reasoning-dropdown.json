@@ -1,0 +1,29 @@
+{
+  "id": "1356-reasoning-dropdown",
+  "kind": "multi-file",
+  "pr": 1356,
+  "issue": 1354,
+  "base": "8b05a62bea09b0508f008ab2bd7171f8a7dda842",
+  "fix": "070a7c40082fe7435ca4223b1e6cdefd0a88a875",
+  "title": "Reasoning tokens should stream separately into a collapsed chat dropdown",
+  "body": "Split hidden reasoning/thinking text out of streamed replies, preserve it separately, and show it in the native chat as a collapsed dropdown instead of speaking or mixing it into the visible answer.",
+  "fixFiles": [
+    "node-bot/acp-memory-store.js",
+    "node-bot/ai/llama-server-runtime.js",
+    "node-bot/server-routes.js",
+    "node-bot/server.js",
+    "node-bot/utils/sse-sentence-stream.js",
+    "node-bot/utils/think-filter.js",
+    "windows-native-launcher/ChatView.cs",
+    "windows-native-launcher/StreamingReplyPlayer.cs",
+    "windows-native-launcher/VoiceLoop.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/think-filter.test.js",
+    "node-bot/test/sse-sentence-stream.test.js",
+    "node-bot/test/reply-stream-route.test.js"
+  ],
+  "testCommand": "node --test test/think-filter.test.js test/sse-sentence-stream.test.js && node --test --test-name-pattern \"#1354\" test/reply-stream-route.test.js",
+  "interface": "think-filter extracts reasoning, reply streaming emits thought/reasoning fields, and visible speech excludes them.",
+  "why": "Streaming prompt/reply plumbing is a common cross-cutting failure surface."
+}
