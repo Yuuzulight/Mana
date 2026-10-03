@@ -581,8 +581,48 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
+        // #1331: delete asks once, then really removes the fact.
+        var deleteButton = new Button { Text = "Delete", Dock = DockStyle.Bottom, Height = 28 };
+        DarkTheme.ApplyButton(deleteButton);
+        deleteButton.Click += async (_, _) =>
+        {
+            deleteButton.Enabled = false;
+            try
+            {
+                await DeleteSelectedFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    deleteButton.Enabled = true;
+                }
+            }
+        };
+
         StyleSearchBox(factsSearch);
+        factsSearch.Dock = DockStyle.Fill;
         factsSearch.TextChanged += (_, _) => ShowFacts();
+        var addFactButton = new Button { Text = "+ Add", Dock = DockStyle.Right, Width = 70 };
+        DarkTheme.ApplyButton(addFactButton);
+        addFactButton.Click += async (_, _) =>
+        {
+            addFactButton.Enabled = false;
+            try
+            {
+                await AddFactAsync();
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    addFactButton.Enabled = true;
+                }
+            }
+        };
+        var factsSearchRow = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = DarkTheme.Background };
+        factsSearchRow.Controls.Add(factsSearch);
+        factsSearchRow.Controls.Add(addFactButton);
 
         // #935: the Obsidian vault sync's status, and a sync right now.
         DarkTheme.ApplyButton(vaultSyncButton);
@@ -610,8 +650,9 @@ internal sealed class SettingsPanel : UserControl
 
         var page = new TabPage("Memory Facts");
         page.Controls.Add(factsList);
-        page.Controls.Add(factsSearch);
+        page.Controls.Add(factsSearchRow);
         page.Controls.Add(vaultRow);
+        page.Controls.Add(deleteButton);
         page.Controls.Add(editButton);
         page.Controls.Add(pinButton);
         page.Controls.Add(archiveButton);
@@ -634,6 +675,75 @@ internal sealed class SettingsPanel : UserControl
         catch (Exception ex)
         {
             Console.WriteLine($"SettingsPanel: failed to pin fact '{fact.Key}'. {ex.Message}");
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    // #1331: type a fact in yourself; a reminder also gets a "when" part.
+    private async Task AddFactAsync()
+    {
+        using var keyDialog = new TextPromptDialog("Add fact", "Name (a short key, e.g. favorite-color):", "");
+        if (keyDialog.ShowDialog(this) != DialogResult.OK || keyDialog.Value.Trim() == "")
+        {
+            return;
+        }
+        using var textDialog = new TextPromptDialog("Add fact", "Fact:", "");
+        if (textDialog.ShowDialog(this) != DialogResult.OK || textDialog.Value.Trim() == "")
+        {
+            return;
+        }
+        using var whenDialog = new TextPromptDialog("Add fact", "Optional -- only bring it up when this comes up:", "");
+        if (whenDialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.CreateMemoryFactAsync(keyDialog.Value.Trim(), textDialog.Value.Trim(), whenDialog.Value.Trim());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to add fact '{keyDialog.Value.Trim()}'. {ex.Message}");
+            if (!IsDisposed)
+            {
+                MessageBox.Show(this, $"Couldn't add that fact (is the name already used?): {ex.Message}", "Add Fact", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    // #1331: asks once, then really removes the fact (Archive keeps it).
+    private async Task DeleteSelectedFactAsync()
+    {
+        if (factsList.SelectedItems.Count == 0 || factsList.SelectedItems[0].Tag is not ManaMemoryFact fact)
+        {
+            return;
+        }
+        var confirmed = MessageBox.Show(
+            this,
+            $"Delete the fact \"{fact.Key}\"? This removes it completely and cannot be undone. (Archive keeps it instead.)",
+            "Delete Fact",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+        if (!confirmed)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.DeleteMemoryFactAsync(fact.Key);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to delete fact '{fact.Key}'. {ex.Message}");
             return;
         }
         if (!IsDisposed)

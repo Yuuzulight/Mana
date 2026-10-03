@@ -191,3 +191,54 @@ test("GET /admin/memory/graph returns typed nodes, weighted edges and every fact
   });
   memoryGraph.close();
 });
+
+// #1331: add / delete from the launcher, against the real store.
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createAcpMemoryStore } = require("../acp-memory-store");
+
+function realStoreApp() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-facts-"));
+  const store = createAcpMemoryStore({ dataDir: dir });
+  const app = express();
+  app.use(express.json());
+  memoryFactsCapability.registerRoutes(app, { checkAdminAuth: () => true, acpMemoryStore: store });
+  return { app, store };
+}
+
+const send = (baseUrl, method, url, body) =>
+  fetch(`${baseUrl}${url}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+
+test("POST /admin/memory/facts adds an active fact in the user's words, and rejects blanks and duplicates (#1331)", async () => {
+  const { app, store } = realStoreApp();
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts", { key: " ", text: "x" })).status, 400);
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts", { key: "pet", text: " " })).status, 400);
+    const added = await send(baseUrl, "POST", "/admin/memory/facts", { key: "pet", text: "I have a cat" });
+    assert.equal(added.status, 200);
+    const fact = store.listFacts().find((f) => f.key === "pet");
+    assert.equal(fact.status, "active");
+    assert.equal(fact.text, "I have a cat");
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts", { key: "PET", text: "dog" })).status, 400);
+  });
+});
+
+test("DELETE /admin/memory/facts/:key really removes a live or archived fact and hides it from the list (#1331)", async () => {
+  const { app, store } = realStoreApp();
+  store.rememberFact({ key: "live", text: "one", source: "human", origin: { kind: "user_stated" } });
+  store.rememberFact({ key: "old", text: "two", source: "human", origin: { kind: "user_stated" } });
+  store.rememberFact({ key: "old", action: "archive", source: "human" });
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await send(baseUrl, "DELETE", "/admin/memory/facts/live")).status, 200);
+    assert.equal((await send(baseUrl, "DELETE", "/admin/memory/facts/old")).status, 200);
+    assert.equal((await send(baseUrl, "DELETE", "/admin/memory/facts/missing")).status, 404);
+    const listed = await (await fetch(`${baseUrl}/admin/memory/facts`)).json();
+    assert.deepEqual(listed.facts, []);
+  });
+  assert.ok(store.listFacts().every((f) => f.status === "stale"));
+});

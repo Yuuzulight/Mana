@@ -1027,12 +1027,20 @@ function createAcpMemoryStore(options = {}) {
     }
 
     if (normalizedAction === "remove" || normalizedAction === "archive") {
-      if (!existing) {
+      // #1331: a real delete also reaches an archived fact (not live, so
+      // liveFactByKey above doesn't find it).
+      const lowerKey = cleanKey.toLowerCase();
+      const target =
+        existing ||
+        (normalizedAction === "remove"
+          ? facts.find((f) => f.status === "archived" && f.key.toLowerCase() === lowerKey)
+          : null);
+      if (!target) {
         return { ok: true, action: normalizedAction, decision: "none", key: cleanKey, found: false };
       }
-      snapshot();
-      existing.status = normalizedAction === "remove" ? "stale" : "archived";
-      existing.updatedAt = timestamp;
+      snapshotFact(cleanKey, target, `fact ${normalizedAction}: ${cleanKey}`, source || "agent");
+      target.status = normalizedAction === "remove" ? "stale" : "archived";
+      target.updatedAt = timestamp;
       saveFacts(facts, { op: normalizedAction === "remove" ? "delete" : "archive", key: cleanKey, origin: cleanOrigin });
       return {
         ok: true,
