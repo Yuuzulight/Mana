@@ -1,0 +1,22 @@
+{
+  "id": "1348-sticky-coding-session",
+  "kind": "multi-file",
+  "pr": 1348,
+  "issue": 1343,
+  "base": "ba43f37e96a3604ac561d64f3b8fc2880062f1ad",
+  "fix": "68a06e8c52f444c0c99076241a5bd959a49bb166",
+  "title": "Sticky coding sessions should route engineering turns to the dedicated coder profile",
+  "body": "Implement a sticky coding-session manager for the tri-mode model architecture. Explicit enter/exit commands should control coding mode, the mode should idle out after the configured timeout, watched games must lock out the heavy coder, and status/start/stop routes should report the state.",
+  "fixFiles": [
+    "node-bot/ai/coding-session.js",
+    "node-bot/ai/local-ai.js",
+    "node-bot/server.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/coding-session.test.js",
+    "node-bot/test/coding-session-routes.test.js"
+  ],
+  "testCommand": "node --test test/coding-session.test.js test/coding-session-routes.test.js",
+  "interface": "createCodingSessionManager exposes explicit start/stop/status behaviour, and /coding-session routes reflect it.",
+  "why": "Self-work needs stable engineering-mode routing without profile ping-pong between follow-up turns."
+}

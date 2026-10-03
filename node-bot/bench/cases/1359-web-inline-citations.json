@@ -1,0 +1,28 @@
+{
+  "id": "1359-web-inline-citations",
+  "kind": "multi-file",
+  "pr": 1359,
+  "issue": 1329,
+  "base": "f79d546611dc5616e447b4edf1807530858973db",
+  "fix": "33534328df3ccc6263980859f91baafa243b56b6",
+  "title": "Web answers should include inline citations and a sources list",
+  "body": "When web context contributes to an answer, require numbered inline citations, track the sources list, and preserve those citations through speech text and native streaming display.",
+  "fixFiles": [
+    "node-bot/capabilities/web-access-capability.js",
+    "node-bot/server-routes.js",
+    "node-bot/tools/web-access.js",
+    "node-bot/utils/citation-check.js",
+    "node-bot/utils/speech-text.js",
+    "windows-native-launcher/ChatView.cs",
+    "windows-native-launcher/StreamingReplyPlayer.cs",
+    "windows-native-launcher/VoiceLoop.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/citation-check.test.js",
+    "node-bot/test/speech-text.test.js",
+    "node-bot/test/web-access.test.js"
+  ],
+  "testCommand": "node --test test/citation-check.test.js test/speech-text.test.js test/web-access.test.js",
+  "interface": "web access context asks for numbered citations, citation-check validates them, and speech text strips source markers safely.",
+  "why": "Research/verification tasks need citations if Mana is going to work independently."
+}
