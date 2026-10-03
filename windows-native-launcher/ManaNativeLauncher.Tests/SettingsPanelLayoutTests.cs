@@ -41,4 +41,43 @@ public class SettingsPanelLayoutTests
             Assert.Equal(rects, Enumerable.Range(0, tabs.TabCount).Select(tabs.GetTabRect).ToList());
         });
     }
+
+    // #1336: Settings > Privacy tab verification
+    [Fact]
+    public void PrivacyTab_IsRegisteredWithExportAndDeleteControls()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Width = 800 };
+            var tabs = panel.Controls.OfType<TabControl>().Single();
+            var privacyTab = tabs.TabPages.Cast<TabPage>().FirstOrDefault(p => p.Text == "Privacy");
+            Assert.NotNull(privacyTab);
+
+            var buttons = GetAllDescendants(privacyTab)
+                .OfType<Button>()
+                .ToList();
+
+            Assert.Contains(buttons, b => b.AccessibleName == "Export everything");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete everything");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Voice Data");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Chat History");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Memory Facts");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Vault Sync State");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Caches & Logs");
+        });
+    }
+
+    private static System.Collections.Generic.IEnumerable<Control> GetAllDescendants(Control control)
+    {
+        yield return control;
+        foreach (Control child in control.Controls)
+        {
+            foreach (var descendant in GetAllDescendants(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
 }
+

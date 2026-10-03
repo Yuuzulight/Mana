@@ -136,6 +136,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildHooksTab());
         tabs.TabPages.Add(new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
         tabs.TabPages.Add(new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }); // #697
+        tabs.TabPages.Add(BuildPrivacyTab()); // #1336
         foreach (TabPage page in tabs.TabPages)
         {
             page.BackColor = DarkTheme.Background;
@@ -4359,5 +4360,328 @@ internal sealed class SettingsPanel : UserControl
         {
             populatingHooks = false;
         }
+    }
+
+    // #1336: Export all my data as a zip archive, or wipe data completely / by category.
+    private TabPage BuildPrivacyTab()
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            Padding = new Padding(12),
+        };
+
+        var titleLabel = new Label
+        {
+            Text = "Data & Privacy",
+            Font = new Font(Font.FontFamily, 12, FontStyle.Bold),
+            ForeColor = DarkTheme.Text,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        layout.Controls.Add(titleLabel);
+
+        var introLabel = new Label
+        {
+            Text = "Export your personal data or permanently delete stored history, memories, and voice samples.",
+            ForeColor = DarkTheme.Muted,
+            AutoSize = true,
+            MaximumSize = new Size(600, 0),
+            Margin = new Padding(0, 0, 0, 16),
+        };
+        layout.Controls.Add(introLabel);
+
+        // Section 1: Export Everything
+        var exportHeader = new Label
+        {
+            Text = "Export All Data",
+            Font = new Font(Font.FontFamily, 10, FontStyle.Bold),
+            ForeColor = DarkTheme.Text,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 4),
+        };
+        var exportDesc = new Label
+        {
+            Text = "Create a single ZIP archive containing all chat sessions (JSON and Markdown), memory facts, vault sync records, voice samples, generated artifacts, and settings (credentials redacted).",
+            ForeColor = DarkTheme.Muted,
+            AutoSize = true,
+            MaximumSize = new Size(600, 0),
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        var exportStatus = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Margin = new Padding(8, 6, 0, 0),
+        };
+
+        var exportButton = new Button
+        {
+            Text = "Export everything...",
+            AccessibleName = "Export everything",
+            AutoSize = true,
+            Padding = new Padding(8, 4, 8, 4),
+        };
+        DarkTheme.ApplyButton(exportButton);
+        exportButton.Click += async (_, _) =>
+        {
+            using var saveDialog = new SaveFileDialog
+            {
+                Title = "Export all Mana data",
+                Filter = "ZIP archive (*.zip)|*.zip",
+                FileName = $"mana-export-{DateTime.UtcNow:yyyy-MM-dd}.zip",
+            };
+            if (saveDialog.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            exportButton.Enabled = false;
+            exportStatus.ForeColor = DarkTheme.Muted;
+            exportStatus.Text = "Exporting data archive...";
+            try
+            {
+                var zipBytes = await backendClient.ExportAllDataAsync();
+                await File.WriteAllBytesAsync(saveDialog.FileName, zipBytes);
+                exportStatus.ForeColor = DarkTheme.Green;
+                exportStatus.Text = $"Export saved successfully ({zipBytes.Length / 1024:N0} KB).";
+            }
+            catch (Exception ex)
+            {
+                exportStatus.ForeColor = Color.Firebrick;
+                exportStatus.Text = $"Export failed: {ex.Message}";
+            }
+            finally
+            {
+                exportButton.Enabled = true;
+            }
+        };
+
+        layout.Controls.Add(exportHeader);
+        layout.Controls.Add(exportDesc);
+        var exportRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        exportRow.Controls.Add(exportButton);
+        exportRow.Controls.Add(exportStatus);
+        layout.Controls.Add(exportRow);
+
+        // Section 2: Delete Everything
+        var deleteHeader = new Label
+        {
+            Text = "Delete Everything",
+            Font = new Font(Font.FontFamily, 10, FontStyle.Bold),
+            ForeColor = Color.IndianRed,
+            AutoSize = true,
+            Margin = new Padding(0, 20, 0, 4),
+        };
+        var deleteDesc = new Label
+        {
+            Text = "Permanently wipes all chat history, memory facts, entity indexes, vault sync state, voice samples, caches, and logs. This leaves Mana in a clean first-run state. This cannot be undone.",
+            ForeColor = DarkTheme.Muted,
+            AutoSize = true,
+            MaximumSize = new Size(600, 0),
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        var deleteStatus = new Label
+        {
+            AutoSize = true,
+            ForeColor = DarkTheme.Muted,
+            Margin = new Padding(8, 6, 0, 0),
+        };
+
+        var deleteAllButton = new Button
+        {
+            Text = "Delete everything...",
+            AccessibleName = "Delete everything",
+            AutoSize = true,
+            ForeColor = Color.IndianRed,
+            Padding = new Padding(8, 4, 8, 4),
+        };
+        DarkTheme.ApplyButton(deleteAllButton);
+        deleteAllButton.Click += async (_, _) =>
+        {
+            using var prompt = new TextPromptDialog(
+                "Delete everything",
+                "Type 'delete-everything' to permanently delete all data and reset to first-run state:",
+                ""
+            );
+            if (prompt.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            var input = prompt.Value.Trim();
+            if (input != "delete-everything")
+            {
+                MessageBox.Show(this, "Confirmation text did not match 'delete-everything'. Deletion canceled.", "Delete Canceled", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            deleteAllButton.Enabled = false;
+            deleteStatus.ForeColor = DarkTheme.Muted;
+            deleteStatus.Text = "Wiping all data...";
+            try
+            {
+                var success = await backendClient.DeleteAllDataAsync("delete-everything");
+                if (success)
+                {
+                    deleteStatus.ForeColor = DarkTheme.Green;
+                    deleteStatus.Text = "All data wiped successfully. Mana is in first-run state.";
+                    MessageBox.Show(this, "All personal data has been wiped. Mana is now in first-run state.", "Data Deleted", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    await RefreshAllAsync();
+                }
+                else
+                {
+                    deleteStatus.ForeColor = Color.Firebrick;
+                    deleteStatus.Text = "Failed to wipe data (backend returned an error).";
+                }
+            }
+            catch (Exception ex)
+            {
+                deleteStatus.ForeColor = Color.Firebrick;
+                deleteStatus.Text = $"Failed to wipe data: {ex.Message}";
+            }
+            finally
+            {
+                deleteAllButton.Enabled = true;
+            }
+        };
+
+        layout.Controls.Add(deleteHeader);
+        layout.Controls.Add(deleteDesc);
+        var deleteRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        deleteRow.Controls.Add(deleteAllButton);
+        deleteRow.Controls.Add(deleteStatus);
+        layout.Controls.Add(deleteRow);
+
+        // Section 3: Delete by Category
+        var categoryHeader = new Label
+        {
+            Text = "Delete by Category",
+            Font = new Font(Font.FontFamily, 10, FontStyle.Bold),
+            ForeColor = DarkTheme.Text,
+            AutoSize = true,
+            Margin = new Padding(0, 20, 0, 4),
+        };
+        var categoryDesc = new Label
+        {
+            Text = "Selectively remove specific data categories without affecting the rest of your profile.",
+            ForeColor = DarkTheme.Muted,
+            AutoSize = true,
+            MaximumSize = new Size(600, 0),
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        layout.Controls.Add(categoryHeader);
+        layout.Controls.Add(categoryDesc);
+
+        var categories = new (string Key, string Title, string Desc)[]
+        {
+            ("voice", "Voice Data", "Voice samples, speaker profiles, and acoustic enrolment recordings."),
+            ("chats", "Chat History", "All conversation sessions, message histories, and transcripts."),
+            ("memory", "Memory Facts", "Learned memory facts, entity indexes, and emotional states."),
+            ("vault", "Vault Sync State", "Obsidian vault synchronization state and cached sync notes."),
+            ("cache-logs", "Caches & Logs", "Tool execution logs, temporary debug files, and upload caches."),
+        };
+
+        foreach (var (key, title, desc) in categories)
+        {
+            layout.Controls.Add(BuildCategoryDeleteRow(key, title, desc));
+        }
+
+        return new TabPage("Privacy") { Controls = { layout } };
+    }
+
+    private FlowLayoutPanel BuildCategoryDeleteRow(string categoryKey, string categoryTitle, string categoryDesc)
+    {
+        var row = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            BackColor = DarkTheme.Background,
+            Margin = new Padding(0, 4, 0, 4),
+        };
+
+        var btn = new Button
+        {
+            Text = $"Delete {categoryTitle}...",
+            AccessibleName = $"Delete {categoryTitle}",
+            AutoSize = true,
+            Padding = new Padding(6, 2, 6, 2),
+        };
+        DarkTheme.ApplyButton(btn);
+
+        var lbl = new Label
+        {
+            Text = categoryDesc,
+            ForeColor = DarkTheme.Muted,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(8, 6, 0, 0),
+        };
+
+        var status = new Label
+        {
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(8, 6, 0, 0),
+        };
+
+        btn.Click += async (_, _) =>
+        {
+            var expected = $"delete-{categoryKey}";
+            using var prompt = new TextPromptDialog(
+                $"Delete {categoryTitle}",
+                $"Type '{expected}' to permanently delete {categoryTitle.ToLowerInvariant()}:",
+                ""
+            );
+            if (prompt.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            var input = prompt.Value.Trim();
+            if (input != expected && input != "delete-everything")
+            {
+                MessageBox.Show(this, $"Confirmation text did not match '{expected}'. Deletion canceled.", "Delete Canceled", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            btn.Enabled = false;
+            status.ForeColor = DarkTheme.Muted;
+            status.Text = "Deleting...";
+            try
+            {
+                var success = await backendClient.DeleteDataCategoryAsync(categoryKey, input);
+                if (success)
+                {
+                    status.ForeColor = DarkTheme.Green;
+                    status.Text = "Deleted.";
+                    if (categoryKey == "memory")
+                    {
+                        await RefreshMemoryFactsAsync();
+                    }
+                }
+                else
+                {
+                    status.ForeColor = Color.Firebrick;
+                    status.Text = "Failed.";
+                }
+            }
+            catch (Exception ex)
+            {
+                status.ForeColor = Color.Firebrick;
+                status.Text = $"Error: {ex.Message}";
+            }
+            finally
+            {
+                btn.Enabled = true;
+            }
+        };
+
+        row.Controls.Add(btn);
+        row.Controls.Add(status);
+        row.Controls.Add(lbl);
+        return row;
     }
 }
