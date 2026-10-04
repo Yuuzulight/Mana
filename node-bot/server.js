@@ -2263,12 +2263,16 @@ ensureDirectory(path.join(__dirname, "tmp"));
 // Both multer instances (here and mobile-routes.js) write to node-bot/tmp
 // (or MANA_UPLOAD_TMP_DIR).
 function deleteUploadFiles(uploadPath) {
-  const dir = path.dirname(uploadPath);
-  const name = path.basename(uploadPath);
-  if (!/^[0-9a-f]{32}$/.test(name)) return;
+  if (typeof uploadPath !== "string") return;
+  const dir = path.resolve(uploadTmpDir());
+  const resolved = path.resolve(uploadPath);
+  const name = path.basename(resolved);
+  if (!/^[0-9a-f]{32}$/.test(name) || resolved !== path.join(dir, name)) return;
   try {
     for (const entry of fs.readdirSync(dir)) {
-      if (entry.startsWith(name)) fs.rmSync(path.join(dir, entry), { force: true });
+      if (entry === name || entry.startsWith(`${name}.`)) {
+        fs.rmSync(path.join(dir, entry), { force: true });
+      }
     }
   } catch (e) {
     console.warn(`[Mana] Couldn't delete voice upload ${name}: ${e.message}`);
@@ -6407,5 +6411,6 @@ module.exports = {
   shouldUseRemoteAi,
   startServer,
   sweepStaleTmpFiles,
+  deleteUploadFiles,
   codingSessionManager,
 };
