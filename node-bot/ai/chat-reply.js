@@ -1,5 +1,6 @@
 const backendDir = require('node:path').join(__dirname, '..');
 const { wrapUntrusted } = require('./untrusted-content');
+const { createAnalysisToolSource, chartArtifact } = require('./analysis-tool-source');
 
 function createChatReply(context) {
 function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
@@ -87,6 +88,7 @@ async function buildAssistantReply(
     onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
+    const analysisCharts = [];
     const chatChoice = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId)?.chatModel : null;
     const selectedChatModel = chatChoice ? context.modelManagement.resolveChatModel(chatChoice, { fallbackToLocal: true }) : null;
     // let: #666's wait below may switch this turn to the fallback profile.
@@ -972,6 +974,12 @@ async function buildAssistantReply(
             context.createSessionSearchToolSource({ acpMemoryStore: context.acpMemoryStore, sessionId }),
             ...(context.projectReferences ? [context.projectReferences.toolSource(sessionId)] : []),
             context.createSkillToolSource({ approvalGate: context.activeApprovalGate, skillsStore: context.activeSkillsStore }),
+            ...(userChat ? [createAnalysisToolSource({
+              env: context.deps.env || process.env,
+              userMessage: transcript,
+              runSandbox: context.deps.runAnalysisSandbox,
+              onCharts: charts => analysisCharts.push(...charts.slice(0, 4 - analysisCharts.length)),
+            })] : []),
             context.createSnapshotToolSource({
               approvalGate: context.activeApprovalGate,
               snapshotStore: context.snapshotStore,
@@ -1643,6 +1651,7 @@ async function buildAssistantReply(
       console.warn("Phrasing variation check failed:", e?.message || e);
     }
 
+    if (analysisCharts.length) reply = String(reply || '') + chartArtifact(analysisCharts);
     try {
       if (
         sessionId &&
