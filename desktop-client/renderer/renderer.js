@@ -154,38 +154,61 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // Default on. Also gated on `listening` -- barge-in should only run while
   // continuous listening is actually on, not for every reply regardless of
   // trigger (push-to-talk-only users shouldn't get this behavior change).
-  function bargeInEnabled() {
-    return listening && localStorage.getItem(BARGE_IN_STORAGE_KEY) !== '0';
-  }
+  const voiceCore = window.ManaVoiceCore.createVoiceCore({
+    get AbortController() { return AbortController; },
+    get appendMessage() { return appendMessage; },
+    get BARGE_IN_STORAGE_KEY() { return BARGE_IN_STORAGE_KEY; },
+    get bargeInCaptureCount() { return bargeInCaptureCount; },
+    get chunks() { return chunks; },
+    set chunks(value) { chunks = value; },
+    get clearMessages() { return clearMessages; },
+    get createSileroVad() { return createSileroVad; },
+    get ensureSessionId() { return ensureSessionId; },
+    get heldReply() { return heldReply; },
+    set heldReply(value) { heldReply = value; },
+    get LISTEN_PAUSE_MS() { return LISTEN_PAUSE_MS; },
+    get listenGeneration() { return listenGeneration; },
+    set listenGeneration(value) { listenGeneration = value; },
+    get listening() { return listening; },
+    set listening(value) { listening = value; },
+    get MAX_UTTERANCE_MS() { return MAX_UTTERANCE_MS; },
+    get MAX_WAIT_FOR_SPEECH_MS() { return MAX_WAIT_FOR_SPEECH_MS; },
+    get mediaStream() { return mediaStream; },
+    set mediaStream(value) { mediaStream = value; },
+    get MIN_SPEECH_RMS() { return MIN_SPEECH_RMS; },
+    get PARTIAL_TRANSCRIPT_POLL_MS() { return PARTIAL_TRANSCRIPT_POLL_MS; },
+    get performance() { return performance; },
+    get recorder() { return recorder; },
+    set recorder(value) { recorder = value; },
+    get replyInProgress() { return replyInProgress; },
+    get selectedPresetId() { return selectedPresetId; },
+    get setSprite() { return setSprite; },
+    get shouldStopRecording() { return shouldStopRecording; },
+    get SILENCE_BUFFER_MS() { return SILENCE_BUFFER_MS; },
+    get SILENCE_METER_INTERVAL_MS() { return SILENCE_METER_INTERVAL_MS; },
+    get sileroVad() { return sileroVad; },
+    set sileroVad(value) { sileroVad = value; },
+    get sileroVadLoadFailed() { return sileroVadLoadFailed; },
+    set sileroVadLoadFailed(value) { sileroVadLoadFailed = value; },
+    get speakStreamingReply() { return speakStreamingReply; },
+    get statusEl() { return statusEl; },
+    get VAD_DISABLED() { return VAD_DISABLED; },
+    get VAD_FRAME_SAMPLES() { return VAD_FRAME_SAMPLES; },
+    get VAD_MODEL_URL() { return VAD_MODEL_URL; },
+    get VAD_SAMPLE_RATE() { return VAD_SAMPLE_RATE; },
+    get VAD_THRESHOLD() { return VAD_THRESHOLD; },
+  });
+  function bargeInEnabled(...args) { return voiceCore.bargeInEnabled(...args); }
 
   let sileroVad = null;
   let sileroVadLoadFailed = false;
   let listening = false;
 
-  function getSileroVad() {
-    if (VAD_DISABLED || sileroVadLoadFailed || typeof window.ort === 'undefined') {
-      return null;
-    }
-    if (!sileroVad) {
-      sileroVad = createSileroVad({
-        ort: window.ort,
-        modelUrl: VAD_MODEL_URL,
-        threshold: VAD_THRESHOLD,
-      });
-    }
-    return sileroVad;
-  }
+  function getSileroVad(...args) { return voiceCore.getSileroVad(...args); }
 
-  function wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
+  function wait(...args) { return voiceCore.wait(...args); }
 
-  async function ensureMediaStream() {
-    if (!mediaStream) {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    }
-    return mediaStream;
-  }
+  function ensureMediaStream(...args) { return voiceCore.ensureMediaStream(...args); }
 
   let mediaStream = null;
   let recorder = null;
@@ -208,18 +231,28 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   let hasMoreHistory = false;
   let loadingHistory = false;
 
-  function makeSessionId() {
-    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-    const bytes = window.crypto.getRandomValues(new Uint8Array(8));
-    return `session-${Date.now()}-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
-  }
-  function ensureSessionId() {
-    if (!currentSessionId) {
-      currentSessionId = makeSessionId();
-      localStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
-    }
-    return currentSessionId;
-  }
+  const chatHistory = window.ManaChatHistory.createChatHistory({
+    get CSS() { return CSS; },
+    get currentSessionId() { return currentSessionId; },
+    set currentSessionId(value) { currentSessionId = value; },
+    get hasMoreHistory() { return hasMoreHistory; },
+    set hasMoreHistory(value) { hasMoreHistory = value; },
+    get historyLoadingEl() { return historyLoadingEl; },
+    get loadingHistory() { return loadingHistory; },
+    set loadingHistory(value) { loadingHistory = value; },
+    get messageInputEl() { return messageInputEl; },
+    get messagesEl() { return messagesEl; },
+    get nextBeforeCursor() { return nextBeforeCursor; },
+    set nextBeforeCursor(value) { nextBeforeCursor = value; },
+    get SESSION_STORAGE_KEY() { return SESSION_STORAGE_KEY; },
+    get sessionArtifacts() { return sessionArtifacts; },
+    set sessionArtifacts(value) { sessionArtifacts = value; },
+    get sessionListEl() { return sessionListEl; },
+    get SESSIONS_API() { return SESSIONS_API; },
+    get showView() { return showView; },
+  });
+  function makeSessionId(...args) { return chatHistory.makeSessionId(...args); }
+  function ensureSessionId(...args) { return chatHistory.ensureSessionId(...args); }
 
   // Issue #391: every artifact detected this session, in chronological
   // order, each enriched with a threadId/versionIndex (see
@@ -241,263 +274,38 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // thread, issue #391) in its own window instead of dominating the bubble.
   // `artifact` is already-versioned (threadId/versionIndex assigned by the
   // caller) or null.
-  function renderBubbleContent(div, text, artifact) {
-    const displayText = artifact ? text.replace(artifact.matchedText, '').trim() : text;
-    div.innerHTML = window.electronAPI.renderMarkdownToSafeHtml(displayText);
-
-    if (artifact) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'chat-artifact-open';
-      button.textContent = `Open ${artifact.language} content in new window`;
-      button.addEventListener('click', () => {
-        const thread = sessionArtifacts.filter((a) => a.threadId === artifact.threadId);
-        window.electronAPI.openArtifact({ thread, index: thread.indexOf(artifact) });
-      });
-      div.appendChild(button);
-    }
-  }
+  function renderBubbleContent(...args) { return chatHistory.renderBubbleContent(...args); }
 
   // Appends one new bubble to the live end of the conversation (a message
   // just sent or just replied to) -- as opposed to prependTurns() below,
   // which inserts older history at the top during scroll-back.
-  function appendMessage(role, text) {
-    if (!messagesEl || !text) return null;
-    const div = document.createElement('div');
-    div.className = 'message ' + (role === 'user' ? 'system' : 'assistant');
-    const rawArtifact = window.electronAPI.extractArtifact(text);
-    let artifact = null;
-    if (rawArtifact) {
-      artifact = window.electronAPI.assignArtifactVersion(rawArtifact, sessionArtifacts);
-      sessionArtifacts.push(artifact);
-    }
-    renderBubbleContent(div, text, artifact);
-    messagesEl.appendChild(div);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    return div;
-  }
+  function appendMessage(...args) { return chatHistory.appendMessage(...args); }
 
-  function prependTurns(turns) {
-    if (!messagesEl || !turns || !turns.length) return;
+  function prependTurns(...args) { return chatHistory.prependTurns(...args); }
 
-    // Pass 1: extract raw artifacts for the whole page and thread them
-    // against each other only (see this section's header comment).
-    const rawByTurn = turns.map((turn) => ({
-      user: turn.user ? window.electronAPI.extractArtifact(turn.user) : null,
-      assistant: turn.assistant ? window.electronAPI.extractArtifact(turn.assistant) : null,
-    }));
-    const pageArtifacts = [];
-    for (const raw of rawByTurn) {
-      if (raw.user) {
-        raw.userVersioned = window.electronAPI.assignArtifactVersion(raw.user, pageArtifacts);
-        pageArtifacts.push(raw.userVersioned);
-      }
-      if (raw.assistant) {
-        raw.assistantVersioned = window.electronAPI.assignArtifactVersion(raw.assistant, pageArtifacts);
-        pageArtifacts.push(raw.assistantVersioned);
-      }
-    }
-    sessionArtifacts = [...pageArtifacts, ...sessionArtifacts];
+  function clearMessages(...args) { return chatHistory.clearMessages(...args); }
 
-    // Pass 2: build the DOM using each turn's already-versioned artifact.
-    const frag = document.createDocumentFragment();
-    for (let i = 0; i < turns.length; i++) {
-      const turn = turns[i];
-      const raw = rawByTurn[i];
-      if (turn.user) {
-        const u = document.createElement('div');
-        u.className = 'message system';
-        renderBubbleContent(u, turn.user, raw.userVersioned || null);
-        frag.appendChild(u);
-      }
-      if (turn.assistant) {
-        const a = document.createElement('div');
-        a.className = 'message assistant';
-        renderBubbleContent(a, turn.assistant, raw.assistantVersioned || null);
-        frag.appendChild(a);
-      }
-    }
-    const anchor = historyLoadingEl?.nextSibling || null;
-    messagesEl.insertBefore(frag, anchor);
-  }
+  function fetchHistoryPage(...args) { return chatHistory.fetchHistoryPage(...args); }
 
-  function clearMessages() {
-    messagesEl?.querySelectorAll('.message').forEach((el) => el.remove());
-    nextBeforeCursor = null;
-    hasMoreHistory = false;
-    sessionArtifacts = [];
-  }
-
-  async function fetchHistoryPage(sessionId, before) {
-    const params = new URLSearchParams({ limit: '20' });
-    if (before !== undefined && before !== null) params.set('before', String(before));
-    const resp = await fetch(`${SESSIONS_API}/sessions/${encodeURIComponent(sessionId)}/turns?${params}`);
-    if (!resp.ok) return null;
-    return resp.json();
-  }
-
-  async function loadInitialHistory(sessionId) {
-    const page = await fetchHistoryPage(sessionId);
-    if (!page) return;
-    prependTurns(page.turns);
-    hasMoreHistory = page.hasMore;
-    nextBeforeCursor = page.nextBefore;
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
+  function loadInitialHistory(...args) { return chatHistory.loadInitialHistory(...args); }
 
   // Scrolling near the top loads the next chunk further back in time.
   // Scroll position is preserved by measuring how much the content grew and
   // shifting scrollTop by exactly that -- otherwise prepending content above
   // the viewport yanks the view down to a random spot.
-  async function loadOlderMessages() {
-    if (loadingHistory || !hasMoreHistory || !currentSessionId || !messagesEl) return;
-    loadingHistory = true;
-    if (historyLoadingEl) historyLoadingEl.hidden = false;
-    const previousScrollHeight = messagesEl.scrollHeight;
-    try {
-      const page = await fetchHistoryPage(currentSessionId, nextBeforeCursor);
-      if (page) {
-        prependTurns(page.turns);
-        hasMoreHistory = page.hasMore;
-        nextBeforeCursor = page.nextBefore;
-        messagesEl.scrollTop = messagesEl.scrollHeight - previousScrollHeight + messagesEl.scrollTop;
-      }
-    } finally {
-      loadingHistory = false;
-      if (historyLoadingEl) historyLoadingEl.hidden = true;
-    }
-  }
+  function loadOlderMessages(...args) { return chatHistory.loadOlderMessages(...args); }
 
-  async function switchToSession(sessionId) {
-    currentSessionId = sessionId;
-    localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-    clearMessages();
-    showView('home');
-    await loadInitialHistory(sessionId);
-    refreshSessionList();
-  }
+  function switchToSession(...args) { return chatHistory.switchToSession(...args); }
 
-  function startNewChat() {
-    currentSessionId = makeSessionId();
-    localStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
-    clearMessages();
-    if (messageInputEl) messageInputEl.value = '';
-    showView('home');
-  }
+  function startNewChat(...args) { return chatHistory.startNewChat(...args); }
 
-  function formatSessionDate(iso) {
-    if (!iso) return '';
-    try {
-      return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    } catch (e) {
-      return '';
-    }
-  }
+  function formatSessionDate(...args) { return chatHistory.formatSessionDate(...args); }
 
-  function beginInlineRename(sessionId, currentName) {
-    const item = sessionListEl?.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
-    if (!item) return;
-    const nameEl = item.querySelector('.session-name');
-    const input = document.createElement('input');
-    input.className = 'session-name-input';
-    input.value = currentName || sessionId;
-    nameEl.replaceWith(input);
-    input.focus();
-    input.select();
+  function beginInlineRename(...args) { return chatHistory.beginInlineRename(...args); }
 
-    let settled = false;
-    async function commit() {
-      if (settled) return;
-      settled = true;
-      const newName = input.value.trim();
-      if (newName && newName !== currentName) {
-        try {
-          await fetch(`${SESSIONS_API}/sessions/${encodeURIComponent(sessionId)}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newName }),
-          });
-        } catch (e) {
-          console.warn('Failed to rename session:', e);
-        }
-      }
-      refreshSessionList();
-    }
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        commit();
-      } else if (e.key === 'Escape') {
-        settled = true;
-        refreshSessionList();
-      }
-    });
-    input.addEventListener('blur', commit);
-  }
+  function renderSessionList(...args) { return chatHistory.renderSessionList(...args); }
 
-  function renderSessionList(sessions) {
-    if (!sessionListEl) return;
-    sessionListEl.innerHTML = '';
-    if (!sessions.length) {
-      sessionListEl.innerHTML = '<p class="subtitle">No saved sessions yet -- start chatting to create one.</p>';
-      return;
-    }
-    for (const session of sessions) {
-      const item = document.createElement('div');
-      item.className = 'session-item' + (session.sessionId === currentSessionId ? ' active' : '');
-      item.dataset.sessionId = session.sessionId;
-
-      const nameEl = document.createElement('div');
-      nameEl.className = 'session-name';
-      nameEl.textContent = session.name || session.sessionId;
-
-      const metaEl = document.createElement('div');
-      metaEl.className = 'session-meta';
-      metaEl.textContent = formatSessionDate(session.updatedAt);
-
-      const renameBtn = document.createElement('button');
-      renameBtn.className = 'session-rename-btn';
-      renameBtn.title = 'Rename';
-      renameBtn.type = 'button';
-      renameBtn.textContent = '✎';
-      renameBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        beginInlineRename(session.sessionId, session.name);
-      });
-
-      item.appendChild(nameEl);
-      item.appendChild(metaEl);
-      item.appendChild(renameBtn);
-
-      // Issue #362: was a plain div with only a click listener -- not in
-      // the tab order and not activatable from the keyboard.
-      item.tabIndex = 0;
-      item.setAttribute('role', 'button');
-      item.setAttribute('aria-label', `Session: ${session.name || session.sessionId}`);
-      const activate = () => {
-        if (session.sessionId !== currentSessionId) switchToSession(session.sessionId);
-      };
-      item.addEventListener('click', activate);
-      item.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          activate();
-        }
-      });
-      sessionListEl.appendChild(item);
-    }
-  }
-
-  async function refreshSessionList() {
-    if (!sessionListEl) return;
-    try {
-      const resp = await fetch(`${SESSIONS_API}/sessions`);
-      const j = await resp.json();
-      renderSessionList(Array.isArray(j.sessions) ? j.sessions : []);
-    } catch (e) {
-      sessionListEl.innerHTML = `<p class="subtitle">Failed to load sessions: ${String(e.message || e)}</p>`;
-    }
-  }
+  function refreshSessionList(...args) { return chatHistory.refreshSessionList(...args); }
 
   messagesEl?.addEventListener('scroll', () => {
     if (messagesEl.scrollTop < 80) loadOlderMessages();
@@ -507,66 +315,46 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // choice for this reply (from the /reply or /transcribe response's
   // `expression` field, if any) -- passed alongside the automatically-
   // detected state, not instead of it.
-  async function speakReply(replyText, preferredExpression) {
-    setSprite('speaking');
-    if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(replyText), preferredExpression);
-    try {
-      const sresp = await fetch('http://127.0.0.1:5005/synthesize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: replyText }),
-      });
-      if (sresp.ok) {
-        const arr = await sresp.arrayBuffer();
-        const audioCtx = new AudioContext();
-        const buf = await audioCtx.decodeAudioData(arr);
-        // Awaited so this function's promise resolves only once playback has
-        // actually finished (naturally, or cut short by barge-in's stop()),
-        // not merely once it has started. speakStreamingReply's fallback
-        // call relies on that to keep replyInProgress set for this reply's
-        // full audible duration (see replyInProgress's declaration below) --
-        // without it, `await speakReply(...)` there returns as soon as
-        // synthesis/decoding finishes, well before the audio stops playing.
-        await new Promise((resolve) => {
-          const src = audioCtx.createBufferSource();
-          src.buffer = buf;
-          src.connect(audioCtx.destination);
-          // Reply-scoped barge-in tracking (see playDecodedChunk/Finding 3):
-          // this is the fallback path (queue.run()'s streamed draft turned out
-          // stale), which plays through its own AudioContext/source outside
-          // playDecodedChunk, but shares the same currentChunkSource variable
-          // and watchForBargeIn() so it isn't left unmonitored.
-          currentChunkSource = src;
-          src.onended = () => {
-            if (currentChunkSource === src) currentChunkSource = null;
-            stopLipSync();
-            setSprite('idle');
-            audioCtx.close().catch(() => {}); // Finding 6: don't leak AudioContexts
-            resolve();
-          };
-          src.start();
-          startLipSync(audioCtx, src);
-          if (bargeInEnabled()) {
-            const playbackTokenAtStart = desktopReplyPlaybackToken;
-            watchForBargeIn(
-              () => currentChunkSource !== null && desktopReplyPlaybackToken === playbackTokenAtStart,
-              () => {
-                if (currentChunkSource) currentChunkSource.stop();
-                stopStreamingReply();
-                handleDesktopBargeInTrigger().catch((e) =>
-                  console.warn('Barge-in interruption handling failed:', e.message),
-                );
-              },
-            ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
-          }
-        });
-      } else {
-        setSprite('idle');
-      }
-    } catch (e) {
-      setSprite('idle');
-    }
-  }
+  const voicePlayback = window.ManaVoicePlayback.createVoicePlayback({
+    get activeStreamingQueue() { return activeStreamingQueue; },
+    set activeStreamingQueue(value) { activeStreamingQueue = value; },
+    get BARGE_IN_HOLD_MS() { return BARGE_IN_HOLD_MS; },
+    get BARGE_IN_MIN_DBFS() { return BARGE_IN_MIN_DBFS; },
+    get BARGE_IN_POLL_MS() { return BARGE_IN_POLL_MS; },
+    get bargeInCaptureCount() { return bargeInCaptureCount; },
+    set bargeInCaptureCount(value) { bargeInCaptureCount = value; },
+    get bargeInEnabled() { return bargeInEnabled; },
+    get bargeInMonitor() { return bargeInMonitor; },
+    set bargeInMonitor(value) { bargeInMonitor = value; },
+    get createDesktopStreamingChunkQueue() { return createDesktopStreamingChunkQueue; },
+    get currentChunkSource() { return currentChunkSource; },
+    set currentChunkSource(value) { currentChunkSource = value; },
+    get dbfsFromSamples() { return dbfsFromSamples; },
+    get desktopReplyPlaybackToken() { return desktopReplyPlaybackToken; },
+    set desktopReplyPlaybackToken(value) { desktopReplyPlaybackToken = value; },
+    get detectReplyEmotion() { return detectReplyEmotion; },
+    get ensureMediaStream() { return ensureMediaStream; },
+    get getSileroVad() { return getSileroVad; },
+    get handleTranscriptText() { return handleTranscriptText; },
+    get heldReply() { return heldReply; },
+    set heldReply(value) { heldReply = value; },
+    get live2dAvatar() { return live2dAvatar; },
+    get mediaStream() { return mediaStream; },
+    get nextBargeInState() { return nextBargeInState; },
+    get performance() { return performance; },
+    get readNdjsonEvents() { return readNdjsonEvents; },
+    get recordUntilSilence() { return recordUntilSilence; },
+    get replyInProgress() { return replyInProgress; },
+    set replyInProgress(value) { replyInProgress = value; },
+    get setSprite() { return setSprite; },
+    get startLipSync() { return startLipSync; },
+    get stopLipSync() { return stopLipSync; },
+    get transcribeBlob() { return transcribeBlob; },
+    get VAD_FRAME_SAMPLES() { return VAD_FRAME_SAMPLES; },
+    get VAD_SAMPLE_RATE() { return VAD_SAMPLE_RATE; },
+    get wait() { return wait; },
+  });
+  function speakReply(...args) { return voicePlayback.speakReply(...args); }
 
   // --- Issue #331: streaming TTS pipeline -------------------------------
   // POST /reply/stream sends newline-delimited JSON objects over a chunked
@@ -603,16 +391,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // node is created per chunk (same one-shot constraint speakReply's
   // existing playback already works within, just repeated per chunk here
   // instead of once per whole reply).
-  async function synthesizeAndDecodeChunk(text, audioCtx) {
-    const response = await fetch('http://127.0.0.1:5005/synthesize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!response.ok) throw new Error('synthesize failed: ' + response.status);
-    const arrayBuffer = await response.arrayBuffer();
-    return audioCtx.decodeAudioData(arrayBuffer);
-  }
+  function synthesizeAndDecodeChunk(...args) { return voicePlayback.synthesizeAndDecodeChunk(...args); }
 
   let bargeInMonitor = null;
 
@@ -653,73 +432,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // hardcoding stopStreamingReply() here, letting playDecodedChunk stop its
   // own live AudioBufferSourceNode (immediate, audible cutoff) instead of
   // only marking the reply superseded and letting the current chunk play out.
-  async function watchForBargeIn(isStillPlaying, onTrigger) {
-    if (bargeInMonitor) {
-      return;
-    }
-    const self = { stopped: false };
-    bargeInMonitor = self;
-
-    try {
-      await ensureMediaStream();
-      const vad = getSileroVad();
-      if (!vad) {
-        return;
-      }
-      vad.reset();
-
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-        sampleRate: VAD_SAMPLE_RATE,
-      });
-      const source = audioCtx.createMediaStreamSource(mediaStream);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 1024;
-      source.connect(analyser);
-      const samples = new Float32Array(analyser.fftSize);
-
-      let speechStartedAt = null;
-      try {
-        while (!self.stopped && isStillPlaying()) {
-          await wait(BARGE_IN_POLL_MS);
-          if (self.stopped || !isStillPlaying()) {
-            break;
-          }
-
-          let isSpeech = false;
-          try {
-            analyser.getFloatTimeDomainData(samples);
-            const frame = samples.subarray(samples.length - VAD_FRAME_SAMPLES);
-            const probability = await vad.processFrame(frame);
-            isSpeech = vad.isSpeech(probability);
-          } catch (e) {
-            isSpeech = false;
-          }
-
-          const isLoudEnough = dbfsFromSamples(samples) >= BARGE_IN_MIN_DBFS;
-
-          const state = nextBargeInState({
-            isSpeech,
-            isLoudEnough,
-            speechStartedAt,
-            now: performance.now(),
-            holdMs: BARGE_IN_HOLD_MS,
-          });
-          speechStartedAt = state.speechStartedAt;
-          if (state.triggered) {
-            onTrigger();
-            break;
-          }
-        }
-      } finally {
-        try {
-          source.disconnect();
-        } catch (e) {}
-        audioCtx.close().catch(() => {});
-      }
-    } finally {
-      bargeInMonitor = null;
-    }
-  }
+  function watchForBargeIn(...args) { return voicePlayback.watchForBargeIn(...args); }
 
   // Tracks the AudioBufferSourceNode currently playing, across ALL chunks of
   // the current reply (not just one) -- reply-scoped, not chunk-scoped.
@@ -738,45 +451,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // so a stale callback from a superseded node can't wipe out a newer one.
   let currentChunkSource = null;
 
-  function playDecodedChunk(audioCtx, audioBuffer, text) {
-    return new Promise((resolve) => {
-      setSprite('speaking');
-      if (live2dAvatar) live2dAvatar.setState(detectReplyEmotion(text));
-      const src = audioCtx.createBufferSource();
-      src.buffer = audioBuffer;
-      src.connect(audioCtx.destination);
-      currentChunkSource = src;
-      src.onended = () => {
-        if (currentChunkSource === src) currentChunkSource = null;
-        stopLipSync();
-        resolve();
-      };
-      src.start();
-      startLipSync(audioCtx, src);
-      if (bargeInEnabled()) {
-        const playbackTokenAtStart = desktopReplyPlaybackToken;
-        watchForBargeIn(
-          () => currentChunkSource !== null && desktopReplyPlaybackToken === playbackTokenAtStart,
-          // Stops whichever chunk is actually live when the trigger fires --
-          // by the time it does, that may be a later chunk than the one
-          // that started this monitor (see currentChunkSource comment
-          // above). src.stop() on an already-started node is valid and
-          // fires onended exactly once (whether triggered here or by
-          // natural completion), so there's no double-resolve risk to guard
-          // against here (unlike windows-launcher's <audio> element, which
-          // has three distinct terminal events -- ended/error/pause -- and
-          // needs waitForPlayback's `settled` guard for that reason).
-          () => {
-            if (currentChunkSource) currentChunkSource.stop();
-            stopStreamingReply();
-            handleDesktopBargeInTrigger().catch((e) =>
-              console.warn('Barge-in interruption handling failed:', e.message),
-            );
-          },
-        ).catch((e) => console.warn('Voice barge-in monitor failed:', e.message));
-      }
-    });
-  }
+  function playDecodedChunk(...args) { return voicePlayback.playDecodedChunk(...args); }
 
   let desktopReplyPlaybackToken = 0;
   // Set for the full duration of speakStreamingReply -- the /reply/stream
@@ -787,9 +462,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // while continuous listening is also toggled on.
   let replyInProgress = false;
 
-  function stopStreamingReply() {
-    desktopReplyPlaybackToken += 1;
-  }
+  function stopStreamingReply(...args) { return voicePlayback.stopStreamingReply(...args); }
 
   // Sub-project B: re-speaks a held reply's remaining sentences from the cut
   // point, reusing the same one-ahead synthesize/play queue
@@ -797,119 +470,14 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // entry point into it, sourced from the held array instead of an NDJSON
   // stream. Held state is text only; this re-synthesizes rather than
   // replaying cached audio.
-  async function resumeHeldReply() {
-    const sentences = heldReply ? heldReply.sentences : null;
-    heldReply = null;
-    if (!sentences || sentences.length === 0) {
-      return;
-    }
+  function resumeHeldReply(...args) { return voicePlayback.resumeHeldReply(...args); }
 
-    stopStreamingReply();
-    const playbackToken = desktopReplyPlaybackToken;
-    const audioCtx = new AudioContext();
-    const queue = createDesktopStreamingChunkQueue({
-      synthesize: (text) => synthesizeAndDecodeChunk(text, audioCtx),
-      play: (audioBuffer, text) => playDecodedChunk(audioCtx, audioBuffer, text),
-      isCurrent: () => desktopReplyPlaybackToken === playbackToken,
-      onIdle: () => setSprite('idle'),
-    });
-    activeStreamingQueue = queue;
-    const runPromise = queue.run();
-    for (const sentence of sentences) {
-      queue.pushChunk(sentence);
-    }
-    queue.markDone();
-    try {
-      await runPromise;
-    } finally {
-      // Matches speakStreamingReply's cleanup: always close the AudioContext
-      // and clear activeStreamingQueue, even if runPromise rejects, so a
-      // failed resume doesn't leak an AudioContext (Chromium caps concurrent
-      // instances at ~6).
-      audioCtx.close().catch(() => {});
-      if (activeStreamingQueue === queue) {
-        activeStreamingQueue = null;
-      }
-    }
-  }
-
-  async function classifyBargeInText(text) {
-    try {
-      const response = await fetch('http://127.0.0.1:5005/barge-in/classify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      if (!response.ok) {
-        return { category: 'unclassified' };
-      }
-      const data = await response.json();
-      return { category: data.category || 'unclassified' };
-    } catch (e) {
-      console.warn('Barge-in classify request failed:', e.message);
-      return { category: 'unclassified' };
-    }
-  }
+  function classifyBargeInText(...args) { return voicePlayback.classifyBargeInText(...args); }
 
   // Acts on a classified interruption against the currently-held reply.
   // `heldReply` must already be set (non-null) when this is called for the
   // non-nested path -- see handleDesktopBargeInTrigger.
-  async function handleDesktopBargeInInterruption(category, transcript) {
-    // Captured once up front: a nested interruption's own capture window can
-    // overlap this one's `await handleTranscriptText` below (see
-    // bargeInCaptureCount's doc comment) and replace the module-global
-    // `heldReply` with a new hold before this call resumes -- comparing
-    // identity against `hold` rather than re-reading the global lets this
-    // dispatch stay correct regardless of that ordering.
-    const hold = heldReply;
-
-    if (category === 'amend') {
-      // Same shape as correction (discard, no resume -- the amended reply
-      // replaces what was being said, it doesn't supplement it), except the
-      // transcript is wrapped so the model steers using the original reply
-      // it already has in session history (see the design doc's Key Finding:
-      // buildAssistantReply appends the full reply to session history before
-      // /reply/stream's final event, well before any barge-in can fire).
-      heldReply = null;
-      if (transcript) {
-        // Kept parenthesis-free to match windows-launcher's wrapper exactly
-        // (its cleanTranscriptText() would strip a "(...)"-wrapped prefix
-        // entirely -- this app doesn't have that stripping, but the wording
-        // is kept identical across both apps for parity).
-        await handleTranscriptText(`Amending what you just said: ${transcript}`);
-      }
-      return;
-    }
-
-    if (category === 'correction') {
-      heldReply = null;
-      if (transcript) {
-        await handleTranscriptText(transcript);
-      }
-      return;
-    }
-
-    if (category === 'new_question') {
-      hold.stackDepth = 1;
-      if (transcript) {
-        // handleTranscriptText -> speakStreamingReply already awaits full
-        // playback of the inserted answer before returning, so resuming
-        // right after is safe -- no separate "wait for playback to finish"
-        // step needed.
-        await handleTranscriptText(transcript);
-      }
-      // A nested interruption during the line above discards heldReply
-      // itself (see handleDesktopBargeInTrigger's wasNested branch) -- only
-      // resume if it's still the same hold.
-      if (heldReply === hold) {
-        await resumeHeldReply();
-      }
-      return;
-    }
-
-    // backchannel or unclassified: resume from the cut point, no new turn.
-    await resumeHeldReply();
-  }
+  function handleDesktopBargeInInterruption(...args) { return voicePlayback.handleDesktopBargeInInterruption(...args); }
 
   // Fired from watchForBargeIn's onTrigger once a trigger holds for
   // BARGE_IN_HOLD_MS (the caller has already stopped the audible playback by
@@ -917,57 +485,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // sites). Captures the current reply's not-yet-played sentences, records
   // the interruption immediately, transcribes and classifies it, then
   // dispatches to resume/discard/insert.
-  async function handleDesktopBargeInTrigger() {
-    const wasNested = Boolean(heldReply && heldReply.stackDepth >= 1);
-    const heldSentences = activeStreamingQueue ? activeStreamingQueue.peekPending() : [];
-
-    if (wasNested) {
-      // A second interruption arrived while an inserted new-question answer
-      // was playing -- per the depth-1 cap, the outer held reply is
-      // discarded outright (not stacked); this interruption becomes a fresh
-      // top-level turn, no classification needed since there's nothing left
-      // to resume/discard against.
-      heldReply = null;
-      bargeInCaptureCount += 1;
-      try {
-        const blob = await recordUntilSilence({ isBargeInCapture: true });
-        if (!blob) return;
-        const transcript = await transcribeBlob(blob);
-        if (transcript) {
-          await handleTranscriptText(transcript);
-        }
-      } catch (e) {
-        console.warn('Barge-in interruption capture failed:', e.message);
-      } finally {
-        bargeInCaptureCount -= 1;
-      }
-      return;
-    }
-
-    if (heldSentences.length === 0) {
-      // Nothing left to hold -- equivalent to today's stop-and-discard; the
-      // normal listen loop picks up whatever comes next.
-      return;
-    }
-
-    heldReply = { sentences: heldSentences, stackDepth: 0 };
-    bargeInCaptureCount += 1;
-    try {
-      const blob = await recordUntilSilence({ isBargeInCapture: true });
-      if (!blob) {
-        await resumeHeldReply();
-        return;
-      }
-      const transcript = await transcribeBlob(blob);
-      const { category } = await classifyBargeInText(transcript);
-      await handleDesktopBargeInInterruption(category, transcript);
-    } catch (e) {
-      console.warn('Barge-in interruption capture failed:', e.message);
-      heldReply = null;
-    } finally {
-      bargeInCaptureCount -= 1;
-    }
-  }
+  function handleDesktopBargeInTrigger(...args) { return voicePlayback.handleDesktopBargeInTrigger(...args); }
 
   // Replaces the fetch('/reply') -> res.json() -> speakReply flow at this
   // app's two reply call sites. Sentences arrive incrementally from POST
@@ -984,129 +502,55 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // #331 review (Finding 1): callers use this to append the reply text to
   // the chat log as soon as it's known, instead of waiting for this whole
   // function (and therefore all queued audio) to finish playing first.
-  async function speakStreamingReply(requestBody, onFinal) {
-    replyInProgress = true;
-    try {
-      stopStreamingReply();
-      const playbackToken = desktopReplyPlaybackToken;
-      const audioCtx = new AudioContext();
-      const queue = createDesktopStreamingChunkQueue({
-        synthesize: (text) => synthesizeAndDecodeChunk(text, audioCtx),
-        play: (audioBuffer, text) => playDecodedChunk(audioCtx, audioBuffer, text),
-        isCurrent: () => desktopReplyPlaybackToken === playbackToken,
-        onIdle: () => setSprite('idle'),
-      });
-      activeStreamingQueue = queue;
-      const runPromise = queue.run();
+  function speakStreamingReply(...args) { return voicePlayback.speakStreamingReply(...args); }
 
-      let finalEvent = null;
-      try {
-        const response = await fetch('http://127.0.0.1:5005/reply/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        });
-
-        for await (const event of readNdjsonEvents(response)) {
-          if (event.type === 'sentence') {
-            queue.pushChunk(event.text);
-          } else if (event.type === 'final') {
-            finalEvent = event;
-            if (typeof onFinal === 'function') {
-              onFinal(finalEvent);
-            }
-            if (event.changed) {
-              // Known now, as early as the final event itself arrives (always
-              // after every sentence event, so this can't miss a pending
-              // chunk) -- drop the rest of the backlog instead of letting the
-              // whole stale draft play out before restarting.
-              queue.cancelPending();
-            }
-          }
-        }
-      } finally {
-        queue.markDone();
-        await runPromise;
-        if (activeStreamingQueue === queue) {
-          activeStreamingQueue = null;
-        }
-      }
-
-      // Finding 6: this reply's audio queue has fully drained (every
-      // streamed chunk synthesized/played) -- this AudioContext is done
-      // being used, whether or not the speakReply fallback below runs next
-      // (that one creates and closes its own). Chromium caps concurrent
-      // AudioContext instances (~6); never closing these would eventually
-      // wedge voice output in a long continuous-listening session.
-      audioCtx.close().catch(() => {});
-
-      const result = finalEvent || { reply: '', ttsConfigured: false };
-
-      if (desktopReplyPlaybackToken === playbackToken && result.changed && result.reply) {
-        stopStreamingReply();
-        await speakReply(result.reply, result.expression);
-      }
-
-      return result;
-    } finally {
-      replyInProgress = false;
-    }
-  }
-
-  async function init() {
-    try {
-      const st = await window.electronAPI.backendStatus();
-      statusEl.textContent = st.running ? 'Backend running' : 'Backend not running';
-      if (!st.running) startLoadingAnimation();
-    } catch (e) { statusEl.textContent = 'Backend unknown'; startLoadingAnimation(); }
-
-    // backend logs: append and use first log to stop loading animation
-    window.electronAPI.backendLog((s)=>{ logsEl.textContent += s + '\n'; logsEl.scrollTop = logsEl.scrollHeight; stopLoadingAnimation();
-      // also detect excite marker
-      try{ if (String(s).includes('__MANA_EXCITE__')) setSprite('excited'); }catch(e){}
-    });
-
-    window.electronAPI.backendExit((info)=>{ statusEl.textContent = 'Backend exited'; startLoadingAnimation(); });
-
-    initLive2dAvatar();
-    // Finding 2: awaited so getUserMedia() has resolved and `mediaStream` is
-    // set before the autostart check below can call startListening() -->
-    // listenLoop() --> recordUntilSilence() --> ensureMediaStream(). Without
-    // this, ensureMediaStream() could see mediaStream still null and open a
-    // second, orphaned MediaStream (duplicate device capture, and
-    // push-to-talk possibly ending up bound to a different stream than the
-    // listen loop).
-    await setupRecording();
-    if (localStorage.getItem(LISTENING_AUTOSTART_STORAGE_KEY) === '1') {
-      startListening();
-    }
-  }
+  const desktopUI = window.ManaDesktopUI.createDesktopUI({
+    get _prevSpriteState() { return _prevSpriteState; },
+    set _prevSpriteState(value) { _prevSpriteState = value; },
+    get createLive2dAvatar() { return createLive2dAvatar; },
+    get doctorBubbleEl() { return doctorBubbleEl; },
+    get doctorBubbleMessageEl() { return doctorBubbleMessageEl; },
+    get doctorBubbleTitleEl() { return doctorBubbleTitleEl; },
+    get fetchAvatarBtnEl() { return fetchAvatarBtnEl; },
+    get homeViewEl() { return homeViewEl; },
+    get lipSyncRafId() { return lipSyncRafId; },
+    set lipSyncRafId(value) { lipSyncRafId = value; },
+    get LISTENING_AUTOSTART_STORAGE_KEY() { return LISTENING_AUTOSTART_STORAGE_KEY; },
+    get live2dAvatar() { return live2dAvatar; },
+    set live2dAvatar(value) { live2dAvatar = value; },
+    get live2dCanvas() { return live2dCanvas; },
+    get logsEl() { return logsEl; },
+    get navHomeBtnEl() { return navHomeBtnEl; },
+    get navInfoBodyEl() { return navInfoBodyEl; },
+    get navInfoModalEl() { return navInfoModalEl; },
+    get navInfoTitleEl() { return navInfoTitleEl; },
+    get navSettingsBtnEl() { return navSettingsBtnEl; },
+    get onboardDetailsEl() { return onboardDetailsEl; },
+    get onboardTextEl() { return onboardTextEl; },
+    get sessionsViewEl() { return sessionsViewEl; },
+    get settingsViewEl() { return settingsViewEl; },
+    get setupAvatarDetailEl() { return setupAvatarDetailEl; },
+    get setupAvatarIconEl() { return setupAvatarIconEl; },
+    get setupModelActionsEl() { return setupModelActionsEl; },
+    get setupModelDetailEl() { return setupModelDetailEl; },
+    get setupModelIconEl() { return setupModelIconEl; },
+    get setupModelScanResultsEl() { return setupModelScanResultsEl; },
+    get setupRecording() { return setupRecording; },
+    get setupWhisperDetailEl() { return setupWhisperDetailEl; },
+    get setupWhisperIconEl() { return setupWhisperIconEl; },
+    get startListening() { return startListening; },
+    get statusEl() { return statusEl; },
+  });
+  function init(...args) { return desktopUI.init(...args); }
 
   // Live2D speaks a richer state vocabulary (idle/talking/excited/angry/
   // sad/disgusted) than the simple state names used elsewhere in this file
   // (idle/listening/speaking/excited); this maps those onto the closest
   // Live2D one for the generic (non-reply) cases. A reply's actual detected
   // emotion (see onRecordingStop) overrides this afterward.
-  function live2dStateFor(spriteState){
-    if (spriteState === 'listening' || spriteState === 'speaking') return 'talking';
-    return spriteState || 'idle';
-  }
+  function live2dStateFor(...args) { return desktopUI.live2dStateFor(...args); }
 
-  async function initLive2dAvatar(){
-    if (!live2dCanvas) return;
-    try {
-      live2dAvatar = await createLive2dAvatar({
-        canvas: live2dCanvas,
-        width: live2dCanvas.clientWidth,
-        height: live2dCanvas.clientHeight,
-      });
-      if (live2dAvatar) {
-        live2dAvatar.setState(live2dStateFor(_prevSpriteState));
-      }
-    } catch (e) {
-      console.warn('Live2D avatar failed to load:', e);
-    }
-  }
+  function initLive2dAvatar(...args) { return desktopUI.initLive2dAvatar(...args); }
 
   if (avatarZoomBtn) {
     avatarZoomBtn.addEventListener('click', () => { if (live2dAvatar) live2dAvatar.cycleZoom(); });
@@ -1119,117 +563,22 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   }
 
   let _prevSpriteState = 'idle';
-  function setSprite(state){
-    // handle transient excited state, which should revert to the underlying
-    // state (idle/speaking) after a beat
-    if (state === 'excited'){
-      const base = _prevSpriteState || 'idle';
-      if (live2dAvatar) live2dAvatar.setState('excited');
-      const durationMs = 320;
-      const iterations = 5;
-      setTimeout(()=>{
-        if (live2dAvatar) live2dAvatar.setState(live2dStateFor(base));
-      }, durationMs * iterations);
-      return;
-    }
-    _prevSpriteState = state || 'idle';
-    if (live2dAvatar) live2dAvatar.setState(live2dStateFor(_prevSpriteState));
-  }
+  function setSprite(...args) { return desktopUI.setSprite(...args); }
 
-  function startLoadingAnimation(){
-    statusEl.textContent = 'Backend starting...';
-  }
-  function stopLoadingAnimation(){
-    statusEl.textContent = 'Backend running';
-  }
+  function startLoadingAnimation(...args) { return desktopUI.startLoadingAnimation(...args); }
+  function stopLoadingAnimation(...args) { return desktopUI.stopLoadingAnimation(...args); }
 
   // Lip sync: sample the playing reply audio's RMS amplitude and forward it
   // to the Live2D avatar's mouth parameter. No-op when Live2D isn't loaded.
   let lipSyncRafId = null;
-  function stopLipSync(){
-    if (lipSyncRafId !== null) {
-      cancelAnimationFrame(lipSyncRafId);
-      lipSyncRafId = null;
-    }
-    if (live2dAvatar) live2dAvatar.setMouthTarget(0, 0);
-  }
-  function startLipSync(audioCtx, sourceNode){
-    if (!live2dAvatar) return;
-    try {
-      const { spectralCentroidHz, computeMfcc, classifyViseme } = window.Live2DLogic;
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      sourceNode.connect(analyser);
-      const samples = new Float32Array(analyser.fftSize);
-      // Frequency-domain read alongside the time-domain one above, used
-      // only for a spectral-centroid estimate (mouth *shape*) -- no extra
-      // audio graph, just a second read of the same analyser.
-      const magnitudesDb = new Float32Array(analyser.frequencyBinCount);
-      let lastSentAt = 0;
-      const tick = (timestamp) => {
-        // ~30Hz is plenty for mouth movement.
-        if (timestamp - lastSentAt >= 33) {
-          lastSentAt = timestamp;
-          analyser.getFloatTimeDomainData(samples);
-          let sum = 0;
-          for (let i = 0; i < samples.length; i += 1) {
-            sum += samples[i] * samples[i];
-          }
-          const rms = Math.sqrt(sum / samples.length);
-          analyser.getFloatFrequencyData(magnitudesDb);
-          const centroidHz = spectralCentroidHz(magnitudesDb, audioCtx.sampleRate, analyser.fftSize);
-          // Issue #275: MFCC-based viseme classification, computed
-          // alongside (not instead of) the older centroid -- see
-          // live2d-avatar.js's setMouthTarget for the fallback order.
-          const viseme = classifyViseme(computeMfcc(magnitudesDb, audioCtx.sampleRate, analyser.fftSize));
-          live2dAvatar.setMouthTarget(rms, centroidHz, viseme);
-        }
-        lipSyncRafId = requestAnimationFrame(tick);
-      };
-      lipSyncRafId = requestAnimationFrame(tick);
-    } catch (e) {
-      // Lip sync is a nicety; never let it break audio playback.
-      console.warn('Lip sync failed to start:', e);
-    }
-  }
+  function stopLipSync(...args) { return desktopUI.stopLipSync(...args); }
+  function startLipSync(...args) { return desktopUI.startLipSync(...args); }
 
-  async function setupRecording(){
-    try{
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    }catch(e){
-      console.error('mic failed', e);
-      await window.electronAPI.showError('Microphone access is required');
-      return;
-    }
+  function setupRecording(...args) { return voiceCore.setupRecording(...args); }
 
-    const btn = document.getElementById('btnRecord');
-    const stopBtn = document.getElementById('btnStop');
-    const clearBtn = document.getElementById('btnClear');
+  function startRecording(...args) { return voiceCore.startRecording(...args); }
 
-    btn.addEventListener('mousedown', startRecording);
-    btn.addEventListener('touchstart', startRecording);
-    btn.addEventListener('mouseup', stopRecording);
-    btn.addEventListener('touchend', stopRecording);
-    stopBtn.addEventListener('click', stopRecording);
-    clearBtn.addEventListener('click', ()=>{ clearMessages(); });
-  }
-
-  function startRecording(){
-    if (!mediaStream) return;
-    chunks = [];
-    recorder = new MediaRecorder(mediaStream);
-    recorder.ondataavailable = (e)=>{ if (e.data && e.data.size) chunks.push(e.data); };
-    recorder.onstop = onRecordingStop;
-    recorder.start();
-    setSprite('listening');
-    statusEl.textContent = 'Listening...';
-  }
-
-  async function stopRecording(){
-    try{ if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch(e){}
-    setSprite('idle');
-    statusEl.textContent = 'Processing...';
-  }
+  function stopRecording(...args) { return voiceCore.stopRecording(...args); }
 
   // Issue #331: transcription and reply generation are now two calls
   // instead of one -- /transcribe-only has no streaming equivalent (it's a
@@ -1237,74 +586,20 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // itself goes through /reply/stream (via speakStreamingReply) the same
   // way sendTextMessage's does, so voice replies get the same
   // early-audio-start pipelining as typed ones.
-  async function transcribeBlob(blob) {
-    const form = new FormData();
-    form.append('file', blob, 'voice.webm');
-    const resp = await fetch('http://127.0.0.1:5005/transcribe-only', { method: 'POST', body: form });
-    if (!resp.ok) {
-      const txt = await resp.text();
-      throw new Error('transcribe failed: ' + resp.status + ' ' + txt);
-    }
-    const j = await resp.json().catch(()=>null);
-    return j?.transcript || '';
-  }
+  function transcribeBlob(...args) { return voiceCore.transcribeBlob(...args); }
 
   // Shared by handleVoiceTurn (push-to-talk/continuous-listening) and the
   // barge-in interruption dispatcher (Sub-project B) -- both end up with a
   // known transcript string and need the exact same reply-generation
   // handling.
-  async function handleTranscriptText(transcript) {
-    try{
-      appendMessage('user', transcript);
-      // Issue #331 review (Finding 1): append to the chat log as soon as
-      // the final event names the reply, not after speakStreamingReply
-      // resolves -- that await also waits for every queued chunk to
-      // finish *playing*.
-      const result = await speakStreamingReply(
-        {
-          text: transcript,
-          sessionId: ensureSessionId(),
-          presetId: selectedPresetId || undefined,
-        },
-        (finalEvent) => {
-          if (!finalEvent.error && finalEvent.reply) appendMessage('assistant', finalEvent.reply);
-        },
-      );
-      if (result.error) throw new Error(result.error);
-      statusEl.textContent = 'Idle';
-    } catch (e){
-      statusEl.textContent = 'Error';
-      await window.electronAPI.showError(String(e));
-      setSprite('idle');
-    }
-  }
+  function handleTranscriptText(...args) { return voiceCore.handleTranscriptText(...args); }
 
   // Shared by push-to-talk (onRecordingStop) and continuous listening
   // (listenLoop) -- both produce a recorded utterance as a Blob and need
   // the exact same transcribe-then-reply handling.
-  async function handleVoiceTurn(blob) {
-    try {
-      const transcript = await transcribeBlob(blob);
-      // Issue #331 review (Finding 1): only act on a genuinely non-empty
-      // transcript. /transcribe-only returning nothing meaningful (empty
-      // string, or no transcript at all) must not reach the chat log or
-      // trigger a reply -- previously the else branch appended a raw
-      // JSON.stringify(j) debug bubble for this case, which continuous
-      // listening's no-speech recordings would otherwise hit constantly.
-      if (transcript) {
-        await handleTranscriptText(transcript);
-      }
-    } catch (e){
-      statusEl.textContent = 'Error';
-      await window.electronAPI.showError(String(e));
-      setSprite('idle');
-    }
-  }
+  function handleVoiceTurn(...args) { return voiceCore.handleVoiceTurn(...args); }
 
-  async function onRecordingStop(){
-    const blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
-    await handleVoiceTurn(blob);
-  }
+  function onRecordingStop(...args) { return voiceCore.onRecordingStop(...args); }
 
   // Continuous listening (issue #135 port): records one utterance at a
   // time, using Silero VAD (falling back to a plain RMS threshold if the
@@ -1313,208 +608,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // variables rather than the module-scope ones startRecording/stopRecording
   // use above -- push-to-talk and continuous listening must not share
   // mutable state, since a user could in principle trigger both at once.
-  async function recordUntilSilence({
-    maxWaitForSpeechMs = MAX_WAIT_FOR_SPEECH_MS,
-    silenceBufferMs = SILENCE_BUFFER_MS,
-    maxDurationMs = MAX_UTTERANCE_MS,
-    // True only for the specific recordUntilSilence() call that IS a
-    // barge-in's own capture (see handleDesktopBargeInTrigger) -- must not
-    // be inferred from module-scope bargeInCaptureCount > 0, which is true
-    // while *any* capture is in flight anywhere and would also bypass
-    // Finding 4 for an unrelated, already-running listenLoop recording.
-    isBargeInCapture = false,
-  } = {}) {
-    await ensureMediaStream();
-
-    const vad = getSileroVad();
-    if (vad) {
-      vad.reset();
-    }
-
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-      sampleRate: VAD_SAMPLE_RATE,
-    });
-    const source = audioCtx.createMediaStreamSource(mediaStream);
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 1024;
-    source.connect(analyser);
-    const samples = new Float32Array(analyser.fftSize);
-
-    function currentRms() {
-      analyser.getFloatTimeDomainData(samples);
-      let sum = 0;
-      for (let i = 0; i < samples.length; i += 1) {
-        sum += samples[i] * samples[i];
-      }
-      return Math.sqrt(sum / samples.length);
-    }
-
-    async function isSpeechNow() {
-      if (vad) {
-        try {
-          analyser.getFloatTimeDomainData(samples);
-          const frame = samples.subarray(samples.length - VAD_FRAME_SAMPLES);
-          const probability = await vad.processFrame(frame);
-          return vad.isSpeech(probability);
-        } catch (e) {
-          console.warn('Silero VAD inference failed, falling back to RMS for this session:', e);
-          sileroVadLoadFailed = true;
-        }
-      }
-      return currentRms() >= MIN_SPEECH_RMS;
-    }
-
-    // Issue #331 review (Finding 1): resolves null instead of a Blob when
-    // there's no real utterance to hand off -- either nobody spoke at all
-    // (no-speech-timeout) or a reply started elsewhere mid-recording
-    // (Finding 4, see the replyInProgress check in tick() below) and
-    // whatever got captured is stale/possibly Mana's own TTS audio picked
-    // up by the mic. Callers (listenLoop) must skip handleVoiceTurn for a
-    // null result instead of transcribing it.
-    return await new Promise((resolve, reject) => {
-      const localChunks = [];
-      const localRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' });
-      let hasHeardSpeech = false;
-      let lastSpeechAt = 0;
-      let meterTimer = null;
-      let partialTimer = null;
-      let partialPollInFlight = false;
-      // Plumbing for #341 Sub-project B's classifier, not yet consumed by
-      // anything -- kept in sync with the status text below.
-      let partialTranscript = "";
-      // Aborted in cleanup() so an in-flight poll doesn't keep running
-      // (and competing for CPU with the real final transcription about to
-      // start) after the recording it was polling for has already ended.
-      const partialAbortController = new AbortController();
-      let stopped = false;
-      let noSpeechResult = false;
-      const startedAt = performance.now();
-
-      function cleanup() {
-        stopped = true;
-        if (meterTimer !== null) {
-          clearTimeout(meterTimer);
-          meterTimer = null;
-        }
-        if (partialTimer !== null) {
-          clearInterval(partialTimer);
-          partialTimer = null;
-        }
-        partialAbortController.abort();
-        try {
-          source.disconnect();
-        } catch (e) {}
-        audioCtx.close().catch(() => {});
-      }
-
-      // #341 Sub-project A: snapshots whatever's been recorded so far and
-      // polls for a partial transcript, updating the live status text. A
-      // failed or slow poll is silently skipped -- never blocks or delays
-      // tick()'s actual stop-detection logic below.
-      async function pollPartialTranscript() {
-        if (stopped || partialPollInFlight || localChunks.length === 0) {
-          return;
-        }
-        partialPollInFlight = true;
-        try {
-          const snapshot = new Blob(localChunks, { type: 'audio/webm' });
-          const form = new FormData();
-          form.append('file', snapshot, 'partial.webm');
-          const response = await fetch('http://127.0.0.1:5005/transcribe-partial', {
-            method: 'POST',
-            body: form,
-            signal: partialAbortController.signal,
-          });
-          if (!response.ok || stopped) {
-            return;
-          }
-          const data = await response.json();
-          if (data.transcript && !stopped) {
-            partialTranscript = data.transcript;
-            statusEl.textContent = `Hearing: "${data.transcript}"`;
-          }
-        } catch (e) {
-          if (e.name !== 'AbortError') {
-            console.warn('Partial transcript poll failed:', e.message);
-          }
-        } finally {
-          partialPollInFlight = false;
-        }
-      }
-
-      localRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          localChunks.push(event.data);
-        }
-      };
-      localRecorder.onerror = (event) => {
-        cleanup();
-        reject(event.error);
-      };
-      localRecorder.onstop = () => {
-        cleanup();
-        resolve(noSpeechResult ? null : new Blob(localChunks, { type: 'audio/webm' }));
-      };
-
-      localRecorder.start(SILENCE_METER_INTERVAL_MS);
-      partialTimer = setInterval(pollPartialTranscript, PARTIAL_TRANSCRIPT_POLL_MS);
-
-      async function tick() {
-        if (stopped) return;
-
-        // Finding 4: a reply started via another path (typing/push-to-talk)
-        // while this recording was already in progress -- stop now rather
-        // than let the VAD keep picking up Mana's own TTS audio as "speech"
-        // for up to MAX_UTTERANCE_MS, then submit that as the user's turn.
-        // This must not abort our *own* barge-in capture, though -- only an
-        // *unrelated* reply starting elsewhere mid-recording should trigger
-        // it. replyInProgress can stay true for a few ticks after
-        // stopStreamingReply() while speakStreamingReply's now-superseded
-        // queue is still winding down, so isBargeInCapture (set only on the
-        // barge-in's own recordUntilSilence() call, not module-scope) gates
-        // this to genuinely unrelated replies -- a module-scope check here
-        // would also bypass Finding 4 for any other, unrelated
-        // recordUntilSilence() call (e.g. listenLoop's own) that happens to
-        // be running while a barge-in capture is in flight elsewhere.
-        if (replyInProgress && !isBargeInCapture) {
-          noSpeechResult = true;
-          if (localRecorder.state !== 'inactive') {
-            localRecorder.stop();
-          }
-          return;
-        }
-
-        if (await isSpeechNow()) {
-          if (!hasHeardSpeech) {
-            statusEl.textContent = 'Listening...';
-          }
-          hasHeardSpeech = true;
-          lastSpeechAt = performance.now();
-        }
-        if (stopped) return;
-
-        const stopReason = shouldStopRecording({
-          hasHeardSpeech,
-          elapsedMs: performance.now() - startedAt,
-          msSinceLastSpeech: hasHeardSpeech ? performance.now() - lastSpeechAt : 0,
-          maxWaitForSpeechMs,
-          silenceBufferMs,
-          maxDurationMs,
-        });
-        if (stopReason) {
-          if (stopReason === 'no-speech-timeout') {
-            noSpeechResult = true;
-          }
-          if (localRecorder.state !== 'inactive') {
-            localRecorder.stop();
-          }
-          return;
-        }
-        meterTimer = setTimeout(tick, SILENCE_METER_INTERVAL_MS);
-      }
-      meterTimer = setTimeout(tick, SILENCE_METER_INTERVAL_MS);
-    });
-  }
+  function recordUntilSilence(...args) { return voiceCore.recordUntilSilence(...args); }
 
   // Issue #331 review (Finding 7): a loop-generation counter so a rapid
   // Stop -> Start click can't leave two listenLoop()s running at once.
@@ -1528,55 +622,11 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // loop only keeps iterating while it's still holding the current one.
   let listenGeneration = 0;
 
-  async function listenLoop(myGeneration) {
-    while (listening && listenGeneration === myGeneration) {
-      // replyInProgress is set for the full duration of speakStreamingReply
-      // (see its declaration above) -- covers both push-to-talk's and this
-      // loop's own reply, so two recordings can never overlap a reply.
-      // bargeInCaptureCount catches the gap between a barge-in stopping
-      // playback (replyInProgress can flip false within a few ticks) and
-      // that interruption's own capture/classify/dispatch actually finishing
-      // -- see its declaration above.
-      if (replyInProgress || bargeInCaptureCount > 0) {
-        await wait(LISTEN_PAUSE_MS);
-        continue;
-      }
-      try {
-        statusEl.textContent = 'Waiting for you...';
-        const blob = await recordUntilSilence();
-        if (!listening || listenGeneration !== myGeneration) break;
-        if (!blob) continue; // Finding 1: nothing was actually said -- don't transcribe/display it
-        await handleVoiceTurn(blob);
-      } catch (error) {
-        console.error(error);
-        statusEl.textContent = `Listening error: ${error.message}`;
-        await wait(1500);
-      }
-    }
-  }
+  function listenLoop(...args) { return voiceCore.listenLoop(...args); }
 
-  function startListening() {
-    if (listening) return;
-    listening = true;
-    const myGeneration = ++listenGeneration;
-    const btn = document.getElementById('btnListen');
-    if (btn) {
-      btn.textContent = 'Stop Listening';
-      btn.classList.add('active');
-    }
-    listenLoop(myGeneration);
-  }
+  function startListening(...args) { return voiceCore.startListening(...args); }
 
-  function stopListening() {
-    listening = false;
-    heldReply = null;
-    const btn = document.getElementById('btnListen');
-    if (btn) {
-      btn.textContent = 'Start Listening';
-      btn.classList.remove('active');
-    }
-    statusEl.textContent = 'Idle';
-  }
+  function stopListening(...args) { return voiceCore.stopListening(...args); }
 
   document.getElementById('btnListen')?.addEventListener('click', () => {
     if (listening) {
@@ -1696,16 +746,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
 
   // Nav: Home (live chat) / Sessions (saved chat list) / Settings. "Code" is
   // an existing unimplemented stub left as-is.
-  function showView(view) {
-    const isSettings = view === 'settings';
-    const isSessions = view === 'sessions';
-    const isHome = view === 'home';
-    if (homeViewEl) homeViewEl.hidden = !isHome;
-    if (settingsViewEl) settingsViewEl.hidden = !isSettings;
-    if (sessionsViewEl) sessionsViewEl.hidden = !isSessions;
-    navHomeBtnEl?.classList.toggle('active', isSessions);
-    navSettingsBtnEl?.classList.toggle('active', isSettings);
-  }
+  function showView(...args) { return desktopUI.showView(...args); }
   navHomeBtnEl?.addEventListener('click', () => {
     showView('sessions');
     refreshSessionList();
@@ -1719,11 +760,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // through one shared info panel rather than a bespoke view per item.
   const BACKEND_URL = 'http://127.0.0.1:5005';
 
-  function escapeHtml(s) {
-    return String(s ?? '').replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-  }
+  function escapeHtml(...args) { return desktopUI.escapeHtml(...args); }
 
   // Doctor issue detail popover: cards show just the label, click one to
   // see the full message in a small bubble anchored to it. position:fixed
@@ -1732,22 +769,8 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   const doctorBubbleEl = document.getElementById('doctorBubble');
   const doctorBubbleTitleEl = doctorBubbleEl?.querySelector('.doctor-bubble-title');
   const doctorBubbleMessageEl = doctorBubbleEl?.querySelector('.doctor-bubble-message');
-  function showDoctorBubble(issueBtn) {
-    if (!doctorBubbleEl) return;
-    doctorBubbleTitleEl.textContent = issueBtn.querySelector('strong')?.textContent || '';
-    doctorBubbleMessageEl.textContent = issueBtn.dataset.doctorMessage || '';
-    doctorBubbleEl.hidden = false;
-    const rect = issueBtn.getBoundingClientRect();
-    const bubbleRect = doctorBubbleEl.getBoundingClientRect();
-    const left = Math.min(rect.left, window.innerWidth - bubbleRect.width - 12);
-    const fitsBelow = rect.bottom + 8 + bubbleRect.height <= window.innerHeight - 12;
-    const top = fitsBelow ? rect.bottom + 8 : Math.max(12, rect.top - bubbleRect.height - 8);
-    doctorBubbleEl.style.left = `${Math.max(12, left)}px`;
-    doctorBubbleEl.style.top = `${top}px`;
-  }
-  function hideDoctorBubble() {
-    if (doctorBubbleEl) doctorBubbleEl.hidden = true;
-  }
+  function showDoctorBubble(...args) { return desktopUI.showDoctorBubble(...args); }
+  function hideDoctorBubble(...args) { return desktopUI.hideDoctorBubble(...args); }
   document.addEventListener('click', (e) => {
     if (!doctorBubbleEl || doctorBubbleEl.hidden) return;
     if (!doctorBubbleEl.contains(e.target) && !e.target.closest('.doctor-issue')) {
@@ -1755,16 +778,8 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
     }
   });
 
-  function openNavInfo(title, bodyHtml) {
-    hideDoctorBubble();
-    navInfoTitleEl.textContent = title;
-    navInfoBodyEl.innerHTML = bodyHtml;
-    navInfoModalEl.setAttribute('aria-hidden', 'false');
-  }
-  function closeNavInfo() {
-    navInfoModalEl.setAttribute('aria-hidden', 'true');
-    hideDoctorBubble();
-  }
+  function openNavInfo(...args) { return desktopUI.openNavInfo(...args); }
+  function closeNavInfo(...args) { return desktopUI.closeNavInfo(...args); }
   navInfoCloseBtnEl?.addEventListener('click', closeNavInfo);
   navInfoXBtnEl?.addEventListener('click', closeNavInfo);
   // Clicking the dimmed backdrop (not the panel itself) closes it too.
@@ -2142,61 +1157,68 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   let editingPresetId = null;
   let latestPresets = [];
 
-  function setSelectedPresetId(presetId) {
-    selectedPresetId = presetId || '';
-    if (selectedPresetId) {
-      localStorage.setItem(PRESET_STORAGE_KEY, selectedPresetId);
-    } else {
-      localStorage.removeItem(PRESET_STORAGE_KEY);
-    }
-    if (presetEditBtnEl) presetEditBtnEl.hidden = !selectedPresetId;
-    if (presetDeleteBtnEl) presetDeleteBtnEl.hidden = !selectedPresetId;
-  }
+  const desktopSettings = window.ManaDesktopSettings.createDesktopSettings({
+    get BACKEND_URL() { return BACKEND_URL; },
+    get basename() { return basename; },
+    get brainApiKeyEl() { return brainApiKeyEl; },
+    get brainBaseUrlEl() { return brainBaseUrlEl; },
+    get brainModelEl() { return brainModelEl; },
+    get brainProviderFieldsEl() { return brainProviderFieldsEl; },
+    get brainProviderPresets() { return brainProviderPresets; },
+    set brainProviderPresets(value) { brainProviderPresets = value; },
+    get brainProviderSelectEl() { return brainProviderSelectEl; },
+    get editingPresetId() { return editingPresetId; },
+    set editingPresetId(value) { editingPresetId = value; },
+    get editingSkillName() { return editingSkillName; },
+    set editingSkillName(value) { editingSkillName = value; },
+    get escapeHtml() { return escapeHtml; },
+    get fetchJson() { return fetchJson; },
+    get latestMemoryFacts() { return latestMemoryFacts; },
+    set latestMemoryFacts(value) { latestMemoryFacts = value; },
+    get latestPresets() { return latestPresets; },
+    set latestPresets(value) { latestPresets = value; },
+    get latestSkills() { return latestSkills; },
+    set latestSkills(value) { latestSkills = value; },
+    get memoryFactsListEl() { return memoryFactsListEl; },
+    get memorySearchInputEl() { return memorySearchInputEl; },
+    get modelClearBtnEl() { return modelClearBtnEl; },
+    get modelCurrentEl() { return modelCurrentEl; },
+    get PRESET_STORAGE_KEY() { return PRESET_STORAGE_KEY; },
+    get presetDeleteBtnEl() { return presetDeleteBtnEl; },
+    get presetEditBtnEl() { return presetEditBtnEl; },
+    get presetEditorEl() { return presetEditorEl; },
+    get presetInstructionsInputEl() { return presetInstructionsInputEl; },
+    get presetNameInputEl() { return presetNameInputEl; },
+    get presetSelectEl() { return presetSelectEl; },
+    get selectedPresetId() { return selectedPresetId; },
+    set selectedPresetId(value) { selectedPresetId = value; },
+    get selectedSkillName() { return selectedSkillName; },
+    set selectedSkillName(value) { selectedSkillName = value; },
+    get SKILL_WRITE_ACTION_TYPES() { return SKILL_WRITE_ACTION_TYPES; },
+    get skillBodyInputEl() { return skillBodyInputEl; },
+    get skillDescriptionInputEl() { return skillDescriptionInputEl; },
+    get skillNameInputEl() { return skillNameInputEl; },
+    get skillsDeleteBtnEl() { return skillsDeleteBtnEl; },
+    get skillsEditBtnEl() { return skillsEditBtnEl; },
+    get skillsEditorEl() { return skillsEditorEl; },
+    get skillsPendingEl() { return skillsPendingEl; },
+    get skillsPendingListEl() { return skillsPendingListEl; },
+    get skillsSelectEl() { return skillsSelectEl; },
+    get skillsStatusEl() { return skillsStatusEl; },
+    get useRemoteAiToggleEl() { return useRemoteAiToggleEl; },
+    get visionMmprojPathEl() { return visionMmprojPathEl; },
+    get visionModelPathEl() { return visionModelPathEl; },
+    get visionModelStatusEl() { return visionModelStatusEl; },
+  });
+  function setSelectedPresetId(...args) { return desktopSettings.setSelectedPresetId(...args); }
 
-  function renderPresetSelect(presets) {
-    if (!presetSelectEl) return;
-    presetSelectEl.innerHTML = '';
-    const noneOption = document.createElement('option');
-    noneOption.value = '';
-    noneOption.textContent = 'None';
-    presetSelectEl.appendChild(noneOption);
-    for (const preset of presets) {
-      const option = document.createElement('option');
-      option.value = preset.id;
-      option.textContent = preset.name;
-      presetSelectEl.appendChild(option);
-    }
-    const stillExists = presets.some((preset) => preset.id === selectedPresetId);
-    presetSelectEl.value = stillExists ? selectedPresetId : '';
-    setSelectedPresetId(presetSelectEl.value);
-  }
+  function renderPresetSelect(...args) { return desktopSettings.renderPresetSelect(...args); }
 
-  async function refreshPresetList() {
-    try {
-      const resp = await fetch('http://127.0.0.1:5005/presets');
-      if (!resp.ok) throw new Error(`Preset list returned ${resp.status}`);
-      const result = await resp.json();
-      latestPresets = result.presets || [];
-      renderPresetSelect(latestPresets);
-    } catch (e) {
-      console.warn('Mana preset list failed:', e);
-    }
-  }
+  function refreshPresetList(...args) { return desktopSettings.refreshPresetList(...args); }
 
-  function closePresetEditor() {
-    editingPresetId = null;
-    if (presetEditorEl) presetEditorEl.hidden = true;
-    if (presetNameInputEl) presetNameInputEl.value = '';
-    if (presetInstructionsInputEl) presetInstructionsInputEl.value = '';
-  }
+  function closePresetEditor(...args) { return desktopSettings.closePresetEditor(...args); }
 
-  function openPresetEditor(preset) {
-    editingPresetId = preset ? preset.id : null;
-    if (presetNameInputEl) presetNameInputEl.value = preset ? preset.name : '';
-    if (presetInstructionsInputEl) presetInstructionsInputEl.value = preset ? preset.instructions : '';
-    if (presetEditorEl) presetEditorEl.hidden = false;
-    presetNameInputEl?.focus();
-  }
+  function openPresetEditor(...args) { return desktopSettings.openPresetEditor(...args); }
 
   presetSelectEl?.addEventListener('change', () => {
     setSelectedPresetId(presetSelectEl.value);
@@ -2271,144 +1293,28 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // for a human to look at.
   const SKILL_WRITE_ACTION_TYPES = ['skill-write', 'skill-write-idle'];
 
-  function setSkillsStatus(message, isError) {
-    if (!skillsStatusEl) return;
-    if (!message) {
-      skillsStatusEl.hidden = true;
-      skillsStatusEl.textContent = '';
-      return;
-    }
-    skillsStatusEl.hidden = false;
-    skillsStatusEl.textContent = message;
-    skillsStatusEl.classList.toggle('error', Boolean(isError));
-  }
+  function setSkillsStatus(...args) { return desktopSettings.setSkillsStatus(...args); }
 
-  function setSelectedSkillName(name) {
-    selectedSkillName = name || '';
-    if (skillsEditBtnEl) skillsEditBtnEl.hidden = !selectedSkillName;
-    if (skillsDeleteBtnEl) skillsDeleteBtnEl.hidden = !selectedSkillName;
-  }
+  function setSelectedSkillName(...args) { return desktopSettings.setSelectedSkillName(...args); }
 
-  function renderSkillsSelect(skills) {
-    if (!skillsSelectEl) return;
-    skillsSelectEl.innerHTML = '';
-    const noneOption = document.createElement('option');
-    noneOption.value = '';
-    noneOption.textContent = 'None';
-    skillsSelectEl.appendChild(noneOption);
-    for (const skill of skills) {
-      const option = document.createElement('option');
-      option.value = skill.name;
-      // Flags a skill nobody's actually reached for again since it was
-      // approved -- the useCount signal from skills-store.js -- so an
-      // approved-but-never-mattered proposal is visible, not indistinguishable
-      // from a genuinely useful one.
-      option.textContent = skill.useCount ? skill.name : `${skill.name} (unused)`;
-      skillsSelectEl.appendChild(option);
-    }
-    const stillExists = skills.some((skill) => skill.name === selectedSkillName);
-    skillsSelectEl.value = stillExists ? selectedSkillName : '';
-    setSelectedSkillName(skillsSelectEl.value);
-  }
+  function renderSkillsSelect(...args) { return desktopSettings.renderSkillsSelect(...args); }
 
-  function renderPendingSkills(pending) {
-    if (!skillsPendingEl || !skillsPendingListEl) return;
-    const skillPending = pending.filter((p) => SKILL_WRITE_ACTION_TYPES.includes(p.actionType));
-    skillsPendingEl.hidden = skillPending.length === 0;
-    skillsPendingListEl.innerHTML = '';
-    for (const item of skillPending) {
-      const row = document.createElement('div');
-      row.className = 'skills-pending-item';
-      const summary = document.createElement('div');
-      summary.className = 'skills-pending-item-summary';
-      summary.textContent = item.summary || item.payload?.name || 'Pending skill';
-      row.appendChild(summary);
-      if (item.flags?.length) {
-        const flags = document.createElement('div');
-        flags.className = 'skills-pending-item-flags';
-        flags.textContent = `Flagged: ${item.flags.join(', ')}`;
-        row.appendChild(flags);
-      }
-      const actions = document.createElement('div');
-      actions.className = 'skills-pending-item-actions';
-      const approveBtn = document.createElement('button');
-      approveBtn.textContent = 'Approve';
-      approveBtn.addEventListener('click', () => decidePendingSkill(item.id, 'allow-once'));
-      const denyBtn = document.createElement('button');
-      denyBtn.textContent = 'Deny';
-      denyBtn.addEventListener('click', () => decidePendingSkill(item.id, 'deny'));
-      actions.appendChild(approveBtn);
-      actions.appendChild(denyBtn);
-      row.appendChild(actions);
-      skillsPendingListEl.appendChild(row);
-    }
-  }
+  function renderPendingSkills(...args) { return desktopSettings.renderPendingSkills(...args); }
 
-  async function decidePendingSkill(requestId, decision) {
-    try {
-      await fetchJson(`${BACKEND_URL}/approvals/${requestId}/decide`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision }),
-      });
-      setSkillsStatus(decision === 'deny' ? 'Skill proposal denied.' : 'Skill approved.');
-      await refreshSkillsList();
-    } catch (e) {
-      setSkillsStatus(`Failed to ${decision === 'deny' ? 'deny' : 'approve'}: ${e.message}`, true);
-    }
-  }
+  function decidePendingSkill(...args) { return desktopSettings.decidePendingSkill(...args); }
 
-  async function refreshPendingSkills() {
-    if (!skillsPendingEl) return;
-    try {
-      const result = await fetchJson(`${BACKEND_URL}/approvals/pending`);
-      renderPendingSkills(result.pending || []);
-    } catch (e) {
-      console.warn('Mana pending skills list failed:', e);
-    }
-  }
+  function refreshPendingSkills(...args) { return desktopSettings.refreshPendingSkills(...args); }
 
-  async function refreshSkillsList() {
-    if (!skillsSelectEl) return;
-    try {
-      const result = await fetchJson(`${BACKEND_URL}/skills`);
-      latestSkills = result.skills || [];
-      renderSkillsSelect(latestSkills);
-    } catch (e) {
-      setSkillsStatus(`Failed to load skills: ${e.message}`, true);
-    }
-    await refreshPendingSkills();
-  }
+  function refreshSkillsList(...args) { return desktopSettings.refreshSkillsList(...args); }
   refreshSkillsList();
   // A proposal (idle or from elsewhere) can land while Settings just sits
   // open -- poll the lightweight pending-only endpoint so it shows up
   // without requiring a local save/delete/decide action first.
   setInterval(refreshPendingSkills, 15000);
 
-  function closeSkillEditor() {
-    editingSkillName = null;
-    if (skillsEditorEl) skillsEditorEl.hidden = true;
-    if (skillNameInputEl) {
-      skillNameInputEl.value = '';
-      skillNameInputEl.disabled = false;
-    }
-    if (skillDescriptionInputEl) skillDescriptionInputEl.value = '';
-    if (skillBodyInputEl) skillBodyInputEl.value = '';
-  }
+  function closeSkillEditor(...args) { return desktopSettings.closeSkillEditor(...args); }
 
-  function openSkillEditor(skill) {
-    editingSkillName = skill ? skill.name : null;
-    if (skillNameInputEl) {
-      skillNameInputEl.value = skill ? skill.name : '';
-      // Renaming isn't supported by skills-store.js's updateSkill -- keep
-      // the name field locked once a skill already exists.
-      skillNameInputEl.disabled = Boolean(skill);
-    }
-    if (skillDescriptionInputEl) skillDescriptionInputEl.value = skill ? skill.description : '';
-    if (skillBodyInputEl) skillBodyInputEl.value = skill ? skill.body : '';
-    if (skillsEditorEl) skillsEditorEl.hidden = false;
-    (skillNameInputEl?.disabled ? skillDescriptionInputEl : skillNameInputEl)?.focus();
-  }
+  function openSkillEditor(...args) { return desktopSettings.openSkillEditor(...args); }
 
   skillsSelectEl?.addEventListener('change', () => {
     setSelectedSkillName(skillsSelectEl.value);
@@ -2505,97 +1411,20 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // Plugins (Settings > Plugins): optional integrations -- FFXIV Market, etc.
   // Watch, stock market, job search -- toggled per plugin, backed by
   // node-bot's new dual-tier plugin store API via GET/POST /plugins/store.
-  async function loadPlugins() {
-    if (!pluginsListEl) return;
-    try {
-      const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
-
-      // Render two sections: Plugins (tier: "plugin") and Add-Ons (tier: "addon").
-      // Plugins lists installed and available ones alike (#499); each row's
-      // button opens the details modal, where install/uninstall happen.
-      const addonRows = [];
-      for (const a of j.addons || []) {
-        // Add-Ons require explicit consent on first load — check via API or assume not consented
-        const isConsented = await fetchJson(`${BACKEND_URL}/addons/consent/${escapeHtml(a.name)}`);
-
-        addonRows.push(
-          `<div class="plugin-row" data-plugin="${escapeHtml(a.name)}">
-            <div class="plugin-row-info">
-              <strong>${escapeHtml(a.name)}</strong>
-              <span>${escapeHtml(a.description || 'Full-scale Mana feature')}</span>
-            </div>
-            ${isConsented.consented ?
-              '<button class="plugin-switch on" data-plugin-key="' + escapeHtml(a.name) + '" aria-pressed="true" title="Enabled"></button>' :
-              '<button class="plugin-switch disabled" data-plugin-key="' + escapeHtml(a.name) + '" aria-pressed="false" title="Requires consent">⚙️</button>'}
-          </div>`
-        );
-      }
-
-      // Build the popup menu with two distinct sections
-      const html = [
-        '<h4 class="section-title">🔌 Plugins</h4>',
-        window.ManaPluginStoreUi.pluginRowsHtml(j.plugins || []),
-        '',
-        '<h4 class="section-title">⚡ Add-Ons</h4>',
-        addonRows.length ? addonRows.join('') : '<p class="subtitle muted">No add-ons available.</p>'
-      ].join('\n');
-
-      pluginsListEl.innerHTML = html;
-    } catch (e) {
-      pluginsListEl.innerHTML = `<p class="subtitle">Failed to load plugins: ${escapeHtml(e.message)}</p>`;
-    }
-  }
+  const pluginsUI = window.ManaPlugins.createPluginsUI({
+    get BACKEND_URL() { return BACKEND_URL; },
+    get escapeHtml() { return escapeHtml; },
+    get fetchJson() { return fetchJson; },
+    get pluginsListEl() { return pluginsListEl; },
+  });
+  function loadPlugins(...args) { return pluginsUI.loadPlugins(...args); }
 
   // Plugin details modal (#499): opened from each row's button. Always
   // refetches so install/uninstall state is never stale; buttons are wired
   // with listeners because inline onclick can't see this closure's functions.
-  async function showPluginDetails(pluginName) {
-    let data;
-    try {
-      const j = await fetchJson(`${BACKEND_URL}/plugins/store`);
-      data = (j.all || []).find((p) => p.name === pluginName);
-    } catch (e) {
-      setPluginsStatus(`Failed to load plugin details: ${e.message}`, true);
-      return;
-    }
-    if (!data) return;
+  function showPluginDetails(...args) { return pluginsUI.showPluginDetails(...args); }
 
-    hidePluginDetails();
-    document.body.insertAdjacentHTML('beforeend', window.ManaPluginStoreUi.pluginDetailsHtml(data));
-    const modal = document.getElementById('pluginDetailsModal');
-    const statusEl = modal.querySelector('.plugin-details-status');
-    modal.querySelector('.close-btn').addEventListener('click', hidePluginDetails);
-    modal.querySelector('.close-btn').focus();
-
-    modal.querySelector('.plugin-install-btn')?.addEventListener('click', async (e) => {
-      e.target.disabled = true;
-      statusEl.textContent = 'Installing...';
-      await installPlugin('github', data.url);
-      showPluginDetails(pluginName);
-    });
-
-    modal.querySelector('.plugin-uninstall-btn')?.addEventListener('click', async (e) => {
-      if (!window.confirm(`Uninstall plugin "${pluginName}"?`)) return;
-      e.target.disabled = true;
-      try {
-        await fetchJson(`${BACKEND_URL}/plugins/store/uninstall`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: pluginName }),
-        });
-        hidePluginDetails();
-        setPluginsStatus(`Uninstalled plugin: ${pluginName}`);
-        loadPlugins();
-      } catch (err) {
-        statusEl.textContent = `Uninstall failed: ${err.message}`;
-        e.target.disabled = false;
-      }
-    });
-  }
-
-  function hidePluginDetails() {
-    document.getElementById('pluginDetailsModal')?.remove();
-  }
+  function hidePluginDetails(...args) { return pluginsUI.hidePluginDetails(...args); }
 
   pluginsListEl?.addEventListener('click', (e) => {
     const btn = e.target.closest('.plugin-details-btn');
@@ -2611,50 +1440,10 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   });
 
   // Install new plugin from GitHub or local file
-  async function installPlugin(sourceType, urlOrPath) {
-    if (!pluginsListEl) return;
-    
-    try {
-      const result = await fetchJson(`${BACKEND_URL}/plugins/store/install`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceType, urlOrPath }),
-      });
-
-      if (result.success) {
-        setPluginsStatus(`Successfully installed plugin: ${escapeHtml(result.name)}!`);
-        
-        // Refresh the list after install
-        setTimeout(loadPlugins, 500);
-      } else if (result.skipped) {
-        setPluginsStatus(`Plugin ${escapeHtml(result.name)} was already installed.`, false);
-      } else {
-        throw new Error(result.error || 'Install failed');
-      }
-    } catch (e) {
-      setPluginsStatus(`Failed to install plugin: ${escapeHtml(e.message)}`, true);
-    }
-  }
+  function installPlugin(...args) { return pluginsUI.installPlugin(...args); }
 
   // Show status message in the plugins section
-  function setPluginsStatus(message, isError = false) {
-    if (!pluginsListEl.parentElement) return;
-    
-    const container = document.createElement('div');
-    container.className = `status-message ${isError ? 'error' : 'success'}`;
-    container.textContent = message;
-    
-    // Insert before the plugins list
-    const firstChild = pluginsListEl.parentElement.firstChild;
-    if (firstChild && firstChild !== pluginsListEl) {
-      pluginsListEl.parentElement.insertBefore(container, firstChild);
-    } else {
-      pluginsListEl.parentElement.appendChild(container);
-    }
-
-    // Auto-remove after 5 seconds
-    setTimeout(() => container.remove(), 5000);
-  }
+  function setPluginsStatus(...args) { return pluginsUI.setPluginsStatus(...args); }
 
   // Install button handler (can be wired from the UI)
   window.installPlugin = installPlugin;
@@ -2668,50 +1457,9 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   const memorySearchInputEl = document.getElementById('memorySearchInput');
   let latestMemoryFacts = [];
 
-  function renderMemoryFactsList(query = '') {
-    if (!memoryFactsListEl) return;
-    const normalizedQuery = query.trim().toLowerCase();
-    const facts = latestMemoryFacts.filter(
-      (fact) =>
-        !normalizedQuery ||
-        fact.key.toLowerCase().includes(normalizedQuery) ||
-        (fact.text || '').toLowerCase().includes(normalizedQuery),
-    );
-    if (facts.length === 0) {
-      memoryFactsListEl.innerHTML = `<p class="subtitle">${
-        latestMemoryFacts.length ? `No facts match "${escapeHtml(query)}".` : 'No remembered facts yet.'
-      }</p>`;
-      return;
-    }
-    memoryFactsListEl.innerHTML = facts
-      .map(
-        (fact) => `
-          <div class="plugin-row">
-            <div class="plugin-row-info">
-              <strong>${escapeHtml(fact.key)}</strong>
-              <span>${escapeHtml(fact.text)}</span>
-              ${fact.unverifiedSource ? '<span class="memory-fact-flag">Unverified source</span>' : ''}
-            </div>
-            ${
-              fact.status === 'active'
-                ? `<button class="memory-archive-btn" data-fact-key="${escapeHtml(fact.key)}" title="Archive">Archive</button>`
-                : `<span class="subtitle">${escapeHtml(fact.status)}</span>`
-            }
-          </div>`,
-      )
-      .join('');
-  }
+  function renderMemoryFactsList(...args) { return desktopSettings.renderMemoryFactsList(...args); }
 
-  async function loadMemoryFacts() {
-    if (!memoryFactsListEl) return;
-    try {
-      const j = await fetchJson(`${BACKEND_URL}/admin/memory/facts`);
-      latestMemoryFacts = j.facts || [];
-      renderMemoryFactsList(memorySearchInputEl?.value || '');
-    } catch (e) {
-      memoryFactsListEl.innerHTML = `<p class="subtitle">Failed to load memory: ${escapeHtml(e.message)}</p>`;
-    }
-  }
+  function loadMemoryFacts(...args) { return desktopSettings.loadMemoryFacts(...args); }
   memorySearchInputEl?.addEventListener('input', () => {
     renderMemoryFactsList(memorySearchInputEl.value);
   });
@@ -2734,58 +1482,13 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // scan the PC for .gguf files or browse to one directly, then persist the
   // pick via node-bot's /models/path -- see model-management.js's
   // scanForModels/setModelPath on the backend.
-  function formatModelBytes(n) {
-    if (!Number.isFinite(n)) return '';
-    const gb = n / (1024 ** 3);
-    if (gb >= 1) return `${gb.toFixed(1)} GB`;
-    return `${(n / (1024 ** 2)).toFixed(0)} MB`;
-  }
+  function formatModelBytes(...args) { return desktopSettings.formatModelBytes(...args); }
 
-  function renderModelScanList(containerEl, scanResult, onPick) {
-    const models = scanResult.found || [];
-    if (!models.length) {
-      containerEl.innerHTML = `<p class="subtitle">No .gguf files found${scanResult.truncated ? ' (scan stopped early -- try Browse instead for a specific file).' : '.'}</p>`;
-    } else {
-      containerEl.innerHTML = models.map((m, i) => `
-        <div class="model-scan-item" data-scan-index="${i}">
-          <div class="model-scan-item-info">
-            <strong>${escapeHtml(m.name)}</strong>
-            <span>${escapeHtml(m.path)}</span>
-          </div>
-          <span class="model-scan-item-size">${escapeHtml(formatModelBytes(m.sizeBytes))}</span>
-        </div>`).join('');
-      containerEl.querySelectorAll('[data-scan-index]').forEach((row) => {
-        row.addEventListener('click', () => onPick(models[Number(row.dataset.scanIndex)].path));
-      });
-    }
-    containerEl.hidden = false;
-  }
+  function renderModelScanList(...args) { return desktopSettings.renderModelScanList(...args); }
 
-  async function selectModelPath(modelPath) {
-    return fetchJson(`${BACKEND_URL}/models/path`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modelPath }),
-    });
-  }
+  function selectModelPath(...args) { return desktopSettings.selectModelPath(...args); }
 
-  async function loadModelSettings() {
-    if (!modelCurrentEl) return;
-    try {
-      const status = await fetchJson(`${BACKEND_URL}/models/status`);
-      if (status.selectedModelPath) {
-        modelCurrentEl.textContent = `Using: ${basename(status.selectedModelPath)}`;
-      } else {
-        const active = status.profiles ? status.profiles[status.activeProfile] : null;
-        modelCurrentEl.textContent = active && active.available
-          ? `Auto-detected: ${basename(active.selectedModel)} (${active.label})`
-          : 'No local model detected yet.';
-      }
-      if (modelClearBtnEl) modelClearBtnEl.hidden = !status.selectedModelPath;
-    } catch (e) {
-      modelCurrentEl.textContent = `Failed to load model status: ${e.message}`;
-    }
-  }
+  function loadModelSettings(...args) { return desktopSettings.loadModelSettings(...args); }
 
   modelScanBtnEl?.addEventListener('click', async () => {
     modelScanBtnEl.disabled = true;
@@ -2842,52 +1545,14 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // same way as the desktop-side model picker above.
   let brainProviderPresets = [];
 
-  async function loadBrainProviderPresets() {
-    if (!brainProviderSelectEl) return;
-    try {
-      brainProviderPresets = await fetchJson(`${BACKEND_URL}/models/brain-providers`);
-      brainProviderSelectEl.innerHTML = '';
-      for (const preset of brainProviderPresets) {
-        const option = document.createElement('option');
-        option.value = preset.id;
-        option.textContent = preset.label;
-        brainProviderSelectEl.appendChild(option);
-      }
-    } catch (e) {
-      console.warn('Mana brain provider presets failed:', e);
-    }
-  }
+  function loadBrainProviderPresets(...args) { return desktopSettings.loadBrainProviderPresets(...args); }
 
   // Only overwrite the brain/vision fields with what the backend has stored
   // when the user isn't actively mid-edit, since this polls alongside the
   // rest of Settings.
-  async function loadBrainAndVisionSettings() {
-    try {
-      const status = await fetchJson(`${BACKEND_URL}/models/status`);
-      const brain = status.brain || { type: 'local', baseUrl: '', model: '' };
-      const isEditing = [brainBaseUrlEl, brainModelEl, brainApiKeyEl].includes(document.activeElement);
-      if (!isEditing) {
-        if (useRemoteAiToggleEl) useRemoteAiToggleEl.checked = brain.type === 'openai_compatible';
-        if (brainProviderFieldsEl) brainProviderFieldsEl.hidden = brain.type !== 'openai_compatible';
-        if (brainProviderSelectEl) {
-          const matched = brainProviderPresets.find((p) => p.baseUrl === brain.baseUrl);
-          brainProviderSelectEl.value = matched ? matched.id : 'custom';
-        }
-        if (brainBaseUrlEl) brainBaseUrlEl.value = brain.baseUrl || '';
-        if (brainModelEl) brainModelEl.value = brain.model || '';
-        if (brainApiKeyEl) brainApiKeyEl.placeholder = brain.hasApiKey ? '(key saved -- leave blank to keep it)' : 'leave blank for local servers';
-      }
-      const vision = status.vision || { modelPath: '', mmprojPath: '' };
-      if (visionModelPathEl) visionModelPathEl.value = vision.modelPath || '';
-      if (visionMmprojPathEl) visionMmprojPathEl.value = vision.mmprojPath || '';
-    } catch (e) {
-      console.warn('Mana brain/vision status failed:', e);
-    }
-  }
+  function loadBrainAndVisionSettings(...args) { return desktopSettings.loadBrainAndVisionSettings(...args); }
 
-  function toggleBrainProviderFields() {
-    if (brainProviderFieldsEl) brainProviderFieldsEl.hidden = !useRemoteAiToggleEl?.checked;
-  }
+  function toggleBrainProviderFields(...args) { return desktopSettings.toggleBrainProviderFields(...args); }
   useRemoteAiToggleEl?.addEventListener('change', toggleBrainProviderFields);
 
   // Picking a preset auto-fills its baseUrl; "Custom" clears it for manual entry.
@@ -2939,21 +1604,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
     }
   });
 
-  async function browseAndSetVisionField(fieldName) {
-    if (!window.electronAPI?.browseModelFile) return;
-    try {
-      const picked = await window.electronAPI.browseModelFile();
-      if (picked.canceled) return;
-      await fetchJson(`${BACKEND_URL}/models/vision-path`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [fieldName]: picked.filePath }),
-      });
-      await loadBrainAndVisionSettings();
-    } catch (e) {
-      if (visionModelStatusEl) visionModelStatusEl.textContent = `Failed: ${e.message}`;
-    }
-  }
+  function browseAndSetVisionField(...args) { return desktopSettings.browseAndSetVisionField(...args); }
   visionModelBrowseBtnEl?.addEventListener('click', () => browseAndSetVisionField('modelPath'));
   visionMmprojBrowseBtnEl?.addEventListener('click', () => browseAndSetVisionField('mmprojPath'));
 
@@ -3034,20 +1685,10 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   // Whisper genuinely aren't set up yet -- not a one-time "seen it" flag,
   // so it keeps helping until the thing it's nudging about is actually
   // fixed, then stays out of the way for good.
-  function showOnboarding(){
-    document.getElementById('onboardingModal').setAttribute('aria-hidden','false');
-  }
-  function hideOnboarding(){
-    document.getElementById('onboardingModal').setAttribute('aria-hidden','true');
-  }
-  function setSetupStatus(iconEl, detailEl, status, message){
-    iconEl.className = 'setup-status-icon' + (status ? ' ' + status : '');
-    iconEl.textContent = status === 'pass' ? '✓' : status === 'fail' ? '!' : '-';
-    detailEl.textContent = message;
-  }
-  function basename(p){
-    return String(p || '').split(/[\\/]/).pop();
-  }
+  function showOnboarding(...args) { return desktopUI.showOnboarding(...args); }
+  function hideOnboarding(...args) { return desktopUI.hideOnboarding(...args); }
+  function setSetupStatus(...args) { return desktopUI.setSetupStatus(...args); }
+  function basename(...args) { return desktopUI.basename(...args); }
 
   const setupModelIconEl = document.getElementById('setupModelIcon');
   const setupModelDetailEl = document.getElementById('setupModelDetail');
@@ -3063,78 +1704,7 @@ const BARGE_IN_STORAGE_KEY = 'mana_barge_in_enabled';
   const onboardDetailsEl = document.getElementById('onboardDetails');
   const onboardTextEl = document.getElementById('onboardText');
 
-  async function runOnboardingChecks(){
-    let modelOk = false;
-    let whisperOk = false;
-    onboardDetailsEl.hidden = true;
-
-    try {
-      // /doctor deliberately returns HTTP 503 whenever any check fails --
-      // that's a real, parseable "here's what's wrong" response, not an
-      // unreachable backend, so read the body regardless of .ok. Only a
-      // network-level failure (caught below) means the backend truly isn't
-      // reachable yet.
-      const [doctorResp, modelsResp] = await Promise.all([
-        fetch('http://127.0.0.1:5005/doctor'),
-        fetch('http://127.0.0.1:5005/models/status'),
-      ]);
-      const doctor = await doctorResp.json();
-      const models = await modelsResp.json();
-
-      const whisperCheck = (doctor.checks || []).find((c) => c.id === 'whisper-config');
-      whisperOk = Boolean(whisperCheck && whisperCheck.status === 'pass');
-      if (whisperOk) {
-        setSetupStatus(setupWhisperIconEl, setupWhisperDetailEl, 'pass',
-          `Using ${basename(whisperCheck.details.bin)} + ${basename(whisperCheck.details.model)}.`);
-      } else {
-        setSetupStatus(setupWhisperIconEl, setupWhisperDetailEl, 'warn',
-          'Not found. Get whisper.cpp (whisper-cli.exe) and a ggml model (e.g. ggml-base.en.bin), place them under tools/whisper/, then click Recheck. See docs/quick_start_windows.md.');
-      }
-
-      const rec = models.recommendation;
-      const profile = rec && models.profiles ? models.profiles[rec.profile] : null;
-      modelOk = Boolean(profile && profile.available);
-      if (modelOk) {
-        setSetupStatus(setupModelIconEl, setupModelDetailEl, 'pass',
-          `Using ${profile.label}: ${basename(profile.selectedModel) || profile.selectedModel}.`);
-      } else if (profile) {
-        setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn',
-          `Recommended for your hardware: ${profile.label}. ${rec.reason} Scan for a model on this PC, browse to one directly, or download one of: ${profile.missing.join(', ')} and place it under tools/llama/, then click Recheck.`);
-      } else {
-        setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn', 'Could not determine a recommendation.');
-      }
-      if (setupModelActionsEl) setupModelActionsEl.hidden = modelOk;
-      if (modelOk && setupModelScanResultsEl) setupModelScanResultsEl.hidden = true;
-    } catch (e) {
-      setSetupStatus(setupModelIconEl, setupModelDetailEl, 'warn', 'Backend not reachable yet.');
-      setSetupStatus(setupWhisperIconEl, setupWhisperDetailEl, 'warn', 'Backend not reachable yet.');
-      if (setupModelActionsEl) setupModelActionsEl.hidden = true;
-      onboardDetailsEl.hidden = false;
-      onboardDetailsEl.textContent = 'Setup check failed: ' + (e.message || e);
-    }
-
-    try {
-      const resolved = window.electronAPI.resolveAvatarModel
-        ? await window.electronAPI.resolveAvatarModel()
-        : null;
-      if (resolved && resolved.modelJson) {
-        setSetupStatus(setupAvatarIconEl, setupAvatarDetailEl, 'pass', 'Avatar model found.');
-        fetchAvatarBtnEl.hidden = true;
-      } else {
-        setSetupStatus(setupAvatarIconEl, setupAvatarDetailEl, 'warn',
-          "No avatar model yet -- Mana falls back to a simple sprite. Optional, and free to fetch below.");
-        fetchAvatarBtnEl.hidden = false;
-      }
-    } catch (e) {
-      setSetupStatus(setupAvatarIconEl, setupAvatarDetailEl, 'warn', 'Could not check.');
-    }
-
-    onboardTextEl.textContent = (modelOk && whisperOk)
-      ? "You're all set!"
-      : 'A couple of things still need setup for the full experience:';
-
-    return { modelOk, whisperOk };
-  }
+  function runOnboardingChecks(...args) { return desktopUI.runOnboardingChecks(...args); }
 
   setupModelScanBtnEl?.addEventListener('click', async () => {
     setupModelScanBtnEl.disabled = true;
