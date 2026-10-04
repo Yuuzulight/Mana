@@ -334,6 +334,10 @@ test("POST /reply/stream: #1325 attached documents are extracted locally and inc
 });
 
 test("POST /reply/stream: #1325 an unreadable document gives a clear reason so Mana can explain it", async () => {
+  const path = require("node:path");
+  const os = require("node:os");
+  const { randomUUID } = require("node:crypto");
+  const missingFile = path.join(os.tmpdir(), `mana-missing-${randomUUID()}`, "missing-file.docx");
   let receivedPrompt = "";
   let ocrCalls = 0;
   const app = createApp({
@@ -347,7 +351,7 @@ test("POST /reply/stream: #1325 an unreadable document gives a clear reason so M
   await withServer(app, async (baseUrl) => {
     const { events } = await postNdjson(baseUrl, "/reply/stream", {
       text: "what is this?",
-      documents: ["C:\\nonexistent\\missing-file.docx"],
+      documents: [missingFile],
     });
     assert.equal(events.at(-1).type, "final");
   });
