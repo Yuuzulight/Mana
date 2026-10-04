@@ -115,7 +115,9 @@ async function launch(deps, options) {
   const chromium = deps.chromium || require("../../node-bot/node_modules/playwright-core").chromium;
   // A profile is locked while any browser has it open.
   await closing;
-  return chromium.launchPersistentContext(PROFILE_DIR, { executablePath, args: LAUNCH_ARGS, ...options });
+  const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
+  if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
+  return chromium.launchPersistentContext(profileDir, { executablePath, args: LAUNCH_ARGS, ...options });
 }
 
 // One tab: its page, with the resource blocking and health counters, and
@@ -202,6 +204,7 @@ const currentPage = () => tabs[current]?.page || null;
 // each result listing her tabs once there's more than one, plus
 // tab({ do: "open" | "switch" | "close" }).
 function tabbedSession(deps) {
+  const owner = context;
   const env = deps.env || process.env;
   const maxTabs = Math.min(5, Math.max(1, Math.floor(Number(env.MANA_BROWSER_MAX_TABS)) || DEFAULT_MAX_TABS));
 
@@ -274,6 +277,20 @@ function tabbedSession(deps) {
   const facade = { tab, upload, testPage, screenshot: () => tabs[current].session.screenshot(), url: () => currentPage().url() };
   for (const name of SESSION_METHODS) {
     facade[name] = async (...args) => withTabs(await tabs[current].session[name](...args));
+  }
+  // A caller may retain this handle across Take over, idle close or a crash.
+  for (const [name, run] of Object.entries(facade)) {
+    facade[name] = async (...args) => {
+      if (takenOver || opening) throw new Error("the user has the browser right now; wait until they press Done");
+      if (context !== owner || !session) throw new Error("this browser session has closed; obtain a fresh session");
+      const blocked = blocker(gateDeps);
+      if (blocked) {
+        await closeSession();
+        throw new Error(`the browser stays closed while ${blocked}`);
+      }
+      lastUsedAt = (gateDeps.now || Date.now)();
+      return run(...args);
+    };
   }
   return facade;
 }
