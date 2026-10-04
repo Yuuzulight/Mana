@@ -84,6 +84,7 @@ function registerCoreRoutes(app, upload, deps) {
     buildGroupReaction = null, // #914
     moodStore = null, // #700
     getScreenOcrWorker = null,
+    documentAccess,
   } = deps;
 
   // #914 group mode (design on the issue): each of my messages gets at most
@@ -174,7 +175,7 @@ function registerCoreRoutes(app, upload, deps) {
   // are extracted locally. Small documents are inlined into prompt context with
   // formatted text/tables. Large documents are chunked into the retriever index.
   // Unreadable files insert a clear notice so Mana explains why she can't read it.
-  async function prepareDocumentTurn(text, documents) {
+  async function prepareDocumentTurn(text, documents, sessionId) {
     if (!documents || documents.length === 0) {
       return text;
     }
@@ -188,7 +189,13 @@ function registerCoreRoutes(app, upload, deps) {
 
     const notes = [];
     for (const docPath of documents) {
-      const res = await documentReader.extractAndPrepareForChat(docPath, { runOcr });
+      if (!documentAccess) throw new Error('Document approval is unavailable');
+      const access = await documentAccess.authorize(docPath, { sessionId: sessionId || '', purpose: 'chat' });
+      if (access.status !== 'approved') {
+        notes.push(`[Document access ${access.status}. No file content has been read. Approval request: ${access.requestId || 'none'}. Do not claim to have read this file.]`);
+        continue;
+      }
+      const res = await documentReader.extractAndPrepareForChat(access.buffer, { runOcr, filename: access.filename, sourceLabel: access.sourceLabel });
       if (!res.ok) {
         notes.push(
           `[Attached document "${res.fileName}" could not be read: ${res.error}. Explain clearly to the user why you cannot read this file.]`,
@@ -410,7 +417,7 @@ function registerCoreRoutes(app, upload, deps) {
       }
 
       if (documents.length > 0) {
-        input.text = await prepareDocumentTurn(input.text, documents);
+        input.text = await prepareDocumentTurn(input.text, documents, sessionId);
       }
 
       if (image) {
@@ -595,7 +602,7 @@ function registerCoreRoutes(app, upload, deps) {
       }
 
       if (documents.length > 0) {
-        input.text = await prepareDocumentTurn(input.text, documents);
+        input.text = await prepareDocumentTurn(input.text, documents, sessionId);
       }
 
       if (images.length) {

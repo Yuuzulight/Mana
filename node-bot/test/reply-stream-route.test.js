@@ -7,6 +7,19 @@ const { withServer, useTestAdminToken } = require("./helpers");
 // Every route but a few public ones needs an admin key (admin-key.js).
 const fetch = useTestAdminToken();
 
+async function approveDocument(file, t) {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-document-approval-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const approvalGate = require('../approval-gate').createApprovalGate({ dataDir: dir });
+  const documentAccess = require('../document-access').createDocumentAccess({ approvalGate });
+  const pending = await documentAccess.authorize(file);
+  await approvalGate.decide(pending.requestId, 'allow-once');
+  return { approvalGate, documentAccess };
+}
+
 async function postNdjson(baseUrl, path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
@@ -296,7 +309,7 @@ test("POST /reply/stream marks a spoken turn in replyMeta.voice", async () => {
   assert.deepEqual(seen, [true, false]);
 });
 
-test("POST /reply/stream: #1325 attached documents are extracted locally and included in prompt context", async () => {
+test("POST /reply/stream: #1325 approved documents are extracted locally and included in prompt context", async (t) => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
@@ -308,6 +321,7 @@ test("POST /reply/stream: #1325 attached documents are extracted locally and inc
   let receivedPrompt = "";
   let ocrCalls = 0;
   const app = createApp({
+    ...await approveDocument(sampleDocPath, t),
     getScreenOcrWorker: async () => { ocrCalls += 1; throw new Error("Text must not start OCR"); },
     buildAssistantReply: async (transcript) => {
       receivedPrompt = transcript;
@@ -333,7 +347,7 @@ test("POST /reply/stream: #1325 attached documents are extracted locally and inc
   }
 });
 
-test("POST /reply/stream: #1325 an unreadable document gives a clear reason so Mana can explain it", async () => {
+test("POST /reply/stream: #1325 unapproved documents request consent without probing the file", async () => {
   const path = require("node:path");
   const os = require("node:os");
   const { randomUUID } = require("node:crypto");
@@ -355,17 +369,18 @@ test("POST /reply/stream: #1325 an unreadable document gives a clear reason so M
     });
     assert.equal(events.at(-1).type, "final");
   });
-  assert.match(receivedPrompt, /Attached document "missing-file\.docx" could not be read/);
-  assert.match(receivedPrompt, /File not found/);
+  assert.match(receivedPrompt, /Document access pending/);
+  assert.match(receivedPrompt, /No file content has been read/);
   assert.equal(ocrCalls, 0);
 });
 
-test("POST /reply/stream: #1325 scanned PDFs lazily request OCR and include recognized text", async () => {
+test("POST /reply/stream: #1325 approved scanned PDFs lazily request OCR and include recognized text", async (t) => {
   const path = require("node:path");
   const file = path.join(__dirname, "../../plugins/document-reader/test/fixtures/image-only.pdf");
   let ocrCalls = 0;
   let receivedPrompt = "";
   const app = createApp({
+    ...await approveDocument(file, t),
     getScreenOcrWorker: async () => {
       ocrCalls += 1;
       return { recognize: async (image) => {
