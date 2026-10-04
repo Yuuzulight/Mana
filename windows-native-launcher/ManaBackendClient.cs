@@ -2648,6 +2648,27 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    public async Task<JsonElement> BrowserManualAsync(string action, string? token = null, object? payload = null)
+    {
+        if (action is not ("start" or "frame" or "input" or "done")) throw new ArgumentException("Unknown browser action", nameof(action));
+        using var request = new HttpRequestMessage(action == "frame" ? HttpMethod.Get : HttpMethod.Post, $"/browser/manual/{action}");
+        if (token is not null) request.Headers.Add("X-Mana-Manual-Token", token);
+        if (action != "frame") request.Content = new StringContent(JsonSerializer.Serialize(payload ?? new { }), Encoding.UTF8, "application/json");
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.Clone();
+    }
+
+    public async Task<string> ConnectPersonalBrowserAsync(string sessionId, string[] origins)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { sessionId, origins }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/browser/personal/start", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.GetProperty("connectionCode").GetString() ?? throw new InvalidOperationException("No Chrome connection code returned");
+    }
+
     // #1140: the Browser tool's reader view -- POST /web/read fetches the
     // page behind the backend's SSRF guard and returns its readable part as
     // Markdown (tools/html-extract.js), with its images as data: URLs.

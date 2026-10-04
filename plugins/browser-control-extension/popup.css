@@ -1,0 +1,8 @@
+body { width: 340px; margin: 0; padding: 16px; font: 14px system-ui, sans-serif; color: #202124; background: #fff; }
+h1 { font-size: 18px; margin: 0 0 12px; }
+label { display: block; margin: 8px 0; overflow-wrap: anywhere; }
+input#code { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid #888; border-radius: 4px; }
+fieldset { margin: 12px 0; border: 1px solid #ccc; max-height: 280px; overflow: auto; }
+button { padding: 8px 12px; background: #146c48; color: white; border: 0; border-radius: 4px; cursor: pointer; }
+button:disabled { opacity: .6; }
+#status { color: #555; overflow-wrap: anywhere; }

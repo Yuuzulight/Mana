@@ -63,7 +63,7 @@ test("every route rejects a non-loopback forwarded request without touching the 
   });
 
   await withServer(app, async (baseUrl) => {
-    for (const route of ["navigate", "snapshot", "click", "type", "close"]) {
+    for (const route of ["navigate", "snapshot", "click", "type", "close", "manual/start", "manual/input", "manual/done", "personal/start"]) {
       const { response, payload } = await postJson(`${baseUrl}/browser/${route}`, {
         url: "https://example.com",
       });
@@ -72,6 +72,38 @@ test("every route rejects a non-loopback forwarded request without touching the 
     }
   });
   assert.equal(sessionCalls, 0);
+});
+
+test('#704: authenticated UI is required for manual input and personal-browser consent', async () => {
+  const app = buildApp({ isLocalRestartRequest: () => true, checkAdminAuth: (_req, res) => { res.status(401).json({ error: 'not authorized' }); return false; } });
+  await withServer(app, async baseUrl => {
+    for (const route of ['manual/start', 'manual/input', 'manual/done', 'personal/start']) {
+      const { response } = await postJson(`${baseUrl}/browser/${route}`, { sessionId: 'chat' });
+      assert.equal(response.status, 401);
+    }
+    for (const route of ['manual/frame', 'personal/status']) assert.equal((await fetch(`${baseUrl}/browser/${route}`)).status, 401);
+  });
+});
+
+test('#704: manual takeover permits page media without dropping ownership or launching another browser', async () => {
+  const fake = createFakeChromium();
+  const deps = { chromium: fake.chromium, env: { MANA_BROWSER_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
+  const app = buildApp(deps);
+  try {
+    await browserAutomationPlugin.getSession(deps);
+    const actions = [];
+    const route = { request: () => ({ url: () => 'https://assets.test/image.png', resourceType: () => 'image' }), abort: () => actions.push('blocked'), continue: () => actions.push('loaded') };
+    await fake.page.routeHandler(route);
+    await withServer(app, async baseUrl => {
+      const { response, payload } = await postJson(`${baseUrl}/browser/manual/start`, {});
+      assert.equal(response.status, 200);
+      assert.ok(payload.token);
+      await fake.page.routeHandler(route);
+      assert.equal(fake.launches.length, 1);
+      assert.equal(fake.launches[0].options.headless, true);
+    });
+    assert.deepEqual(actions, ['blocked', 'loaded']);
+  } finally { await browserAutomationPlugin.closeSession(); }
 });
 
 test("POST /browser/navigate surfaces a clear error when no browser executable is configured", async () => {
