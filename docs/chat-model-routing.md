@@ -5,6 +5,13 @@ or an available configured cloud endpoint. The choice belongs to the chat's
 session, persists across restart, and is inherited by a fork. It does not change
 the global active model or self-work escalation. Electron controls are unchanged.
 
+When a saved cloud choice becomes unavailable (including revoked permission or
+local-only mode), that chat uses the active local profile automatically. The
+picker shows the effective local choice, and the answer is labelled with the
+local model. This recovery cannot route back into another cloud endpoint.
+The saved cloud preference is retained for when access is restored; new cloud
+selections still require permission and valid configuration.
+
 Settings > Model > Chat Cloud Fallback is opt-in and disabled by default. Its
 confirmation grants permission for chat fallback only, not general remote AI.
 Local-only mode blocks activation, cloud picker entries, and runtime fallback.

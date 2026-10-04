@@ -182,3 +182,25 @@ test('explicit cloud choice answers directly, and a local choice preserves its p
   assert.equal(await app.locals.buildAssistantReply('hi', '', '', 'default', 'local', null, null, {}), 'Selected local.');
   assert.equal(calls, 1);
 });
+
+test('unavailable cloud primary recovers locally without bouncing into cloud fallback', async t => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { createAcpMemoryStore } = require('../acp-memory-store');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-cloud-recovery-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const store = createAcpMemoryStore({ dataDir });
+  store.setSessionChatModel('one', 'cloud:brain');
+  const app = createApp({
+    acpMemoryStore: store,
+    modelManagement: { getActiveProfile: () => 'fast', resolveChatModel: (_id, options) => { assert.equal(options.fallbackToLocal, true); return { profile: 'fast', localOnly: true }; } },
+    runLocalAssistantReply: async (_prompt, _max, profile) => { assert.equal(profile, 'fast'); return 'Local recovery.'; },
+    openAiFallbackConfig: () => assert.fail('must not escalate a revoked cloud selection'),
+  });
+  const meta = {};
+  assert.equal(await app.locals.buildAssistantReply('hi', '', '', 'default', 'one', null, null, meta), 'Local recovery.');
+  assert.match(meta.answerModel, /Local: fast/);
+  assert.equal(meta.cloudFallback, undefined);
+  assert.equal(store.getSession('one').chatModel, 'cloud:brain');
+});

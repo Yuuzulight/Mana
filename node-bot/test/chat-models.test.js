@@ -89,6 +89,21 @@ test('cleanup failure restores temporary context and prevents claiming successfu
   assert.equal(state.contextRestorePending, false);
 });
 
+test('picker shows effective local recovery without overwriting the saved cloud preference', () => {
+  let route;
+  registerChatModelRoutes({ get: (_path, handler) => { route = handler; }, post() {} }, {
+    checkAdminAuth: () => true,
+    acpMemoryStore: { getSession: () => ({ chatModel: 'cloud:fallback' }), setSessionChatModel: () => assert.fail('read must not change preference') },
+    modelManagement: {
+      getChatModels: () => [{ id: 'local:fast', label: 'Local: fast' }],
+      resolveChatModel: (id, opts) => { assert.equal(id, 'cloud:fallback'); assert.equal(opts.fallbackToLocal, true); return { profile: 'fast', localOnly: true }; },
+    },
+  });
+  let payload;
+  route({ query: { sessionId: 'one' } }, { json: value => { payload = value; } });
+  assert.equal(payload.selected, 'local:fast');
+});
+
 test('answer model follows the selected regenerated reply version', t => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-chat-version-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));

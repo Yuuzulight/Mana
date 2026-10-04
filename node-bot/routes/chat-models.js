@@ -7,7 +7,12 @@ function registerChatModelRoutes(app, { modelManagement, acpMemoryStore, checkAd
       const sessionId = optionalString(req.query.sessionId, 'sessionId');
       if (sessionId.length > 240) throw new Error('Invalid sessionId');
       const session = sessionId ? acpMemoryStore.getSession(sessionId) : null;
-      res.json({ models: modelManagement.getChatModels(), selected: session?.chatModel || 'automatic' });
+      let selected = session?.chatModel || 'automatic';
+      if (selected === 'cloud:brain' || selected === 'cloud:fallback') {
+        const effective = modelManagement.resolveChatModel(selected, { fallbackToLocal: true });
+        if (effective.localOnly) selected = `local:${effective.profile}`;
+      }
+      res.json({ models: modelManagement.getChatModels(), selected });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/models/chat', (req, res) => {

@@ -81,7 +81,7 @@ async function buildAssistantReply(
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
     const chatChoice = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId)?.chatModel : null;
-    const selectedChatModel = chatChoice ? context.modelManagement.resolveChatModel(chatChoice) : null;
+    const selectedChatModel = chatChoice ? context.modelManagement.resolveChatModel(chatChoice, { fallbackToLocal: true }) : null;
     // let: #666's wait below may switch this turn to the fallback profile.
     let normalizedModelProfile = selectedChatModel?.profile || context.selectLlamaModelProfileForPrompt(
       transcript,
@@ -1390,7 +1390,7 @@ async function buildAssistantReply(
     }
 
     const BACKUP_NOTICE = "My main model isn't answering, so I'm using my backup.";
-    const fallbackConfig = replyMeta && !replyMeta.scheduled && !selectedChatModel?.remoteConfig ? context.openAiFallbackConfig?.() : null;
+    const fallbackConfig = replyMeta && !replyMeta.scheduled && !selectedChatModel?.remoteConfig && !selectedChatModel?.localOnly ? context.openAiFallbackConfig?.() : null;
     fallbackAttempt = (context.createChatAttempt || require('./chat-attempt').createChatAttempt)(fallbackConfig?.timeoutSeconds);
     memoryExtraMessages.signal = fallbackAttempt.signal;
     memoryExtraMessages.onReplyStarted = fallbackAttempt.markStarted;

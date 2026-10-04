@@ -223,6 +223,9 @@ test('fallback toggle grants chat permission without enabling the global remote 
   manager.setFallbackSettings({ enabled: false });
   assert.ok(!manager.getChatModels().some(model => model.id === 'cloud:fallback'));
   assert.throws(() => manager.resolveChatModel('cloud:fallback'), /not enabled/);
+  assert.deepEqual(manager.resolveChatModel('cloud:fallback', { fallbackToLocal: true }), { profile: manager.getActiveProfile(), localOnly: true });
+  assert.deepEqual(manager.resolveChatModel('cloud:brain', { fallbackToLocal: true }), { profile: manager.getActiveProfile(), localOnly: true });
+  assert.throws(() => manager.resolveChatModel('cloud:arbitrary', { fallbackToLocal: true }), /Unknown/);
   assert.throws(() => manager.setFallbackSettings({ timeoutSeconds: 15 }), /0, 30 or 60/);
   assert.throws(() => manager.setFallbackSettings({ baseUrl: 'https://key:secret@example.com' }), /credentials/);
 });
@@ -242,6 +245,9 @@ test("setFallbackSettings refuses all fallback activation in local-only mode", (
     assert.equal(manager.getModelStatus().cloudFallbackEnabled, false);
     assert.ok(manager.getChatModels().every(model => !model.id.startsWith('cloud:')));
     assert.throws(() => manager.resolveChatModel('cloud:fallback'), /local-only/);
+    for (const id of ['cloud:fallback', 'cloud:brain']) {
+      assert.deepEqual(manager.resolveChatModel(id, { fallbackToLocal: true }), { profile: manager.getActiveProfile(), localOnly: true });
+    }
     assert.throws(() => manager.setFallbackSettings({ enabled: true, baseUrl: "http://192.168.1.20:11434/v1" }), /disabled in local-only mode/);
   } finally {
     if (prior === undefined) delete process.env.MANA_LOCAL_ONLY;

@@ -747,20 +747,25 @@ function createModelManagement(options = {}) {
     }
   }
 
-  function resolveChatModel(id) {
+  function resolveChatModel(id, { fallbackToLocal = false } = {}) {
     if (!id || id === 'automatic') return null;
     if (id.startsWith('local:') && getKnownLlamaModelProfiles().includes(id.slice(6))) return { profile: id.slice(6) };
-    if (isLocalOnly(env) || isLocalOnly()) throw new Error('Cloud chat models are disabled in local-only mode');
-    let config;
-    if (id === 'cloud:brain') config = effectiveOpenAiConfig();
-    else if (id === 'cloud:fallback') {
-      config = effectiveFallbackConfig();
-      if (!config.enabled) throw new Error('Cloud fallback is not enabled');
+    if (!['cloud:brain', 'cloud:fallback'].includes(id)) throw new Error('Unknown chat model');
+    try {
+      if (isLocalOnly(env) || isLocalOnly()) throw new Error('Cloud chat models are disabled in local-only mode');
+      let config;
+      if (id === 'cloud:brain') config = effectiveOpenAiConfig();
+      else {
+        config = effectiveFallbackConfig();
+        if (!config.enabled) throw new Error('Cloud fallback is not enabled');
+      }
+      const model = id === 'cloud:brain' ? modelSettingsStore.getBrainSettings().model || env.OPENAI_MODEL : config.model;
+      if (!model || !shouldUseRemoteAi({ ...config, allowRemoteAi: config.allowRemoteAi ?? env.MANA_ALLOW_REMOTE_AI ?? '' })) throw new Error('Cloud chat model is not configured or permitted');
+      return { remoteConfig: { ...config, model } };
+    } catch (error) {
+      if (!fallbackToLocal) throw error;
+      return { profile: getActiveProfile(), localOnly: true };
     }
-    else throw new Error('Unknown chat model');
-    const model = id === 'cloud:brain' ? modelSettingsStore.getBrainSettings().model || env.OPENAI_MODEL : config.model;
-    if (!model || !shouldUseRemoteAi({ ...config, allowRemoteAi: config.allowRemoteAi ?? env.MANA_ALLOW_REMOTE_AI ?? '' })) throw new Error('Cloud chat model is not configured or permitted');
-    return { remoteConfig: { ...config, model } };
   }
 
   function getChatModels() {
