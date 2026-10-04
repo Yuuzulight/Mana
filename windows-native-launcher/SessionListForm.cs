@@ -178,7 +178,7 @@ internal sealed partial class SessionListForm : Form
         newChatButton.Height = 36;
         newChatButton.TextAlign = ContentAlignment.MiddleLeft; // the #652 mockup's
         newChatButton.Padding = new Padding(6, 0, 0, 0);
-        newChatButton.Click += (_, _) => StartNewChat();
+        newChatButton.Click += async (_, _) => await StartNewChatAsync();
         // #538's own new-chat button is a solid accent CTA, not the
         // muted flat style DarkTheme.ApplyButton gives every other button
         // in this window -- matched here instead of through that shared
@@ -227,6 +227,7 @@ internal sealed partial class SessionListForm : Form
         list.AfterLabelEdit += OnAfterLabelEdit;
 
         var contextMenu = new ContextMenuStrip();
+        AddMoveToProjectMenu(contextMenu);
         contextMenu.Items.Add("Switch to session", null, (_, _) => SwitchToSelected());
         contextMenu.Items.Add("Rename", null, (_, _) =>
         {
@@ -368,6 +369,7 @@ internal sealed partial class SessionListForm : Form
         sidebar.Controls.Add(searchField);
         sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(newChatButton);
+        sidebar.Controls.Add(BuildProjectControls());
         sidebar.Controls.Add(Gap(DockStyle.Bottom));
         sidebar.Controls.Add(avatarCard);
 
@@ -1435,12 +1437,20 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
-    private void StartNewChat()
+    private async Task StartNewChatAsync()
     {
         // No explicit "create session" call -- matches the reference:
         // node-bot's ensureSession lazily creates the row on the first
         // real turn sent with this id, not when the id is merely minted.
-        SwitchTo(Guid.NewGuid().ToString());
+        var sessionId = Guid.NewGuid().ToString();
+        newChatButton.Enabled = false;
+        try
+        {
+            if (SelectedProject is { } project) await backendClient.SetSessionProjectAsync(sessionId, project.Id);
+            if (!IsDisposed) SwitchTo(sessionId);
+        }
+        catch (Exception ex) { if (!IsDisposed) SetListError(ex.Message); }
+        finally { if (!IsDisposed) newChatButton.Enabled = true; }
     }
 
     private void SwitchTo(string sessionId)
@@ -1794,6 +1804,8 @@ internal sealed partial class SessionListForm : Form
         try
         {
             sessions = await backendClient.GetSessionsAsync();
+            var loadedProjects = await backendClient.GetProjectsAsync();
+            if (!IsDisposed) UpdateProjects(loadedProjects);
         }
         catch (Exception ex)
         {
@@ -1879,7 +1891,8 @@ internal sealed partial class SessionListForm : Form
     {
         list.BeginUpdate();
         list.Items.Clear();
-        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId)))
+        list.Groups.Clear();
+        foreach (var session in sessions.Where(s => MatchesProject(s) && (SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId))))
         {
             var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
             {
@@ -1887,6 +1900,10 @@ internal sealed partial class SessionListForm : Form
                 ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
             };
             item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, DateTimeOffset.Now));
+            var groupKey = session.ProjectId is { } id ? $"project:{id}" : "ungrouped";
+            var group = list.Groups[groupKey];
+            if (group is null) { group = new ListViewGroup(groupKey, session.ProjectName ?? "Ungrouped"); list.Groups.Add(group); }
+            item.Group = group;
             list.Items.Add(item);
         }
         list.EndUpdate();

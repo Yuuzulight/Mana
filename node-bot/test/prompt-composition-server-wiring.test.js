@@ -12,6 +12,34 @@ const { withServer, useTestAdminToken } = require("./helpers");
 const fetch = useTestAdminToken();
 const { resetPromptCompositionReport } = require("../prompt-composition-report");
 
+test('project chat prompt includes scoped live excerpts and separate composition blocks', async t => {
+  const fs = require('node:fs/promises');
+  const path = require('node:path');
+  const dir = await fs.mkdtemp(path.join(require('node:os').tmpdir(), 'mana-project-prompt-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = require('../projects-store').createProjectsStore({ dataDir: path.join(dir, 'state') });
+  store.upsertProject({ id: 'alpha', name: 'Alpha', instructions: 'Always verify project tests.' });
+  store.assignSession('project-chat', 'alpha');
+  const file = path.join(dir, 'notes.md');
+  await fs.writeFile(file, 'needle project-specific reference');
+  let captured;
+  const app = createApp({ projectsStore: store, isLocalAdminRequest: () => true,
+    runLocalAssistantReply: async (prompt, maxTokens, profile, systemPrompt) => { captured = systemPrompt; return 'reply'; },
+  });
+  await withServer(app, async base => {
+    const linked = await fetch(`${base}/projects/alpha/references/picker`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: file }) });
+    assert.equal(linked.status, 200);
+    await app.locals.buildAssistantReply('needle', '', '', 'default', 'project-chat');
+    assert.match(captured, /Always verify project tests/);
+    assert.match(captured, /project-specific reference/);
+    const report = await (await fetch(`${base}/prompt-composition/project-chat`)).json();
+    assert.ok(report.blocks.find(block => block.name === 'project-instructions').chars > 0);
+    assert.ok(report.blocks.find(block => block.name === 'project-references').chars > 0);
+    await app.locals.buildAssistantReply('needle', '', '', 'default', 'other-chat');
+    assert.doesNotMatch(captured, /Always verify project tests|project-specific reference/);
+  });
+});
+
 test("a local reply's prompt composition is recorded and surfaced via /prompt-composition/:sessionId", async () => {
   resetPromptCompositionReport();
   const app = createApp({ runLocalAssistantReply: async () => "local reply" });

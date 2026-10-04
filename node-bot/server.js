@@ -2505,7 +2505,10 @@ function registerRoutes(app, upload, deps = {}) {
       whisperModel: whisperDiscovery.findWhisperModel({ env: deps.env || process.env }),
     });
   const activeProjectsStore =
-    deps.projectsStore || createProjectsStore({ dataDir: path.join(__dirname, "data") });
+    deps.projectsStore || createProjectsStore({
+      dataDir: (deps.env || process.env).MANA_PROJECTS_DIR || path.join((deps.acpMemoryStore || acpMemoryStore).dataDir || path.join(__dirname, 'data'), 'projects'),
+      getSession: id => (deps.acpMemoryStore || acpMemoryStore).getSession?.(id),
+    });
 
   // llama-server normally starts lazily on the first chat reply. Desktop
   // clients that want a startup loading screen to actually mean something
@@ -2615,6 +2618,7 @@ function registerRoutes(app, upload, deps = {}) {
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
   const documentAccess = deps.documentAccess || require('./document-access').createDocumentAccess({ approvalGate: activeApprovalGate });
+  const projectReferences = require('./project-references').createProjectReferences({ projectsStore: activeProjectsStore, approvalGate: activeApprovalGate });
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
   // Distinct action type for the idle-triggered autonomous pass (issue
   // #262/skill-proposal.js) -- same executor, but kept separate from
@@ -2706,6 +2710,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
   const capabilityContext = {
     documentAccess,
+    projectsStore: activeProjectsStore,
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     jobs: researchJobs,
     onBackgroundTaskDone: backgroundTaskDone,
@@ -2932,33 +2937,7 @@ function registerRoutes(app, upload, deps = {}) {
     checkAdminAuth,
   });
 
-  app.get("/projects", (req, res) => {
-    return res.json({ projects: activeProjectsStore.listProjects() });
-  });
-  app.post("/projects", (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    try {
-      return res.json(activeProjectsStore.upsertProject(req.body || {}));
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
-  });
-  app.delete("/projects/:id", (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    return res.json({ deleted: activeProjectsStore.deleteProject(req.params.id) });
-  });
-  app.put("/sessions/:id/project", (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    try {
-      const project = activeProjectsStore.assignSession(req.params.id, req.body?.projectId || null);
-      return res.json({ sessionId: req.params.id, project });
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
-  });
-  app.get("/sessions/:id/project", (req, res) => {
-    return res.json({ sessionId: req.params.id, project: activeProjectsStore.projectForSession(req.params.id) });
-  });
+  require('./routes/projects').registerProjectRoutes(app, { projectsStore: activeProjectsStore, projectReferences, checkAdminAuth, isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest });
 
   // Issue #418: transient, human-facing "what's browser automation doing
   // right now" feed for the launcher to poll -- no auth, same as
@@ -3741,6 +3720,7 @@ function registerRoutes(app, upload, deps = {}) {
     get activePluginSettingsStore() { return activePluginSettingsStore; },
     get activePresetsStore() { return activePresetsStore; },
     get activeProjectsStore() { return activeProjectsStore; },
+    get projectReferences() { return projectReferences; },
     get activeSkillsStore() { return activeSkillsStore; },
     get activeToolCallLog() { return activeToolCallLog; },
     get activeToolPolicy() { return activeToolPolicy; },

@@ -46,6 +46,8 @@ function maxTier(a, b) {
 const BUILTIN_TIERS = {
   read_file: "read",
   session_search__query: "read",
+  project_references__search: "read",
+  project_references__link: "write",
   skill__view: "read",
   snapshot__list: "read",
   vision__look: "read",
@@ -133,6 +135,7 @@ const BUILTIN_TIERS = {
 // automation's first-use gate). Per-call approval passes them through
 // rather than asking twice for one call.
 const SELF_GATED = new Set([
+  "project_references__link",
   "memory__remember",
   "skill__create",
   "skill__run",
