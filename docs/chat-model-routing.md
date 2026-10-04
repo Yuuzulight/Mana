@@ -25,6 +25,8 @@ start their deadline when the main local inference attempt begins, including
 model startup. Prompt/context preparation precedes this deadline. Any visible
 reply text or tool execution disables handoff for that attempt, preventing an
 interrupted reply or repeated actions. Thinking alone does not count as a reply.
+Fallback permission and endpoint settings are re-read before handoff, so
+disabling fallback while a local request waits prevents a later cloud request.
 
 Timed requests carry an AbortSignal through startup and completion paths. A
 cancelled request releases its in-flight state. If its owned model is not serving

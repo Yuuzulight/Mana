@@ -25,7 +25,13 @@ function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
   }
 
 async function runOpenAIReply(prompt, maxTokens = context.LLAMA_MAX_TOKENS, systemPromptOverride = null, sessionId = null, remoteConfig = null) {
-    const config = remoteConfig || { apiKey: context.openAiApiKey(), baseUrl: context.openAiBaseUrl(), model: context.openAiModel() };
+    let config = remoteConfig || { apiKey: context.openAiApiKey(), baseUrl: context.openAiBaseUrl(), model: context.openAiModel() };
+    if (remoteConfig?.enabled === true) {
+      try { config = context.modelManagement.resolveChatModel('cloud:fallback').remoteConfig; }
+      catch { return null; }
+      if (!config) return null;
+      if (config.model !== remoteConfig.model || config.baseUrl !== remoteConfig.baseUrl) return null;
+    }
     if (!context.shouldUseRemoteAi(config)) return null;
     if (sessionId) {
       const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
@@ -1465,9 +1471,10 @@ async function buildAssistantReply(
     if (!(typeof reply === 'string' && reply.trim())) {
       if (fallbackConfig && !fallbackAttempt.started) {
         fallbackAttempt.close();
-        const fallbackReply = untag(await runOpenAIReply(finalPrompt, effectiveMaxTokens, selectedSystemPrompt + flatMemorySuffix, sessionId, fallbackConfig));
+        const permittedFallback = context.openAiFallbackConfig?.();
+        const fallbackReply = permittedFallback ? untag(await runOpenAIReply(finalPrompt, effectiveMaxTokens, selectedSystemPrompt + flatMemorySuffix, sessionId, permittedFallback)) : null;
         if (fallbackReply) {
-          if (replyMeta) { replyMeta.cloudFallback = true; replyMeta.answerModel = fallbackConfig.model; }
+          if (replyMeta) { replyMeta.cloudFallback = true; replyMeta.answerModel = permittedFallback.model; }
           reply = fallbackReply;
         }
       }

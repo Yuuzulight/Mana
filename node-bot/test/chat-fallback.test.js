@@ -204,3 +204,42 @@ test('unavailable cloud primary recovers locally without bouncing into cloud fal
   assert.equal(meta.cloudFallback, undefined);
   assert.equal(store.getSession('one').chatModel, 'cloud:brain');
 });
+
+test('revoking fallback while local inference waits prevents a later cloud handoff', async t => {
+  let calls = 0;
+  let enabled = true;
+  const baseUrl = await endpoint(t, (_req, res) => { calls += 1; res.end('{}'); });
+  const app = createApp({
+    runLocalAssistantReply: async () => { enabled = false; throw new Error('local failed after revocation'); },
+    openAiFallbackConfig: () => enabled ? { baseUrl, model: 'cloud-test', timeoutSeconds: 0 } : null,
+  });
+  await assert.rejects(app.locals.buildAssistantReply('hi', '', '', 'default', null, null, null, {}), /local failed after revocation/);
+  assert.equal(calls, 0);
+});
+
+test('a selected fallback endpoint also rechecks scoped consent before sending the cloud request', async t => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { createAcpMemoryStore } = require('../acp-memory-store');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-consent-recheck-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const store = createAcpMemoryStore({ dataDir });
+  store.setSessionChatModel('one', 'cloud:fallback');
+  let calls = 0;
+  let resolutions = 0;
+  const baseUrl = await endpoint(t, (_req, res) => { calls += 1; res.end('{}'); });
+  const app = createApp({
+    acpMemoryStore: store,
+    modelManagement: { getActiveProfile: () => 'default', resolveChatModel: () => {
+      if (resolutions++ > 0) throw new Error('permission revoked');
+      return { remoteConfig: { enabled: true, baseUrl, model: 'cloud-test', allowRemoteAi: '1' } };
+    } },
+    runLocalAssistantReply: async () => 'Local after revoked consent.',
+    openAiFallbackConfig: () => assert.fail('must not bounce back into cloud'),
+  });
+  const meta = {};
+  assert.equal(await app.locals.buildAssistantReply('hi', '', '', 'default', 'one', null, null, meta), 'Local after revoked consent.');
+  assert.equal(calls, 0);
+  assert.match(meta.answerModel, /Local:/);
+});
