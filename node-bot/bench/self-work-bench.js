@@ -214,6 +214,7 @@ async function runCase(c, deps) {
       isGaming: deps.isGaming,
       ramPercent: deps.ramPercent,
       runTests: deps.runTests,
+      approvalGate: deps.approvalGate,
       gemini: deps.gemini || null,
       onEvent: deps.onEvent || ((run, text) => console.log(`[bench ${c.id}] ${text}`)),
     });

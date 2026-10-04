@@ -32,7 +32,7 @@ function isAnalysisAvailable(env = process.env) {
 function runProcess(command, args, { input = "", timeoutMs = 75000, spawnImpl = spawn } = {}) {
   return new Promise((resolve, reject) => {
     let child;
-    try { child = spawnImpl(command, args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }); }
+    try { child = spawnImpl(command, args, { shell: false, windowsHide: true, detached: process.platform === "win32", stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, MANA_SANDBOX_PARENT_PID: String(process.pid) } }); }
     catch (error) { reject(error); return; }
     let output = "", errors = "", bytes = 0, settled = false;
     const finish = (error, result) => {

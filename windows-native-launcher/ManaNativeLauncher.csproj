@@ -119,6 +119,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <NativeExecutionHelperInputs Include="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.cs;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj" />
+  </ItemGroup>
+  <Target Name="PublishNativeExecutionHelper" AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('Windows'))"
+          Inputs="@(NativeExecutionHelperInputs)"
+          Outputs="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.exe;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.dll;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.runtimeconfig.json">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj"
+             Targets="Restore;Publish"
+             RemoveProperties="TargetFramework;TargetFrameworks;OutputPath;BaseOutputPath;BaseIntermediateOutputPath;IntermediateOutputPath"
+             Properties="Configuration=Release;RuntimeIdentifier=win-x64;SelfContained=true;PublishDir=$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\;UseSharedCompilation=false" />
+  </Target>
+
+  <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
     <!-- 4.153.0: Folio.Skia's own SkiaSharp, which a lower version here

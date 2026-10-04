@@ -24,6 +24,13 @@ const PROTECTED_PATHS = [
   "node-bot/workspace-scratch-copy.js",
   "node-bot/tools/analysis-sandbox.js",
   "tools/analysis-sandbox/",
+  "node-bot/tools/native-execution.js",
+  "node-bot/tools/native-execution-copy-worker.js",
+  "node-bot/tools/test-resource-profile.js",
+  "node-bot/tools/test-execution-policy.js",
+  "node-bot/tools/self-work-test-approval.js",
+  "node-bot/tools/script-runner.js",
+  "node-bot/tools/script-runner-worker.js",
   // Her self-work runner's own checks (#1006).
   "node-bot/self-work.js",
   // Local-only mode, the admin key, auth and secrets.

@@ -4,7 +4,7 @@
 // packaged installers need no system Python at all -- see
 // desktop-client/python-env.js for how the app finds these at runtime.
 //
-// Two separate copies (not one shared env) because SearXNG's dependency
+// Separate copies (not one shared env) because SearXNG's dependency
 // stack (flask/lxml/babel/...) and Kokoro's (fastapi/onnxruntime/...) can
 // conflict on shared transitive deps; isolating them mirrors the
 // per-service venvs tools/setup-searxng.ps1 and first-run-setup.js already
@@ -13,12 +13,14 @@
 // Usage:
 //   cd desktop-client
 //   node scripts/prepare-portable-python.js
-// Output: desktop-client/portable-python/{searxng,tts-service}/ (gitignored).
+//   node scripts/prepare-portable-python.js --target analysis
+// Output: desktop-client/portable-python/{analysis,searxng,tts-service}/ (gitignored).
 // Delete a target's folder to force a rebuild of just that one.
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { parseArgs } = require('node:util');
 
 const PY_VERSION = '3.13.1';
 const EMBED_URL = `https://www.python.org/ftp/python/${PY_VERSION}/python-${PY_VERSION}-embed-amd64.zip`;
@@ -29,6 +31,9 @@ const REPO_ROOT = path.join(ROOT, '..');
 const OUT_ROOT = path.join(ROOT, 'portable-python');
 
 const TARGETS = {
+  analysis: {
+    requirements: path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'requirements.txt'),
+  },
   searxng: {
     requirements: path.join(REPO_ROOT, 'tools', 'searxng', 'requirements.txt'),
     windowsPwdStub: true,
@@ -134,10 +139,13 @@ async function buildOne(name, cfg) {
 }
 
 (async () => {
+  const { values } = parseArgs({ options: { target: { type: 'string', multiple: true } } });
+  const targets = values.target || Object.keys(TARGETS);
+  for (const name of targets) if (!Object.hasOwn(TARGETS, name)) throw new Error(`Unknown portable Python target: ${name}`);
   const helper = path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'Mana.AnalysisSandbox.csproj');
   run('dotnet', ['publish', helper, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'bundle')]);
-  for (const [name, cfg] of Object.entries(TARGETS)) {
-    await buildOne(name, cfg);
+  for (const name of targets) {
+    await buildOne(name, TARGETS[name]);
   }
   console.log('Portable Python prep complete.');
 })().catch((e) => {

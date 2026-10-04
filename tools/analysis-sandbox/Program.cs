@@ -14,6 +14,8 @@ internal static class Program
         try
         {
             if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Windows AppContainer is required");
+            if (args.Length == 2 && args[0] == "--process") return ProcessSandbox.Run(args[1]);
+            if (args.Length == 2 && args[0] == "--process-cleanup") { ProcessSandbox.Cleanup(args[1]); return 0; }
             if (args.Length == 3 && args[0] == "--cleanup")
             {
                 Cleanup(args[1], args[2]);
@@ -45,6 +47,7 @@ internal static class Program
         var initialized = false;
         var runtimeGranted = false;
         using var job = Native.CreateLimitedJob();
+        using var owner = Native.OpenOwnerProcess();
         try
         {
             Marshal.ThrowExceptionForHR(Native.CreateAppContainerProfile(profile, profile, "Mana offline analysis", IntPtr.Zero, 0, out sid));
@@ -80,6 +83,7 @@ internal static class Program
             var watch = Stopwatch.StartNew();
             while (Native.WaitForSingleObject(process.Process, 100) == 258)
             {
+                Native.CheckOwner(owner);
                 if (watch.ElapsedMilliseconds > timeout) throw new TimeoutException("analysis sandbox timed out");
                 if (ScratchBytes(work) > 64 * 1024 * 1024) throw new IOException("analysis scratch storage limit exceeded");
             }

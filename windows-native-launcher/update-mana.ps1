@@ -51,6 +51,12 @@ try {
     $head = Invoke-Git rev-parse HEAD
 
     $nodeBot = Join-Path $root 'node-bot'
+    $sandboxProject = Join-Path $root 'tools\analysis-sandbox\Mana.AnalysisSandbox.csproj'
+    $sandboxBundle = Join-Path $root 'tools\analysis-sandbox\bundle'
+    if (Test-Path $sandboxProject) {
+        dotnet publish $sandboxProject -c Release -r win-x64 --self-contained true -o $sandboxBundle -v q --disable-build-servers
+        if ($LASTEXITCODE) { throw 'Native execution helper build failed; update was not applied.' }
+    }
     if (Test-Newer (Join-Path $nodeBot 'package-lock.json') (Join-Path $nodeBot 'node_modules\.package-lock.json')) {
         npm install --prefix $nodeBot --no-audit --no-fund
         if ($LASTEXITCODE) { throw 'npm install failed' }

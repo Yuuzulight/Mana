@@ -32,8 +32,9 @@ async function runToolScript(code, options = {}) {
   // through as sandbox data, not a capability, so no IPC round-trip needed.
   const inputs = options.inputs && typeof options.inputs === "object" ? options.inputs : {};
   const timeoutMs = Math.max(1000, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS);
-  const forkFn = options.fork || fork;
+  const forkFn = options.fork || (process.platform === 'win32' ? require('./native-execution').nativeSkillWorker : fork);
   const workerPath = options.workerPath || WORKER_PATH;
+  if (Buffer.byteLength(JSON.stringify({ code, toolNames, inputs })) > 1048576) throw new Error('Skill input size limit exceeded');
 
   return new Promise((resolve, reject) => {
     const child = forkFn(workerPath, [], {
@@ -41,6 +42,7 @@ async function runToolScript(code, options = {}) {
     });
 
     let settled = false;
+    let terminationError = null;
     const logs = [];
     let logsCharCount = 0;
     // A script looping console.log() for the full timeout could otherwise
@@ -48,11 +50,13 @@ async function runToolScript(code, options = {}) {
     // the timeout fires -- cap total buffered log size the same way every
     // other unbounded-text sink in this codebase does (a fixed char cap).
     const MAX_LOGS_CHARS = 20000;
+    const calls = new Set();
+    let activeCalls = 0;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      child.once('close', () => reject(terminationError || new Error(`script execution timed out after ${timeoutMs}ms`)));
       child.kill();
-      reject(new Error(`script execution timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     if (typeof timer.unref === "function") timer.unref();
 
@@ -60,39 +64,50 @@ async function runToolScript(code, options = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      child.once('close', () => terminationError ? reject(terminationError) : fn());
       child.kill();
-      fn();
+    }
+
+    function send(message) {
+      if (settled) return;
+      try { child.send(message); }
+      catch (error) { finish(() => reject(error)); }
     }
 
     child.on("message", async (msg) => {
-      if (!msg || typeof msg !== "object") return;
+      if (settled || !msg || typeof msg !== "object") return;
 
       if (msg.type === "tool-call") {
+        if (!Number.isSafeInteger(msg.callId) || !Array.isArray(msg.args) || msg.args.length > 128) { finish(() => reject(new Error('Invalid skill tool call'))); return; }
+        if (calls.has(msg.callId) || calls.size >= 1024 || activeCalls >= 16) { finish(() => reject(new Error('Skill tool call budget exceeded'))); return; }
+        calls.add(msg.callId);
         const toolFn = tools[msg.name];
-        if (typeof toolFn !== "function") {
-          child.send({
+        if (!toolNames.includes(msg.name) || typeof toolFn !== "function") {
+          send({
             type: "tool-result",
             callId: msg.callId,
             error: `unknown tool: ${msg.name}`,
           });
           return;
         }
+        activeCalls++;
         try {
           const result = await toolFn(...(msg.args || []));
-          child.send({ type: "tool-result", callId: msg.callId, result });
+          send({ type: "tool-result", callId: msg.callId, result });
         } catch (e) {
-          child.send({
+          send({
             type: "tool-result",
             callId: msg.callId,
             error: (e && e.message) || String(e),
           });
-        }
+        } finally { activeCalls--; }
         return;
       }
 
       if (msg.type === "log") {
+        if (!Array.isArray(msg.args) || msg.args.some(arg => typeof arg !== 'string')) { finish(() => reject(new Error('Invalid skill log message'))); return; }
         if (logsCharCount < MAX_LOGS_CHARS) {
-          const line = (msg.args || []).join(" ");
+          const line = msg.args.join(" ").slice(0, MAX_LOGS_CHARS - logsCharCount);
           logs.push(line);
           logsCharCount += line.length;
         }
@@ -110,7 +125,7 @@ async function runToolScript(code, options = {}) {
       }
     });
 
-    child.on("error", (e) => finish(() => reject(e)));
+    child.on("error", (e) => { terminationError ||= e; finish(() => reject(e)); });
     child.on("exit", (exitCode) => {
       if (settled) return;
       settled = true;
@@ -118,7 +133,7 @@ async function runToolScript(code, options = {}) {
       reject(new Error(`script process exited early (code ${exitCode})`));
     });
 
-    child.send({ type: "run", code, toolNames, inputs });
+    send({ type: "run", code, toolNames, inputs });
   });
 }
 

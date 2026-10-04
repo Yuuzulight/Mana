@@ -6,22 +6,37 @@ namespace Mana.AnalysisSandbox;
 
 internal static class Native
 {
+    internal static SafeFileHandle OpenOwnerProcess()
+    {
+        if (!uint.TryParse(Environment.GetEnvironmentVariable("MANA_SANDBOX_PARENT_PID"), out var pid) || pid == 0)
+            throw new InvalidOperationException("Missing sandbox owner process");
+        var handle = OpenProcess(0x100000, false, pid);
+        Check(!handle.IsInvalid);
+        return handle;
+    }
+
+    internal static void CheckOwner(SafeFileHandle owner)
+    {
+        var state = WaitForSingleObject(owner.DangerousGetHandle(), 0);
+        if (state == 0) throw new IOException("Mana backend terminated; stopping sandbox execution");
+        if (state != 258) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
     internal static void Check(bool ok, [System.Runtime.CompilerServices.CallerArgumentExpression("ok")] string? operation = null)
     { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(), $"{operation}: {new Win32Exception(Marshal.GetLastWin32Error()).Message}"); }
 
-    internal static SafeFileHandle CreateLimitedJob()
+    internal static SafeFileHandle CreateLimitedJob(int memoryMb = 512, uint processes = 1, int cpuSeconds = 30, uint cpuRate = 1000)
     {
         var job = CreateJobObjectW(IntPtr.Zero, null);
         var limits = new ExtendedLimits
         {
-            Basic = new BasicLimits { LimitFlags = 0x2000 | 0x200 | 0x8 | 0x4, ActiveProcessLimit = 1, PerJobUserTimeLimit = 30 * 10000000L },
-            JobMemoryLimit = (nuint)(512 * 1024 * 1024),
+            Basic = new BasicLimits { LimitFlags = 0x2000 | 0x200 | 0x8 | 0x4, ActiveProcessLimit = processes, PerJobUserTimeLimit = cpuSeconds * 10000000L },
+            JobMemoryLimit = (nuint)((ulong)memoryMb * 1024 * 1024),
         };
         try
         {
             Check(!job.IsInvalid);
             Check(SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf<ExtendedLimits>()));
-            var cpu = new CpuRate { ControlFlags = 1 | 4, Rate = 1000 };
+            var cpu = new CpuRate { ControlFlags = 1 | 4, Rate = cpuRate };
             Check(SetInformationJobObject(job, 15, ref cpu, Marshal.SizeOf<CpuRate>()));
             return job;
         }
@@ -73,6 +88,17 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool GetExitCodeProcess(IntPtr process, out uint exit);
     [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool TerminateProcess(IntPtr process, uint exit);
     [DllImport("kernel32.dll")] internal static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] internal static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeFileHandle OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern IntPtr GetStdHandle(int kind);
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool DuplicateHandle(IntPtr sourceProcess, IntPtr source, IntPtr targetProcess, out IntPtr target, uint access, bool inherit, uint options);
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool TerminateJobObject(SafeFileHandle job, uint code);
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool QueryInformationJobObject(SafeFileHandle job, int kind, out JobAccounting info, int size, IntPtr returned);
+    [StructLayout(LayoutKind.Sequential)] internal struct JobAccounting
+    {
+        public long TotalUserTime, TotalKernelTime, PeriodUserTime, PeriodKernelTime;
+        public uint TotalPageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern SafeFileHandle CreateJobObjectW(IntPtr attributes, string? name);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(SafeFileHandle job, int kind, ref ExtendedLimits limits, int size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(SafeFileHandle job, int kind, ref CpuRate limits, int size);

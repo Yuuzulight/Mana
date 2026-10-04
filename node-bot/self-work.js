@@ -33,7 +33,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { resolveWithinRoot, isCredentialPath } = require("./ai/tool-policy");
-const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME, runTestCommand } = require("./ai/coding-tool-source");
+const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME, runTestCommand, TEST_ESTIMATE_SCHEMA } = require("./ai/coding-tool-source");
 const {
   SESSION_GOAL_FINISH_TOOL_NAME,
   TOOL_SCHEMAS: GOAL_TOOL_SCHEMAS,
@@ -92,7 +92,7 @@ const DEFAULT_MAX_MINUTES = 120;
 // #1259: rounds to review and finish an attempt whose tests passed unfinished.
 const REVIEW_ROUNDS = 10;
 // What an attempt starts without: the last one's outcome and plan.
-const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "reviewedTree", "refutations", "conversations"];
+const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "judgeModes", "reviewedTree", "refutations", "conversations"];
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
@@ -252,7 +252,7 @@ const TOOL_SCHEMAS = [
       name: CODING_TEST_TOOL_NAME,
       description:
         "Run tests in your worktree: a node-bot test file (node-bot/test/x.test.js), a launcher test file (windows-native-launcher/ManaNativeLauncher.Tests/XTests.cs), or no path for the whole node-bot suite.",
-      parameters: { type: "object", properties: { path: { type: "string" } } },
+      parameters: { type: "object", properties: { path: { type: "string" }, estimate: TEST_ESTIMATE_SCHEMA, execution: { type: 'string', enum: ['sandbox', 'unrestricted'], description: 'Default sandbox; only after the same sandboxed command fails, ask for a separately approved unrestricted rerun with host file/network access.' } } },
     },
   },
 ];
@@ -314,7 +314,26 @@ function createSelfWork(options = {}) {
   const reviewEdit = options.reviewEdit || null;
   // #1000's guardrail list: her writes never reach it.
   const guard = options.protectedPaths || protectedPaths;
-  const runTests = options.runTests || runTestCommand;
+  const nativeTests = process.platform === 'win32' && !options.runTests;
+  const executeTests = options.runTests || (nativeTests ? require('./tools/native-execution').runSandboxedTestCommand : runTestCommand);
+  const executionPolicy = require('./tools/test-execution-policy').createTestExecutionPolicy();
+  const runTests = async (command, cwd, testOptions = {}) => {
+    if (!nativeTests) return executeTests(command, cwd, testOptions);
+    const owner = testOptions.owner || current;
+    const cancelled = () => !owner || (current && current !== owner) || owner.stopRequested || owner.state !== 'running';
+    const unrestricted = executionPolicy.unrestricted(command, cwd, owner?.worktree, testOptions.execution);
+    const copySources = require('./tools/native-execution').approvedCopySources();
+    return require('./tools/self-work-test-approval').approveSelfWorkTests({
+      gate: options.approvalGate, command, cwd, estimate: testOptions.estimate, unrestricted, copySources,
+      cancelled,
+      onWaiting: recommendation => log(owner, `Waiting for your approval: ${recommendation.minutes}-minute test profile (${recommendation.reason})`, true),
+      run: async recommendation => {
+        const result = await executeTests(command, cwd, { ...testOptions, cancelled, unrestricted, copySources, workspaceRoot: owner.worktree, resourceProfile: recommendation.id });
+        if (!unrestricted) executionPolicy.record(command, cwd, owner.worktree, result);
+        return result;
+      },
+    });
+  };
   const isGaming = options.isGaming || (() => false);
   const ramPercent = options.ramPercent || systemRamPercent;
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -745,6 +764,7 @@ function createSelfWork(options = {}) {
   async function bench(issue, worktree, { attempts = 1 } = {}) {
     const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: roundBudget(issue.body) });
     try {
+      if (nativeTests && !options.approvalGate) throw new Error('Windows benchmark tests require a human approval gate; no unrestricted benchmark fallback');
       return { reply: (await bestOf(r, issue, attempts)).reply, run: r };
     } catch (e) {
       return { reply: null, run: r, error: e.message };
@@ -1171,6 +1191,8 @@ How to work:
         await sleep(60000);
       }
       const result = await runTests(command, cwd, {
+        owner: r,
+        execution: r.judgeModes?.get(command),
         spawnImpl: (c, o) => spawn(c, { ...o, env: testEnv(env) }),
         timeoutMs: TEST_TIMEOUT_MS,
         terminal: { source: "self-work", stop },
@@ -1484,7 +1506,7 @@ Before it can be a PR:
       return goal.executeTool(SESSION_GOAL_FINISH_TOOL_NAME, args);
     }
 
-    async function tests({ path: rel }) {
+    async function tests({ path: rel, estimate, execution }) {
       const target = rel ? posix(inside(rel)) : "";
       let cwd = path.join(root, "node-bot");
       let command = "node run_tests.js";
@@ -1504,6 +1526,7 @@ Before it can be a PR:
       log(r, `Running ${command}`);
       const clean = testEnv(env);
       const result = await runTests(command, cwd, {
+        owner: r, estimate, execution,
         spawnImpl: (c, o) => spawn(c, { ...o, env: clean }),
         timeoutMs: TEST_TIMEOUT_MS,
         terminal: { source: "self-work", stop },
@@ -1516,7 +1539,10 @@ Before it can be a PR:
       lastTestOutcome = outcome;
       r.lastTestCommand = command;
       // #1247: a test file she ran judges her attempt.
-      if (target) (r.judgeCommands ||= new Map()).set(command, cwd);
+      if (target) {
+        (r.judgeCommands ||= new Map()).set(command, cwd);
+        (r.judgeModes ||= new Map()).set(command, execution || 'sandbox');
+      }
       log(r, `${command}: ${passed ? "passed" : "failed"}`);
       return JSON.stringify({ status: "ok", command, passed, ...result });
     }

@@ -141,3 +141,33 @@ test("live analysis calculates from CSV and renders a chart with the CPU-only ba
   assert.equal(result.charts.length, 1);
   assert.equal(sandboxProcesses(), "");
 });
+
+test("live Python helper cleans up after backend termination", { skip: !live, timeout: 30000 }, async t => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-python-owner-'));
+  t.after(() => fs.rmSync(source, { recursive: true, force: true }));
+  const controller = spawn(process.execPath, ['-e', `
+    const sandbox = require(${JSON.stringify(require.resolve('../tools/analysis-sandbox'))});
+    sandbox.runAnalysisSandbox({ code: 'while True: pass', files: [] }, {
+      runProcess: (command, args, options) => {
+        if (args[0] !== '--cleanup') console.log('work:' + args[1]);
+        return sandbox.runProcess(command, args, options);
+      },
+    }).catch(error => console.error(error.message));
+  `], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => controller.kill());
+  let output = '';
+  controller.stdout.on('data', data => { output += data; });
+  controller.stderr.on('data', data => { output += data; });
+  let work;
+  for (let i = 0; i < 10; i++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    work = /work:([^\r\n]+)/.exec(output)?.[1];
+    if (work && sandboxProcesses()) break;
+  }
+  assert.ok(work, output);
+  assert.notEqual(sandboxProcesses(), '', 'Python must start before its backend is killed');
+  controller.kill();
+  for (let i = 0; i < 100 && fs.existsSync(work); i++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(fs.existsSync(work), false, output);
+  assert.equal(sandboxProcesses(), '');
+});
