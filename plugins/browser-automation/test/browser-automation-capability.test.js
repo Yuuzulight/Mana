@@ -177,6 +177,62 @@ test("#1137: Edge starts lazily, once, on Mana's own profile with no GPU and one
   await browserAutomationPlugin.closeSession();
 });
 
+test("#704: an explicit profile is shared by automation and take-over", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeEdge();
+  const profileDir = require("node:path").resolve("explicit-browser-profile");
+  const deps = { env: { ...FAKE_ENV, MANA_BROWSER_PROFILE_DIR: profileDir }, chromium, ramPercent: () => 50 };
+  await browserAutomationPlugin.getSession(deps);
+  await browserAutomationPlugin.takeOver(deps);
+  assert.deepEqual(launches.map((launch) => launch.dir), [profileDir, profileDir]);
+  await browserAutomationPlugin.handBack();
+  await browserAutomationPlugin.getSession(deps);
+  assert.equal(launches[2].dir, profileDir);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#704: relative profile paths fail before launching", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeChromium();
+  await assert.rejects(browserAutomationPlugin.getSession({
+    env: { ...FAKE_ENV, MANA_BROWSER_PROFILE_DIR: "relative" }, chromium, ramPercent: () => 50,
+  }), /must be an absolute path/);
+  assert.equal(launches.length, 0);
+});
+
+test("#704: retained handles stop during take-over and stay invalid after hand-back", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeEdge();
+  const deps = { env: FAKE_ENV, chromium, ramPercent: () => 50 };
+  const stale = await browserAutomationPlugin.getSession(deps);
+  await browserAutomationPlugin.takeOver(deps);
+  for (const action of [() => stale.navigate("https://example.test"), () => stale.url(), () => stale.screenshot()]) {
+    await assert.rejects(action, /user has the browser/);
+  }
+  await browserAutomationPlugin.handBack();
+  await browserAutomationPlugin.getSession(deps);
+  await assert.rejects(() => stale.navigate("https://example.test"), /session has closed/);
+  assert.deepEqual(launches[2].ctx.page.gone, []);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#704: actions refresh idle time and recheck resource gates on a retained handle", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, context } = createFakeChromium();
+  let now = 1_000_000;
+  let gaming = false;
+  const deps = { env: FAKE_ENV, chromium, ramPercent: () => 50, now: () => now, isGaming: () => gaming };
+  const retained = await browserAutomationPlugin.getSession(deps);
+  now += browserAutomationPlugin.IDLE_CLOSE_MS - 1;
+  await retained.snapshot();
+  now += 2;
+  await browserAutomationPlugin.checkSession();
+  assert.equal(context.closed, 0);
+  gaming = true;
+  await assert.rejects(() => retained.navigate("https://example.test"), /game is running/);
+  assert.equal(context.closed, 1);
+});
+
 test("#1137: images, video and fonts are blocked unless the Browser panel is watching", async () => {
   browserAutomationPlugin._resetForTests();
   const { chromium, page } = createFakeChromium();
@@ -476,17 +532,15 @@ test("#1159: she opens, lists, switches and closes up to three tabs, and extra o
   assert.equal(pages[1].closed, true);
   assert.deepEqual(closed.tabs, ["1. Page 1 -- https://a.test/ (current)", "2. Page 3 -- https://c.test/"]);
 
-  // RAM gate: no new tab above the limit.
-  ram = 86;
-  await assert.rejects(() => session.tab({ do: "open", url: "https://e.test/" }), /no new tab while RAM is at 86%/);
-  ram = 50;
-
   await session.tab({ do: "switch", number: 2 });
   await browserAutomationPlugin.closeExtraTabs();
   assert.equal(pages[0].closed, true);
   assert.equal(pages[2].closed, false);
   assert.equal(await session.url(), "https://c.test/");
   await assert.rejects(() => session.tab({ do: "close", number: 1 }), /her only tab/);
+  ram = 86;
+  await assert.rejects(() => session.tab({ do: "open", url: "https://e.test/" }), /browser stays closed while RAM is at 86%/);
+  await assert.rejects(() => session.snapshot(), /session has closed/);
   await browserAutomationPlugin.closeSession();
 });
 

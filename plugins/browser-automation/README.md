@@ -22,6 +22,11 @@ moment, and never appears in my Take over window.
 
 - Mana's own profile in `node-bot/data/browser-profile`
   (`launchPersistentContext`), so a site I log in to stays logged in.
+- `MANA_BROWSER_PROFILE_DIR` explicitly selects another persistent user-data
+  directory (an absolute path). Close any browser using it first. It grants
+  Mana access to that profile's signed-in sites; a separate automation profile
+  is recommended. Chromium may refuse automation of a normal default profile.
+  Take over and Done use the same configured directory.
 - Started on her first browser call; one context, one page.
 - `--disable-gpu` (no VRAM) and `--renderer-process-limit=1`.
 - Images, video and fonts are blocked (`page.route`) unless the rail's
