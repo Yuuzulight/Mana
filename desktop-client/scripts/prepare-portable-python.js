@@ -134,6 +134,8 @@ async function buildOne(name, cfg) {
 }
 
 (async () => {
+  const helper = path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'Mana.AnalysisSandbox.csproj');
+  run('dotnet', ['publish', helper, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'bundle')]);
   for (const [name, cfg] of Object.entries(TARGETS)) {
     await buildOne(name, cfg);
   }

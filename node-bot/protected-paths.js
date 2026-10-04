@@ -22,6 +22,8 @@ const PROTECTED_PATHS = [
   "node-bot/acp-path-guard.js",
   "node-bot/acp-test-runner.js",
   "node-bot/workspace-scratch-copy.js",
+  "node-bot/tools/analysis-sandbox.js",
+  "tools/analysis-sandbox/",
   // Her self-work runner's own checks (#1006).
   "node-bot/self-work.js",
   // Local-only mode, the admin key, auth and secrets.
