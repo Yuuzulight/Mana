@@ -53,6 +53,13 @@ test('disposable copies exclude credentials and refuse links outside approved so
   copyTree(source, runtimeCopy);
   assert.equal(fs.existsSync(path.join(runtimeCopy, '.npmrc')), false);
   assert.equal(fs.existsSync(path.join(runtimeCopy, '.env')), false);
+  const credentialDirectory = path.join(source, 'secrets.json');
+  fs.mkdirSync(credentialDirectory);
+  fs.writeFileSync(path.join(credentialDirectory, 'value'), 'host-secret');
+  fs.symlinkSync(credentialDirectory, path.join(source, 'ordinary-alias'), process.platform === 'win32' ? 'junction' : 'dir');
+  const aliasCopy = path.join(root, 'alias-copy');
+  copyTree(source, aliasCopy, { exclude: true });
+  assert.equal(fs.existsSync(path.join(aliasCopy, 'ordinary-alias')), false);
   const outside = path.join(root, 'outside'); fs.mkdirSync(outside);
   fs.symlinkSync(outside, path.join(source, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => copyTree(source, path.join(root, 'bad')), /approved source/);

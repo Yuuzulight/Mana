@@ -26,9 +26,9 @@ test("analysis can be disabled and copies only explicitly offered non-secret fil
     });
     assert.equal(source.listToolSchemas()[0].function.name, TOOL_NAME);
     assert.match(await source.executeTool(TOOL_NAME, { code: "pass", files: [data] }), /untrusted-.*analysis output/);
-    assert.match(await source.executeTool(TOOL_NAME, { code: "pass", files: [secret] }), /credential file/);
-    assert.match(await source.executeTool(TOOL_NAME, { code: "pass", files: [path.join(dir, "not-offered.csv")] }), /explicitly named/);
-    assert.match(await source.executeTool(TOOL_NAME, { code: "pass", files: [data, data] }), /unique/);
+    await assert.rejects(source.executeTool(TOOL_NAME, { code: "pass", files: [secret] }), /credential file/);
+    await assert.rejects(source.executeTool(TOOL_NAME, { code: "pass", files: [path.join(dir, "not-offered.csv")] }), /explicitly named/);
+    await assert.rejects(source.executeTool(TOOL_NAME, { code: "pass", files: [data, data] }), /unique/);
     assert.equal(called, 1);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -46,7 +46,32 @@ test("analysis delivers charts out of model context and reports unavailable runt
   assert.match(chartArtifact(charts), /```html\n<img alt="Analysis chart"/);
   assert.equal(chartArtifact([]), "");
   const unavailable = createAnalysisToolSource({ env: { MANA_ANALYSIS_ENABLED: "1" }, runSandbox: async () => { throw new Error("AppContainer helper is missing"); } });
-  assert.match(await unavailable.executeTool(TOOL_NAME, { code: "pass" }), /AppContainer helper is missing/);
+  await assert.rejects(unavailable.executeTool(TOOL_NAME, { code: "pass" }), /AppContainer helper is missing/);
+});
+
+test('Python failures propagate with untrusted output instead of appearing successful', async () => {
+  const source = createAnalysisToolSource({ env: { MANA_ANALYSIS_ENABLED: '1' },
+    runSandbox: async () => ({ logs: 'before failure', error: 'ValueError: expected', charts: [] }) });
+  await assert.rejects(source.executeTool(TOOL_NAME, { code: 'raise ValueError()' }), error => {
+    assert.match(error.message, /untrusted-.*analysis failure/);
+    assert.match(error.message, /before failure/);
+    assert.match(error.message, /ValueError/);
+    return true;
+  });
+});
+
+test('analysis rejects credential configuration and reserved input names before execution', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-analysis-private-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const name of ['.npmrc', 'NuGet.Config', 'worker.py', 'request.json']) {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, 'private');
+    const source = createAnalysisToolSource({ env: { MANA_ANALYSIS_ENABLED: '1' }, userMessage: `Analyze "${file}"`,
+      runSandbox: () => assert.fail('must not execute') });
+    await assert.rejects(source.executeTool(TOOL_NAME, { code: 'pass', files: [file] }), /credential file|unsupported input filename/);
+  }
+  const source = createAnalysisToolSource({ env: { MANA_ANALYSIS_ENABLED: '1' }, runSandbox: () => assert.fail('must not execute') });
+  await assert.rejects(source.executeTool(TOOL_NAME, { code: ' ' }), /code must contain/);
 });
 
 test("chat wires analysis into the tool policy and appends charts after the model reply", async () => {
@@ -68,4 +93,25 @@ test("chat wires analysis into the tool policy and appends charts after the mode
   assert.match(reply, /The mean is 2/);
   assert.ok(reply.includes(dataUrl));
   assert.match(reply, /```html/);
+});
+
+test('chat activity shows Python code, output and failure status', async () => {
+  const { createApp } = require('../server');
+  const events = [];
+  const code = "print('before failure')\nraise ValueError('expected')";
+  const app = createApp({ env: { ...process.env, MANA_ANALYSIS_ENABLED: '1' },
+    isLlamaServerEnabled: () => true,
+    runAnalysisSandbox: async () => ({ logs: 'before failure', error: 'ValueError: expected', charts: [] }),
+    runToolAwareReply: async (_prompt, policy) => {
+      await assert.rejects(policy.executeTool(TOOL_NAME, { code }), /ValueError/);
+      return { content: 'The analysis failed with a ValueError.', toolCalls: [{ name: TOOL_NAME, args: { code }, ok: false }], rounds: 1 };
+    },
+  });
+  await app.locals.buildAssistantReply('run the calculation', '', '', 'default', null, null, null,
+    { wrapToolPolicy: policy => policy, onToolCall: event => events.push(event) });
+  const end = events.find(event => event.name === TOOL_NAME && event.phase === 'end');
+  assert.equal(end.status, 'failed');
+  assert.equal(end.detail.command, code);
+  assert.match(end.detail.resultPreview, /before failure/);
+  assert.match(end.detail.resultPreview, /ValueError/);
 });

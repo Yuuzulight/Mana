@@ -1214,10 +1214,14 @@ async function buildAssistantReply(
               turnTools.push(name);
               ok = true;
               return result;
+            } catch (error) {
+              if (name === 'analysis__run_python') result = error.message;
+              throw error;
             } finally {
               reportTool(name, "end", {
                 ok,
-                result: ok ? context.trimResult(result) : undefined,
+                result: ok || name === 'analysis__run_python'
+                  ? context.trimResult(result, name === 'analysis__run_python' ? 30000 : undefined) : undefined,
                 tokens: context.activeLlamaServerRuntime.getLastPromptUsage?.()?.promptTokens,
                 // #1337: a background task it started gets its own chat line.
                 task: ok ? context.launchedTask(result) : undefined,

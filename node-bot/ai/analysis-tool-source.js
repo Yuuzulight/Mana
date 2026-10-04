@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { runAnalysisSandbox, isAnalysisAvailable, MAX_INPUT_BYTES } = require("../tools/analysis-sandbox");
-const { isCredentialPath } = require("./tool-policy");
+const { runAnalysisSandbox, isAnalysisAvailable, MAX_INPUT_BYTES, MAX_CODE_CHARS } = require("../tools/analysis-sandbox");
+const { isPrivateSandboxFile } = require('../tools/native-execution');
 const { pathsIn } = require("../../plugins/browser-automation");
 const { wrapUntrusted } = require("./untrusted-content");
 
@@ -33,6 +33,7 @@ function createAnalysisToolSource(options = {}) {
     executeTool: async (name, args = {}) => {
       if (!enabled || name !== TOOL_NAME) throw new Error(`unknown analysis tool: ${name}`);
       try {
+        if (typeof args.code !== 'string' || !args.code.trim() || args.code.length > MAX_CODE_CHARS) throw new Error(`code must contain 1 to ${MAX_CODE_CHARS} characters`);
         const requested = args.files || [];
         if (!Array.isArray(requested) || requested.length > 8) throw new Error("files must be an array of up to eight paths");
         const names = new Set();
@@ -41,8 +42,8 @@ function createAnalysisToolSource(options = {}) {
           if (typeof file !== "string" || !allowed.has(path.resolve(file))) throw new Error("input files must be explicitly named in the user's current message");
           const real = fs.realpathSync(file);
           const name = path.basename(real);
-          if (isCredentialPath(path.basename(file)) || isCredentialPath(name)) throw new Error("refusing to read a credential file");
-          if (!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,119}$/.test(name) || name.toLowerCase() === "output") throw new Error("unsupported input filename");
+          if (isPrivateSandboxFile(path.basename(file)) || isPrivateSandboxFile(name)) throw new Error("refusing to read a credential file");
+          if (!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,119}$/.test(name) || ['output', 'worker.py', 'request.json', 'result.json'].includes(name.toLowerCase())) throw new Error("unsupported input filename");
           if (names.has(name.toLowerCase())) throw new Error("input filenames must be unique");
           names.add(name.toLowerCase());
           const descriptor = fs.openSync(real, "r");
@@ -57,14 +58,17 @@ function createAnalysisToolSource(options = {}) {
               if (!read) break;
               count += read;
             }
+            const after = fs.fstatSync(descriptor);
+            if (count !== stat.size || ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(key => after[key] !== stat[key])) throw new Error('Input file changed while reading; offer it again');
             return { name, data: buffer.subarray(0, count).toString("base64") };
           } finally { fs.closeSync(descriptor); }
         });
         const result = await run({ code: args.code, files }, { helperPath: env.MANA_ANALYSIS_HELPER, runtimeDir: env.MANA_ANALYSIS_PYTHON_DIR });
         options.onCharts?.(result.charts);
+        if (result.error) throw new Error(JSON.stringify({ logs: result.logs, error: result.error }));
         return wrapUntrusted("analysis output", JSON.stringify({ logs: result.logs, error: result.error, charts: result.charts.length }));
       } catch (error) {
-        return JSON.stringify({ status: "error", error: error.message });
+        throw new Error(wrapUntrusted("analysis failure", error.message));
       }
     },
   };
