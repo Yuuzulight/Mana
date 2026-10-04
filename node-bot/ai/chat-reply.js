@@ -24,107 +24,30 @@ function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
     return parts.join("\n");
   }
 
-async function runOpenAIReply(
-    prompt,
-    maxTokens = context.LLAMA_MAX_TOKENS,
-    systemPromptOverride = null,
-    // Issue #421: only passed by call sites that have a REAL per-user
-    // session in scope -- the main chat-turn reply path, and
-    // acp-memory-store.js's automatic per-session summarization. The
-    // background reviewer/connections jobs fold every session's summaries
-    // together with no single session in scope, so they're left untracked
-    // rather than polluting a "default" bucket with unrelated global usage.
-    sessionId = null,
-  ) {
-    if (!context.shouldUseRemoteAi()) {
-      return null; // no key configured; fall back to local
+async function runOpenAIReply(prompt, maxTokens = context.LLAMA_MAX_TOKENS, systemPromptOverride = null, sessionId = null, remoteConfig = null) {
+    let config = remoteConfig || { apiKey: context.openAiApiKey(), baseUrl: context.openAiBaseUrl(), model: context.openAiModel() };
+    if (remoteConfig?.enabled === true) {
+      try { config = context.modelManagement.resolveChatModel('cloud:fallback').remoteConfig; }
+      catch { return null; }
+      if (!config) return null;
+      if (config.model !== remoteConfig.model || config.baseUrl !== remoteConfig.baseUrl) return null;
     }
-
+    if (!context.shouldUseRemoteAi(config)) return null;
     if (sessionId) {
       const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
-      if (
-        Number.isFinite(stopThreshold) &&
-        stopThreshold > 0 &&
-        context.sessionTokenUsage.getUsage(sessionId).totalTokens >= stopThreshold
-      ) {
-        console.warn(
-          `Remote AI call blocked for session ${sessionId}: token stop threshold (${stopThreshold}) reached.`,
-        );
-        return null; // falls back to local, same as remote AI being disabled
-      }
+      if (Number.isFinite(stopThreshold) && stopThreshold > 0 && context.sessionTokenUsage.getUsage(sessionId).totalTokens >= stopThreshold) return null;
     }
-
-    const systemPrompt = systemPromptOverride || context.activeDefaultPrompt();
-
-    const baseUrl = context.openAiBaseUrl().replace(/\/+$/, "");
-    const url = new URL(baseUrl + "/v1/chat/completions");
-    const transport = url.protocol === "https:" ? context.https : context.http;
-
-    const body = JSON.stringify({
-      model: context.openAiModel(),
+    const result = await require('./remote-chat').requestChatCompletion({
+      ...config,
+      maxTokens,
+      timeoutMs: process.env.MANA_REMOTE_AI_TIMEOUT_MS,
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt },
+        { role: 'system', content: systemPromptOverride || context.activeDefaultPrompt() },
+        { role: 'user', content: prompt },
       ],
-      max_tokens: maxTokens,
-      temperature: 0.7,
     });
-
-    return new Promise((resolve) => {
-      const options = {
-        hostname: url.hostname,
-        port: url.port || (url.protocol === "https:" ? 443 : 80),
-        path: url.pathname + url.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-          // Many self-hosted OpenAI-compatible servers (Ollama, llama.cpp's
-          // own llama-server, etc.) don't require auth at all -- only send
-          // the header when there's actually a key configured, rather than
-          // sending a literal "Bearer null" to a server that might choke on it.
-          ...(context.openAiApiKey() ? { Authorization: `Bearer ${context.openAiApiKey()}` } : {}),
-        },
-      };
-
-      const req = transport.request(options, (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          try {
-            const raw = Buffer.concat(chunks).toString("utf8");
-            const j = JSON.parse(raw);
-            const text =
-              j?.choices?.[0]?.message?.content ||
-              j?.choices?.[0]?.text ||
-              null;
-            if (sessionId && j?.usage) {
-              context.sessionTokenUsage.recordUsage(sessionId, j.usage);
-            }
-            if (text) {
-              resolve(text.trim());
-            } else {
-              console.warn(
-                "OpenAI proxy returned unexpected shape:",
-                raw.slice(0, 300),
-              );
-              resolve(null);
-            }
-          } catch (e) {
-            console.warn("OpenAI proxy parse error:", e.message);
-            resolve(null);
-          }
-        });
-      });
-
-      req.on("error", (e) => {
-        console.warn("OpenAI proxy request error:", e.message);
-        resolve(null);
-      });
-
-      req.write(body);
-      req.end();
-    });
+    if (sessionId && result?.usage) context.sessionTokenUsage.recordUsage(sessionId, result.usage);
+    return result?.content || null;
   }
 
 function pickAssistantMode(transcript, normalizedModelProfile) {
@@ -163,10 +86,12 @@ async function buildAssistantReply(
     onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
+    const chatChoice = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId)?.chatModel : null;
+    const selectedChatModel = chatChoice ? context.modelManagement.resolveChatModel(chatChoice, { fallbackToLocal: true }) : null;
     // let: #666's wait below may switch this turn to the fallback profile.
-    let normalizedModelProfile = context.selectLlamaModelProfileForPrompt(
+    let normalizedModelProfile = selectedChatModel?.profile || context.selectLlamaModelProfileForPrompt(
       transcript,
-      modelProfile,
+      selectedChatModel?.profile || modelProfile,
     );
 
     // #1343 Phase 3: Sticky coding session handling and gaming guard
@@ -211,6 +136,7 @@ async function buildAssistantReply(
     // (#780's replyMeta.scheduled). let: her tool call can switch it
     // mid-reply.
     const userChat = Boolean(replyMeta && !replyMeta.scheduled);
+    if (selectedChatModel?.profile && !replyMeta?.gamingHeld) normalizedModelProfile = selectedChatModel.profile;
     let manaThinking = false;
     if (userChat) {
       // #697: a reply soon after an unprompted remark counts as engaging with it.
@@ -362,7 +288,7 @@ async function buildAssistantReply(
       String((context.deps.env || process.env).MANA_GOAL_MODE || "0") === "1" &&
       toolCallingEnabled &&
       context.isLlamaServerAvailable();
-    if (goalMode) normalizedModelProfile = "default";
+    if (goalMode && !selectedChatModel?.profile) normalizedModelProfile = "default";
 
     // Issue #400: buildSkillsIndexBlock already computes how many skills it
     // left out, but only as a line of text baked into the block -- read
@@ -837,15 +763,18 @@ async function buildAssistantReply(
     };
 
     // Try OpenAI/proxy only when explicitly allowed.
-    if (context.shouldUseRemoteAi()) {
+    const useRemoteChat = selectedChatModel?.remoteConfig || (!selectedChatModel && context.shouldUseRemoteAi() && !require('../local-only').isLocalOnly());
+    if (useRemoteChat) {
       try {
         const openAiReply = untag(await runOpenAIReply(
           finalPrompt,
           effectiveMaxTokens,
           selectedSystemPrompt + flatMemorySuffix,
           sessionId,
+          selectedChatModel?.remoteConfig || null,
         ));
         if (openAiReply) {
+          if (replyMeta) replyMeta.answerModel = selectedChatModel?.remoteConfig?.model || context.openAiModel();
           console.log("Using OpenAI proxy reply.");
           context.queueVTubeReaction(openAiReply);
           try {
@@ -866,6 +795,7 @@ async function buildAssistantReply(
                       : openAiReply,
                   // #914: history lines are labelled with who said them.
                   speaker: context.characterStore.active().name,
+                  answerModel: replyMeta?.answerModel,
                 })
                 .catch((memErr) =>
                   console.warn(
@@ -923,6 +853,7 @@ async function buildAssistantReply(
           const { text: sentence, emotions } = context.stripEmotionTags(tagged);
           if (emotions.length) sentenceEmotion = emotions[0];
           if (!sentence) return;
+          fallbackAttempt?.markStarted();
           streamedSentences.push(sentence);
           await onSentence(sentence, sentenceEmotion);
         }
@@ -939,7 +870,9 @@ async function buildAssistantReply(
     // #646: this pass's entry in GET /agent/activity; its stop flag is
     // read by the executeTool wrapper below.
     let activityRun = null;
+    let fallbackAttempt = null;
     async function replyMaybeWithTools(promptText) {
+      fallbackAttempt?.signal.throwIfAborted();
       turnToolSchemas = [];
       const usageBefore = context.activeLlamaServerRuntime.getLastPromptUsage?.();
       activityRun = context.agentActivity.start({
@@ -1238,6 +1171,7 @@ async function buildAssistantReply(
             } catch (e) {}
           };
           mergedToolPolicy.executeTool = async (name, args) => {
+            fallbackAttempt?.markStarted();
             // #646: Stop from the activity panel. The tool already running
             // finishes; every later call is refused, so the model answers
             // or the loop's own 3-consecutive-errors cap makes it.
@@ -1339,6 +1273,8 @@ async function buildAssistantReply(
             "Tool-aware reply returned empty content; falling back to the plain reply path",
           );
         } catch (e) {
+          if (e?.code === 'LOCAL_CLEANUP_FAILED') throw e;
+          fallbackAttempt?.signal.throwIfAborted();
           console.warn(
             "Tool-aware reply failed, falling back to plain reply:",
             e && e.message ? e.message : e,
@@ -1364,6 +1300,8 @@ async function buildAssistantReply(
             thinking: thinkHarder,
           });
         } catch (e) {
+          if (e?.code === 'LOCAL_CLEANUP_FAILED') throw e;
+          fallbackAttempt?.signal.throwIfAborted();
           console.warn(
             "Streaming local reply failed, falling back to non-streaming:",
             e && e.message ? e.message : e,
@@ -1395,6 +1333,7 @@ async function buildAssistantReply(
     const bestOfNEnabled =
       String(process.env.MANA_BEST_OF_N_ENABLED || "0") === "1";
     async function replyMaybeWithBestOfN(promptText) {
+      fallbackAttempt?.signal.throwIfAborted();
       if (
         bestOfNEnabled &&
         !goalMode &&
@@ -1407,6 +1346,8 @@ async function buildAssistantReply(
         try {
           const n = Number(process.env.MANA_BEST_OF_N_COUNT || 3);
           const result = await context.runBestOfNReply(promptText, {
+            signal: memoryExtraMessages.signal,
+            onReplyStarted: memoryExtraMessages.onReplyStarted,
             n,
             maxTokens: effectiveMaxTokens,
             profile: normalizedModelProfile,
@@ -1443,6 +1384,8 @@ async function buildAssistantReply(
             "Best-of-N reply returned empty content; falling back to the plain reply path",
           );
         } catch (e) {
+          if (e?.code === 'LOCAL_CLEANUP_FAILED') throw e;
+          fallbackAttempt?.signal.throwIfAborted();
           console.warn(
             "Best-of-N reply failed, falling back to plain reply:",
             e && e.message ? e.message : e,
@@ -1453,6 +1396,13 @@ async function buildAssistantReply(
     }
 
     const BACKUP_NOTICE = "My main model isn't answering, so I'm using my backup.";
+    const fallbackConfig = replyMeta && !replyMeta.scheduled && !selectedChatModel?.remoteConfig && !selectedChatModel?.localOnly ? context.openAiFallbackConfig?.() : null;
+    fallbackAttempt = (context.createChatAttempt || require('./chat-attempt').createChatAttempt)(fallbackConfig?.timeoutSeconds);
+    memoryExtraMessages.signal = fallbackAttempt.signal;
+    memoryExtraMessages.onReplyStarted = fallbackAttempt.markStarted;
+    memoryExtraMessages.requireCancellable = [30, 60].includes(fallbackConfig?.timeoutSeconds);
+    let replyWithBackup;
+    try {
     let usedBackup = false;
     // #666: wait out a llama-server (re)start instead of failing the turn,
     // telling a streaming client once, as a spoken sentence. Not in
@@ -1470,6 +1420,7 @@ async function buildAssistantReply(
           normalizedModelProfile,
           onSentence ? () => onSentence("Give me a second, I'm waking up.") : null,
           memoryExtraMessages.images,
+          { signal: fallbackAttempt.signal },
         );
         if (readyProfile !== normalizedModelProfile) {
           console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
@@ -1478,6 +1429,7 @@ async function buildAssistantReply(
           usedBackup = true;
         }
       } catch (e) {
+        if (e?.code === 'LOCAL_CLEANUP_FAILED') throw e;
         console.warn("llama-server still unavailable after waiting:", e && e.message ? e.message : e);
       }
     }
@@ -1485,7 +1437,7 @@ async function buildAssistantReply(
     // #666: an empty reply (after the runtime's own retry) gets one try on
     // the backup model before llama-cli -- once per turn, including a switch
     // the wait above already made, so the notice is said at most once.
-    async function replyWithBackup(promptText) {
+    replyWithBackup = async function replyWithBackup(promptText) {
       if (usedBackup) return null;
       usedBackup = true;
       try {
@@ -1503,13 +1455,33 @@ async function buildAssistantReply(
         normalizedModelProfile = backup;
         return backupReply;
       } catch (e) {
+        if (e?.code === 'LOCAL_CLEANUP_FAILED') throw e;
+        fallbackAttempt.signal.throwIfAborted();
         console.warn("Backup model reply failed, falling back to llama-cli:", e && e.message ? e.message : e);
         return null;
       }
     }
 
     // Fall back to local llama
-    let reply = untag(await replyMaybeWithBestOfN(finalPrompt));
+    let reply;
+    let localError;
+    try { reply = untag(await replyMaybeWithBestOfN(finalPrompt)); }
+    catch (error) { localError = error; }
+    if (localError?.code === 'LOCAL_CLEANUP_FAILED') throw localError;
+    if (!(typeof reply === 'string' && reply.trim())) {
+      if (fallbackConfig && !fallbackAttempt.started) {
+        fallbackAttempt.close();
+        const permittedFallback = context.openAiFallbackConfig?.();
+        const fallbackReply = permittedFallback ? untag(await runOpenAIReply(finalPrompt, effectiveMaxTokens, selectedSystemPrompt + flatMemorySuffix, sessionId, permittedFallback)) : null;
+        if (fallbackReply) {
+          if (replyMeta) { replyMeta.cloudFallback = true; replyMeta.answerModel = permittedFallback.model; }
+          reply = fallbackReply;
+        }
+      }
+      if (!reply && localError) throw localError;
+    }
+    fallbackAttempt.close();
+    if (replyMeta && !replyMeta.answerModel) replyMeta.answerModel = context.activeLlamaServerRuntime.getStatus?.()?.model?.split(/[\\/]/).pop() || `Local: ${normalizedModelProfile}`;
 
     // Conversational rut detection (issue #159), general reply path: the
     // Best-of-N branch above already prefers a less-repetitive candidate
@@ -1521,7 +1493,7 @@ async function buildAssistantReply(
     try {
       const rutEnabled = String(process.env.MANA_RUT_DETECTION_ENABLED || "1") === "1";
       // #676: never regenerate a goal-mode reply -- that reruns the whole loop, tool calls included.
-      if (rutEnabled && !goalMode && sessionId && context.acpMemoryStore && typeof reply === "string") {
+      if (rutEnabled && !replyMeta?.cloudFallback && !goalMode && sessionId && context.acpMemoryStore && typeof reply === "string") {
         const recentReplies = (context.acpMemoryStore.getSession(sessionId)?.turns || [])
           .map((t) => t.assistant)
           .filter(Boolean);
@@ -1581,7 +1553,7 @@ async function buildAssistantReply(
         String(process.env.MANA_AUTO_RETRY_VERIFICATION || "0") === "1";
       const maxRetries = Number(process.env.MANA_VERIFY_MAX_RETRIES || 1);
 
-      if (verifyEnabled) {
+      if (verifyEnabled && !replyMeta?.cloudFallback) {
         let attempts = 0;
         while (true) {
           attempts += 1;
@@ -1633,7 +1605,7 @@ async function buildAssistantReply(
     try {
       const phrasingEnabled =
         String(process.env.MANA_PHRASING_VARIATION_ENABLED || "1") === "1";
-      if (phrasingEnabled && sessionId && typeof reply === "string") {
+      if (phrasingEnabled && !replyMeta?.cloudFallback && sessionId && typeof reply === "string") {
         const check = context.phrasingVariator.checkReply(sessionId, reply);
         if (check.isPredictable) {
           const alt = await context.rewritePhrase(check.match.matchedText, {
@@ -1677,6 +1649,8 @@ async function buildAssistantReply(
             // #1337: the reply's step lines, for the chat when it's reopened.
             steps: activityRun ? context.agentActivity.steps(activityRun.id) : null,
             speaker: context.characterStore.active().name,
+            answerModel: replyMeta?.answerModel,
+            cloudFallback: replyMeta?.cloudFallback,
           })
           .catch((memErr) =>
             console.warn(
@@ -1726,6 +1700,7 @@ async function buildAssistantReply(
         }))().catch((e) => console.warn("Failed to finalize prompt composition:", e?.message || e));
     }
     return reply;
+    } finally { fallbackAttempt.close(); }
   }
 
 async function buildGroupReaction({ sessionId, userText, sister, reply }) {

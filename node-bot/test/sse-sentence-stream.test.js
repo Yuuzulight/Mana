@@ -34,6 +34,19 @@ async function collect(resp) {
   return { seen, full };
 }
 
+test('reply progress starts on visible text before a sentence, never on thinking alone', async () => {
+  let progress = 0;
+  await streamSentences(sseBody(['<think>private reasoning</think>']), { onReplyStarted: () => { progress += 1; } });
+  assert.equal(progress, 0);
+  const order = [];
+  await streamSentences(sseBody(['<think>reasoning</think>', 'Hello', '. ']), {
+    onReplyStarted: () => order.push('progress'),
+    onSentence: () => order.push('sentence'),
+  });
+  assert.equal(order[0], 'progress');
+  assert.equal(order.at(-1), 'sentence');
+});
+
 test("emits sentences as they complete", async () => {
   const { seen, full } = await collect(sseBody(["Hello there", ". ", "How are you", "? "]));
   assert.deepEqual(seen, ["Hello there.", "How are you?"]);

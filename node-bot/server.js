@@ -453,6 +453,25 @@ function openAiModel() {
   if (override && override.model) return override.model;
   return process.env.OPENAI_MODEL || "codex-gpt-5.5";
 }
+function openAiFallbackConfig() {
+  if (require('./local-only').isLocalOnly()) return null;
+  const fallback = modelSettingsStore.getFallbackSettings();
+  if (!fallback.enabled) return null;
+  const config = {
+    apiKey: fallback.apiKey || process.env.OPENAI_API_KEY || null,
+    baseUrl: fallback.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com",
+    model: fallback.model || process.env.OPENAI_MODEL || '',
+    timeoutSeconds: fallback.timeoutSeconds,
+    allowRemoteAi: '1',
+  };
+  return config.model && shouldUseRemoteAiCore({
+    apiKey: config.apiKey,
+    allowRemoteAi: config.allowRemoteAi,
+    baseUrl: config.baseUrl,
+  })
+    ? config
+    : null;
+}
 const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
 
 // Threads the dynamic Settings-driven apiKey/baseUrl through to every
@@ -719,6 +738,8 @@ async function runLocalLlamaReply(
   // #675: true forces thinking on for this reply (a "think harder" turn).
   thinking = undefined,
 ) {
+  extraMessages?.signal?.throwIfAborted();
+  if (extraMessages?.requireCancellable && !llamaServerRuntime.isEnabled()) throw new Error('Timed fallback requires the cancellable llama-server runtime');
   if (llamaServerRuntime.isEnabled()) {
     try {
       return await llamaServerRuntime.runLocalAssistantReply(
@@ -731,6 +752,9 @@ async function runLocalLlamaReply(
         thinking,
       );
     } catch (e) {
+      if (e?.code === 'LOCAL_CLEANUP_FAILED') throw e;
+      extraMessages?.signal?.throwIfAborted();
+      if (extraMessages?.requireCancellable) throw e;
       if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
         const backupReply = await onEmptyReply();
         if (backupReply) return backupReply;
@@ -3675,7 +3699,7 @@ function registerRoutes(app, upload, deps = {}) {
   function readScreenText(...args) { return speechRuntime.readScreenText(...args); }
 
   const chatReply = createChatReply({
-    get acpMemoryStore() { return acpMemoryStore; },
+    get acpMemoryStore() { return deps.acpMemoryStore || acpMemoryStore; },
     get activeApprovalGate() { return activeApprovalGate; },
     get activeBrowserAutomationToolSource() { return activeBrowserAutomationToolSource; },
     get activeDefaultPrompt() { return activeDefaultPrompt; },
@@ -3747,6 +3771,8 @@ function registerRoutes(app, upload, deps = {}) {
     get openAiApiKey() { return openAiApiKey; },
     get openAiBaseUrl() { return openAiBaseUrl; },
     get openAiModel() { return openAiModel; },
+    get openAiFallbackConfig() { return deps.openAiFallbackConfig || openAiFallbackConfig; },
+    get createChatAttempt() { return deps.createChatAttempt; },
     get path() { return path; },
     get perfMetrics() { return perfMetrics; },
     get persona() { return persona; },
@@ -3906,6 +3932,7 @@ function registerRoutes(app, upload, deps = {}) {
   // directly (e.g. triggering its automatic summarizeFn compaction) rather
   // than going through an HTTP route.
   app.locals.acpMemoryStore = deps.acpMemoryStore || acpMemoryStore;
+  require('./routes/chat-models').registerChatModelRoutes(app, { modelManagement, acpMemoryStore: app.locals.acpMemoryStore, checkAdminAuth });
 
   registerVTubeRoutes(app, { vtubeRuntime });
 

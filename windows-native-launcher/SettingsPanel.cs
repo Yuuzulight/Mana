@@ -88,6 +88,13 @@ internal sealed class SettingsPanel : UserControl
     private readonly TextBox brainApiKeyBox = new() { Width = 300, UseSystemPasswordChar = true };
     private readonly TextBox brainModelBox = new() { Width = 300 };
     private readonly Label brainStatusLabel = new() { AutoSize = true };
+    private readonly CheckBox cloudFallbackToggle = new() { Text = "Cloud fallback", AutoSize = true };
+    private readonly ComboBox cloudFallbackTiming = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180, AccessibleName = "Fallback wait" };
+    private readonly TextBox cloudFallbackUrl = new() { Width = 300, AccessibleName = "Fallback base URL" };
+    private readonly TextBox cloudFallbackKey = new() { Width = 300, UseSystemPasswordChar = true, AccessibleName = "Fallback API key" };
+    private readonly TextBox cloudFallbackModel = new() { Width = 300, AccessibleName = "Fallback model" };
+    private readonly Label cloudFallbackStatus = new() { AutoSize = true, MaximumSize = new Size(400, 0) };
+    private bool clearingFallbackKey;
     private readonly TextBox visionModelPathBox = new() { Width = 300 };
     private readonly TextBox visionMmprojPathBox = new() { Width = 300 };
     private readonly CheckBox loadIntoVramCheckBox = new() { Text = "Load the model straight into VRAM (saves ~4 GB RAM)", AutoSize = true };
@@ -3035,6 +3042,7 @@ internal sealed class SettingsPanel : UserControl
         stack.Controls.Add(BuildActiveProfileGroup());
         stack.Controls.Add(BuildLocalModelGroup());
         stack.Controls.Add(BuildBrainProviderGroup());
+        stack.Controls.Add(BuildCloudFallbackGroup());
         stack.Controls.Add(BuildVisionModelGroup());
         stack.Controls.Add(BuildLlamaBuildGroup());
         scroll.Controls.Add(stack);
@@ -3303,6 +3311,59 @@ internal sealed class SettingsPanel : UserControl
         stack.Controls.Add(buttonRow);
         stack.Controls.Add(brainStatusLabel);
         group.Controls.Add(stack);
+        return group;
+    }
+
+    private GroupBox BuildCloudFallbackGroup()
+    {
+        var group = NewGroup("Chat Cloud Fallback");
+        var layout = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Location = new Point(8, 24), BackColor = DarkTheme.Background };
+        void AddRow(string label, Control control)
+        {
+            layout.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
+            layout.Controls.Add(control);
+        }
+        cloudFallbackToggle.ForeColor = DarkTheme.Text;
+        cloudFallbackTiming.BackColor = DarkTheme.Panel2;
+        cloudFallbackTiming.ForeColor = DarkTheme.Text;
+        cloudFallbackTiming.Items.AddRange(new object[] { "30 seconds", "60 seconds", "No timeout" });
+        cloudFallbackTiming.SelectedIndex = 2;
+        StyleTextBox(cloudFallbackUrl);
+        StyleTextBox(cloudFallbackKey);
+        StyleTextBox(cloudFallbackModel);
+        cloudFallbackStatus.ForeColor = DarkTheme.Muted;
+        AddRow("Enabled", cloudFallbackToggle);
+        AddRow("Wait", cloudFallbackTiming);
+        AddRow("Base URL", cloudFallbackUrl);
+        AddRow("API key", cloudFallbackKey);
+        AddRow("Model", cloudFallbackModel);
+        var buttons = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background };
+        var save = new Button { Text = "Save" };
+        var clearKey = new Button { Text = "Clear key" };
+        DarkTheme.ApplyButton(save);
+        DarkTheme.ApplyButton(clearKey);
+        clearKey.Click += (_, _) => { clearingFallbackKey = true; cloudFallbackKey.Clear(); cloudFallbackKey.PlaceholderText = "Key will be cleared on Save"; };
+        save.Click += async (_, _) =>
+        {
+            if (cloudFallbackToggle.Checked && MessageBox.Show(this, "Allow failed or stalled chat replies to send chat context to this endpoint? Provider charges may apply.", "Cloud fallback", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            save.Enabled = false;
+            try
+            {
+                var seconds = cloudFallbackTiming.SelectedIndex == 0 ? 30 : cloudFallbackTiming.SelectedIndex == 1 ? 60 : 0;
+                var key = clearingFallbackKey ? "" : string.IsNullOrWhiteSpace(cloudFallbackKey.Text) ? null : cloudFallbackKey.Text.Trim();
+                await backendClient.SetCloudFallbackAsync(cloudFallbackToggle.Checked, seconds, cloudFallbackUrl.Text.Trim(), key, cloudFallbackModel.Text.Trim());
+                clearingFallbackKey = false;
+                cloudFallbackKey.Clear();
+                await RefreshModelTabAsync();
+            }
+            catch (Exception ex) { if (!IsDisposed) cloudFallbackStatus.Text = ex.Message; }
+            finally { if (!IsDisposed) save.Enabled = true; }
+        };
+        buttons.Controls.Add(save);
+        buttons.Controls.Add(clearKey);
+        AddRow("", buttons);
+        AddRow("", cloudFallbackStatus);
+        group.Controls.Add(layout);
         return group;
     }
 
@@ -3643,6 +3704,13 @@ internal sealed class SettingsPanel : UserControl
         useRemoteAiCheckBox.Checked = status.BrainType == "openai_compatible";
         brainBaseUrlBox.Text = status.BrainBaseUrl;
         brainModelBox.Text = status.BrainModel;
+        cloudFallbackToggle.Enabled = !status.LocalOnly;
+        cloudFallbackToggle.Checked = !status.LocalOnly && status.Fallback.Enabled;
+        cloudFallbackTiming.SelectedIndex = status.Fallback.TimeoutSeconds == 30 ? 0 : status.Fallback.TimeoutSeconds == 60 ? 1 : 2;
+        cloudFallbackUrl.Text = status.Fallback.BaseUrl;
+        cloudFallbackModel.Text = status.Fallback.Model;
+        cloudFallbackKey.PlaceholderText = status.Fallback.HasApiKey ? "(configured -- leave blank to keep it)" : "";
+        cloudFallbackStatus.Text = status.LocalOnly ? "Local-only mode" : status.Fallback.Enabled && !status.Fallback.Active ? "Endpoint unavailable or not permitted" : "";
         // Never pre-fills the real key (node-bot never echoes it) --
         // just hints that one is already saved, so Save's "blank means
         // leave it alone" behavior above doesn't look like a data-loss bug.

@@ -552,12 +552,15 @@ internal sealed class ManaBackendClient
         }
 
         var brain = root.TryGetProperty("brain", out var brainEl) ? brainEl : default;
+        var fallback = root.TryGetProperty("fallback", out var fallbackEl) ? fallbackEl : default;
         var vision = root.TryGetProperty("vision", out var visionEl) ? visionEl : default;
         var recommendation = root.TryGetProperty("recommendation", out var recommendationEl) ? recommendationEl : default;
 
         return new ManaModelStatus
         {
             ActiveProfile = activeProfile,
+            LocalOnly = root.TryGetProperty("localOnly", out var localOnlyEl) && localOnlyEl.ValueKind == JsonValueKind.True,
+            Fallback = fallback.ValueKind == JsonValueKind.Object ? JsonSerializer.Deserialize<ManaCloudFallback>(fallback.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new() : new(),
             Profiles = profiles,
             SelectedModelPath = root.TryGetProperty("selectedModelPath", out var selectedEl) ? selectedEl.GetString() : null,
             BrainType = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("type", out var typeEl) ? typeEl.GetString() ?? "local" : "local",
@@ -569,6 +572,29 @@ internal sealed class ManaBackendClient
             RecommendedProfile = recommendation.ValueKind == JsonValueKind.Object && recommendation.TryGetProperty("profile", out var recProfileEl) ? recProfileEl.GetString() : null,
             LoadIntoVram = root.TryGetProperty("loadIntoVram", out var loadIntoVramEl) && loadIntoVramEl.ValueKind == JsonValueKind.True,
         };
+    }
+
+    public async Task<ManaChatModels> GetChatModelsAsync(string? sessionId)
+    {
+        using var response = await http.GetAsync("/models/chat?sessionId=" + Uri.EscapeDataString(sessionId ?? ""));
+        response.EnsureSuccessStatusCode();
+        return JsonSerializer.Deserialize<ManaChatModels>(await response.Content.ReadAsStringAsync(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+    }
+
+    public async Task SetChatModelAsync(string sessionId, string model)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { sessionId, model }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/chat", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task SetCloudFallbackAsync(bool enabled, int timeoutSeconds, string baseUrl, string? apiKey, string model)
+    {
+        var fields = new Dictionary<string, object> { ["enabled"] = enabled, ["timeoutSeconds"] = timeoutSeconds, ["baseUrl"] = baseUrl, ["model"] = model };
+        if (apiKey is not null) fields["apiKey"] = apiKey;
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/cloud-fallback", content);
+        response.EnsureSuccessStatusCode();
     }
 
     public async Task SetActiveProfileAsync(string profile)
@@ -919,6 +945,8 @@ internal sealed class ManaBackendClient
                     User = turnElement.TryGetProperty("user", out var userElement) ? userElement.GetString() : null,
                     Assistant = turnElement.TryGetProperty("assistant", out var assistantElement) ? assistantElement.GetString() : null,
                     Thought = turnElement.TryGetProperty("thought", out var thoughtElement) ? thoughtElement.GetString() : null,
+                    AnswerModel = turnElement.TryGetProperty("answerModel", out var answerModelEl) ? answerModelEl.GetString() : null,
+                    CloudFallback = turnElement.TryGetProperty("cloudFallback", out var fallbackEl) && fallbackEl.ValueKind == JsonValueKind.True,
                     Steps = ParseAgentSteps(turnElement), // #1337: absent on older turns
                     Versions = versionsList,
                     VersionIndex = versionIndex,
@@ -3116,6 +3144,8 @@ internal sealed class ManaBackendClient
             Type = root.GetProperty("type").GetString() ?? "",
             Text = root.TryGetProperty("text", out var textProp) ? textProp.GetString() : null,
             Reply = root.TryGetProperty("reply", out var replyProp) ? replyProp.GetString() : null,
+            AnswerModel = root.TryGetProperty("answerModel", out var answerModelProp) ? answerModelProp.GetString() : null,
+            CloudFallback = root.TryGetProperty("cloudFallback", out var fallbackProp) && fallbackProp.ValueKind == JsonValueKind.True,
             Changed = root.TryGetProperty("changed", out var changedProp) && changedProp.GetBoolean(),
             Expression = root.TryGetProperty("expression", out var exprProp) ? exprProp.GetString() : null,
             Emotion = root.TryGetProperty("emotion", out var emotionProp) && emotionProp.ValueKind == JsonValueKind.String ? emotionProp.GetString() : null,
@@ -3185,6 +3215,8 @@ internal sealed class ManaSessionTokenUsage
 // #527/#572: GET /models/status.
 internal sealed class ManaModelStatus
 {
+    public bool LocalOnly { get; init; }
+    public ManaCloudFallback Fallback { get; init; } = new();
     public string? ActiveProfile { get; init; }
     public IReadOnlyDictionary<string, ManaModelProfile> Profiles { get; init; } = new Dictionary<string, ManaModelProfile>();
     public string? SelectedModelPath { get; init; }
@@ -3201,6 +3233,27 @@ internal sealed class ManaModelStatus
 }
 
 // #572: one entry from GET /models/brain-providers.
+internal sealed class ManaCloudFallback
+{
+    public bool Enabled { get; init; }
+    public bool Active { get; init; }
+    public int TimeoutSeconds { get; init; }
+    public string BaseUrl { get; init; } = "";
+    public string Model { get; init; } = "";
+    public bool HasApiKey { get; init; }
+}
+
+internal sealed class ManaChatModels
+{
+    public List<ManaChatModel> Models { get; init; } = new();
+    public string Selected { get; init; } = "automatic";
+}
+
+internal sealed record ManaChatModel(string Id, string Label)
+{
+    public override string ToString() => Label;
+}
+
 internal sealed class ManaBrainProviderPreset
 {
     public string Id { get; init; } = "";
@@ -3306,6 +3359,8 @@ internal sealed record ManaSavedArtifactList(List<ManaSavedArtifact>? Artifacts)
 
 internal sealed class ManaSessionTurn
 {
+    public string? AnswerModel { get; init; }
+    public bool CloudFallback { get; init; }
     public int TurnIndex { get; init; }
     public string? At { get; init; }
     public string? User { get; init; }
@@ -3485,6 +3540,8 @@ internal sealed class ManaHookRule
 
 internal sealed class ReplyStreamEvent
 {
+    public string? AnswerModel { get; init; }
+    public bool CloudFallback { get; init; }
     public string Type { get; init; } = "";
     public string? Text { get; init; }
     public string? Reply { get; init; }

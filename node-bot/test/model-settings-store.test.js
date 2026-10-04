@@ -100,6 +100,42 @@ test("model-settings-store: brain and vision settings persist independently of m
   }
 });
 
+test("model-settings-store: fallback settings persist independently and keep the key encrypted", () => {
+  const tempDir = createTempDir();
+  try {
+    const store = createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets });
+    assert.deepEqual(store.getFallbackSettings(), {
+      enabled: false,
+      timeoutSeconds: 0,
+      baseUrl: "",
+      apiKey: "",
+      model: "",
+    });
+
+    const result = store.setFallbackSettings({
+      enabled: true,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-fallback",
+      model: "gpt-test",
+    });
+    assert.deepEqual(result, {
+      enabled: true,
+      timeoutSeconds: 0,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-fallback",
+      model: "gpt-test",
+    });
+    assert.ok(!readFile(tempDir).includes("sk-fallback"));
+    assert.match(readFile(tempDir), /"fallback"/);
+    assert.equal(
+      createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets }).getFallbackSettings().apiKey,
+      "sk-fallback",
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true });
+  }
+});
+
 test("model-settings-store: load-into-VRAM defaults on, MANA_LLAMA_MMAP=1 turns it off, a saved choice beats both", () => {
   const tempDir = createTempDir();
   try {

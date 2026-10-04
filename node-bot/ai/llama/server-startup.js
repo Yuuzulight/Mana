@@ -32,7 +32,7 @@ function sameModelPath(a, b) {
     }
   }
 
-async function startServer(model, mmproj = null, profile = null) {
+async function startServer(model, mmproj = null, profile = null, signal = null) {
     context.state.lastStartBin = null;
     context.state.ctx = context.configuredContext();
     const bin = context.findLlamaServerBin();
@@ -42,6 +42,7 @@ async function startServer(model, mmproj = null, profile = null) {
     // new one spawned before that fails to bind, which #693 would count
     // against the build.
     await context.state.stopping;
+    if (signal?.aborted && context.state.busy <= 1) signal.throwIfAborted();
 
     // If something already answers on the target port (e.g. a server left
     // over from a previous backend run), adopt it when it serves the same
@@ -65,6 +66,7 @@ async function startServer(model, mmproj = null, profile = null) {
     }
 
     const args = context.buildServerArgs(model, port, mmproj, profile, bin);
+    if (signal?.aborted && context.state.busy <= 1) signal.throwIfAborted();
     console.log("Starting llama-server:", bin, args.join(" "));
     const child = context.spawn(bin, args, {
       // bin always names a Windows llama-server.exe -- path.win32 so this
@@ -103,6 +105,7 @@ async function startServer(model, mmproj = null, profile = null) {
     const timeoutMs = Number(context.env.LLAMA_SERVER_STARTUP_TIMEOUT_MS || 180000);
     const startedWaitingAt = context.nowMs();
     for (;;) {
+      if (signal?.aborted && context.state.busy <= 1) signal.throwIfAborted();
       if (exited) {
         context.stop();
         throw new Error(
@@ -148,7 +151,8 @@ async function startServer(model, mmproj = null, profile = null) {
   // for no reason" debounce/adoption logic below for a cosmetic difference.
   // onWait (#666) is called whenever this call is about to wait on a
   // (re)start, so a chat turn can tell the user it's waking up.
-  async function ensureServerConfig(model, mmproj = null, profile = null, onWait = null) {
+  async function ensureServerConfig(model, mmproj = null, profile = null, onWait = null, signal = null) {
+    signal?.throwIfAborted();
     // After a failed start (missing binary, port conflict, out of memory),
     // don't re-pay the startup wait on every reply; let the llama-cli
     // fallback serve until the cooldown expires. #666: per model, and it
@@ -192,7 +196,7 @@ async function startServer(model, mmproj = null, profile = null) {
     // shutdown had nothing to kill. From here to `state.starting =` is
     // synchronous, so re-checking once is enough.
     if (context.state.starting) {
-      return ensureServerConfig(model, mmproj, profile, onWait);
+      return ensureServerConfig(model, mmproj, profile, onWait, signal);
     }
 
     const isRunning = Boolean(context.state.child || context.state.port);
@@ -226,8 +230,9 @@ async function startServer(model, mmproj = null, profile = null) {
       context.stop(); // startServer() waits for the exit
     }
 
+    signal?.throwIfAborted();
     context.state.loading = { model, since: context.nowMs() };
-    context.state.starting = startServer(model, mmproj, profile);
+    context.state.starting = startServer(model, mmproj, profile, signal);
     try {
       await context.state.starting;
       context.state.startFailures.delete(model);
@@ -250,6 +255,7 @@ async function startServer(model, mmproj = null, profile = null) {
         console.log(`llama-server: swap completed in ${context.state.lastSwapMs}ms${vramNote}`);
       }
     } catch (e) {
+      if (signal?.aborted) throw signal.reason;
       const count = (context.state.startFailures.get(model)?.count || 0) + 1;
       context.state.startFailures.set(model, { at: context.nowMs(), count });
       e.retryAfterMs = startCooldownMs(count);
@@ -289,10 +295,10 @@ async function startServer(model, mmproj = null, profile = null) {
 // #872: images = the turn's attached images, if any. The first image turn
   // restarts the chat server with its mmproj; later turns keep it until
   // unloadVision().
-  async function ensureServer(profile, images = null) {
+  async function ensureServer(profile, images = null, { signal = null } = {}) {
     if (images?.length) context.noteImageTurn();
     const model = context.findLlamaModel(profile);
-    return ensureServerConfig(model, chatMmprojToLoad(model), profile);
+    return ensureServerConfig(model, chatMmprojToLoad(model), profile, null, signal);
   }
 
 function chatMmprojToLoad(model) {
@@ -305,7 +311,7 @@ function chatMmprojToLoad(model) {
   // profile's fallbackProfile gets one try. onWait fires at most once, the
   // first time the turn actually has to wait. Resolves to the profile that
   // is ready; rejects with the primary's error when nothing came up.
-  async function waitForServer(profile, onWait = null, images = null) {
+  async function waitForServer(profile, onWait = null, images = null, { signal = null } = {}) {
     if (images?.length) context.noteImageTurn();
     let waited = false;
     const notify = () => {
@@ -317,20 +323,22 @@ function chatMmprojToLoad(model) {
     const model = context.findLlamaModel(profile);
     for (let delayMs = 2000; ; delayMs *= 3) {
       try {
-        await ensureServerConfig(model, chatMmprojToLoad(model), profile, notify);
+        await ensureServerConfig(model, chatMmprojToLoad(model), profile, notify, signal);
+        signal?.throwIfAborted();
         return profile;
       } catch (e) {
+        signal?.throwIfAborted();
         const waitMs = Math.max(delayMs, e.retryAfterMs || 0);
         if (context.nowMs() + waitMs <= deadline) {
           notify();
-          await context.sleep(waitMs);
+          await context.sleep(waitMs, null, { signal });
           continue;
         }
         const fallback = context.backupProfileFor(profile);
         if (!fallback) throw e;
         try {
           const fallbackModel = context.findLlamaModel(fallback);
-          await ensureServerConfig(fallbackModel, chatMmprojToLoad(fallbackModel), fallback, notify);
+          await ensureServerConfig(fallbackModel, chatMmprojToLoad(fallbackModel), fallback, notify, signal);
         } catch {
           throw e;
         }
