@@ -119,6 +119,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <NativeExecutionHelperInputs Include="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.cs;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.ps1;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\worker.py;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj" />
+  </ItemGroup>
+  <Target Name="PublishNativeExecutionHelper" AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(MANA_NATIVE_TEST_WORKSPACE)' != '1'"
+          Inputs="@(NativeExecutionHelperInputs)"
+          Outputs="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.exe;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.dll;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.runtimeconfig.json">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\publish-helper.ps1&quot;" />
+  </Target>
+
+  <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
     <!-- 4.153.0: Folio.Skia's own SkiaSharp, which a lower version here

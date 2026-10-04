@@ -18,6 +18,16 @@
 // code, only as isolation from Mana's own generated scripts making an
 // honest mistake.
 const vm = require("node:vm");
+const stdio = process.argv.includes('--stdio');
+if (stdio) {
+  const lines = require('node:readline').createInterface({ input: process.stdin });
+  process.send = message => process.stdout.write(`${JSON.stringify(message)}\n`);
+  lines.on('line', line => {
+    if (line.length > 1048576) process.exit(1);
+    try { process.emit('message', JSON.parse(line)); }
+    catch { process.exit(1); }
+  });
+}
 
 function seal(value, seen = new Set()) {
   if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
@@ -83,6 +93,7 @@ async function runScript(code, toolNames, inputs) {
     process.send({ type: "error", error: (e && e.message) || String(e) });
   }
   process.exitCode = 0;
+  if (stdio) process.stdout.write('', () => process.exit(0));
 }
 
 process.on("message", (msg) => {

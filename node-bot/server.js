@@ -2993,6 +2993,7 @@ function registerRoutes(app, upload, deps = {}) {
   const selfWork =
     deps.selfWork ||
     createSelfWork({
+      approvalGate: activeApprovalGate,
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
       gitTools,
