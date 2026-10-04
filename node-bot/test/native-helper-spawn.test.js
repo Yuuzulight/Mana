@@ -88,6 +88,7 @@ test('publisher waits for active sandbox scripts before replacing the helper', {
   for (let i = 0; i < 80 && !fs.existsSync(gate); i++) await delay(100);
   assert.equal(fs.existsSync(gate), true, errors);
   assert.equal(fs.statSync(HELPER_PATH).mtimeMs, before);
+  await assert.rejects(require('../tools/script-runner').runToolScript('return 42;', { timeoutMs: 1000 }), /timed out/);
   assert.equal(await published, 0, errors);
   assert.equal(await done, 0);
   assert.equal(fs.existsSync(prepared.work), false);

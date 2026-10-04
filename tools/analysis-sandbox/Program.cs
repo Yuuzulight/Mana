@@ -45,7 +45,6 @@ internal static class Program
         IntPtr sid = IntPtr.Zero, attributes = IntPtr.Zero, capabilities = IntPtr.Zero, environment = IntPtr.Zero;
         var process = new Native.ProcessInformation();
         var initialized = false;
-        var runtimeGranted = false;
         using var job = Native.CreateLimitedJob();
         using var owner = Native.OpenOwnerProcess();
         try
@@ -57,7 +56,6 @@ internal static class Program
             // AppContainer processes run at low integrity. Only the scratch directory is writable.
             Native.SetLowIntegrity(work);
             Grant(runtime, identity, FileSystemRights.ReadAndExecute);
-            runtimeGranted = true;
             File.WriteAllText(Path.Combine(work, "request.json"), input, new UTF8Encoding(false));
             File.Copy(Path.Combine(AppContext.BaseDirectory, "worker.py"), Path.Combine(work, "worker.py"));
 
@@ -110,13 +108,8 @@ internal static class Program
             if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
             if (capabilities != IntPtr.Zero) Marshal.FreeHGlobal(capabilities);
             if (environment != IntPtr.Zero) Marshal.FreeHGlobal(environment);
-            if (sid != IntPtr.Zero)
-            {
-                if (runtimeGranted) Revoke(runtime, new SecurityIdentifier(sid));
-                Native.FreeSid(sid);
-                Native.DeleteAppContainerProfile(profile);
-            }
-            if (Directory.Exists(work)) Directory.Delete(work, true);
+            if (sid != IntPtr.Zero) Native.FreeSid(sid);
+            Cleanup(runtime, work);
         }
     }
 
@@ -124,7 +117,7 @@ internal static class Program
     {
         var full = Path.GetFullPath(work);
         var name = Path.GetFileName(full);
-        if (!Path.IsPathFullyQualified(work) || !string.Equals(Path.GetDirectoryName(full)?.TrimEnd('\\'), Path.GetTempPath().TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
+        if (!Path.IsPathFullyQualified(work) || !string.Equals(Path.GetDirectoryName(full)?.TrimEnd('\\'), Path.GetFullPath(Path.GetTempPath()).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
             || !name.StartsWith("Mana.Analysis.", StringComparison.Ordinal) || !Guid.TryParseExact(name[14..], "N", out _))
             throw new ArgumentException("invalid analysis scratch directory");
         if (Directory.Exists(full) && (File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0)
@@ -167,7 +160,8 @@ internal static class Program
         foreach (var file in Directory.EnumerateFileSystemEntries(directory, "*", options))
         {
             if (++count > 5000) throw new IOException("analysis scratch file count limit exceeded");
-            if (!Directory.Exists(file)) total += new FileInfo(file).Length;
+            try { if (!Directory.Exists(file)) total += new FileInfo(file).Length; }
+            catch (FileNotFoundException) { continue; }
             if (total > 64 * 1024 * 1024) break;
         }
         return total;
