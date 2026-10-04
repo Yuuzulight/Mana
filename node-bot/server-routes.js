@@ -179,16 +179,16 @@ function registerCoreRoutes(app, upload, deps) {
       return text;
     }
     const documentReader = require("../plugins/document-reader/document-reader");
-    let ocrWorker = null;
-    if (typeof getScreenOcrWorker === "function") {
-      try {
-        ocrWorker = await getScreenOcrWorker();
-      } catch (_) {}
-    }
+    // Only scanned PDFs need OCR; text documents must not start a worker.
+    const runOcr = typeof getScreenOcrWorker === "function" ? async (image) => {
+      const worker = await getScreenOcrWorker();
+      const result = await worker.recognize(image);
+      return result?.data?.text || "";
+    } : undefined;
 
     const notes = [];
     for (const docPath of documents) {
-      const res = await documentReader.extractAndPrepareForChat(docPath, { ocrWorker });
+      const res = await documentReader.extractAndPrepareForChat(docPath, { runOcr });
       if (!res.ok) {
         notes.push(
           `[Attached document "${res.fileName}" could not be read: ${res.error}. Explain clearly to the user why you cannot read this file.]`,
