@@ -816,6 +816,8 @@ internal sealed class ManaBackendClient
                     SessionId = element.TryGetProperty("sessionId", out var idElement) ? idElement.GetString() ?? "" : "",
                     Name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null,
                     Goal = element.TryGetProperty("goal", out var goalElement) ? goalElement.GetString() : null,
+                    ProjectId = element.TryGetProperty("projectId", out var projectElement) ? projectElement.GetString() : null,
+                    ProjectName = element.TryGetProperty("projectName", out var projectNameElement) ? projectNameElement.GetString() : null,
                     UpdatedAt = element.TryGetProperty("updatedAt", out var updatedElement) ? updatedElement.GetString() : null,
                     ForkedFrom = element.TryGetProperty("forkedFrom", out var forkedElement) ? forkedElement.GetString() : null,
                     BranchTurnIndex = element.TryGetProperty("branchTurnIndex", out var btElement) && btElement.ValueKind == JsonValueKind.Number ? btElement.GetInt32() : null,
@@ -823,6 +825,59 @@ internal sealed class ManaBackendClient
             }
         }
         return sessions;
+    }
+
+    public async Task<IReadOnlyList<ManaProject>> GetProjectsAsync()
+    {
+        using var response = await http.GetAsync("/projects");
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<List<ManaProject>>(document.RootElement.GetProperty("projects").GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? new();
+    }
+
+    public async Task<ManaProject> SaveProjectAsync(string? id, string name, string instructions)
+    {
+        var payload = id is null ? (object)new { name, instructions } : new { id, name, instructions };
+        using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/projects", content);
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<ManaProject>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    }
+
+    public async Task DeleteProjectAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/projects/{Uri.EscapeDataString(id)}");
+        using var document = await ReadProjectResponseAsync(response);
+    }
+
+    public async Task SetSessionProjectAsync(string sessionId, string? projectId)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { projectId }), Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/project", content);
+        using var document = await ReadProjectResponseAsync(response);
+    }
+
+    public async Task<ManaProject> LinkProjectReferenceAsync(string id, string path)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { path }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/projects/{Uri.EscapeDataString(id)}/references/picker", content);
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<ManaProject>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    }
+
+    public async Task<ManaProject> RemoveProjectReferenceAsync(string id, string referenceId)
+    {
+        using var response = await http.DeleteAsync($"/projects/{Uri.EscapeDataString(id)}/references/{Uri.EscapeDataString(referenceId)}");
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<ManaProject>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    }
+
+    private static async Task<JsonDocument> ReadProjectResponseAsync(HttpResponseMessage response)
+    {
+        var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        if (response.IsSuccessStatusCode) return document;
+        var error = document.RootElement.TryGetProperty("error", out var message) ? message.GetString() : response.ReasonPhrase;
+        document.Dispose();
+        throw new InvalidOperationException(error ?? "Project request failed");
     }
 
     // #687 part 3: ids of the sessions whose stored messages contain every
@@ -3314,6 +3369,8 @@ internal sealed class ManaDoctorCheck
 // session list UI needs.
 internal sealed class ManaSession
 {
+    public string? ProjectId { get; init; }
+    public string? ProjectName { get; init; }
     public string SessionId { get; init; } = "";
     public string? Name { get; init; }
     public string? Goal { get; init; }
@@ -3321,6 +3378,25 @@ internal sealed class ManaSession
     // #1322: branched session metadata
     public string? ForkedFrom { get; init; }
     public int? BranchTurnIndex { get; init; }
+}
+
+internal sealed class ManaProject
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Instructions { get; set; } = "";
+    public List<ManaProjectReference> References { get; set; } = new();
+    public override string ToString() => Name;
+}
+
+internal sealed class ManaProjectReference
+{
+    public string Id { get; set; } = "";
+    public string Label { get; set; } = "";
+    public string Path { get; set; } = "";
+    public string Kind { get; set; } = "file";
+    public bool Authorized { get; set; }
+    public override string ToString() => $"{Label} ({Path})";
 }
 
 // #586: GET /sessions/:id's full stored shape, trimmed to what the

@@ -11,6 +11,13 @@ const KEY = "sessions";
 
 function registerSessionsRoutes(app, context = {}) {
   const acpMemoryStore = context.acpMemoryStore;
+  function listSessions() {
+    if (!context.projectsStore) return acpMemoryStore.listSessions();
+    return acpMemoryStore.listSessions().map(session => {
+      const project = context.projectsStore?.projectForSession(session.sessionId);
+      return { ...session, projectId: project?.id || null, projectName: project?.name || null };
+    });
+  }
 
   // #687: ?q= keeps only the sessions whose stored messages contain every
   // word (session-search-index.js). `query` is echoed so a client can tell
@@ -18,9 +25,9 @@ function registerSessionsRoutes(app, context = {}) {
   app.get("/sessions", (req, res) => {
     try {
       const q = typeof req.query?.q === "string" ? req.query.q.trim() : "";
-      if (!q) return res.json({ sessions: acpMemoryStore.listSessions() });
+      if (!q) return res.json({ sessions: listSessions() });
       const ids = acpMemoryStore.sessionIdsMatching ? acpMemoryStore.sessionIdsMatching(q) : null;
-      const sessions = ids ? acpMemoryStore.listSessions().filter((s) => ids.has(s.sessionId)) : [];
+      const sessions = ids ? listSessions().filter((s) => ids.has(s.sessionId)) : [];
       return res.json({ sessions, query: q });
     } catch (e) {
       console.error(e);

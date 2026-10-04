@@ -492,11 +492,15 @@ function scoreTf(queryTokens, entry) {
 
 function searchSync(query, k = 5) {
   const idx = loadIndexSync();
-  if (!idx || !Array.isArray(idx.entries) || idx.entries.length === 0)
+  return searchEntries(query, idx?.entries, k);
+}
+
+function searchEntries(query, entries, k = 5) {
+  if (!Array.isArray(entries) || entries.length === 0)
     return [];
   // If embeddings present, prefer embedding-based search synchronously is not supported here
   const qtokens = tokenize(query);
-  const scored = idx.entries.map((e) => ({ e, score: scoreTf(qtokens, e) }));
+  const scored = entries.map((e) => ({ e, score: scoreTf(qtokens, e) }));
   scored.sort((a, b) => b.score - a.score);
   const top = scored
     .filter((s) => s.score > 0)
@@ -635,6 +639,9 @@ async function buildVectorStore(options = {}) {
 }
 
 module.exports = {
+  searchEntries,
+  tokenize,
+  termFreq,
   buildIndex,
   incrementalScan,
   buildVectorStore,

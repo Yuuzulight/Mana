@@ -1,4 +1,5 @@
 const backendDir = require('node:path').join(__dirname, '..');
+const { wrapUntrusted } = require('./untrusted-content');
 
 function createChatReply(context) {
 function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
@@ -222,6 +223,12 @@ async function buildAssistantReply(
         console.warn("Failed to apply preset:", presetErr.message || presetErr);
       }
     }
+
+    const projectSearch = sessionId && context.projectReferences ? await context.projectReferences.search(sessionId, transcript) : { results: [], warnings: [] };
+    const projectBlock = sessionId ? context.activeProjectsStore?.promptBlockForSession(sessionId) || '' : '';
+    if (projectBlock) selectedSystemPrompt += `\n\n${projectBlock}`;
+    const projectReferenceText = projectSearch.results.length ? wrapUntrusted('project references', projectSearch.results.map(result => `Reference: ${result.label}\n${result.snippet}`).join('\n\n')) : '';
+    if (projectReferenceText) selectedSystemPrompt += `\n\n${projectReferenceText}`;
 
     // Small server log for selected mode
     try {
@@ -452,11 +459,15 @@ async function buildAssistantReply(
     // Issue #642: the skills index is its own block now, and each block's
     // text is kept (compositionTexts) so the end of the turn can count its
     // real tokens -- see finalizePromptComposition below.
-    const systemPromptText = skillsIndexText
+    let systemPromptText = skillsIndexText
       ? selectedSystemPrompt.replace(`\n\n${skillsIndexText}`, "")
       : selectedSystemPrompt;
+    if (projectBlock) systemPromptText = systemPromptText.replace(`\n\n${projectBlock}`, '');
+    if (projectReferenceText) systemPromptText = systemPromptText.replace(`\n\n${projectReferenceText}`, '');
     const compositionTexts = {
       "system-prompt": systemPromptText,
+      "project-instructions": projectBlock,
+      "project-references": projectReferenceText,
       "skills-index": skillsIndexText,
       "prompt-memory": promptMemoryText,
       "related-facts": relatedFactsText,
@@ -466,6 +477,8 @@ async function buildAssistantReply(
     try {
       compositionRecord = context.recordPromptComposition(sessionId, [
         { name: "system-prompt", chars: systemPromptText.length, dropped: null },
+        { name: "project-instructions", chars: projectBlock.length, dropped: null },
+        { name: "project-references", chars: projectReferenceText.length, dropped: { warnings: projectSearch.warnings } },
         { name: "skills-index", chars: skillsIndexText.length, dropped: { skillsOmitted: skillsOmittedCount } },
         { name: "prompt-memory", chars: promptMemoryChars, dropped: { truncated: promptMemoryTruncated, turnsDroppedByAge } },
         {
@@ -957,6 +970,7 @@ async function buildAssistantReply(
               turnTools,
             }),
             context.createSessionSearchToolSource({ acpMemoryStore: context.acpMemoryStore, sessionId }),
+            ...(context.projectReferences ? [context.projectReferences.toolSource(sessionId)] : []),
             context.createSkillToolSource({ approvalGate: context.activeApprovalGate, skillsStore: context.activeSkillsStore }),
             context.createSnapshotToolSource({
               approvalGate: context.activeApprovalGate,
@@ -1138,7 +1152,7 @@ async function buildAssistantReply(
                   ),
                   // A web page, search/wiki results or the browser tab
                   // (framed by ai/untrusted-content.js) came in with the turn.
-                  untrustedSources: context.untrustedSources(promptText),
+                  untrustedSources: context.untrustedSources(`${promptText}\n${projectReferenceText}`),
                 });
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one

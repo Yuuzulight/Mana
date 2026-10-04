@@ -298,6 +298,7 @@ const { createEditorIntegrations } = require("./zed-integration");
 const { createModelManagement } = require("./model-management");
 const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
+const { createProjectsStore } = require("./projects-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
@@ -2503,6 +2504,11 @@ function registerRoutes(app, upload, deps = {}) {
       ttsProvider: TTS_PROVIDER,
       whisperModel: whisperDiscovery.findWhisperModel({ env: deps.env || process.env }),
     });
+  const activeProjectsStore =
+    deps.projectsStore || createProjectsStore({
+      dataDir: (deps.env || process.env).MANA_PROJECTS_DIR || path.join((deps.acpMemoryStore || acpMemoryStore).dataDir || path.join(__dirname, 'data'), 'projects'),
+      getSession: id => (deps.acpMemoryStore || acpMemoryStore).getSession?.(id),
+    });
 
   // llama-server normally starts lazily on the first chat reply. Desktop
   // clients that want a startup loading screen to actually mean something
@@ -2612,6 +2618,7 @@ function registerRoutes(app, upload, deps = {}) {
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
   const documentAccess = deps.documentAccess || require('./document-access').createDocumentAccess({ approvalGate: activeApprovalGate });
+  const projectReferences = require('./project-references').createProjectReferences({ projectsStore: activeProjectsStore, approvalGate: activeApprovalGate });
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
   // Distinct action type for the idle-triggered autonomous pass (issue
   // #262/skill-proposal.js) -- same executor, but kept separate from
@@ -2703,6 +2710,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
   const capabilityContext = {
     documentAccess,
+    projectsStore: activeProjectsStore,
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     jobs: researchJobs,
     onBackgroundTaskDone: backgroundTaskDone,
@@ -2928,6 +2936,8 @@ function registerRoutes(app, upload, deps = {}) {
     llamaBuilds: deps.llamaBuilds || llamaBuilds,
     checkAdminAuth,
   });
+
+  require('./routes/projects').registerProjectRoutes(app, { projectsStore: activeProjectsStore, projectReferences, checkAdminAuth, isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest });
 
   // Issue #418: transient, human-facing "what's browser automation doing
   // right now" feed for the launcher to poll -- no auth, same as
@@ -3709,6 +3719,8 @@ function registerRoutes(app, upload, deps = {}) {
     get activeMoodStore() { return activeMoodStore; },
     get activePluginSettingsStore() { return activePluginSettingsStore; },
     get activePresetsStore() { return activePresetsStore; },
+    get activeProjectsStore() { return activeProjectsStore; },
+    get projectReferences() { return projectReferences; },
     get activeSkillsStore() { return activeSkillsStore; },
     get activeToolCallLog() { return activeToolCallLog; },
     get activeToolPolicy() { return activeToolPolicy; },
