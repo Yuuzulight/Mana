@@ -117,15 +117,15 @@ test("runtime: keeps the last completion's prompt size, and asks the running ser
   const orig = console.log;
   console.log = () => {};
   try {
-    await runtime.runLocalAssistantReply("hello", 16, "default");
+    assert.equal(await runtime.runLocalAssistantReply("hello", 16, "default"), "hi");
+    const usage = runtime.getLastPromptUsage();
+    assert.deepEqual(usage, { promptTokens: 3205, promptN: 40, cacheN: 3165 });
+    assert.equal(await runtime.countTokens("a b c"), 3);
+    assert.equal(await runtime.getContextSize(), 8192);
   } finally {
     console.log = orig;
+    runtime.stop();
   }
-  const usage = runtime.getLastPromptUsage();
-  assert.deepEqual(usage, { promptTokens: 3205, promptN: 40, cacheN: 3165 });
-  assert.equal(await runtime.countTokens("a b c"), 3);
-  assert.equal(await runtime.getContextSize(), 8192);
-  runtime.stop(); // clears the idle-shutdown timer
 });
 
 test("server: a tool-aware reply's meter counts tool schemas (local vs MCP), the user turn, and llama-server's prompt size", async () => {
