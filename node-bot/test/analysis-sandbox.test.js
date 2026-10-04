@@ -119,11 +119,16 @@ test("live AppContainer returns PNGs, cleans scratch after completion and kills 
 test("live helper termination kills its Python process through the job", { skip: !live }, async () => {
   const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("Mana.Analysis."));
   let sawPython = false;
-  await assert.rejects(runAnalysisSandbox({ code: "while True: pass", files: [] }, {
+  await assert.rejects(runAnalysisSandbox({ code: "from pathlib import Path\nPath('started').write_text('ready')\nwhile True: pass", files: [] }, {
     runProcess: (command, args, options) => runProcess(command, args, { ...options, spawnImpl: (...spawnArgs) => {
       const child = spawn(...spawnArgs);
       if (args[0] !== "--cleanup") {
-        setTimeout(() => { sawPython = Boolean(sandboxProcesses()); child.kill(); }, 800);
+        const deadline = Date.now() + 15000;
+        const timer = setInterval(() => {
+          sawPython = fs.existsSync(path.join(args[1], 'started'));
+          if (sawPython || Date.now() >= deadline) { clearInterval(timer); child.kill(); }
+        }, 100);
+        child.once('close', () => clearInterval(timer));
       }
       return child;
     } }),
@@ -169,5 +174,12 @@ test("live Python helper cleans up after backend termination", { skip: !live, ti
   controller.kill();
   for (let i = 0; i < 100 && fs.existsSync(work); i++) await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(fs.existsSync(work), false, output);
+  assert.equal(sandboxProcesses(), '');
+});
+
+test('live scratch monitoring tolerates files and directories removed during execution', { skip: !live }, async () => {
+  const result = await runAnalysisSandbox({ code: "import tempfile, time\nfrom pathlib import Path\nend = time.monotonic() + 2\nwhile time.monotonic() < end:\n with tempfile.TemporaryDirectory(dir='.') as folder:\n  Path(folder, 'data').write_bytes(b'x' * 4096)\nprint('temporary files cleaned')", files: [] });
+  assert.equal(result.error, null, result.error);
+  assert.match(result.logs, /temporary files cleaned/);
   assert.equal(sandboxProcesses(), '');
 });

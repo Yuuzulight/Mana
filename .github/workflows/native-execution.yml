@@ -45,12 +45,13 @@ jobs:
       - name: Prepare private analysis runtime
         run: node desktop-client/scripts/prepare-portable-python.js --target analysis
       - name: Prepare offline fixture package cache
-        run: dotnet restore node-bot/test/fixtures/native-dotnet/Fixture.csproj
+        run: dotnet restore node-bot/test/fixtures/native-dotnet/Fixture.csproj --packages "${{ runner.temp }}/mana-fixture-nuget"
       - name: Verify live isolation, approvals and cleanup
         env:
           MANA_TEST_NATIVE_LIVE: '1'
           MANA_TEST_NATIVE_DOTNET: '1'
           MANA_TEST_ANALYSIS_LIVE: '1'
+          MANA_TEST_NUGET_CACHE: '${{ runner.temp }}/mana-fixture-nuget'
           NODE_ENV: test
         run: node --test node-bot/test/native-execution.test.js node-bot/test/native-helper-spawn.test.js node-bot/test/analysis-sandbox.test.js node-bot/test/script-runner.test.js node-bot/test/self-work-test-approval.test.js node-bot/test/test-resource-profile.test.js node-bot/test/test-execution-policy.test.js node-bot/test/coding-tool-source.test.js
       - name: Verify update waits for active sandbox scripts

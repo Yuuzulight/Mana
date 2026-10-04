@@ -120,6 +120,10 @@ resource budget. Wall time is limited to 60 seconds. Numerical library threads
 are capped at one and matplotlib uses the CPU-only Agg renderer. Scratch
 storage is monitored at 100ms intervals with a 64MB/5,000-entry budget;
 this is a monitored limit, not a hard filesystem quota.
+Temporary directories inside scratch inherit its private user/AppContainer SID
+ACL; a worker-local adapter avoids Python's Windows `0700` replacement ACL,
+which otherwise excludes the AppContainer itself. Host directory permissions
+and the OS boundary are unchanged.
 
 On success, script error, timeout or helper termination, the backend waits for
 process termination and cleans the scratch directory, AppContainer profile

@@ -66,8 +66,11 @@ try {
     }
     Remove-Owned $previous
 } finally {
-    if ($owned) { Remove-Owned $gate }
-    Remove-Owned $stage
-    if ($mutexOwned) { $mutex.ReleaseMutex() }
-    $mutex.Dispose()
+    try {
+        if ($owned) { Remove-Owned $gate }
+        Remove-Owned $stage
+    } finally {
+        if ($mutexOwned) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
 }

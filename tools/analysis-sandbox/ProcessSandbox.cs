@@ -175,13 +175,17 @@ internal static class ProcessSandbox
         long bytes = 0;
         var count = 0;
         var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
-        foreach (var entry in Directory.EnumerateFileSystemEntries(root, "*", options))
+        try
         {
-            if (++count > maxEntries) throw new IOException("Sandbox scratch entry limit exceeded");
-            try { if (!Directory.Exists(entry)) bytes += new FileInfo(entry).Length; }
-            catch (FileNotFoundException) { continue; }
-            if (bytes > maxBytes) throw new IOException("Sandbox scratch storage limit exceeded");
+            foreach (var entry in Directory.EnumerateFileSystemEntries(root, "*", options))
+            {
+                if (++count > maxEntries) throw new IOException("Sandbox scratch entry limit exceeded");
+                try { if (!Directory.Exists(entry)) bytes += new FileInfo(entry).Length; }
+                catch (FileNotFoundException) { continue; }
+                if (bytes > maxBytes) throw new IOException("Sandbox scratch storage limit exceeded");
+            }
         }
+        catch (DirectoryNotFoundException) { /* Test runners can remove temporary subtrees during enumeration. */ }
     }
     private static void ValidateWork(string work)
     {

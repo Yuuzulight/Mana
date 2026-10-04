@@ -119,7 +119,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <NativeExecutionHelperInputs Include="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.cs;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.ps1;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj" />
+    <NativeExecutionHelperInputs Include="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.cs;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.ps1;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\worker.py;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj" />
   </ItemGroup>
   <Target Name="PublishNativeExecutionHelper" AfterTargets="Build"
           Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(MANA_NATIVE_TEST_WORKSPACE)' != '1'"

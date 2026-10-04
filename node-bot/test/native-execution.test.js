@@ -195,7 +195,7 @@ test('live native runner: offline .NET test fixture', { skip: process.platform !
   t.after(() => fs.rmSync(source, { recursive: true, force: true }));
   for (const name of ['Fixture.csproj', 'Tests.cs']) fs.copyFileSync(path.join(__dirname, 'fixtures', 'native-dotnet', name), path.join(source, name));
   const { work, request } = await prepareTestExecutionAsync('dotnet test Fixture.csproj --verbosity quiet', source, 'large', {
-    copySources: { dependencyRoots: [], nugetRoot: path.join(os.homedir(), '.nuget', 'packages') },
+    copySources: { dependencyRoots: [], nugetRoot: process.env.MANA_TEST_NUGET_CACHE || path.join(os.homedir(), '.nuget', 'packages') },
   });
   const child = launchNativeProcess(work, request);
   let output = '';

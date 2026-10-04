@@ -157,13 +157,17 @@ internal static class Program
         long total = 0;
         var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
         var count = 0;
-        foreach (var file in Directory.EnumerateFileSystemEntries(directory, "*", options))
+        try
         {
-            if (++count > 5000) throw new IOException("analysis scratch file count limit exceeded");
-            try { if (!Directory.Exists(file)) total += new FileInfo(file).Length; }
-            catch (FileNotFoundException) { continue; }
-            if (total > 64 * 1024 * 1024) break;
+            foreach (var file in Directory.EnumerateFileSystemEntries(directory, "*", options))
+            {
+                if (++count > 5000) throw new IOException("analysis scratch file count limit exceeded");
+                try { if (!Directory.Exists(file)) total += new FileInfo(file).Length; }
+                catch (FileNotFoundException) { continue; }
+                if (total > 64 * 1024 * 1024) break;
+            }
         }
+        catch (DirectoryNotFoundException) { /* A script can remove a temporary subtree during enumeration. */ }
         return total;
     }
 

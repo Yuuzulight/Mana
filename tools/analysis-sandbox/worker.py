@@ -16,6 +16,24 @@ class BoundedLog(io.StringIO):
 
 
 workspace = Path(sys.argv[1])
+scratch_root = os.path.normcase(os.path.realpath(workspace))
+native_mkdir = os.mkdir
+
+
+def scratch_mkdir(path, mode=0o777, *, dir_fd=None):
+    # Windows' 0700 ACL omits the AppContainer SID. Inside private scratch,
+    # inherit the helper's user/SID ACL rather than replacing it.
+    if mode == 0o700 and dir_fd is None:
+        target = os.path.normcase(os.path.realpath(os.fsdecode(path)))
+        try:
+            if os.path.commonpath((scratch_root, target)) == scratch_root:
+                mode = 0o777
+        except ValueError:
+            pass
+    return native_mkdir(path, mode, dir_fd=dir_fd)
+
+
+os.mkdir = scratch_mkdir
 payload = json.loads((workspace / 'request.json').read_text(encoding='utf-8'))
 os.chdir(workspace)
 output_dir = workspace / 'output'
