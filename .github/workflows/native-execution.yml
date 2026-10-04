@@ -29,14 +29,14 @@ jobs:
   native-sandbox:
     runs-on: windows-latest
     timeout-minutes: 25
-    env:
-      DOTNET_INSTALL_DIR: '${{ runner.temp }}/mana-fixture-dotnet'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: '${{ runner.temp }}/mana-fixture-dotnet'
         with:
           dotnet-version: '10.0.x'
       - name: Install backend dependencies
