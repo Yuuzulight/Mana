@@ -67,6 +67,48 @@ let resumeUrl = null;
 let needsYou = null;
 // #1161: a site test loads images whether or not the panel watches.
 let loadMedia = false;
+let epoch = 0;
+const agentActions = new Set();
+let personalBrowser = null;
+let personalRequest = null;
+function runAgent(action) {
+  const running = Promise.resolve().then(action);
+  agentActions.add(running);
+  return running.finally(() => agentActions.delete(running));
+}
+const manualControl = require('./manual-control').createManualControl({
+  getContext: () => personalBrowser?.getContext() || context,
+  getPage: () => personalBrowser?.getPage() || currentPage(),
+  touch: () => { lastUsedAt = (gateDeps.now || Date.now)(); },
+  async prepare(deps, fallbackUrl) {
+    if (takenOver || opening) throw new Error('Browser control is already changing');
+    opening = true;
+    epoch += 1;
+    try {
+      await Promise.allSettled([...agentActions]);
+      if (personalBrowser) {
+        await personalBrowser.getSession({ ...deps, sessionId: personalBrowser.sessionId });
+        needsYou = null;
+        return;
+      }
+      if (starting) await starting;
+      if (!context) {
+        starting ||= startSession({ ...deps, env: { ...(deps.env || process.env), MANA_BROWSER_HEADLESS: '1' } }).finally(() => { starting = null; });
+        await starting;
+      }
+      gateDeps = deps;
+      lastUsedAt = (deps.now || Date.now)();
+      if (/^https?:/i.test(fallbackUrl || '') && currentPage().url() === 'about:blank') await currentPage().goto(fallbackUrl);
+      needsYou = null;
+    } finally { opening = false; }
+  },
+  async resume() {
+    epoch += 1;
+    personalBrowser?.invalidate();
+    lastUsedAt = (gateDeps.now || Date.now)();
+    if (context) session = tabbedSession(gateDeps);
+  },
+});
 
 // Why her browser mustn't run right now, or null -- self-work's gates.
 function blocker(deps) {
@@ -77,7 +119,17 @@ function blocker(deps) {
 
 async function getSession(deps = {}) {
   gateDeps = deps;
-  if (takenOver || opening) throw new Error("the user has the browser right now; wait until they press Done");
+  if (takenOver || opening || manualControl.isActive()) throw new Error("the user has the browser right now; wait until they press Done");
+  if (personalBrowser) {
+    if (personalBrowser.isClosed()) {
+      const ended = personalBrowser;
+      personalBrowser = null;
+      await ended.close();
+      throw new Error('Your personal-browser connection ended. Reconnect it or use the dedicated Mana browser');
+    }
+    refuseIfLocalOnly('browser automation', deps.env || process.env);
+    return personalBrowser.getSession(deps);
+  }
   const blocked = blocker(deps);
   if (blocked) {
     await closeSession();
@@ -115,7 +167,9 @@ async function launch(deps, options) {
   const chromium = deps.chromium || require("../../node-bot/node_modules/playwright-core").chromium;
   // A profile is locked while any browser has it open.
   await closing;
-  return chromium.launchPersistentContext(PROFILE_DIR, { executablePath, args: LAUNCH_ARGS, ...options });
+  const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
+  if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
+  return chromium.launchPersistentContext(profileDir, { executablePath, args: LAUNCH_ARGS, ...options });
 }
 
 // One tab: its page, with the resource blocking and health counters, and
@@ -159,7 +213,7 @@ async function setUpTab(page) {
       aborted.add(request);
       return route.abort();
     }
-    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !gateDeps.isWatched?.() && !loadMedia) {
+    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType()) && !manualControl.isActive() && !gateDeps.isWatched?.() && !loadMedia) {
       aborted.add(request);
       return route.abort();
     }
@@ -202,6 +256,8 @@ const currentPage = () => tabs[current]?.page || null;
 // each result listing her tabs once there's more than one, plus
 // tab({ do: "open" | "switch" | "close" }).
 function tabbedSession(deps) {
+  const owner = context;
+  const generation = epoch;
   const env = deps.env || process.env;
   const maxTabs = Math.min(5, Math.max(1, Math.floor(Number(env.MANA_BROWSER_MAX_TABS)) || DEFAULT_MAX_TABS));
 
@@ -275,6 +331,23 @@ function tabbedSession(deps) {
   for (const name of SESSION_METHODS) {
     facade[name] = async (...args) => withTabs(await tabs[current].session[name](...args));
   }
+  // A caller may retain this handle across Take over, idle close or a crash.
+  for (const [name, run] of Object.entries(facade)) {
+    facade[name] = async (...args) => {
+      if (takenOver || opening || manualControl.isActive()) throw new Error("the user has the browser right now; wait until they press Done");
+      if (context !== owner || !session || epoch !== generation) throw new Error("this browser session has closed; obtain a fresh session");
+      const blocked = blocker(gateDeps);
+      if (blocked) {
+        await closeSession();
+        throw new Error(`the browser stays closed while ${blocked}`);
+      }
+      lastUsedAt = (gateDeps.now || Date.now)();
+      const action = Promise.resolve().then(() => run(...args));
+      agentActions.add(action);
+      try { return await action; }
+      finally { agentActions.delete(action); }
+    };
+  }
   return facade;
 }
 
@@ -319,6 +392,8 @@ function offerFilesFromMessage(text) {
 // #1159: when her task (the reply) ends, only the tab she's on stays --
 // popups a site opened by itself go too.
 async function closeExtraTabs() {
+  if (personalBrowser) return;
+  if (manualControl.isActive() || opening) return;
   if (!tabs.length) return;
   const keep = tabs[current];
   const extra = new Set([...tabs.map((t) => t.page), ...(context?.pages?.() || [])]);
@@ -334,6 +409,7 @@ async function closeExtraTabs() {
 // CAPTCHA or payment there myself; nothing I type goes to the model. Not
 // gated on games or RAM: I asked for it.
 async function takeOver(deps = {}, fallbackUrl = null) {
+  if (manualControl.isActive()) throw new Error('Use Done in the Browser panel to hand back manual control');
   if (takenOver || opening) return;
   opening = true;
   try {
@@ -379,7 +455,7 @@ function requestHandOver(reason, deps = gateDeps) {
 }
 
 function takeOverStatus() {
-  return { active: Boolean(takenOver || opening), needsYou };
+  return { active: Boolean(takenOver || opening || manualControl.isActive()), ...(manualControl.isActive() ? { embedded: true } : {}), needsYou };
 }
 
 // Closes her browser after IDLE_CLOSE_MS without a call, and at once when
@@ -391,6 +467,8 @@ async function checkSession() {
 }
 
 function forget() {
+  manualControl.clear();
+  epoch += 1;
   clearInterval(checkTimer);
   checkTimer = null;
   context = null;
@@ -399,7 +477,17 @@ function forget() {
   session = null;
 }
 
-async function closeSession() {
+async function closeSession(startRequest = null) {
+  if (personalRequest && personalRequest !== startRequest) personalRequest.cancelled = true;
+  if (personalBrowser) {
+    const ended = personalBrowser;
+    personalBrowser = null;
+    manualControl.clear();
+    await ended.close();
+  }
+  const manualWindow = takenOver;
+  takenOver = null;
+  if (manualWindow) await manualWindow.close().catch(() => {});
   if (starting) await starting.catch(() => {});
   const ctx = context;
   forget();
@@ -494,6 +582,51 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
     await handBack();
     return res.json(takeOverStatus());
   });
+
+  app.post('/browser/manual/start', async (req, res) => {
+    if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+    try { res.json(await manualControl.takeOver(deps, req.body?.url)); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/browser/personal/start', async (req, res) => {
+    if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+    let ticket = null;
+    try {
+      refuseIfLocalOnly('personal browser', deps.env || process.env);
+      if (opening || manualControl.isActive()) throw new Error('Finish manual browser control before connecting Chrome');
+      if (typeof req.body?.sessionId !== 'string' || !req.body.sessionId.trim()) throw new Error('Choose a chat before connecting Chrome');
+      opening = true;
+      ticket = { cancelled: false };
+      personalRequest = ticket;
+      epoch += 1;
+      await Promise.allSettled([...agentActions]);
+      await closeSession(ticket);
+      const chromium = deps.chromium || require('../../node-bot/node_modules/playwright-core').chromium;
+      const candidate = await require('./personal-browser').createPersonalBrowser({
+        sessionId: req.body.sessionId, origins: req.body.origins || [], chromium, runAgent,
+        isPaused: () => opening || manualControl.isActive(),
+      });
+      if (ticket.cancelled) { await candidate.close(); throw new Error('Personal-browser connection was cancelled'); }
+      personalBrowser = candidate;
+      res.json({ connectionCode: personalBrowser.connectionCode });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+    finally { if (ticket && personalRequest === ticket) { personalRequest = null; opening = false; } }
+  });
+  app.get('/browser/personal/status', (req, res) => {
+    if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+    res.json({ connected: Boolean(personalBrowser?.isConnected()), sessionId: personalBrowser?.sessionId || null });
+  });
+  for (const [method, url, run] of [
+    ['get', '/browser/manual/frame', req => manualControl.frame(req.get('x-mana-manual-token'))],
+    ['post', '/browser/manual/input', req => manualControl.input(req.get('x-mana-manual-token'), req.body)],
+    ['post', '/browser/manual/done', req => manualControl.handBack(req.get('x-mana-manual-token'))],
+  ]) {
+    app[method](url, async (req, res) => {
+      if (!requireLocal(req, res) || !checkAdminAuth(req, res)) return;
+      try { res.json(await run(req)); }
+      catch (error) { res.status(400).json({ error: error.message }); }
+    });
+  }
 }
 
 module.exports = {
@@ -536,6 +669,9 @@ module.exports = {
   // Test-only escape hatch to reset the module-level singleton between
   // test files/runs -- production code never calls this.
   _resetForTests: () => {
+    const ended = personalBrowser;
+    personalBrowser = null;
+    if (ended) void ended.close().catch(() => {});
     forget();
     starting = null;
     closing = null;

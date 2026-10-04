@@ -413,7 +413,7 @@ internal sealed partial class SessionListForm : Form
         RegisterRailTool("terminal", "terminal", "Terminal",
             () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
         // #1122: her browser automation, docked.
-        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient));
+        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient, () => voiceLoop.CurrentSessionId));
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.

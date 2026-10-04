@@ -49,6 +49,9 @@ public class BrowserToolTests
                 "/browser-automation/activity" => activity(),
                 "/browser/close" => """{"ok":true}""",
                 "/browser/take-over" or "/browser/hand-back" => NotTakenOver,
+                "/browser/manual/start" => """{"token":"manual-test-token"}""",
+                "/browser/manual/done" or "/browser/manual/input" => """{"active":false}""",
+                "/browser/manual/frame" => """{"image":null,"width":800,"height":600,"url":"https://shop.test/cart"}""",
                 "/browser-automation/site-test" => """{"url":"","title":"Site test: shop.test","text":"# Site test: shop.test\n\n### phone\n![phone screenshot](shot-1)\n\n- Console errors: none","images":{"shot-1":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},"truncated":false,"needsBrowser":null}""",
                 "/browser/offer-files" => """{"offered":["C:\\files\\cv.pdf"]}""",
                 "/web/read" => readerPage,
@@ -136,7 +139,7 @@ public class BrowserToolTests
     }
 
     [Fact]
-    public void Tool_TakesOverInAWindow_ShowsWhySheAsked_AndHandsBackOnDone()
+    public void Tool_TakesOverInsideMana_ShowsWhySheAsked_AndHandsBackOnDone()
     {
         RunSta(() =>
         {
@@ -153,10 +156,9 @@ public class BrowserToolTests
             var button = TakeOverButton();
             Assert.Equal("Take over", button.Text);
 
-            // Take over asks the backend for the window at her page; it never
-            // opens my own browser.
+            // Manual frames and input stay inside Mana; no browser opens.
             Click(button);
-            Pump(() => requests.Contains("""POST /browser/take-over {"url":"https://shop.test/cart"}""") && button.Enabled);
+            Pump(() => requests.Contains("""POST /browser/manual/start {"url":"https://shop.test/cart"}""") && button.Enabled);
             takeOverState = """{"active":true,"needsYou":null}""";
             Pump(tool.RefreshAsync());
             Assert.Equal("Done", button.Text);
@@ -165,13 +167,93 @@ public class BrowserToolTests
             Assert.True(button.Enabled);
 
             Click(button);
-            Pump(() => requests.Contains("POST /browser/hand-back") && button.Enabled);
+            Pump(() => requests.Contains("POST /browser/manual/done") && button.Enabled);
             takeOverState = NotTakenOver;
             Pump(tool.RefreshAsync());
             Assert.Equal("Take over", button.Text);
             Assert.Equal("Cart", Title().Text);
             Assert.Empty(opened);
         });
+    }
+
+    [Fact]
+    public void ManualCoordinatesRespectLetterboxing_AndKeyboardModifiers()
+    {
+        Assert.Equal(new System.Drawing.Point(400, 300), BrowserPageView.PagePoint(new(200, 100), new(400, 200), new(800, 600)));
+        Assert.Null(BrowserPageView.PagePoint(new(0, 100), new(400, 200), new(800, 600)));
+        Assert.Equal("Control+A", BrowserPageView.BrowserKey(new KeyEventArgs(Keys.Control | Keys.A)));
+        Assert.Equal("Shift+Tab", BrowserPageView.BrowserKey(new KeyEventArgs(Keys.Shift | Keys.Tab)));
+        Assert.Equal("Space", BrowserPageView.BrowserKey(new KeyEventArgs(Keys.Space)));
+        Assert.Null(BrowserPageView.BrowserKey(new KeyEventArgs(Keys.A)));
+    }
+
+    [Theory]
+    [InlineData(280)]
+    [InlineData(640)]
+    public void BrowserButtonsFitWithoutOverlapAtNarrowAndWideWidths(int width)
+    {
+        RunSta(() =>
+        {
+            using var tool = new BrowserTool(Backend([], () => Activity("t1"))) { Size = new System.Drawing.Size(width, 620) };
+            Pump(tool.RefreshAsync());
+            tool.CreateControl();
+            tool.PerformLayout();
+            var row = tool.Controls.OfType<FlowLayoutPanel>().Single();
+            row.PerformLayout();
+            var buttons = row.Controls.OfType<Button>().ToArray();
+            foreach (var button in buttons) Assert.True(row.ClientRectangle.Contains(button.Bounds), $"{button.Text}: {button.Bounds} outside {row.ClientRectangle}");
+            for (int i = 0; i < buttons.Length; i++)
+                for (int j = i + 1; j < buttons.Length; j++) Assert.False(buttons[i].Bounds.IntersectsWith(buttons[j].Bounds));
+            var capture = Environment.GetEnvironmentVariable("MANA_BROWSER_UI_CAPTURE");
+            if (!string.IsNullOrEmpty(capture))
+            {
+                System.IO.Directory.CreateDirectory(capture);
+                using var bitmap = new System.Drawing.Bitmap(width, 620);
+                tool.DrawToBitmap(bitmap, tool.ClientRectangle);
+                bitmap.Save(System.IO.Path.Combine(capture, $"browser-panel-{width}.png"));
+            }
+        });
+    }
+
+    [Fact]
+    public void StoppingWhileAFrameIsInFlightDoesNotRestoreItsImage()
+    {
+        RunSta(() =>
+        {
+            using var handler = new DelayedBrowserFrameHandler();
+            using var tool = new BrowserTool(new ManaBackendClient(handler));
+            Pump(tool.RefreshAsync());
+            var buttons = tool.Controls.OfType<Panel>().SelectMany(panel => panel.Controls.OfType<Button>()).ToArray();
+            Click(buttons.Single(button => button.Text == "Take over"));
+            Pump(() => handler.FrameRequested);
+            Click(buttons.Single(button => button.Text == "Stop"));
+            Pump(() => handler.Stopped);
+            handler.Frame.SetResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"image":"late-frame","url":"https://private.test/","width":800,"height":600}""") });
+            Pump(() => (bool)typeof(BrowserTool).GetField("polling", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(tool)! == false);
+            Pump(tool.RefreshAsync());
+            Assert.Null(typeof(BrowserTool).GetField("manualImage", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(tool));
+            Assert.Null(tool.Controls.OfType<PictureBox>().Single().Image);
+        });
+    }
+
+    private sealed class DelayedBrowserFrameHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource<HttpResponseMessage> Frame { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool FrameRequested { get; private set; }
+        public bool Stopped { get; private set; }
+        private bool active;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            string json;
+            switch (request.RequestUri!.AbsolutePath)
+            {
+                case "/browser/manual/start": active = true; json = """{"token":"manual-token"}"""; break;
+                case "/browser/manual/frame": FrameRequested = true; return Frame.Task;
+                case "/browser/close": active = false; Stopped = true; json = "{}"; break;
+                default: json = Activity("t1", active ? """{"active":true}""" : NotTakenOver); break;
+            }
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
+        }
     }
 
     [Fact]

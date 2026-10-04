@@ -1014,7 +1014,7 @@ async function buildAssistantReply(
             // #787: approvalGate enables coding__run_tests (asks first).
             context.createCodingToolSource({ editors: context.getEditorIntegrations(), approvalGate: context.activeApprovalGate, reviewEdit: context.reviewEdit }),
             ...(context.isPluginEnabled(context.browserAutomationPlugin, context.activePluginSettingsStore)
-              ? [context.activeBrowserAutomationToolSource]
+              ? [context.activeBrowserAutomationToolSource.forSession?.(sessionId) || context.activeBrowserAutomationToolSource]
               : []),
             // Issue #401: only offered when this session actually has a
             // goal set -- there's nothing to finish otherwise, and no

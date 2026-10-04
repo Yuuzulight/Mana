@@ -254,6 +254,22 @@ function createBrowserAutomationToolSource(options = {}) {
     throw new Error("an approvalGate is required");
   }
   approvalGate.registerExecutor(APPROVAL_ACTION_TYPE, async () => ({ approved: true }));
+  const personalRequests = new Map();
+  function forgetPersonalRequest(nonce) {
+    const entry = personalRequests.get(nonce);
+    personalRequests.delete(nonce);
+    if (entry) { clearTimeout(entry.timer); entry.unsubscribe?.(); }
+  }
+  const PERSONAL_ACTION_TYPE = 'browser-personal-action';
+  approvalGate.registerExecutor(PERSONAL_ACTION_TYPE, async payload => {
+    const request = personalRequests.get(payload?.nonce);
+    forgetPersonalRequest(payload?.nonce);
+    if (!request || Date.now() - request.createdAt > 120000) throw new Error('This personal-browser action expired; ask Mana to propose it again');
+    if (await request.session.url() !== request.url) throw new Error('The personal-browser page changed after this action was proposed');
+    const result = await act(request.session, request.action, request.args, true);
+    await recordScreenshot(request.session);
+    return result;
+  });
   // "Allow once" lets her next action of that kind on that site through.
   const allowedOnce = new Set();
 
@@ -292,7 +308,7 @@ function createBrowserAutomationToolSource(options = {}) {
     return TOOL_SCHEMAS;
   }
 
-  async function executeTool(qualifiedName, args) {
+  async function executeTool(qualifiedName, args, sessionId) {
     // isGranted, not isAlwaysAllowed: an "allow for this session" (#669)
     // counts too.
     if (!approvalGate.isGranted(APPROVAL_ACTION_TYPE)) {
@@ -322,7 +338,7 @@ function createBrowserAutomationToolSource(options = {}) {
       return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
     }
     // #1137: her page loads images only while the Browser panel watches.
-    const session = await getSession({ ...sessionDeps, isWatched: activityLog.isWatched, onDownload });
+    const session = await getSession({ ...sessionDeps, sessionId, isWatched: activityLog.isWatched, onDownload });
     if (action === "batch") return runBatch(session, args?.steps);
     const result = await act(session, action, args);
     await recordScreenshot(session);
@@ -354,10 +370,31 @@ function createBrowserAutomationToolSource(options = {}) {
   }
 
   // One action: the site check, the step itself and the activity feed.
-  async function act(session, action, args) {
+  async function act(session, action, args, personalApproved = false) {
     let result;
     try {
-      if (ACTS_ON_SITE.has(action)) await requireSitePermission(await session.url());
+      if (session.personal && !personalApproved && !['snapshot', 'find', 'scroll', 'hover'].includes(action)) {
+        const url = await session.url();
+        for (const [nonce, entry] of personalRequests) if (Date.now() - entry.createdAt > 120000) forgetPersonalRequest(nonce);
+        if (personalRequests.size >= 64) throw new Error('Review pending personal-browser actions before requesting more');
+        const nonce = require('node:crypto').randomBytes(16).toString('hex');
+        const copiedArgs = JSON.parse(JSON.stringify(args || {}));
+        const entry = { session, action, args: copiedArgs, url, createdAt: Date.now() };
+        personalRequests.set(nonce, entry);
+        entry.timer = setTimeout(() => forgetPersonalRequest(nonce), 120000);
+        entry.timer.unref();
+        entry.unsubscribe = session.onInvalidated?.(() => forgetPersonalRequest(nonce));
+        const decision = await approvalGate.requestApproval(PERSONAL_ACTION_TYPE, {
+          forceReview: true,
+          summary: `Approve Mana's ${action} in your personal browser on ${siteOf(url) || url}`,
+          payload: { nonce, sessionId: session.sessionId, action, args: copiedArgs, url },
+        });
+        if (decision.status !== 'pending') forgetPersonalRequest(nonce);
+        throw new Error(decision.status === 'pending'
+          ? `Personal-browser action needs your approval (request ${decision.requestId}). Approval executes this exact action once; do not repeat it. Read a fresh snapshot afterward.`
+          : `Personal-browser action was not approved: ${decision.reason || decision.status}`);
+      }
+      if (!session.personal && ACTS_ON_SITE.has(action)) await requireSitePermission(await session.url());
       if (action === "devtools" && args?.do === "run_js") await requireSitePermission(await session.url(), true);
       if (action === "navigate") result = await session.navigate(args?.url);
       else if (action === "snapshot") result = await session.snapshot();
@@ -414,6 +451,12 @@ function createBrowserAutomationToolSource(options = {}) {
     executeTool,
     isKnownToolName: isBrowserAutomationToolName,
     activityLog,
+    forSession: sessionId => ({
+      listToolSchemas,
+      executeTool: (name, args) => executeTool(name, args, sessionId),
+      isKnownToolName: isBrowserAutomationToolName,
+      activityLog,
+    }),
   };
 }
 

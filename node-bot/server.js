@@ -3193,13 +3193,15 @@ function registerRoutes(app, upload, deps = {}) {
   // handler (registered for the POSIX case) never runs. desktop-client's
   // shutdown-manager.js calls this instead, then waits for this process to
   // actually exit.
-  app.post("/admin/shutdown", (req, res) => {
+  app.post("/admin/shutdown", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
       llamaServerRuntime.stop();
     } catch (e) {
       console.error("Error stopping llama-server during shutdown:", e?.message || e);
     }
+    try { await browserAutomationPlugin.closeSession(); }
+    catch (e) { console.error("Error closing browser during shutdown:", e?.message || e); }
     res.json({ ok: true });
     setTimeout(() => process.exit(0), 150);
   });
