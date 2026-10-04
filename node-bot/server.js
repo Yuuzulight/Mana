@@ -2583,6 +2583,7 @@ function registerRoutes(app, upload, deps = {}) {
   // module load time against the module-level skillsStore would silently
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
+  const documentAccess = deps.documentAccess || require('./document-access').createDocumentAccess({ approvalGate: activeApprovalGate });
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
   // Distinct action type for the idle-triggered autonomous pass (issue
   // #262/skill-proposal.js) -- same executor, but kept separate from
@@ -2673,6 +2674,7 @@ function registerRoutes(app, upload, deps = {}) {
     (deps.notifyTray || notifyTray)({ type: "background_task_done", sessionId, ...event });
   }
   const capabilityContext = {
+    documentAccess,
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     jobs: researchJobs,
     onBackgroundTaskDone: backgroundTaskDone,
@@ -5957,6 +5959,7 @@ function registerRoutes(app, upload, deps = {}) {
   }
 
   registerCoreRoutes(app, upload, {
+    documentAccess,
     UNIVERSALIS_DEFAULT_WORLD,
     TTS_PROVIDER,
     SCREEN_CONTEXT_MAX_CHARS,

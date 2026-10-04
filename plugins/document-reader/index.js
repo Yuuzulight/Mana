@@ -3,9 +3,23 @@ const documentReader = require("./document-reader");
 function registerDocumentReaderRoutes(app, deps) {
   const { fetchPage } = deps;
 
+  async function approvedInput(req, res, purpose) {
+    if (!deps.documentAccess) throw new Error('Document approval is unavailable');
+    const access = await deps.documentAccess.authorize(req.body?.filePath, { sessionId: req.body?.sessionId || '', purpose });
+    if (access.status !== 'approved') {
+      res.status(access.status === 'pending' ? 202 : 403).json(access);
+      return null;
+    }
+    return access;
+  }
+
   app.post("/documents/extract", async (req, res) => {
     try {
-      const result = await documentReader.extractAndPrepareForChat(req.body?.filePath, {
+      const access = await approvedInput(req, res, 'extract');
+      if (!access) return;
+      const result = await documentReader.extractAndPrepareForChat(access.buffer, {
+        filename: access.filename,
+        sourceLabel: access.sourceLabel,
         ocrWorker: deps?.ocrWorker,
       });
       return res.json(result);
@@ -16,7 +30,9 @@ function registerDocumentReaderRoutes(app, deps) {
 
   app.post("/documents/ingest/file", async (req, res) => {
     try {
-      const result = await documentReader.ingestDocument(req.body?.filePath);
+      const access = await approvedInput(req, res, 'ingest');
+      if (!access) return;
+      const result = await documentReader.ingestDocument(access.buffer, access);
       return res.json(result);
     } catch (e) {
       return res.status(400).json({ error: e.message });
@@ -25,7 +41,13 @@ function registerDocumentReaderRoutes(app, deps) {
 
   app.post("/documents/ingest/pdf", async (req, res) => {
     try {
-      const result = await documentReader.ingestPdf(req.body?.filePath, {
+      const access = await approvedInput(req, res, 'ingest-pdf');
+      if (!access) return;
+      if (!access.filename.toLowerCase().endsWith('.pdf')) throw new Error('A PDF file is required');
+      const result = await documentReader.ingestDocument(access.buffer, {
+        filename: access.filename,
+        sourceLabel: access.sourceLabel,
+        chunk: false,
         ocrWorker: deps?.ocrWorker,
       });
       return res.json(result);

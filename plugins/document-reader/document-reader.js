@@ -130,18 +130,19 @@ async function ingestPdf(filePath, options = {}) {
 
 // Unified document ingestion for PDF, Word, Excel, PowerPoint, CSV, Text, Markdown
 async function ingestDocument(filePath, options = {}) {
-  const resolved = String(filePath || "").trim();
-  if (!fs.existsSync(resolved)) {
+  const fromBuffer = Buffer.isBuffer(filePath);
+  const resolved = fromBuffer ? options.filename : String(filePath || "").trim();
+  if (!fromBuffer && !fs.existsSync(resolved)) {
     throw new Error(`File not found: ${resolved}`);
   }
   const ext = (path.extname(resolved) || "").toLowerCase();
   const baseTitle = path.basename(resolved, ext);
 
-  const doc = await extractDocument(resolved, options);
+  const doc = await extractDocument(fromBuffer ? filePath : resolved, options);
   return ingestText({
     title: baseTitle,
     sourceType: doc.type,
-    sourceLabel: resolved,
+    sourceLabel: options.sourceLabel || resolved,
     text: doc.text,
     chunk: options.chunk ?? true,
   });
@@ -166,7 +167,7 @@ async function ingestUrl(url, { fetchPage } = {}) {
 // Large docs are chunked into the retriever index instead of stuffed into the prompt.
 // Unreadable docs report a clear reason so Mana can tell the user why.
 async function extractAndPrepareForChat(filePath, options = {}) {
-  const fileName = path.basename(filePath);
+  const fileName = path.basename(Buffer.isBuffer(filePath) ? options.filename : filePath);
   const maxPromptChars = options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS;
 
   try {
@@ -180,7 +181,7 @@ async function extractAndPrepareForChat(filePath, options = {}) {
         text: doc.text,
         chars,
         fileName,
-        filePath,
+        filePath: options.sourceLabel || (Buffer.isBuffer(filePath) ? null : filePath),
         type: doc.type,
         tables: doc.tables,
         sheets: doc.sheets,
@@ -193,7 +194,7 @@ async function extractAndPrepareForChat(filePath, options = {}) {
     const ingestRes = await ingestText({
       title: fileName,
       sourceType: doc.type,
-      sourceLabel: filePath,
+      sourceLabel: options.sourceLabel || (Buffer.isBuffer(filePath) ? fileName : filePath),
       text: doc.text,
       chunk: true,
     });
@@ -206,7 +207,7 @@ async function extractAndPrepareForChat(filePath, options = {}) {
       excerpt,
       chars,
       fileName,
-      filePath,
+      filePath: options.sourceLabel || (Buffer.isBuffer(filePath) ? null : filePath),
       type: doc.type,
       fileSize: doc.fileSize,
       documentId: ingestRes.id,
@@ -216,7 +217,7 @@ async function extractAndPrepareForChat(filePath, options = {}) {
       ok: false,
       error: err.message || String(err),
       fileName,
-      filePath,
+      filePath: options.sourceLabel || (Buffer.isBuffer(filePath) ? null : filePath),
     };
   }
 }

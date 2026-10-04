@@ -65,7 +65,7 @@ test("POST /documents/ingest/url ingests via the injected fetchPage, then GET/DE
   });
 });
 
-test("POST /documents/ingest/pdf surfaces validation errors as 400s", async () => {
+test("POST /documents/ingest/pdf fails closed when approval is unavailable", async () => {
   const app = express();
   app.use(express.json());
   documentReaderPlugin.registerRoutes(app, {});
@@ -75,8 +75,28 @@ test("POST /documents/ingest/pdf surfaces validation errors as 400s", async () =
       filePath: "C:\\not\\a\\real.pdf",
     });
     assert.equal(response.status, 400);
-    assert.match(payload.error, /File not found/);
+    assert.match(payload.error, /Document approval is unavailable/);
   });
+});
+
+test('file-reading routes return pending without invoking extraction', async () => {
+  const app = express();
+  app.use(express.json());
+  const purposes = [];
+  documentReaderPlugin.registerRoutes(app, {
+    documentAccess: { authorize: async (_file, options) => {
+      purposes.push(options.purpose);
+      return { status: 'pending', requestId: 'approval-id' };
+    } },
+  });
+  await withServer(app, async baseUrl => {
+    for (const route of ['/documents/extract', '/documents/ingest/file', '/documents/ingest/pdf']) {
+      const result = await postJson(`${baseUrl}${route}`, { filePath: 'missing.txt' });
+      assert.equal(result.response.status, 202);
+      assert.equal(result.payload.requestId, 'approval-id');
+    }
+  });
+  assert.deepEqual(purposes, ['extract', 'ingest', 'ingest-pdf']);
 });
 
 test("plugin metadata matches the shape other Mana plugins use", () => {
