@@ -1854,6 +1854,13 @@ function createAcpMemoryStore(options = {}) {
   // never inferred by the model, so it's set the same way a name is (one
   // string, replace-in-place). An empty string clears it, same as
   // renameSession's own empty-name-becomes-null behavior.
+  function setSessionChatModel(sessionId, chatModel) {
+    if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 240) throw new Error('Invalid chat session ID');
+    if (typeof chatModel !== 'string' || !/^(automatic|local:[a-z0-9_-]+|cloud:(brain|fallback))$/.test(chatModel)) throw new Error('Invalid chat model');
+    const existing = ensureSession({ sessionId });
+    return saveSession({ ...existing, chatModel, updatedAt: now() });
+  }
+
   function setSessionGoal(sessionId, goal) {
     const existing = getSession(cleanText(sessionId, 240));
     if (!existing) {
@@ -2015,6 +2022,8 @@ function createAcpMemoryStore(options = {}) {
     turn.versionIndex = vIdx;
     const v = turn.versions[vIdx];
     turn.assistant = v.assistant;
+    turn.answerModel = v.answerModel;
+    turn.cloudFallback = Boolean(v.cloudFallback);
     if (v.thought !== undefined) turn.thought = v.thought;
     if (v.toolCalls !== undefined) turn.toolCalls = v.toolCalls;
     if (v.steps !== undefined) turn.steps = v.steps;
@@ -2037,6 +2046,8 @@ function createAcpMemoryStore(options = {}) {
           toolCalls: turn.toolCalls,
           steps: turn.steps,
           sources: turn.sources,
+          answerModel: turn.answerModel,
+          cloudFallback: Boolean(turn.cloudFallback),
           at: turn.at,
         },
       ];
@@ -2047,11 +2058,15 @@ function createAcpMemoryStore(options = {}) {
       toolCalls: versionData.toolCalls,
       steps: versionData.steps,
       sources: versionData.sources,
+      answerModel: cleanText(versionData.answerModel, 160) || undefined,
+      cloudFallback: Boolean(versionData.cloudFallback),
       at: now(),
     };
     turn.versions.push(newVersion);
     turn.versionIndex = turn.versions.length - 1;
     turn.assistant = newVersion.assistant;
+    turn.answerModel = newVersion.answerModel;
+    turn.cloudFallback = newVersion.cloudFallback;
     turn.thought = newVersion.thought;
     turn.toolCalls = newVersion.toolCalls;
     turn.steps = newVersion.steps;
@@ -2166,6 +2181,8 @@ function createAcpMemoryStore(options = {}) {
     // history's labels; turns from before carry none.
     const speaker = cleanText(input.speaker, 60);
     if (speaker) turn.speaker = speaker;
+    if (input.answerModel) turn.answerModel = cleanText(input.answerModel, 160);
+    if (input.cloudFallback === true) turn.cloudFallback = true;
     // #1142: the reply's artifact verbatim, for the Artifacts panel after a
     // restart (artifact-history.js); the text above loses its line breaks.
     const artifact = artifactOf(redactSensitive(input.assistant));
@@ -2193,6 +2210,8 @@ function createAcpMemoryStore(options = {}) {
         thought: turn.thought,
         toolCalls: turn.toolCalls,
         steps: turn.steps,
+        answerModel: turn.answerModel,
+        cloudFallback: Boolean(turn.cloudFallback),
         at: turn.at,
       },
     ];
@@ -2728,6 +2747,7 @@ function createAcpMemoryStore(options = {}) {
     listSessions,
     renameSession,
     setSessionGoal,
+    setSessionChatModel,
     forkSession,
     truncateTurns,
     setTurnVersion,

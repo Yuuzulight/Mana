@@ -154,6 +154,7 @@ function createModelSettingsStore(options = {}) {
     const fallback = settings.fallback && typeof settings.fallback === "object" ? settings.fallback : {};
     return {
       enabled: fallback.enabled === true,
+      timeoutSeconds: [30, 60].includes(fallback.timeoutSeconds) ? fallback.timeoutSeconds : 0,
       baseUrl: typeof fallback.baseUrl === "string" ? fallback.baseUrl : "",
       apiKey: readApiKey(fallback),
       model: typeof fallback.model === "string" ? fallback.model : "",
@@ -164,6 +165,7 @@ function createModelSettingsStore(options = {}) {
     const settings = readAll();
     const next = settings.fallback && typeof settings.fallback === "object" ? { ...settings.fallback } : {};
     if (partial.enabled !== undefined) next.enabled = partial.enabled === true;
+    if (partial.timeoutSeconds !== undefined) next.timeoutSeconds = partial.timeoutSeconds;
     if (partial.baseUrl !== undefined) next.baseUrl = String(partial.baseUrl || "").trim();
     if (partial.apiKey !== undefined) {
       delete next.apiKey;

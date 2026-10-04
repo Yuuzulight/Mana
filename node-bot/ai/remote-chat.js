@@ -8,7 +8,8 @@ function completionUrl(baseUrl) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
     throw new Error('Chat endpoint must be an HTTP(S) URL without embedded credentials');
   }
-  const base = url.pathname.replace(/\/+$/, '');
+  let base = url.pathname;
+  while (base.endsWith('/')) base = base.slice(0, -1);
   url.pathname = base + (base.endsWith('/v1') ? '/chat/completions' : '/v1/chat/completions');
   return url;
 }

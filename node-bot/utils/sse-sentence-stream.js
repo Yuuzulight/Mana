@@ -62,7 +62,7 @@ async function* readSseDeltas(resp, onTimings = null) {
 // Order matters: think-block suppression runs BEFORE sentence cutting, so
 // reasoning never reaches TTS. The other way round would speak the model's
 // deliberation before its closing tag arrived.
-async function streamSentences(resp, { onSentence = null, onThought = null, onThoughtDone = null, maxSentenceChars, onTimings = null } = {}) {
+async function streamSentences(resp, { onSentence = null, onThought = null, onThoughtDone = null, maxSentenceChars, onTimings = null, onReplyStarted = null } = {}) {
   const thinkFilter = createThinkFilter({ onThought });
   const chunker = createSentenceChunker({ maxChars: maxSentenceChars });
   const emit = typeof onSentence === "function" ? onSentence : () => {};
@@ -77,12 +77,14 @@ async function streamSentences(resp, { onSentence = null, onThought = null, onTh
 
   for await (const delta of readSseDeltas(resp, onTimings)) {
     const visible = thinkFilter.push(delta);
+    if (visible?.trim()) onReplyStarted?.();
     if (visible) await deliver(chunker.push(visible));
   }
   // Both filters may be holding text back: the think filter on something
   // that turned out not to be a tag, the chunker on a final sentence with
   // no terminator. Released in that order.
   const tail = thinkFilter.flush();
+  if (tail?.trim()) onReplyStarted?.();
   if (tail) await deliver(chunker.push(tail));
   await deliver(chunker.flush());
 

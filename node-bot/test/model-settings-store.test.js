@@ -106,6 +106,7 @@ test("model-settings-store: fallback settings persist independently and keep the
     const store = createModelSettingsStore({ dataDir: tempDir, secrets: fakeSecrets });
     assert.deepEqual(store.getFallbackSettings(), {
       enabled: false,
+      timeoutSeconds: 0,
       baseUrl: "",
       apiKey: "",
       model: "",
@@ -119,6 +120,7 @@ test("model-settings-store: fallback settings persist independently and keep the
     });
     assert.deepEqual(result, {
       enabled: true,
+      timeoutSeconds: 0,
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-fallback",
       model: "gpt-test",

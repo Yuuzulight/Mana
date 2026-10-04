@@ -209,7 +209,25 @@ test("setFallbackSettings enables local-first cloud fallback without echoing the
   assert.equal(JSON.stringify(status).includes("sk-fallback-secret"), false);
 });
 
-test("setFallbackSettings refuses a cloud endpoint in local-only mode, but not a LAN one", () => {
+test('fallback toggle grants chat permission without enabling the global remote brain', () => {
+  const store = fakeModelSettingsStore();
+  const manager = createModelManagement({ env: {}, localGgufs: [], modelSettingsStore: store });
+  manager.setFallbackSettings({ enabled: true, baseUrl: 'https://api.openai.com/v1', apiKey: 'secret', model: 'configured-model', timeoutSeconds: 60 });
+  const status = manager.getModelStatus();
+  assert.equal(status.cloudFallbackEnabled, true);
+  assert.equal(status.remoteAiEnabled, false);
+  assert.equal(status.fallback.timeoutSeconds, 60);
+  assert.ok(manager.getChatModels().some(model => model.id === 'cloud:fallback'));
+  assert.equal(manager.resolveChatModel('cloud:fallback').remoteConfig.allowRemoteAi, '1');
+  assert.ok(!JSON.stringify(manager.getChatModels()).includes('secret'));
+  manager.setFallbackSettings({ enabled: false });
+  assert.ok(!manager.getChatModels().some(model => model.id === 'cloud:fallback'));
+  assert.throws(() => manager.resolveChatModel('cloud:fallback'), /not enabled/);
+  assert.throws(() => manager.setFallbackSettings({ timeoutSeconds: 15 }), /0, 30 or 60/);
+  assert.throws(() => manager.setFallbackSettings({ baseUrl: 'https://key:secret@example.com' }), /credentials/);
+});
+
+test("setFallbackSettings refuses all fallback activation in local-only mode", () => {
   const store = fakeModelSettingsStore();
   const manager = createModelManagement({ env: {}, localGgufs: [], modelSettingsStore: store });
   const prior = process.env.MANA_LOCAL_ONLY;
@@ -217,11 +235,14 @@ test("setFallbackSettings refuses a cloud endpoint in local-only mode, but not a
   try {
     assert.throws(
       () => manager.setFallbackSettings({ enabled: true, baseUrl: "https://api.openai.com/v1" }),
-      /Local-only mode is on .*cloud fallback at api\.openai\.com/,
+      /disabled in local-only mode/,
     );
     assert.equal(store.getFallbackSettings().enabled, false);
-    manager.setFallbackSettings({ enabled: true, baseUrl: "http://192.168.1.20:11434/v1" });
-    assert.equal(store.getFallbackSettings().baseUrl, "http://192.168.1.20:11434/v1");
+    store.setFallbackSettings({ enabled: true, model: 'configured-model', apiKey: 'secret' });
+    assert.equal(manager.getModelStatus().cloudFallbackEnabled, false);
+    assert.ok(manager.getChatModels().every(model => !model.id.startsWith('cloud:')));
+    assert.throws(() => manager.resolveChatModel('cloud:fallback'), /local-only/);
+    assert.throws(() => manager.setFallbackSettings({ enabled: true, baseUrl: "http://192.168.1.20:11434/v1" }), /disabled in local-only mode/);
   } finally {
     if (prior === undefined) delete process.env.MANA_LOCAL_ONLY;
     else process.env.MANA_LOCAL_ONLY = prior;

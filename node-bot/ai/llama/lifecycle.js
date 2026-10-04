@@ -151,17 +151,31 @@ function registerExit() {
   function inTurn(fn) {
     return async (...args) => {
       context.state.busy += 1;
+      const signal = args.find(value => value?.signal)?.signal || args.find(value => value?.extraMessages?.signal)?.extraMessages.signal;
+      const cancelOwned = () => { if (context.state.busy === 1 && context.state.child) stop(); };
+      signal?.addEventListener('abort', cancelOwned, { once: true });
       try {
+        signal?.throwIfAborted();
         return await fn(...args);
       } finally {
+        signal?.removeEventListener('abort', cancelOwned);
         context.state.busy -= 1;
-        if (context.state.busy === 0 && context.state.gamingSwapPending !== null) setGaming(context.state.gamingSwapPending);
-        if (context.state.busy === 0 && context.state.visionUnloadPending) unloadVision();
+        let cleanupError;
+        if (signal?.aborted && context.state.busy === 0) {
+          if (context.state.child) stop();
+          if (context.state.stopping && !(await context.state.stopping)) {
+            cleanupError = new Error('Cancelled local model process did not exit');
+            cleanupError.code = 'LOCAL_CLEANUP_FAILED';
+          }
+        }
+        if (!signal?.aborted && context.state.busy === 0 && context.state.gamingSwapPending !== null) setGaming(context.state.gamingSwapPending);
+        if (!signal?.aborted && context.state.busy === 0 && context.state.visionUnloadPending) unloadVision();
         // #1214: her context ended while chat replies were in flight.
         if (context.state.busy === 0 && context.state.contextRestorePending) {
           context.state.contextOverride = null;
           context.state.contextRestorePending = false;
         }
+        if (cleanupError) throw cleanupError;
       }
     };
   }

@@ -319,6 +319,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var reply = new Message(fromUser: false)
                 {
                     FinalText = text,
+                    AnswerModel = turn.AnswerModel,
+                    CloudFallback = turn.CloudFallback,
                     Steps = group,
                     Thought = first && group is null ? turn.Thought : null,
                     TurnIndex = turnIdx,
@@ -350,6 +352,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // cut mid-line, so Mana's bubble is re-parsed from the real text. As in
     // Electron, the reply's artifact (a big or ```html/```mermaid block)
     public void ReportReply(string replyText) => ReportReply(replyText, null);
+
+    public void SetAnswerModel(string? model, bool fallback) => RunOnUiThread(() =>
+    {
+        var message = messages.LastOrDefault(m => !m.FromUser && m.Steps is null);
+        if (message is null) return;
+        message.AnswerModel = model;
+        message.CloudFallback = fallback;
+        Relayout(forceScroll: false);
+        Invalidate();
+    });
 
     // #1329: ReportReply with verified web sources citations.
     public void ReportReply(string replyText, IReadOnlyList<WebSourceCitation>? sources) => RunOnUiThread(() =>
@@ -721,7 +733,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             var x = message.FromUser ? ViewportWidth - SideMargin - bubbleWidth : SideMargin;
             // #1318: a step line has no "Mana" label above it.
             var labelHeight = message.Steps is null ? labelFont.Height + LabelGap : 0;
-            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, 60, labelHeight);
+            var labelWidth = message.FromUser ? 60 : Math.Min(Math.Max(40, ViewportWidth - SideMargin * 2 - 200), Math.Max(60, Measure(message.Speaker, labelFont)));
+            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, labelWidth, labelHeight);
             message.Bounds = new Rectangle(x, y + labelHeight, bubbleWidth, message.ContentHeight + PadY * 2);
 
             // #1322: Action and version stepper button layout
@@ -1256,7 +1269,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             var label = message.LabelBounds with { Y = message.LabelBounds.Y - scroll };
             TextRenderer.DrawText(g, message.Speaker, labelFont, label, DarkTheme.Muted,
-                TextFlags | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
+                TextFlags | TextFormatFlags.EndEllipsis | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
 
             // #1322: Draw version stepper controls if multiple versions exist
             if (message.Versions != null && message.Versions.Count > 1)
@@ -1556,11 +1569,13 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         base.OnMouseMove(e);
         var link = LinkAt(e.Location);
+        var label = messages.FirstOrDefault(message => !message.FromUser && message.LabelBounds.Contains(e.X, e.Y + (scrolling ? scrollBar.Value : 0)))?.Speaker;
+        var tip = link ?? label;
         if (link != hoveredLink)
         {
             hoveredLink = link;
-            linkTip.SetToolTip(this, link); // shows where a link really goes before it's clicked
         }
+        if (linkTip.GetToolTip(this) != tip) linkTip.SetToolTip(this, tip);
         var isThoughtHeader = false;
         if (HitTest(e.Location) is var thMoveHit and >= 0 && !string.IsNullOrWhiteSpace(messages[thMoveHit].Thought))
         {
@@ -2215,7 +2230,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public bool FromUser { get; }
         // #914: the character's name on her messages (null: Mana).
         public string? Name { get; init; }
-        public string Speaker => FromUser ? "You" : Name ?? "Mana";
+        public string? AnswerModel { get; set; }
+        public bool CloudFallback { get; set; }
+        public string Speaker => FromUser ? "You" : (Name ?? "Mana") + (AnswerModel is null ? "" : $" · {AnswerModel}{(CloudFallback ? " (fallback)" : "")}");
         public List<MarkdownBlock> Blocks { get; } = new();
         public List<Line> Lines { get; set; } = new();
         public string Text { get; set; } = "";

@@ -151,7 +151,8 @@ async function runLocalAssistantReply(
       throw new Error("fetch is not available; cannot use llama-server");
     }
     const startedAt = context.nowMs();
-    await context.ensureServer(profile, extraMessages?.images);
+    await context.ensureServer(profile, extraMessages?.images, { signal: extraMessages?.signal });
+    extraMessages?.signal?.throwIfAborted();
 
     // #1343: Tri-mode dynamic multi-LoRA routing
     if (context.state.hasLoraAdapters) {
@@ -167,6 +168,7 @@ async function runLocalAssistantReply(
       `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
       {
         method: "POST",
+        signal: extraMessages?.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages, ...sampling.params }),
       },
@@ -180,6 +182,7 @@ async function runLocalAssistantReply(
     const json = await resp.json();
     logPromptCache("llama-server", json?.timings);
     const rawContent = json?.choices?.[0]?.message?.content;
+    if (context.stripThinking(rawContent)?.trim()) extraMessages?.onReplyStarted?.();
     const thought = context.extractThinking(rawContent);
     if (thought && typeof extraMessages?.onThoughtDone === "function") {
       extraMessages.onThoughtDone(thought);
@@ -234,7 +237,8 @@ async function runLocalAssistantReply(
       throw new Error("fetch is not available; cannot use llama-server");
     }
     const startedAt = context.nowMs();
-    await context.ensureServer(profile, extraMessages?.images);
+    await context.ensureServer(profile, extraMessages?.images, { signal: extraMessages?.signal });
+    extraMessages?.signal?.throwIfAborted();
 
     const messages = buildMessages(overrideSystemPrompt || context.systemPromptOf(), prompt, extraMessages);
     const { params } = context.buildSamplingParams({ profile, task: "stream", maxTokens, thinking, env: context.env });
@@ -243,6 +247,7 @@ async function runLocalAssistantReply(
       `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
       {
         method: "POST",
+        signal: extraMessages?.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages, ...params, stream: true }),
       },
@@ -258,6 +263,7 @@ async function runLocalAssistantReply(
     // but a server run with timings_per_token sends them on every frame.
     let lastTimings = null;
     const full = await context.streamSentences(resp, {
+      onReplyStarted: extraMessages?.onReplyStarted,
       onSentence,
       onThought,
       onThoughtDone,
@@ -310,19 +316,23 @@ async function runLocalAssistantReply(
       maxTokens = 512,
       profile = "coding",
       overrideSystemPrompt = null,
+      signal = null,
+      onReplyStarted = null,
     } = {},
   ) {
     if (typeof context.fetchImpl !== "function") {
       throw new Error("fetch is not available; cannot use llama-server");
     }
     const startedAt = context.nowMs();
-    await context.ensureServer(profile);
+    await context.ensureServer(profile, null, { signal });
 
     async function completeChat(messages, temperature, tokenLimit) {
+      signal?.throwIfAborted();
       const resp = await context.fetchImpl(
         `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
         {
           method: "POST",
+          signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages,
@@ -339,6 +349,7 @@ async function runLocalAssistantReply(
         );
       }
       const json = await resp.json();
+      if (context.stripThinking(json?.choices?.[0]?.message?.content)?.trim()) onReplyStarted?.();
       const content =
         json && json.choices && json.choices[0] && json.choices[0].message
           ? String(json.choices[0].message.content || "")

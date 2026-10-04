@@ -283,6 +283,7 @@ test("cloud fallback route persists fallback settings through model management",
     assert.equal(response.status, 200);
     assert.deepEqual(calls[0], {
       enabled: true,
+      timeoutSeconds: undefined,
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
       model: "gpt-test",

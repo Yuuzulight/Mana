@@ -30,7 +30,8 @@ async function runToolAwareReply(
       );
     }
     const startedAt = context.nowMs();
-    await context.ensureServer(profile, extraMessages?.images);
+    await context.ensureServer(profile, extraMessages?.images, { signal: extraMessages?.signal });
+    extraMessages?.signal?.throwIfAborted();
 
     // #1343: Tool execution routes to assistant LoRA
     if (context.state.hasLoraAdapters) {
@@ -79,7 +80,8 @@ async function runToolAwareReply(
       // request goes out. On the common no-swap path this is just a cheap
       // isHealthy() check (ensureServerConfig's early-return), not a real
       // restart.
-      await context.ensureServer(profile);
+      await context.ensureServer(profile, null, { signal: extraMessages?.signal });
+      extraMessages?.signal?.throwIfAborted();
       // #675: never DRY/XTC here, and no thinking unless this is a "think
       // harder" turn -- both can break tool-call JSON. When it thinks,
       // llama-server returns the reasoning apart from content and
@@ -95,6 +97,7 @@ async function runToolAwareReply(
         `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
         {
           method: "POST",
+          signal: extraMessages?.signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ messages, ...toolFields, ...params }),
         },
@@ -106,6 +109,7 @@ async function runToolAwareReply(
         );
       }
       const json = await resp.json();
+      if (context.stripThinking(json?.choices?.[0]?.message?.content)?.trim()) extraMessages?.onReplyStarted?.();
       context.logPromptCache("llama-server-tool-reply", json && json.timings);
       return json;
     }

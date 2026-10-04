@@ -480,9 +480,11 @@ function createModelManagement(options = {}) {
     const fallback = modelSettingsStore.getFallbackSettings();
     return {
       enabled: fallback.enabled === true,
+      timeoutSeconds: fallback.timeoutSeconds,
+      allowRemoteAi: fallback.enabled ? '1' : '',
       apiKey: fallback.apiKey || env.OPENAI_API_KEY || null,
       baseUrl: fallback.baseUrl || env.OPENAI_BASE_URL || "https://api.openai.com",
-      model: fallback.model || env.OPENAI_MODEL || "codex-gpt-5.5",
+      model: fallback.model || env.OPENAI_MODEL || '',
     };
   }
 
@@ -501,16 +503,17 @@ function createModelManagement(options = {}) {
     });
     const fallback = effectiveFallbackConfig();
     const cloudFallbackEnabled =
-      fallback.enabled &&
+      !(isLocalOnly(env) || isLocalOnly()) && fallback.enabled && Boolean(fallback.model) &&
       shouldUseRemoteAi({
         apiKey: fallback.apiKey,
-        allowRemoteAi: env.MANA_ALLOW_REMOTE_AI || "",
+        allowRemoteAi: fallback.allowRemoteAi,
         baseUrl: fallback.baseUrl,
       });
 
     const liveVramUsage = getLiveVramUsage();
     return {
       activeProfile,
+      localOnly: isLocalOnly(env) || isLocalOnly(),
       remoteAiEnabled,
       remoteAiWarning: remoteAiEnabled
         ? "Remote AI is enabled. Mana may use paid or proxy chat replies."
@@ -646,6 +649,10 @@ function createModelManagement(options = {}) {
   }
 
   function setFallbackSettings(partial = {}) {
+    for (const key of ['baseUrl', 'apiKey', 'model']) {
+      if (partial[key] !== undefined && typeof partial[key] !== 'string') throw new Error(`${key} must be a string`);
+    }
+    if (partial.timeoutSeconds !== undefined && ![0, 30, 60].includes(partial.timeoutSeconds)) throw new Error('timeoutSeconds must be 0, 30 or 60');
     if (partial.baseUrl) {
       let parsed;
       try {
@@ -656,14 +663,14 @@ function createModelManagement(options = {}) {
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         throw new Error(`baseUrl must be http:// or https://: ${partial.baseUrl}`);
       }
+      if (parsed.username || parsed.password) throw new Error('Use the API key field, not credentials in the endpoint URL');
     }
     if (partial.enabled !== undefined && typeof partial.enabled !== "boolean") {
       throw new Error("enabled must be true or false");
     }
-    if (isLocalOnly()) {
-      const next = { ...modelSettingsStore.getFallbackSettings(), ...partial };
-      if (next.enabled === true) assertLocalUrl(next.baseUrl, "cloud fallback at");
-    }
+    if ((isLocalOnly(env) || isLocalOnly()) && partial.enabled === true) throw new Error('Cloud fallback is disabled in local-only mode');
+    const next = { ...modelSettingsStore.getFallbackSettings(), ...Object.fromEntries(Object.entries(partial).filter(([, value]) => value !== undefined)) };
+    if (next.enabled && !(next.model || env.OPENAI_MODEL)) throw new Error('Configure a fallback model before enabling it');
     modelSettingsStore.setFallbackSettings(partial);
     return getModelStatus();
   }
@@ -740,7 +747,34 @@ function createModelManagement(options = {}) {
     }
   }
 
+  function resolveChatModel(id) {
+    if (!id || id === 'automatic') return null;
+    if (id.startsWith('local:') && getKnownLlamaModelProfiles().includes(id.slice(6))) return { profile: id.slice(6) };
+    if (isLocalOnly(env) || isLocalOnly()) throw new Error('Cloud chat models are disabled in local-only mode');
+    let config;
+    if (id === 'cloud:brain') config = effectiveOpenAiConfig();
+    else if (id === 'cloud:fallback') {
+      config = effectiveFallbackConfig();
+      if (!config.enabled) throw new Error('Cloud fallback is not enabled');
+    }
+    else throw new Error('Unknown chat model');
+    const model = id === 'cloud:brain' ? modelSettingsStore.getBrainSettings().model || env.OPENAI_MODEL : config.model;
+    if (!model || !shouldUseRemoteAi({ ...config, allowRemoteAi: config.allowRemoteAi ?? env.MANA_ALLOW_REMOTE_AI ?? '' })) throw new Error('Cloud chat model is not configured or permitted');
+    return { remoteConfig: { ...config, model } };
+  }
+
+  function getChatModels() {
+    const models = [{ id: 'automatic', label: 'Automatic' }];
+    for (const profile of getKnownLlamaModelProfiles()) models.push({ id: `local:${profile}`, label: `Local: ${profile}` });
+    for (const id of ['cloud:brain', 'cloud:fallback']) {
+      try { const selected = resolveChatModel(id); models.push({ id, label: `Cloud: ${selected.remoteConfig.model}` }); } catch {}
+    }
+    return models;
+  }
+
   return {
+    resolveChatModel,
+    getChatModels,
     getActiveProfile,
     getKnownBrainProviders,
     getModelStatus,

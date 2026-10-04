@@ -259,6 +259,7 @@ context.app.post("/reply", async (req, res) => {
       }
       return res.json({
         reply: finalReply,
+        ...(replyMeta.answerModel ? { answerModel: replyMeta.answerModel, cloudFallback: Boolean(replyMeta.cloudFallback) } : {}),
         ...(finalSources ? { sources: finalSources } : {}),
         ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
         ttsConfigured: context.TTS_PROVIDER !== "none",
@@ -476,6 +477,7 @@ context.app.post("/reply/stream", async (req, res) => {
       writeEvent({
         type: "final",
         reply: finalReply,
+        ...(replyMeta.answerModel ? { answerModel: replyMeta.answerModel, cloudFallback: Boolean(replyMeta.cloudFallback) } : {}),
         ...(finalSources ? { sources: finalSources } : {}),
         ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
         ttsConfigured: context.TTS_PROVIDER !== "none",

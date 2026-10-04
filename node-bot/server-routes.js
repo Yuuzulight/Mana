@@ -217,6 +217,7 @@ function registerModelRoutes(app, deps) {
       return res.json(
         modelManagement.setFallbackSettings({
           enabled: req.body?.enabled,
+          timeoutSeconds: req.body?.timeoutSeconds,
           baseUrl: req.body?.baseUrl,
           apiKey: req.body?.apiKey,
           model: req.body?.model,

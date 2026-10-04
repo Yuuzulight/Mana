@@ -51,6 +51,10 @@ internal sealed partial class SessionListForm : Form
     private readonly Label avatarStatusLabel = new();
     private readonly Label contextMeterLabel = new();
     private readonly Label chatTitleLabel = new();
+    private readonly ComboBox chatModelPicker = new() { Dock = DockStyle.Right, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Chat model" };
+    private bool loadingChatModels;
+    private string? modelsForSession;
+    private int modelLoadVersion;
     private readonly Font chatTitleFont = new("Segoe UI Semibold", 10.5f);
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
@@ -501,6 +505,19 @@ internal sealed partial class SessionListForm : Form
         };
         // Last added docks first: toggle left, listen toggle outermost right.
         chatHeader.Controls.Add(chatTitleLabel);
+        chatHeader.Controls.Add(chatModelPicker);
+        chatModelPicker.BackColor = DarkTheme.Panel2;
+        chatModelPicker.ForeColor = DarkTheme.Text;
+        chatModelPicker.DropDown += async (_, _) => await RefreshChatModelsAsync();
+        chatModelPicker.SelectedIndexChanged += async (_, _) =>
+        {
+            if (loadingChatModels || chatModelPicker.SelectedItem is not ManaChatModel model) return;
+            var sessionId = voiceLoop.EnsureSessionId();
+            chatModelPicker.Enabled = false;
+            try { await backendClient.SetChatModelAsync(sessionId, model.Id); }
+            catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, ex.Message, "Chat model", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            finally { if (!IsDisposed) { chatModelPicker.Enabled = true; await RefreshChatModelsAsync(); } }
+        };
         chatHeader.Controls.Add(contextMeterLabel);
         chatHeader.Controls.Add(listenButton);
         chatHeader.Controls.Add(sidebarToggleButton);
@@ -1878,7 +1895,29 @@ internal sealed partial class SessionListForm : Form
         ShowChatTitle();
     }
 
-    private void ShowChatTitle() => chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+    private void ShowChatTitle()
+    {
+        chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+        if (modelsForSession != activeSessionId || chatModelPicker.Items.Count == 0) _ = RefreshChatModelsAsync();
+    }
+
+    private async Task RefreshChatModelsAsync()
+    {
+        var version = ++modelLoadVersion;
+        var sessionId = voiceLoop.CurrentSessionId;
+        try
+        {
+            var result = await backendClient.GetChatModelsAsync(sessionId);
+            if (IsDisposed || version != modelLoadVersion || sessionId != voiceLoop.CurrentSessionId) return;
+            loadingChatModels = true;
+            chatModelPicker.Items.Clear();
+            foreach (var model in result.Models) chatModelPicker.Items.Add(model);
+            chatModelPicker.SelectedItem = result.Models.FirstOrDefault(m => m.Id == result.Selected);
+            modelsForSession = sessionId;
+        }
+        catch { if (!IsDisposed && version == modelLoadVersion) chatModelPicker.SelectedIndex = -1; }
+        finally { loadingChatModels = false; }
+    }
 
     // The open chat's name for the header; a chat not saved yet is "New chat".
     internal static string ChatTitle(System.Collections.Generic.IReadOnlyList<ManaSession> sessions, string? activeSessionId) =>
