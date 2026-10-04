@@ -1481,6 +1481,8 @@ function createLlamaServerRuntime(options = {}) {
         `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
       );
     }
+    const json = await resp.json();
+    logPromptCache("llama-server", json?.timings);
     const rawContent = json?.choices?.[0]?.message?.content;
     const thought = extractThinking(rawContent);
     if (thought && typeof extraMessages?.onThoughtDone === "function") {

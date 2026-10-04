@@ -306,7 +306,9 @@ test("POST /reply/stream: #1325 attached documents are extracted locally and inc
   fs.writeFileSync(sampleDocPath, "This is extracted document content from sample.txt.");
 
   let receivedPrompt = "";
+  let ocrCalls = 0;
   const app = createApp({
+    getScreenOcrWorker: async () => { ocrCalls += 1; throw new Error("Text must not start OCR"); },
     buildAssistantReply: async (transcript) => {
       receivedPrompt = transcript;
       return "I reviewed the document.";
@@ -325,14 +327,21 @@ test("POST /reply/stream: #1325 attached documents are extracted locally and inc
     assert.match(receivedPrompt, /Attached document: sample\.txt/);
     assert.match(receivedPrompt, /This is extracted document content from sample\.txt\./);
     assert.match(receivedPrompt, /summarize this file/);
+    assert.equal(ocrCalls, 0);
   } finally {
     fs.rmSync(tempDir, { recursive: true });
   }
 });
 
 test("POST /reply/stream: #1325 an unreadable document gives a clear reason so Mana can explain it", async () => {
+  const path = require("node:path");
+  const os = require("node:os");
+  const { randomUUID } = require("node:crypto");
+  const missingFile = path.join(os.tmpdir(), `mana-missing-${randomUUID()}`, "missing-file.docx");
   let receivedPrompt = "";
+  let ocrCalls = 0;
   const app = createApp({
+    getScreenOcrWorker: async () => { ocrCalls += 1; throw new Error("Missing files must not start OCR"); },
     buildAssistantReply: async (transcript) => {
       receivedPrompt = transcript;
       return "I couldn't read the file.";
@@ -342,12 +351,40 @@ test("POST /reply/stream: #1325 an unreadable document gives a clear reason so M
   await withServer(app, async (baseUrl) => {
     const { events } = await postNdjson(baseUrl, "/reply/stream", {
       text: "what is this?",
-      documents: ["C:\\nonexistent\\missing-file.docx"],
+      documents: [missingFile],
     });
     assert.equal(events.at(-1).type, "final");
   });
   assert.match(receivedPrompt, /Attached document "missing-file\.docx" could not be read/);
   assert.match(receivedPrompt, /File not found/);
+  assert.equal(ocrCalls, 0);
+});
+
+test("POST /reply/stream: #1325 scanned PDFs lazily request OCR and include recognized text", async () => {
+  const path = require("node:path");
+  const file = path.join(__dirname, "../../plugins/document-reader/test/fixtures/image-only.pdf");
+  let ocrCalls = 0;
+  let receivedPrompt = "";
+  const app = createApp({
+    getScreenOcrWorker: async () => {
+      ocrCalls += 1;
+      return { recognize: async (image) => {
+        assert.ok(Buffer.isBuffer(image));
+        return { data: { text: "Recognized scanned document" } };
+      } };
+    },
+    buildAssistantReply: async (transcript) => {
+      receivedPrompt = transcript;
+      return "Read the scan.";
+    },
+  });
+  assert.equal(ocrCalls, 0);
+  await withServer(app, async (baseUrl) => {
+    const { events } = await postNdjson(baseUrl, "/reply/stream", { text: "read this scan", documents: [file] });
+    assert.equal(events.at(-1).reply, "Read the scan.");
+  });
+  assert.ok(ocrCalls > 0);
+  assert.match(receivedPrompt, /Recognized scanned document/);
 });
 
 test("POST /reply/stream: #1354 reasoning tokens stream as thought events and are included on final", async () => {

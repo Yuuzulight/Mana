@@ -2135,8 +2135,17 @@ function createAcpMemoryStore(options = {}) {
   function appendEvent({ sessionId, ...event } = {}) {
     const session = sessionId ? getSession(cleanText(sessionId, 240)) : null;
     if (!session) return null;
-    const at = now();
+    const at = nextTurnTimestamp(session);
     return saveSession({ ...session, turns: [...session.turns, { role: "event", ...event, at }], updatedAt: at });
+  }
+
+  function nextTurnTimestamp(session) {
+    const timestamp = now();
+    const current = Date.parse(timestamp);
+    const previous = Date.parse(session.turns?.at(-1)?.at);
+    // Fact provenance uses turn timestamps; collisions must not merge branch boundaries.
+    return Number.isFinite(current) && Number.isFinite(previous) && current <= previous
+      ? new Date(previous + 1).toISOString() : timestamp;
   }
 
   async function appendTurn(input = {}) {
@@ -2145,7 +2154,7 @@ function createAcpMemoryStore(options = {}) {
       const turnIdx = typeof input.turnIndex === "number" ? input.turnIndex : session.turns.length - 1;
       return addTurnVersion(session.sessionId, turnIdx, input);
     }
-    const timestamp = now();
+    const timestamp = nextTurnTimestamp(session);
     const turn = {
       at: timestamp,
       user: cleanText(redactSensitive(input.user), 4000),
