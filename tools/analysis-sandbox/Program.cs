@@ -79,11 +79,19 @@ internal static class Program
             Native.Check(Native.AssignProcessToJobObject(job, process.Process));
             if (Native.ResumeThread(process.Thread) == uint.MaxValue) throw new Win32Exception();
             var watch = Stopwatch.StartNew();
+            var inaccessibleScans = 0;
             while (Native.WaitForSingleObject(process.Process, 100) == 258)
             {
                 Native.CheckOwner(owner);
                 if (watch.ElapsedMilliseconds > timeout) throw new TimeoutException("analysis sandbox timed out");
-                if (ScratchBytes(work) > 64 * 1024 * 1024) throw new IOException("analysis scratch storage limit exceeded");
+                try
+                {
+                    if (ScratchBytes(work) > 64 * 1024 * 1024) throw new IOException("analysis scratch storage limit exceeded");
+                    inaccessibleScans = 0;
+                }
+                // Windows can briefly deny enumeration of a directory pending deletion.
+                // Persistent unreadable scratch still fails closed after three scans.
+                catch (UnauthorizedAccessException) when (++inaccessibleScans < 3) { }
             }
             Native.Check(Native.GetExitCodeProcess(process.Process, out var exit));
             if (exit != 0) throw new IOException($"analysis Python exited with code {exit}");

@@ -44,9 +44,15 @@ test('disposable copies exclude credentials and refuse links outside approved so
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, 'source'); fs.mkdirSync(source);
   fs.writeFileSync(path.join(source, 'safe.js'), 'safe'); fs.writeFileSync(path.join(source, '.env'), 'secret');
+  for (const name of ['.npmrc', '.yarnrc.yml', 'NuGet.Config', '.netrc', 'pip.ini']) fs.writeFileSync(path.join(source, name), 'host-credential');
   const copied = path.join(root, 'copy'); copyTree(source, copied, { exclude: true });
   assert.equal(fs.readFileSync(path.join(copied, 'safe.js'), 'utf8'), 'safe');
   assert.equal(fs.existsSync(path.join(copied, '.env')), false);
+  for (const name of ['.npmrc', '.yarnrc.yml', 'NuGet.Config', '.netrc', 'pip.ini']) assert.equal(fs.existsSync(path.join(copied, name)), false);
+  const runtimeCopy = path.join(root, 'runtime-copy');
+  copyTree(source, runtimeCopy);
+  assert.equal(fs.existsSync(path.join(runtimeCopy, '.npmrc')), false);
+  assert.equal(fs.existsSync(path.join(runtimeCopy, '.env')), false);
   const outside = path.join(root, 'outside'); fs.mkdirSync(outside);
   fs.symlinkSync(outside, path.join(source, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => copyTree(source, path.join(root, 'bad')), /approved source/);

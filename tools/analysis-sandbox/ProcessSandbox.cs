@@ -106,13 +106,20 @@ internal static class ProcessSandbox
             if (Native.ResumeThread(process.Thread) == uint.MaxValue) throw new System.ComponentModel.Win32Exception();
             var watch = Stopwatch.StartNew();
             var storageCheck = Stopwatch.StartNew();
+            var inaccessibleScans = 0;
             while (Native.WaitForSingleObject(process.Process, 100) == 258)
             {
                 Native.CheckOwner(owner);
                 if (watch.ElapsedMilliseconds > timeout) throw new TimeoutException("Native execution timed out");
                 if (storageCheck.ElapsedMilliseconds >= 1000)
                 {
-                    CheckStorage(work, skill ? 256L * 1024 * 1024 : 8L * 1024 * 1024 * 1024, skill ? 5000 : 500000);
+                    try
+                    {
+                        CheckStorage(work, skill ? 256L * 1024 * 1024 : 8L * 1024 * 1024 * 1024, skill ? 5000 : 500000);
+                        inaccessibleScans = 0;
+                    }
+                    // Pending deletions can briefly deny enumeration; persistent denial stops execution.
+                    catch (UnauthorizedAccessException) when (++inaccessibleScans < 3) { }
                     storageCheck.Restart();
                 }
             }

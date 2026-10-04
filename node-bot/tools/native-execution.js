@@ -22,6 +22,7 @@ function approvedCopySources() {
   return { dependencyRoots: sources.dependencyRoots, nugetRoot: sources.nugetRoot || null };
 }
 const EXCLUDES = new Set(['.git', '.github', 'bin', 'obj', '.next', 'dist', 'out', 'target', 'tmp']);
+const PRIVATE_CONFIGS = new Set(['.npmrc', '.yarnrc', '.yarnrc.yml', '.pypirc', '.netrc', '_netrc', '.git-credentials', 'nuget.config', 'pip.conf', 'pip.ini']);
 const inside = (root, target) => {
   const relative = path.relative(root, target);
   return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
@@ -40,7 +41,7 @@ function copyTree(source, destination, { allowedRoots = [fs.realpathSync(source)
       for (const name of fs.readdirSync(real)) {
         const relative = path.relative(source, path.join(from, name)).replaceAll('\\', '/').toLowerCase();
         const packageTree = dependency || name.toLowerCase() === 'node_modules';
-        if (exclude && (isCredentialPath(name) || (!packageTree && (EXCLUDES.has(name.toLowerCase()) || relative === 'data' || relative === 'node-bot/data')))) continue;
+        if (isCredentialPath(name) || PRIVATE_CONFIGS.has(name.toLowerCase()) || (exclude && !packageTree && (EXCLUDES.has(name.toLowerCase()) || relative === 'data' || relative === 'node-bot/data'))) continue;
         walk(path.join(real, name), path.join(to, name), next, packageTree);
       }
     } else if (stat.isFile()) fs.copyFileSync(real, to);
