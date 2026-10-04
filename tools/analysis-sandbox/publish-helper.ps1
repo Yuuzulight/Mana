@@ -39,7 +39,8 @@ try {
             $ownerPath = Join-Path $gate 'owner'
             if (Test-Path -LiteralPath $ownerPath) {
                 $ownerId = 0
-                $ownerText = [IO.File]::ReadAllText($ownerPath).Trim()
+                try { $ownerText = [IO.File]::ReadAllText($ownerPath).Trim() }
+                catch [IO.IOException] { $ownerText = '' }
                 if ($ownerText -and (-not [int]::TryParse($ownerText, [ref]$ownerId) -or $ownerId -le 0)) { throw 'Invalid helper launch gate' }
                 if ($ownerId -gt 0 -and -not (Get-Process -Id $ownerId -ErrorAction SilentlyContinue)) {
                     Remove-Owned $gate

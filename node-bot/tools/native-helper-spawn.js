@@ -38,6 +38,7 @@ function spawnNativeHelper(executable, args, options) {
     try {
       try { fs.mkdirSync(gate); acquired = true; }
       catch (error) {
+        if (['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) { timer = setTimeout(start, 100); return; }
         if (error.code !== 'EEXIST') throw error;
         try {
           const ownerText = fs.readFileSync(path.join(gate, 'owner'), 'utf8').trim();
@@ -59,7 +60,7 @@ function spawnNativeHelper(executable, args, options) {
             });
             return;
           }
-        } catch (read) { if (read.code !== 'ENOENT') throw read; }
+        } catch (read) { if (!['ENOENT', 'EPERM', 'EACCES', 'EBUSY'].includes(read.code)) throw read; }
         timer = setTimeout(start, 100);
         return;
       }
