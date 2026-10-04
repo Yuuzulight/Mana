@@ -29,6 +29,8 @@ jobs:
   native-sandbox:
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      DOTNET_INSTALL_DIR: '${{ runner.temp }}/mana-fixture-dotnet'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
