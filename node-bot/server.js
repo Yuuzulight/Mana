@@ -296,6 +296,7 @@ const { createModelManagement } = require("./model-management");
 const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
 const { createProjectsStore } = require("./projects-store");
+const { createAnalysisToolSource, chartArtifact } = require("./ai/analysis-tool-source");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
@@ -4368,6 +4369,7 @@ function registerRoutes(app, upload, deps = {}) {
     onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
+    const analysisCharts = [];
     // let: #666's wait below may switch this turn to the fallback profile.
     let normalizedModelProfile = selectLlamaModelProfileForPrompt(
       transcript,
@@ -5242,6 +5244,12 @@ function registerRoutes(app, upload, deps = {}) {
             }),
             createSessionSearchToolSource({ acpMemoryStore, sessionId }),
             createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
+            createAnalysisToolSource({
+              env: deps.env || process.env,
+              userMessage: userChat ? transcript : "",
+              runSandbox: deps.runAnalysisSandbox,
+              onCharts: (charts) => analysisCharts.push(...charts.slice(0, 4 - analysisCharts.length)),
+            }),
             createSnapshotToolSource({
               approvalGate: activeApprovalGate,
               snapshotStore,
@@ -5895,6 +5903,7 @@ function registerRoutes(app, upload, deps = {}) {
       console.warn("Phrasing variation check failed:", e?.message || e);
     }
 
+    if (analysisCharts.length) reply = String(reply || "") + chartArtifact(analysisCharts);
     try {
       if (
         sessionId &&

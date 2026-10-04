@@ -29,6 +29,9 @@ const REPO_ROOT = path.join(ROOT, '..');
 const OUT_ROOT = path.join(ROOT, 'portable-python');
 
 const TARGETS = {
+  analysis: {
+    requirements: path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'requirements.txt'),
+  },
   searxng: {
     requirements: path.join(REPO_ROOT, 'tools', 'searxng', 'requirements.txt'),
     windowsPwdStub: true,
@@ -134,6 +137,8 @@ async function buildOne(name, cfg) {
 }
 
 (async () => {
+  const helper = path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'Mana.AnalysisSandbox.csproj');
+  run('dotnet', ['publish', helper, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'bundle')]);
   for (const [name, cfg] of Object.entries(TARGETS)) {
     await buildOne(name, cfg);
   }
