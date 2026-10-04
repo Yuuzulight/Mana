@@ -16,6 +16,15 @@ runtimes, applies request guards, and passes dependencies to route registrars.
 - `ai/speech-runtime.js`: speech providers, uploaded audio conversion, and OCR.
 - `admin-token-cache-routes.js`: token-cache administration.
 
+`ai/llama-server-runtime.js` composes the persistent inference runtime from
+`ai/llama/` modules: model discovery and LoRA, server configuration and VRAM
+guards, startup/adoption/restarts, lifecycle and idle shutdown, completion and
+vision requests, tool parsing/repair, goal review, and the bounded tool loop.
+These modules share one per-runtime state object. Stop still tree-kills only
+owned children and records their exit promise; startup waits for that promise
+before attempting to bind the port again. Adopted external servers are not
+killed by Mana.
+
 `registerCoreRoutes` preserves the existing public API and composes chat,
 speech, and restart routes. Authentication and request guards remain outside
 these modules. Runtime factories do not start workers or acquire resources
@@ -43,4 +52,5 @@ it is not parsed directly in the renderer.
 
 This extraction reduces the composition roots, but does not impose an
 arbitrary file-size limit or claim that the reply pipeline needs no further
-decomposition. The llama-server process runtime is a separate boundary.
+decomposition. Runtime factories are inert at construction, including the
+llama modules, and all mutable state remains per instance rather than global.
