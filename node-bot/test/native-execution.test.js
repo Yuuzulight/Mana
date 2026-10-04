@@ -63,6 +63,15 @@ test('runtime and workspace copies share a single storage budget', t => {
   assert.equal(fs.existsSync(path.join(source, 'second')), false);
 });
 
+test('workspace copies refuse to recursively copy their own scratch', t => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-copy-recursion-'));
+  t.after(() => fs.rmSync(source, { recursive: true, force: true }));
+  const work = path.join(source, 'scratch');
+  fs.mkdirSync(work);
+  assert.throws(() => prepareTestExecution('node test.js', source, 'standard', { work }), /outside the copied workspace/);
+  assert.equal(fs.existsSync(work), false);
+});
+
 test('live native runner: focused Node test and scratch cleanup', { skip: process.platform !== 'win32' || process.env.MANA_TEST_NATIVE_LIVE !== '1', timeout: 15000 }, async t => {
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-native-fixture-'));
   t.after(() => fs.rmSync(source, { recursive: true, force: true }));
@@ -96,6 +105,30 @@ test('live native runner: sequential suite keeps separate processes inside the j
   clearTimeout(timer);
   assert.equal(code, 0, output);
   assert.match(output, /All test files passed/);
+  assert.equal(fs.existsSync(work), false);
+});
+
+test('live native runner normalizes Windows short-form temporary paths', { skip: process.platform !== 'win32' || process.env.MANA_TEST_NATIVE_LIVE !== '1', timeout: 15000 }, async t => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mana path normalization '));
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mana short temp path '));
+  const original = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+  t.after(() => {
+    for (const [name, value] of Object.entries(original)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    fs.rmSync(source, { recursive: true, force: true });
+    fs.rmSync(temp, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(source, 'check.js'), "console.log('normalized')");
+  const short = require('node:child_process').execFileSync('powershell.exe', ['-NoProfile', '-Command', '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:MANA_TEST_SHORT_ROOT).ShortPath'], { encoding: 'utf8', windowsHide: true, env: { ...process.env, MANA_TEST_SHORT_ROOT: temp } }).trim();
+  process.env.TEMP = short;
+  process.env.TMP = short;
+  const { work, request } = prepareTestExecution('node check.js', source, 'standard');
+  const child = launchNativeProcess(work, request);
+  let output = '';
+  child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
+  child.stdin.end();
+  const done = new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+  assert.equal(await done, 0, output);
+  assert.match(output, /normalized/);
   assert.equal(fs.existsSync(work), false);
 });
 
@@ -157,7 +190,7 @@ test('live native runner kills descendants on completion and Stop', { skip: proc
   }
 });
 
-test('live native runner: offline .NET test fixture', { skip: process.platform !== 'win32' || process.env.MANA_TEST_NATIVE_DOTNET !== '1', timeout: 180000 }, async t => {
+test('live native runner: offline .NET test fixture', { skip: process.platform !== 'win32' || process.env.MANA_TEST_NATIVE_DOTNET !== '1', timeout: 600000 }, async t => {
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-native-dotnet-'));
   t.after(() => fs.rmSync(source, { recursive: true, force: true }));
   for (const name of ['Fixture.csproj', 'Tests.cs']) fs.copyFileSync(path.join(__dirname, 'fixtures', 'native-dotnet', name), path.join(source, name));

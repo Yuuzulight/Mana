@@ -251,7 +251,9 @@ test('unrestricted reruns require sandbox failure and a fresh explicit access wa
   assert.equal(gate.requests.length, 0);
   const failed = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, {}));
   assert.equal(failed.unrestrictedRetryAvailable, true);
-  const retried = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { execution: 'unrestricted' }));
+  const nextReply = createCodingToolSource({ editors: fakeEditors({ workspace: { path: ws } }), approvalGate: gate,
+    runTests: async (_command, _cwd, options) => { modes.push(options.unrestricted); return { exitCode: options.unrestricted ? 0 : 1 }; } });
+  const retried = JSON.parse(await nextReply.executeTool(CODING_TEST_TOOL_NAME, { execution: 'unrestricted' }));
   assert.equal(retried.passed, true);
   assert.deepEqual(modes, [false, true]);
   assert.equal(gate.requests[1].forceReview, true);

@@ -52,4 +52,8 @@ jobs:
           MANA_TEST_NATIVE_DOTNET: '1'
           MANA_TEST_ANALYSIS_LIVE: '1'
           NODE_ENV: test
-        run: node --test node-bot/test/native-execution.test.js node-bot/test/analysis-sandbox.test.js node-bot/test/script-runner.test.js node-bot/test/self-work-test-approval.test.js node-bot/test/test-resource-profile.test.js node-bot/test/test-execution-policy.test.js node-bot/test/coding-tool-source.test.js
+        run: node --test node-bot/test/native-execution.test.js node-bot/test/native-helper-spawn.test.js node-bot/test/analysis-sandbox.test.js node-bot/test/script-runner.test.js node-bot/test/self-work-test-approval.test.js node-bot/test/test-resource-profile.test.js node-bot/test/test-execution-policy.test.js node-bot/test/coding-tool-source.test.js
+      - name: Verify update waits for active sandbox scripts
+        env:
+          MANA_TEST_NATIVE_UPDATE: '1'
+        run: node --test --test-name-pattern="publisher waits" node-bot/test/native-helper-spawn.test.js

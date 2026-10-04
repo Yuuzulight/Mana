@@ -143,7 +143,8 @@ async function buildOne(name, cfg) {
   const targets = values.target || Object.keys(TARGETS);
   for (const name of targets) if (!Object.hasOwn(TARGETS, name)) throw new Error(`Unknown portable Python target: ${name}`);
   const helper = path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'Mana.AnalysisSandbox.csproj');
-  run('dotnet', ['publish', helper, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'bundle')]);
+  if (process.platform === 'win32') run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'publish-helper.ps1')]);
+  else run('dotnet', ['publish', helper, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', path.join(REPO_ROOT, 'tools', 'analysis-sandbox', 'bundle')]);
   for (const name of targets) {
     await buildOne(name, TARGETS[name]);
   }

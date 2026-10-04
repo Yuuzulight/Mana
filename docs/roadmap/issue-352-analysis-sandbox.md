@@ -75,6 +75,12 @@ a live process in the closed Job Object.
 Native launcher builds and updates publish the self-contained helper. Electron
 packaging does so through `prepare-portable-python`. Windows CI checks live
 isolation, approval, offline .NET compatibility, Stop and cleanup.
+Publishing stages a complete runtime, then holds a launch gate while existing
+scripts finish before replacing the bundle. New helper launches queue behind
+that gate and remain cancellable. Failed builds leave the installed helper
+unchanged; abandoned gates recover through the serialized publisher. Disposable
+native test builds do not deploy helpers. Only the workspace-selected .NET SDK
+is copied, rather than every SDK installed on the host.
 
 ## Python Analysis Infrastructure (#1327 Integration)
 

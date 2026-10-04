@@ -26,6 +26,7 @@ const CODING_EDIT_TOOL_NAME = `${CODING_TOOL_PREFIX}propose_edit`;
 const CODING_TEST_TOOL_NAME = `${CODING_TOOL_PREFIX}run_tests`;
 const TEST_TIMEOUT_MS = 120000;
 const MAX_TEST_OUTPUT_CHARS = 4000;
+const testPolicies = new WeakMap();
 const TEST_ESTIMATE_SCHEMA = { type: 'object', description: 'Estimate this test workload and explain the recommendation; approved limits are fixed, never arbitrary.', properties: {
   minutes: { type: 'number', exclusiveMinimum: 0 }, memoryMb: { type: 'number', exclusiveMinimum: 0 }, processes: { type: 'number', exclusiveMinimum: 0 }, reason: { type: 'string' },
 } };
@@ -176,7 +177,11 @@ function createCodingToolSource(options = {}) {
     path.join(__dirname, "..", "data", "coding-diffs");
   const approvalGate = options.approvalGate || null;
   const env = options.env || process.env;
-  const executionPolicy = require('../tools/test-execution-policy').createTestExecutionPolicy();
+  let executionPolicy = approvalGate && testPolicies.get(approvalGate);
+  if (!executionPolicy) {
+    executionPolicy = require('../tools/test-execution-policy').createTestExecutionPolicy();
+    if (approvalGate) testPolicies.set(approvalGate, executionPolicy);
+  }
   const runTests = options.runTests || (process.platform === 'win32' ? require('../tools/native-execution').runSandboxedTestCommand : runTestCommand);
 
   if (approvalGate) {

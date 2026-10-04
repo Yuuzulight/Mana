@@ -172,3 +172,7 @@ forecast-service/*.log
 
 # Self-work bench reports (node-bot/bench/self-work-bench.js's default --out)
 node-bot/bench/results/
+
+tools/analysis-sandbox/bundle.staging.*/
+tools/analysis-sandbox/bundle.previous.*/
+tools/analysis-sandbox/helper-launch.lock/

@@ -1,4 +1,3 @@
-const { spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -29,7 +28,7 @@ function isAnalysisAvailable(env = process.env) {
     .some((dir) => fs.existsSync(path.join(dir, "python.exe")));
 }
 
-function runProcess(command, args, { input = "", timeoutMs = 75000, spawnImpl = spawn } = {}) {
+function runProcess(command, args, { input = "", timeoutMs = 75000, spawnImpl = require('./native-helper-spawn').spawnNativeHelper } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try { child = spawnImpl(command, args, { shell: false, windowsHide: true, detached: process.platform === "win32", stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, MANA_SANDBOX_PARENT_PID: String(process.pid) } }); }
@@ -40,7 +39,7 @@ function runProcess(command, args, { input = "", timeoutMs = 75000, spawnImpl = 
       settled = true;
       clearTimeout(timer);
       if (error) {
-        if (!child.pid) { reject(error); return; }
+        if (!child.pid) { child.kill(); reject(error); return; }
         child.once("close", () => reject(error));
         if (!child.kill()) reject(error);
       } else resolve(result);

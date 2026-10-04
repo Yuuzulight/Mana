@@ -25,6 +25,7 @@ const PROTECTED_PATHS = [
   "node-bot/tools/analysis-sandbox.js",
   "tools/analysis-sandbox/",
   "node-bot/tools/native-execution.js",
+  "node-bot/tools/native-helper-spawn.js",
   "node-bot/tools/native-execution-copy-worker.js",
   "node-bot/tools/test-resource-profile.js",
   "node-bot/tools/test-execution-policy.js",

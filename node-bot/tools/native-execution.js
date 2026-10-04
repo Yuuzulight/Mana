@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { spawn, execFileSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { Worker } = require('node:worker_threads');
 const { HELPER_PATH, runProcess } = require('./analysis-sandbox');
@@ -64,22 +64,26 @@ function copyNode(work) {
 }
 
 // The helper inherits exactly stdin/out/err, not the backend's IPC or secret handles.
-function launchNativeProcess(work, request, { helperPath = HELPER_PATH, spawnImpl = spawn, cleanup = runProcess } = {}) {
+function launchNativeProcess(work, request, { helperPath = HELPER_PATH, spawnImpl = require('./native-helper-spawn').spawnNativeHelper, cleanup = runProcess } = {}) {
   if (process.platform !== 'win32') throw new Error('Windows AppContainer is required');
-  if (!fs.existsSync(helperPath)) throw new Error('Native execution helper is unavailable; no unrestricted fallback');
+  if (!fs.existsSync(helperPath) && !fs.existsSync(path.join(path.dirname(path.dirname(helperPath)), 'helper-launch.lock'))) throw new Error('Native execution helper is unavailable; no unrestricted fallback');
   fs.writeFileSync(path.join(work, 'launch.json'), JSON.stringify(request));
   // The owner handle lets the helper finish cleanup after a backend crash.
   const helper = spawnImpl(helperPath, ['--process', work], { windowsHide: true, detached: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, MANA_SANDBOX_PARENT_PID: String(process.pid) } });
   const child = new EventEmitter();
   Object.assign(child, { pid: helper.pid, stdin: helper.stdin, stdout: helper.stdout, stderr: helper.stderr, exitCode: null, signalCode: null, cleanupRequired: true });
+  Object.defineProperty(child, 'pid', { get: () => helper.pid });
   child.kill = () => helper.kill();
   let launchError;
   helper.on('error', error => { launchError = error; });
   child.stdin?.on('error', error => child.emit('error', error));
   helper.on('close', async (code, signal) => {
     try {
-      const result = await cleanup(helperPath, ['--process-cleanup', work], { timeoutMs: 20000 });
-      if (result.code !== 0 || fs.existsSync(work)) throw new Error(`Native execution cleanup failed: ${result.errors || 'scratch remains'}`);
+      if (!helper.pid) await fs.promises.rm(work, { recursive: true, force: true });
+      else {
+        const result = await cleanup(helperPath, ['--process-cleanup', work], { timeoutMs: 20000 });
+        if (result.code !== 0 || fs.existsSync(work)) throw new Error(`Native execution cleanup failed: ${result.errors || 'scratch remains'}`);
+      }
       if (launchError) { code = 1; child.emit('error', launchError); }
       child.exitCode = code;
       child.signalCode = signal;
@@ -129,6 +133,7 @@ function prepareTestExecution(command, cwd, profileId, { workspaceRoot = cwd, wo
   work ||= newWork();
   try {
     const root = fs.realpathSync(workspaceRoot);
+    if (inside(root, fs.realpathSync(work))) throw new Error('Disposable scratch must be outside the copied workspace; select a narrower project root');
     const sourceCwd = fs.realpathSync(cwd);
     if (!inside(root, sourceCwd)) throw new Error('Test directory is outside the approved workspace');
     const roots = [root];
@@ -156,7 +161,14 @@ function prepareTestExecution(command, cwd, profileId, { workspaceRoot = cwd, wo
     } else if (/^dotnet\s/.test(command)) {
       const found = execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'where.exe'), ['dotnet.exe'], { encoding: 'utf8', windowsHide: true }).trim().split(/\r?\n/)[0];
       const runtime = path.join(work, 'dotnet');
-      copyTree(path.dirname(found), runtime, { budget });
+      const installed = path.dirname(found);
+      const sdk = execFileSync(found, ['--version'], { cwd: sourceCwd, encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
+      if (!/^[\w.-]+$/.test(sdk) || !fs.existsSync(path.join(installed, 'sdk', sdk))) throw new Error('The workspace-selected .NET SDK is unavailable');
+      fs.mkdirSync(runtime);
+      for (const name of fs.readdirSync(installed)) {
+        if (name.toLowerCase() !== 'sdk') copyTree(path.join(installed, name), path.join(runtime, name), { budget });
+      }
+      copyTree(path.join(installed, 'sdk', sdk), path.join(runtime, 'sdk', sdk), { budget });
       if (!copySources.nugetRoot || !fs.existsSync(copySources.nugetRoot)) throw new Error('Approved offline NuGet package cache is unavailable');
       copyTree(copySources.nugetRoot, path.join(work, 'nuget-packages'), { budget });
       const config = path.join(work, 'nuget.config');

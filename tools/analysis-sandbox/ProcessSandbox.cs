@@ -14,13 +14,14 @@ internal static class ProcessSandbox
     internal static int Run(string work)
     {
         ValidateWork(work);
+        work = Path.GetFullPath(work);
         var requestPath = Path.Combine(work, "launch.json");
         if ((File.GetAttributes(requestPath) & FileAttributes.ReparsePoint) != 0) throw new IOException("Redirected launch request");
         if (new FileInfo(requestPath).Length > 65536) throw new IOException("Launch request too large");
         var request = JsonSerializer.Deserialize<Request>(File.ReadAllText(requestPath), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new IOException("Missing launch request");
         var executable = Path.GetFullPath(request.Executable);
         var cwd = Path.GetFullPath(request.Cwd);
-        if (!Inside(work, executable) || !Inside(work, cwd) || !File.Exists(executable)) throw new IOException("Execution must use the disposable workspace");
+        if (!Inside(work, executable) || !Inside(work, cwd) || !File.Exists(executable)) throw new IOException($"Execution must use the disposable workspace: root={work}; executable={executable}; cwd={cwd}; executableExists={File.Exists(executable)}");
         ValidateAncestors(work, executable);
         ValidateAncestors(work, cwd);
         if (request.Arguments.Length > 128 || request.Arguments.Any(a => a.Length > 16000 || a.Contains('\0'))) throw new IOException("Invalid process arguments");
@@ -88,6 +89,7 @@ internal static class ProcessSandbox
                 ["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0", ["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false",
                 ["DOTNET_NOLOGO"] = "1", ["DOTNET_ROOT"] = Path.Combine(work, "dotnet"),
                 ["LOCALAPPDATA"] = work, ["MANA_APP_CONTAINER_TEST"] = skill || unrestricted ? "0" : "1",
+                ["MANA_NATIVE_TEST_WORKSPACE"] = skill ? "0" : "1",
                 ["MSBUILDDISABLENODEREUSE"] = "1", ["NODE_ENV"] = "test",
                 ["NODE_OPTIONS"] = "--preserve-symlinks --preserve-symlinks-main",
                 ["NUGET_PACKAGES"] = Path.Combine(work, "nuget-packages"),
@@ -185,7 +187,7 @@ internal static class ProcessSandbox
     {
         var full = Path.GetFullPath(work);
         var name = Path.GetFileName(full);
-        if (!Path.IsPathFullyQualified(work) || !string.Equals(Path.GetDirectoryName(full)?.TrimEnd('\\'), Path.GetTempPath().TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
+        if (!Path.IsPathFullyQualified(work) || !string.Equals(Path.GetDirectoryName(full)?.TrimEnd('\\'), Path.GetFullPath(Path.GetTempPath()).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
             || !name.StartsWith("Mana.Execution.", StringComparison.Ordinal) || !Guid.TryParseExact(name[15..], "N", out _)) throw new IOException("Invalid execution scratch directory");
         if (Directory.Exists(full) && (File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0) throw new IOException("Redirected execution scratch directory");
     }

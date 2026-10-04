@@ -52,9 +52,8 @@ try {
 
     $nodeBot = Join-Path $root 'node-bot'
     $sandboxProject = Join-Path $root 'tools\analysis-sandbox\Mana.AnalysisSandbox.csproj'
-    $sandboxBundle = Join-Path $root 'tools\analysis-sandbox\bundle'
     if (Test-Path $sandboxProject) {
-        dotnet publish $sandboxProject -c Release -r win-x64 --self-contained true -o $sandboxBundle -v q --disable-build-servers
+        & (Join-Path $root 'tools\analysis-sandbox\publish-helper.ps1')
         if ($LASTEXITCODE) { throw 'Native execution helper build failed; update was not applied.' }
     }
     if (Test-Newer (Join-Path $nodeBot 'package-lock.json') (Join-Path $nodeBot 'node_modules\.package-lock.json')) {

@@ -119,16 +119,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <NativeExecutionHelperInputs Include="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.cs;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj" />
+    <NativeExecutionHelperInputs Include="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.cs;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\*.ps1;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj" />
   </ItemGroup>
   <Target Name="PublishNativeExecutionHelper" AfterTargets="Build"
-          Condition="$([MSBuild]::IsOSPlatform('Windows'))"
+          Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(MANA_NATIVE_TEST_WORKSPACE)' != '1'"
           Inputs="@(NativeExecutionHelperInputs)"
           Outputs="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.exe;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.dll;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.runtimeconfig.json">
-    <MSBuild Projects="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\Mana.AnalysisSandbox.csproj"
-             Targets="Restore;Publish"
-             RemoveProperties="TargetFramework;TargetFrameworks;OutputPath;BaseOutputPath;BaseIntermediateOutputPath;IntermediateOutputPath"
-             Properties="Configuration=Release;RuntimeIdentifier=win-x64;SelfContained=true;PublishDir=$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\;UseSharedCompilation=false" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\publish-helper.ps1&quot;" />
   </Target>
 
   <ItemGroup>
