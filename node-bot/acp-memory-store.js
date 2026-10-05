@@ -7,6 +7,7 @@ const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
 const { redactSensitive } = require("./utils/sensitive-text");
 const { artifactOf } = require("./artifact-history");
+const { normalizeAnalysisOutputs } = require('./tools/analysis-results');
 const { UNTRUSTED_RULE, wrapUntrustedInline } = require("./ai/untrusted-content");
 
 function ensureDir(dir) {
@@ -2024,6 +2025,7 @@ function createAcpMemoryStore(options = {}) {
     turn.assistant = v.assistant;
     turn.answerModel = v.answerModel;
     turn.cloudFallback = Boolean(v.cloudFallback);
+    turn.analysisOutputs = normalizeAnalysisOutputs(v.analysisOutputs);
     if (v.thought !== undefined) turn.thought = v.thought;
     if (v.toolCalls !== undefined) turn.toolCalls = v.toolCalls;
     if (v.steps !== undefined) turn.steps = v.steps;
@@ -2048,6 +2050,7 @@ function createAcpMemoryStore(options = {}) {
           sources: turn.sources,
           answerModel: turn.answerModel,
           cloudFallback: Boolean(turn.cloudFallback),
+          analysisOutputs: normalizeAnalysisOutputs(turn.analysisOutputs),
           at: turn.at,
         },
       ];
@@ -2060,6 +2063,7 @@ function createAcpMemoryStore(options = {}) {
       sources: versionData.sources,
       answerModel: cleanText(versionData.answerModel, 160) || undefined,
       cloudFallback: Boolean(versionData.cloudFallback),
+      analysisOutputs: normalizeAnalysisOutputs(versionData.analysisOutputs),
       at: now(),
     };
     turn.versions.push(newVersion);
@@ -2067,6 +2071,7 @@ function createAcpMemoryStore(options = {}) {
     turn.assistant = newVersion.assistant;
     turn.answerModel = newVersion.answerModel;
     turn.cloudFallback = newVersion.cloudFallback;
+    turn.analysisOutputs = newVersion.analysisOutputs;
     turn.thought = newVersion.thought;
     turn.toolCalls = newVersion.toolCalls;
     turn.steps = newVersion.steps;
@@ -2175,6 +2180,8 @@ function createAcpMemoryStore(options = {}) {
       user: cleanText(redactSensitive(input.user), 4000),
       assistant: cleanText(redactSensitive(input.assistant), 4000),
     };
+    const analysisOutputs = normalizeAnalysisOutputs(input.analysisOutputs);
+    if (analysisOutputs.charts.length || analysisOutputs.files.length || analysisOutputs.tables.length) turn.analysisOutputs = analysisOutputs;
     // #1354: reasoning tokens / thought deliberation.
     if (input.thought) turn.thought = cleanText(input.thought, 10000);
     // #914: which character said it (group mode, switching), for the
@@ -2212,6 +2219,7 @@ function createAcpMemoryStore(options = {}) {
         steps: turn.steps,
         answerModel: turn.answerModel,
         cloudFallback: Boolean(turn.cloudFallback),
+        analysisOutputs: turn.analysisOutputs,
         at: turn.at,
       },
     ];

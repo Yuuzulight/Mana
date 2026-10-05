@@ -9,4 +9,5 @@ internal interface IArtifactSink
 {
     void ReportReply(string replyText);
     void ReportReply(string replyText, System.Collections.Generic.IReadOnlyList<WebSourceCitation>? sources) => ReportReply(replyText);
+    void ReportAnalysisOutputs(AnalysisOutputs outputs) { }
 }

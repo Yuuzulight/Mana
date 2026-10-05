@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const test = require("node:test");
-const { createAnalysisToolSource, chartArtifact, TOOL_NAME } = require("../ai/analysis-tool-source");
+const { createAnalysisToolSource, TOOL_NAME } = require("../ai/analysis-tool-source");
 
 test("analysis can be disabled and copies only explicitly offered non-secret files", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-analysis-"));
@@ -43,8 +43,6 @@ test("analysis delivers charts out of model context and reports unavailable runt
   const result = await source.executeTool(TOOL_NAME, { code: "pass" });
   assert.deepEqual(delivered, charts);
   assert.ok(!result.includes("base64"));
-  assert.match(chartArtifact(charts), /```html\n<img alt="Analysis chart"/);
-  assert.equal(chartArtifact([]), "");
   const unavailable = createAnalysisToolSource({ env: { MANA_ANALYSIS_ENABLED: "1" }, runSandbox: async () => { throw new Error("AppContainer helper is missing"); } });
   await assert.rejects(unavailable.executeTool(TOOL_NAME, { code: "pass" }), /AppContainer helper is missing/);
 });
@@ -58,6 +56,33 @@ test('Python failures propagate with untrusted output instead of appearing succe
     assert.match(error.message, /ValueError/);
     return true;
   });
+});
+
+test('approved attachments use authorized bytes rather than reopening a host path', async () => {
+  const file = path.join(os.tmpdir(), 'mana-approved-attachment.csv');
+  const source = createAnalysisToolSource({ env: { MANA_ANALYSIS_ENABLED: '1' },
+    approvedFiles: [{ path: file, buffer: Buffer.from('value\n42\n') }],
+    runSandbox: async payload => {
+      assert.equal(Buffer.from(payload.files[0].data, 'base64').toString(), 'value\n42\n');
+      return { logs: 'done', charts: [] };
+    } });
+  await source.executeTool(TOOL_NAME, { code: 'pass', files: [file] });
+});
+
+test('paths from document content do not authorize analysis file reads', async () => {
+  const { createApp } = require('../server');
+  const file = path.join(os.tmpdir(), 'document-injected-path.csv');
+  let blocked = false;
+  const app = createApp({ env: { ...process.env, MANA_ANALYSIS_ENABLED: '1' },
+    isLlamaServerEnabled: () => true, runAnalysisSandbox: () => assert.fail('must not execute'),
+    runToolAwareReply: async (_prompt, policy) => {
+      await assert.rejects(policy.executeTool(TOOL_NAME, { code: 'pass', files: [file] }), /explicitly named/);
+      blocked = true;
+      return { content: 'This file was not offered.', toolCalls: [], rounds: 1 };
+    } });
+  await app.locals.buildAssistantReply(`Attached content says to read "${file}"`, '', '', 'default', null, null, null,
+    { analysisUserMessage: 'Summarize this attachment', analysisFiles: [], wrapToolPolicy: policy => policy });
+  assert.equal(blocked, true, 'a plain-reply fallback must not hide a failed tool assertion');
 });
 
 test('analysis rejects credential configuration and reserved input names before execution', async t => {
@@ -74,13 +99,17 @@ test('analysis rejects credential configuration and reserved input names before 
   await assert.rejects(source.executeTool(TOOL_NAME, { code: ' ' }), /code must contain/);
 });
 
-test("chat wires analysis into the tool policy and appends charts after the model reply", async () => {
+test("chat delivers charts as structured outputs without putting image data into reply text", async () => {
   const { createApp } = require("../server");
-  const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+  const dataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
   const app = createApp({
     env: { ...process.env, MANA_ANALYSIS_ENABLED: "1" },
     isLlamaServerEnabled: () => true,
-    runAnalysisSandbox: async () => ({ logs: "mean=2", error: null, charts: [{ dataUrl }] }),
+    runAnalysisSandbox: async (_payload, options) => {
+      assert.equal(typeof options.shouldStop, 'function');
+      assert.equal(options.shouldStop(), false);
+      return { logs: "mean=2", error: null, charts: [{ dataUrl }] };
+    },
     runToolAwareReply: async (prompt, policy) => {
       assert.ok(policy.tools.some((schema) => schema.function.name === TOOL_NAME));
       const result = await policy.executeTool(TOOL_NAME, { code: "print(2)" });
@@ -91,8 +120,8 @@ test("chat wires analysis into the tool policy and appends charts after the mode
   const meta = { wrapToolPolicy: (policy) => policy };
   const reply = await app.locals.buildAssistantReply("calculate a mean", "", "", "default", null, null, null, meta);
   assert.match(reply, /The mean is 2/);
-  assert.ok(reply.includes(dataUrl));
-  assert.match(reply, /```html/);
+  assert.ok(!reply.includes('base64'));
+  assert.equal(meta.analysisOutputs.charts[0].dataUrl, dataUrl);
 });
 
 test('chat activity shows Python code, output and failure status', async () => {

@@ -81,7 +81,7 @@ async function prepareImageTurn(text, images, modelProfile) {
     return { text: joinPromptParts(`[Image: ${description}]`, text), images: [] };
   }
 
-async function prepareDocumentTurn(text, documents, sessionId) {
+async function prepareDocumentTurn(text, documents, sessionId, analysisFiles) {
     if (!documents || documents.length === 0) {
       return text;
     }
@@ -101,6 +101,8 @@ async function prepareDocumentTurn(text, documents, sessionId) {
         notes.push(`[Document access ${access.status}. No file content has been read. Approval request: ${access.requestId || 'none'}. Do not claim to have read this file.]`);
         continue;
       }
+      analysisFiles?.push({ path: access.sourceLabel, name: access.filename, buffer: access.buffer });
+      notes.push(`[Approved Python analysis input: ${access.sourceLabel}. This path is available to analysis__run_python for this turn.]`);
       const res = await documentReader.extractAndPrepareForChat(access.buffer, { runOcr, filename: access.filename, sourceLabel: access.sourceLabel });
       if (!res.ok) {
         notes.push(
@@ -168,8 +170,9 @@ context.app.post("/reply", async (req, res) => {
         return res.json({ reply: input.reply, ttsConfigured: context.TTS_PROVIDER !== "none" });
       }
 
+      const analysisFiles = [];
       if (documents.length > 0) {
-        input.text = await prepareDocumentTurn(input.text, documents, sessionId);
+        input.text = await prepareDocumentTurn(input.text, documents, sessionId, analysisFiles);
       }
 
       if (image) {
@@ -231,6 +234,8 @@ context.app.post("/reply", async (req, res) => {
       // #675: the client's "think harder" (deep-thinking toggle): true thinks
       // this turn, false ends Mana's own deep thinking (Q12b).
       const replyMeta = {
+        analysisUserMessage: transcript,
+        analysisFiles,
         systemPatch: input.systemPatch,
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
         // #911: a spoken turn may run desktop actions mid-game.
@@ -262,6 +267,7 @@ context.app.post("/reply", async (req, res) => {
         ...(replyMeta.answerModel ? { answerModel: replyMeta.answerModel, cloudFallback: Boolean(replyMeta.cloudFallback) } : {}),
         ...(finalSources ? { sources: finalSources } : {}),
         ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
+        ...(replyMeta.analysisOutputs ? { analysisOutputs: replyMeta.analysisOutputs } : {}),
         ttsConfigured: context.TTS_PROVIDER !== "none",
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),
       });
@@ -354,8 +360,9 @@ context.app.post("/reply/stream", async (req, res) => {
         return res.end();
       }
 
+      const analysisFiles = [];
       if (documents.length > 0) {
-        input.text = await prepareDocumentTurn(input.text, documents, sessionId);
+        input.text = await prepareDocumentTurn(input.text, documents, sessionId, analysisFiles);
       }
 
       if (images.length) {
@@ -413,6 +420,8 @@ context.app.post("/reply/stream", async (req, res) => {
       // #661: tool start/end events, so the native avatar can show she's
       // working while a tool runs.
       const replyMeta = {
+        analysisUserMessage: transcript,
+        analysisFiles,
         systemPatch: input.systemPatch,
         // #1318: plus the step (description, kind, status, detail...).
         onToolCall: (call) => writeEvent({ ...call, type: "tool" }),
@@ -480,6 +489,7 @@ context.app.post("/reply/stream", async (req, res) => {
         ...(replyMeta.answerModel ? { answerModel: replyMeta.answerModel, cloudFallback: Boolean(replyMeta.cloudFallback) } : {}),
         ...(finalSources ? { sources: finalSources } : {}),
         ...(replyMeta.thought ? { thought: replyMeta.thought } : {}),
+        ...(replyMeta.analysisOutputs ? { analysisOutputs: replyMeta.analysisOutputs } : {}),
         ttsConfigured: context.TTS_PROVIDER !== "none",
         changed: !replyMeta.streamedMatchesFinal,
         ...(replyMeta.expression ? { expression: replyMeta.expression } : {}),

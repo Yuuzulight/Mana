@@ -79,7 +79,20 @@ test("analysis runs one script at a time and continues after a failed run", asyn
   assert.equal((await runAnalysisSandbox({ code: "pass" }, options)).logs, "done");
 });
 
+test('Stop terminates the helper and refuses queued runs before spawning', async () => {
+  const child = fakeProcess();
+  await assert.rejects(runProcess('helper', [], { shouldStop: () => true, spawnImpl: () => child }), /stopped by the user/);
+  assert.equal(child.killed, 1);
+  await assert.rejects(runAnalysisSandbox({ code: 'pass' }, { shouldStop: () => true, runProcess: () => assert.fail('must not spawn') }), /stopped by the user/);
+});
+
 const live = process.platform === "win32" && process.env.MANA_TEST_ANALYSIS_LIVE === "1";
+
+test('live Stop waits for Python termination and scratch cleanup', { skip: !live }, async () => {
+  const started = Date.now();
+  await assert.rejects(runAnalysisSandbox({ code: 'while True: pass', files: [] }, { shouldStop: () => Date.now() - started > 2000 }), /stopped by the user/);
+  assert.equal(sandboxProcesses(), '');
+});
 function sandboxProcesses() {
   const output = execFileSync("powershell", ["-NoProfile", "-Command", "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*Mana.Analysis.*worker.py*' } | Select-Object -ExpandProperty ProcessId"], { encoding: "utf8", windowsHide: true });
   return output.trim();
@@ -139,11 +152,13 @@ test("live helper termination kills its Python process through the job", { skip:
 });
 
 test("live analysis calculates from CSV and renders a chart with the CPU-only backend", { skip: !live }, async () => {
-  const code = "import pandas as pd\nimport matplotlib\nimport matplotlib.pyplot as plt\nfrom pathlib import Path\nx = pd.read_csv('data.csv')\nassert x.value.mean() == 2\nassert matplotlib.get_backend().lower() == 'agg'\nx.plot()\nplt.savefig(Path(output_dir) / 'chart.png')\nprint('mean=2; cpu-only chart')";
+  const code = "import pandas as pd\nimport matplotlib\nimport matplotlib.pyplot as plt\nfrom pathlib import Path\nx = pd.read_csv('data.csv')\nassert x.value.mean() == 2\nassert matplotlib.get_backend().lower() == 'agg'\nx.plot()\nplt.savefig(Path(output_dir) / 'chart.png')\ndisplay(x)\nx.to_csv(Path(output_dir) / 'results.csv', index=False)\nprint('mean=2; cpu-only chart')";
   const result = await runAnalysisSandbox({ code, files: [{ name: "data.csv", data: Buffer.from("value\n1\n2\n3\n").toString("base64") }] });
   assert.equal(result.error, null, result.error);
   assert.match(result.logs, /cpu-only chart/);
   assert.equal(result.charts.length, 1);
+  assert.deepEqual(result.tables, [{ columns: ['value'], rows: [['1'], ['2'], ['3']] }]);
+  assert.equal(Buffer.from(result.files.find(file => file.name === 'results.csv').data, 'base64').toString().replaceAll('\r', ''), 'value\n1\n2\n3\n');
   assert.equal(sandboxProcesses(), "");
 });
 

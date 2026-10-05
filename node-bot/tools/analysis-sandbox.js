@@ -2,6 +2,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
+const { normalizeAnalysisOutputs } = require('./analysis-results');
 
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 1500000;
@@ -28,7 +29,7 @@ function isAnalysisAvailable(env = process.env) {
     .some((dir) => fs.existsSync(path.join(dir, "python.exe")));
 }
 
-function runProcess(command, args, { input = "", timeoutMs = 75000, spawnImpl = require('./native-helper-spawn').spawnNativeHelper } = {}) {
+function runProcess(command, args, { input = "", timeoutMs = 75000, shouldStop, spawnImpl = require('./native-helper-spawn').spawnNativeHelper } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try { child = spawnImpl(command, args, { shell: false, windowsHide: true, detached: process.platform === "win32", stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, MANA_SANDBOX_PARENT_PID: String(process.pid) } }); }
@@ -38,6 +39,7 @@ function runProcess(command, args, { input = "", timeoutMs = 75000, spawnImpl = 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearInterval(stopTimer);
       if (error) {
         if (!child.pid) { child.kill(); reject(error); return; }
         child.once("close", () => reject(error));
@@ -45,6 +47,10 @@ function runProcess(command, args, { input = "", timeoutMs = 75000, spawnImpl = 
       } else resolve(result);
     };
     const timer = setTimeout(() => finish(new Error("analysis helper timed out")), timeoutMs);
+    const stopTimer = typeof shouldStop === 'function' ? setInterval(() => {
+      try { if (shouldStop()) finish(new Error('Analysis stopped by the user')); }
+      catch (error) { finish(error); }
+    }, 100) : null;
     child.on("error", (error) => finish(error));
     child.stdin.on("error", (error) => finish(error));
     for (const [stream, isError] of [[child.stdout, false], [child.stderr, true]]) {
@@ -69,6 +75,7 @@ function runAnalysisSandbox(payload, options = {}) {
 }
 
 async function runOneAnalysis(payload, options = {}) {
+  if (options.shouldStop?.()) throw new Error('Analysis stopped by the user');
   if ((options.platform || process.platform) !== "win32") throw new Error("Windows AppContainer is required for analysis");
   if (typeof payload?.code !== "string" || !payload.code.trim() || payload.code.length > MAX_CODE_CHARS) throw new Error(`code must contain 1 to ${MAX_CODE_CHARS} characters`);
   const input = JSON.stringify(payload);
@@ -81,7 +88,7 @@ async function runOneAnalysis(payload, options = {}) {
   const work = path.join(os.tmpdir(), `Mana.Analysis.${randomUUID().replaceAll("-", "")}`);
   let result;
   try {
-    result = await run(helper, [runtime, work, String(timeout)], { input, timeoutMs: timeout + 15000 });
+    result = await run(helper, [runtime, work, String(timeout)], { input, timeoutMs: timeout + 15000, shouldStop: options.shouldStop });
   } finally {
     // The helper's finally cannot run if Windows forcibly terminates it.
     // Revoke its per-run ACL and profile before reporting completion.
@@ -92,15 +99,8 @@ async function runOneAnalysis(payload, options = {}) {
   if (result.code !== 0) throw new Error(`analysis sandbox failed: ${result.errors.slice(-2000)}`);
   const parsed = JSON.parse(result.output);
   if (!parsed || typeof parsed.logs !== "string" || !Array.isArray(parsed.charts)) throw new Error("invalid analysis sandbox response");
-  const charts = parsed.charts.slice(0, 4).flatMap((chart) => {
-    if (typeof chart?.data !== "string" || chart.data.length > 342000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(chart.data)) return [];
-    const bytes = Buffer.from(chart.data, "base64");
-    if (bytes.length < 24 || bytes.length > 256000 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || bytes.toString("ascii", 12, 16) !== "IHDR") return [];
-    const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
-    if (!width || !height || width > 4096 || height > 4096 || width * height > 4000000) return [];
-    return [{ name: "Analysis chart", dataUrl: `data:image/png;base64,${bytes.toString("base64")}` }];
-  });
-  return { logs: parsed.logs.slice(0, 20000), error: parsed.error ? String(parsed.error).slice(0, 4000) : null, charts };
+  return { logs: parsed.logs.slice(0, 20000), error: parsed.error ? String(parsed.error).slice(0, 4000) : null,
+    ...normalizeAnalysisOutputs(parsed) };
 }
 
 module.exports = { runAnalysisSandbox, runProcess, prepareBundledRuntime, isAnalysisAvailable, MAX_INPUT_BYTES, MAX_CODE_CHARS, HELPER_PATH, RUNTIME_DIR };

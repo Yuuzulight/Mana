@@ -1,6 +1,7 @@
 const backendDir = require('node:path').join(__dirname, '..');
 const { wrapUntrusted } = require('./untrusted-content');
-const { createAnalysisToolSource, chartArtifact } = require('./analysis-tool-source');
+const { createAnalysisToolSource } = require('./analysis-tool-source');
+const { normalizeAnalysisOutputs } = require('../tools/analysis-results');
 
 function createChatReply(context) {
 function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
@@ -89,6 +90,8 @@ async function buildAssistantReply(
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
     const analysisCharts = [];
+    const analysisFiles = [];
+    const analysisTables = [];
     const chatChoice = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId)?.chatModel : null;
     const selectedChatModel = chatChoice ? context.modelManagement.resolveChatModel(chatChoice, { fallbackToLocal: true }) : null;
     // let: #666's wait below may switch this turn to the fallback profile.
@@ -976,9 +979,15 @@ async function buildAssistantReply(
             context.createSkillToolSource({ approvalGate: context.activeApprovalGate, skillsStore: context.activeSkillsStore }),
             ...(userChat ? [createAnalysisToolSource({
               env: context.deps.env || process.env,
-              userMessage: transcript,
+              userMessage: replyMeta?.analysisUserMessage ?? transcript,
+              approvedFiles: replyMeta?.analysisFiles,
+              shouldStop: () => Boolean(activityRun?.stopRequested),
               runSandbox: context.deps.runAnalysisSandbox,
               onCharts: charts => analysisCharts.push(...charts.slice(0, 4 - analysisCharts.length)),
+              onOutputs: result => {
+                analysisFiles.push(...(result.files || []).slice(0, 8 - analysisFiles.length));
+                analysisTables.push(...(result.tables || []).slice(0, 4 - analysisTables.length));
+              },
             })] : []),
             context.createSnapshotToolSource({
               approvalGate: context.activeApprovalGate,
@@ -1655,7 +1664,8 @@ async function buildAssistantReply(
       console.warn("Phrasing variation check failed:", e?.message || e);
     }
 
-    if (analysisCharts.length) reply = String(reply || '') + chartArtifact(analysisCharts);
+    const analysisOutputs = normalizeAnalysisOutputs({ charts: analysisCharts, files: analysisFiles, tables: analysisTables });
+    if (replyMeta) replyMeta.analysisOutputs = analysisOutputs;
     try {
       if (
         sessionId &&
@@ -1678,6 +1688,7 @@ async function buildAssistantReply(
             speaker: context.characterStore.active().name,
             answerModel: replyMeta?.answerModel,
             cloudFallback: replyMeta?.cloudFallback,
+            analysisOutputs,
           })
           .catch((memErr) =>
             console.warn(

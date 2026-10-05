@@ -45,20 +45,74 @@ for file in payload.get('files', []):
     (workspace / name).write_bytes(base64.b64decode(file['data'], validate=True))
 
 logs = BoundedLog()
+tables = []
+table_chars = 0
+
+
+def display(value):
+    global table_chars
+    import pandas as pd
+    if isinstance(value, pd.Series):
+        value = value.to_frame()
+    if not isinstance(value, pd.DataFrame):
+        print(value)
+        return
+    if len(tables) >= 4:
+        print('Table preview limit reached; save the full data under output_dir.')
+        return
+    preview = value.iloc[:20, :8].map(lambda cell: str(cell)[:256])
+    columns = [str(column)[:256] for column in preview.columns]
+    rows = preview.values.tolist()
+    remaining = 10000 - table_chars
+    while rows and sum(map(len, columns)) + sum(len(cell) for row in rows for cell in row) > remaining:
+        rows.pop()
+    chars = sum(map(len, columns)) + sum(len(cell) for row in rows for cell in row)
+    if chars > remaining or not columns:
+        return
+    table_chars += chars
+    tables.append({'columns': columns, 'rows': rows})
+
+
 error = None
 try:
     with contextlib.redirect_stdout(logs), contextlib.redirect_stderr(logs):
         exec(compile(payload['code'], '<mana-analysis>', 'exec'),
-             {'__name__': '__main__', 'output_dir': str(output_dir)})
+             {'__name__': '__main__', 'output_dir': str(output_dir), 'display': display})
 except BaseException:
     error = traceback.format_exc()[-4000:]
 
 charts = []
-for file in sorted(output_dir.glob('*.png'))[:4]:
-    if file.is_symlink() or not file.is_file() or file.stat().st_size > 256000:
+files = []
+output_bytes = 0
+for file in sorted(output_dir.iterdir()):
+    if file.is_symlink() or file.resolve().parent != output_dir.resolve() or not file.is_file():
         continue
-    data = file.read_bytes()
-    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+    if file.stat().st_size > 256000:
+        continue
+    with file.open('rb') as stream:
+        data = stream.read(256001)
+    if len(data) > 256000 or output_bytes + len(data) > 1024000:
+        continue
+    if file.suffix.lower() == '.png' and data.startswith(b'\x89PNG\r\n\x1a\n') and len(charts) < 4:
         charts.append({'name': file.name, 'data': base64.b64encode(data).decode('ascii')})
-(workspace / 'result.json').write_text(
-    json.dumps({'logs': logs.getvalue(), 'error': error, 'charts': charts}), encoding='utf-8')
+    elif len(files) < 8:
+        files.append({'name': file.name, 'data': base64.b64encode(data).decode('ascii')})
+    else:
+        continue
+    output_bytes += len(data)
+result = {'logs': logs.getvalue(), 'error': error, 'charts': charts, 'files': files, 'tables': tables}
+encoded = json.dumps(result)
+omitted = False
+while len(encoded.encode('utf-8')) > 1450000:
+    if files:
+        files.pop()
+    elif charts:
+        charts.pop()
+    else:
+        tables.pop()
+    omitted = True
+    encoded = json.dumps(result)
+if omitted:
+    result['logs'] = result['logs'][:19800] + '\nSome outputs exceeded the transfer limit and were omitted.'
+    encoded = json.dumps(result)
+(workspace / 'result.json').write_text(encoded, encoding='utf-8')

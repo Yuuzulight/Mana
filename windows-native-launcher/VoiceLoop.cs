@@ -2028,6 +2028,7 @@ internal sealed class VoiceLoop : IDisposable
         // non-streamed path below -- reply is the true final text
         // either way by this point. #1329: FinalSources carries verified web sources.
         artifactSink?.ReportReply(reply ?? "", streamingReplyPlayer.FinalSources);
+        artifactSink?.ReportAnalysisOutputs(streamingReplyPlayer.FinalAnalysisOutputs);
         if (chatLog is ChatView view) view.SetAnswerModel(streamingReplyPlayer.FinalAnswerModel, streamingReplyPlayer.FinalCloudFallback);
 
         if (!changed)
