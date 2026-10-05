@@ -42,6 +42,8 @@ function createReranker(options = {}) {
 
   // Spawn/reuse/idle-stop/cooldown live in utils/on-demand-process.js.
   const server = createOnDemandProcess({
+    resourceCoordinator: options.resourceCoordinator,
+    resourceEstimate: () => ({ ramMb: Math.ceil(fs.statSync(modelPath()).size / 1048576 * 1.2) }),
     name: "Reranker llama-server",
     healthUrl: () => `http://127.0.0.1:${port()}/health`,
     command: () => {
@@ -118,8 +120,8 @@ function createReranker(options = {}) {
     const limit = deadline(budgetMs);
     const controller = new AbortController();
     try {
-      await Promise.race([server.ensure(), limit.promise]);
-      server.touch();
+      return await Promise.race([server.use(async () => {
+      controller.signal.throwIfAborted();
       const resp = await Promise.race([
         fetchImpl(`http://127.0.0.1:${port()}/v1/rerank`, {
           method: "POST",
@@ -147,6 +149,7 @@ function createReranker(options = {}) {
         ms: Date.now() - startedAt,
         fallback: null,
       };
+      }, { owner: 'Memory reranking', estimate: { cpu: threads }, signal: controller.signal }), limit.promise]);
     } catch (e) {
       controller.abort();
       const fallback = e?.message || String(e);
@@ -161,7 +164,7 @@ function createReranker(options = {}) {
   // turn): its ~3.5 s cold start is longer than rerank()'s budget. Never
   // throws; concurrent calls share one start. Not while gaming.
   function warm() {
-    if (isEnabled() && !gaming()) server.ensure().then(server.touch, () => {});
+    if (isEnabled() && !gaming()) server.ensure({ background: true }).then(server.touch, () => {});
   }
 
   return { rerank, warm, isEnabled, stop: server.stop };

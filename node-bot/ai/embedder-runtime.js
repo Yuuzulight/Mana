@@ -70,9 +70,12 @@ function createEmbedder(options = {}) {
   const gaming = options.gaming || (() => false);
 
   const server = createOnDemandProcess({
+    resourceCoordinator: options.resourceCoordinator,
+    resourceEstimate: () => ({ ramMb: Math.ceil(fs.statSync(modelPath()).size / 1048576), vramMb: Math.max(2300, Math.ceil(fs.statSync(modelPath()).size / 1048576 * 1.2)) }),
+    cpuAlternative: () => ({ ramMb: Math.ceil(fs.statSync(modelPath()).size / 1048576) + 512 }),
     name: "Embedding llama-server",
     healthUrl: () => `http://127.0.0.1:${port()}/health`,
-    command: () => {
+    command: (mode) => {
       const bin = findServerBin();
       return {
         bin,
@@ -82,7 +85,8 @@ function createEmbedder(options = {}) {
           "--port", String(port()),
           "--embedding",
           "--pooling", "last",
-          "-ngl", "99",
+          "-ngl", mode === 'cpu' ? '0' : '99',
+          ...(mode === 'cpu' ? ['--no-kv-offload'] : []),
           "-c", String(MAX_TOKENS),
           "-b", String(MAX_TOKENS),
           "-ub", String(MAX_TOKENS),
@@ -91,7 +95,7 @@ function createEmbedder(options = {}) {
           // system RAM (#747).
           ...(supportsLoadMode(bin) ? ["--load-mode", "none"] : ["--no-mmap"]),
         ],
-        options: { cwd: path.win32.dirname(bin) },
+        options: { cwd: path.win32.dirname(bin), ...(mode === 'cpu' ? { env: { ...env, CUDA_VISIBLE_DEVICES: '-1' } } : {}) },
       };
     },
     idleMs: () =>
@@ -135,6 +139,8 @@ function createEmbedder(options = {}) {
   // query: the texts are search queries (the user's message), not stored
   // documents -- they get QUERY_PROMPT and are cut, never chunked.
   async function embed(inputs, { query = false } = {}) {
+    const coordinator = options.resourceCoordinator || require('../utils/resource-service').getResourceService();
+    const background = query ? false : coordinator?.currentContext()?.background ?? true;
     const out = inputs.map(() => null);
     if (!out.length) return out;
     const prompt = query && /qwen3-embedding/i.test(path.basename(modelPath() || "")) ? QUERY_PROMPT : "";
@@ -143,8 +149,7 @@ function createEmbedder(options = {}) {
     );
     const input = pieces.flat();
     try {
-      await server.ensure();
-      server.touch();
+      await server.use(async () => {
       const resp = await fetchImpl(`http://127.0.0.1:${port()}/v1/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -163,6 +168,7 @@ function createEmbedder(options = {}) {
         const vs = vectors.slice(next, (next += p.length));
         if (vs.every(Array.isArray)) out[i] = vs.length === 1 ? vs[0] : unitMean(vs);
       });
+      }, { owner: 'Memory embeddings', background, estimate: { cpu: 1 } });
     } catch (e) {
       console.warn("Embedding llama-server unavailable:", e?.message || e);
     }
@@ -173,7 +179,7 @@ function createEmbedder(options = {}) {
   // turn), so the recall that follows doesn't wait out the cold start.
   // Never throws; concurrent calls share one start. Not while gaming.
   function warm() {
-    if (isEnabled() && !gaming()) server.ensure().then(server.touch, () => {});
+    if (isEnabled() && !gaming()) server.ensure({ background: true }).then(server.touch, () => {});
   }
 
   return { embed, warm, isEnabled, modelId, stop: server.stop };

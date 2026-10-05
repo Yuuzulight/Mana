@@ -6,6 +6,7 @@ const { createCompletions } = require('./llama/completions');
 const { createToolCalls } = require('./llama/tool-calls');
 const { createGoalReview } = require('./llama/goal-review');
 const { createToolReply } = require('./llama/tool-reply');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const defaultFs = require("node:fs");
 const { streamSentences } = require("../utils/sse-sentence-stream");
 const { stripEmotionTags } = require("../utils/emotion-tags");
@@ -124,6 +125,67 @@ function createLlamaServerRuntime(options = {}) {
   const execFile = options.execFile || defaultExecFile;
   const platform = options.platform || process.platform;
   const fetchImpl = options.fetch || globalThis.fetch;
+  const resourceCoordinator = options.resourceCoordinator;
+  const resourceContext = new AsyncLocalStorage();
+  async function withModelOperation(fn, cpu = 0) {
+    if (!resourceCoordinator) return fn();
+    if (resourceCoordinator.currentContext()?.modelOperation) return fn();
+    const request = resourceContext.getStore() || {};
+    const lease = await resourceCoordinator.acquire({ owner: request.background ? 'Self-work inference' : 'Chat model operation',
+      background: !!request.background, cancelled: request.cancelled, onWait: request.onWait, signal: request.signal,
+      exclusive: 'chat-model', estimate: { cpu } });
+    let transferred = false;
+    const finish = () => {
+      state.resourceExecuting -= 1;
+      lease.release();
+      if (!state.busy && !state.resourceExecuting) {
+        if (state.gamingSwapPending !== null) setGaming(state.gamingSwapPending);
+        if (state.visionUnloadPending) unloadVision();
+        if (state.contextRestorePending) { state.contextOverride = null; state.contextRestorePending = false; }
+      }
+    };
+    const failed = async () => {
+      if (state.child) {
+        lease.attachProcess(state.child);
+        stop();
+        await state.stopping;
+      } else if (state.port && cpu > 0) {
+        lease.retain('An external model request failed; completion is unconfirmed. The external process was not stopped.');
+      }
+    };
+    try {
+      state.resourceExecuting = (state.resourceExecuting || 0) + 1;
+      const result = await resourceCoordinator.scope({ ...request, admitted: true, modelOperation: true }, fn);
+      if (result instanceof Response && result.body) {
+        const reader = result.body.getReader();
+        let ended = false;
+        const end = async (failure = false) => {
+          if (ended) return;
+          ended = true;
+          try { if (failure) await failed(); } finally { finish(); }
+        };
+        const body = new ReadableStream({
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) { await end(); controller.close(); }
+              else controller.enqueue(chunk.value);
+            } catch (error) { await end(true); controller.error(error); }
+          },
+          async cancel(reason) {
+            try { await reader.cancel(reason); } finally { await end(true); }
+          },
+        }, { highWaterMark: 0 });
+        const response = new Response(body, { status: result.status, statusText: result.statusText, headers: result.headers });
+        transferred = true;
+        return response;
+      }
+      return result;
+    } catch (error) {
+      await failed();
+      throw error;
+    } finally { if (!transferred) finish(); }
+  }
   const baseDir = options.baseDir || path.resolve(__dirname, "..");
   const toolsDir =
     options.toolsDir || path.resolve(baseDir, "..", "tools", "llama");
@@ -282,6 +344,11 @@ function createLlamaServerRuntime(options = {}) {
   function getVisionStatus(...args) { return modelDiscovery.getVisionStatus(...args); }
 
   const serverStartup = createServerStartup({
+    get resourceCoordinator() { return resourceCoordinator; },
+    get resourceRequest() { return resourceContext.getStore() || {}; },
+    get estimateLoadFootprintMb() { return estimateLoadFootprintMb; },
+    get kvCacheMb() { return kvCacheMb; },
+    get supportsFlag() { return supportsFlag; },
     get assertVramForSwap() { return assertVramForSwap; },
     get backupProfileFor() { return backupProfileFor; },
     get buildServerArgs() { return buildServerArgs; },
@@ -317,6 +384,10 @@ function createLlamaServerRuntime(options = {}) {
   function sameModelPath(...args) { return serverStartup.sameModelPath(...args); }
 
   const lifecycle = createLifecycle({
+    get withModelOperation() { return withModelOperation; },
+    get resourceCoordinator() { return resourceCoordinator; },
+    get resourceContext() { return resourceContext; },
+    get threads() { return threads; },
     get configuredContext() { return configuredContext; },
     get CONTEXT_SWITCH_WAIT_MS() { return CONTEXT_SWITCH_WAIT_MS; },
     get contextFits() { return contextFits; },
@@ -463,7 +534,7 @@ function createLlamaServerRuntime(options = {}) {
 
   function buildToolCallRepairSchema(...args) { return toolCalls.buildToolCallRepairSchema(...args); }
 
-  function repairToolCalls(...args) { return toolCalls.repairToolCalls(...args); }
+  function repairToolCalls(...args) { return withModelOperation(() => toolCalls.repairToolCalls(...args), Math.max(1, Number(threads) || 1)); }
 
   const goalReview = createGoalReview({
     get buildSamplingParams() { return buildSamplingParams; },
@@ -488,7 +559,7 @@ function createLlamaServerRuntime(options = {}) {
   const EDIT_GOAL_RE = /\b(fix|add|rename|change|update|implement|refactor|remove|delete|edit|replace|modify)\b/i;
   function goalEvidence(...args) { return goalReview.goalEvidence(...args); }
 
-  function reviewGoalCompletion(...args) { return goalReview.reviewGoalCompletion(...args); }
+  function reviewGoalCompletion(...args) { return withModelOperation(() => goalReview.reviewGoalCompletion(...args), Math.max(1, Number(threads) || 1)); }
 
   function withContextSize(...args) { return lifecycle.withContextSize(...args); }
 
@@ -497,6 +568,10 @@ function createLlamaServerRuntime(options = {}) {
   function contextFits(...args) { return serverConfig.contextFits(...args); }
 
   const toolReply = createToolReply({
+    get withModelOperation() { return withModelOperation; },
+    get resourceCoordinator() { return resourceCoordinator; },
+    get resourceRequest() { return resourceContext.getStore() || {}; },
+    get threads() { return threads; },
     get applyLoraAdapter() { return applyLoraAdapter; },
     get buildMessages() { return buildMessages; },
     get buildSamplingParams() { return buildSamplingParams; },

@@ -515,6 +515,24 @@ test("swapFishDevice retries after a failed swap instead of getting stuck", asyn
   }
 });
 
+test('opposite Fish device transfers are serialized and finish their resource handoff', async () => {
+  let active = 0, peak = 0;
+  const finished = [];
+  const server = http.createServer((_req, res) => {
+    peak = Math.max(peak, ++active);
+    setTimeout(() => { active -= 1; res.writeHead(200); res.end('{}'); }, 10);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const runtime = createTtsRuntime({ env: { FISH_TTS_URL: `http://127.0.0.1:${server.address().port}` },
+      resourceCoordinator: { acquire: async () => ({ release() {} }) },
+      finishFishResourceTransfer: (_lease, target, success) => finished.push({ target, success }) });
+    await Promise.all([runtime.swapFishDevice('cpu'), runtime.swapFishDevice('cuda')]);
+    assert.equal(peak, 1);
+    assert.deepEqual(finished, [{ target: 'cpu', success: true }, { target: 'cuda', success: true }]);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test("warmupFishTts skips (status 'skipped') when the provider isn't fish", async () => {
   const runtime = createTtsRuntime({
     env: { TTS_PROVIDER: "kokoro" },

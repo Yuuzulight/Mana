@@ -93,6 +93,7 @@ function launchNativeProcess(work, request, { helperPath = HELPER_PATH, spawnImp
       child.emit('exit', code, signal);
       child.emit('close', code, signal);
     } catch (error) {
+      child.resourceCleanupFailed = true;
       child.exitCode = 1;
       child.emit('error', error);
       child.emit('exit', 1);
@@ -238,6 +239,11 @@ function runSandboxedTestCommand(command, cwd, options = {}) {
   const task = testQueue.then(async () => {
     if (options.cancelled?.()) throw new Error('Sandbox test execution was stopped before setup');
     const profile = testProfile(options.resourceProfile || 'standard');
+    const coordinator = options.resourceCoordinator || require('../utils/resource-service').getResourceService();
+    const lease = await coordinator?.acquire({ owner: 'Workspace tests', background: coordinator.currentContext()?.background ?? true,
+      estimate: { ramMb: profile.memoryMb, cpu: (os.availableParallelism?.() || os.cpus().length) * 0.5 },
+      cancelled: options.cancelled, timeoutMs: profile.timeoutMs, onWait: options.onResourceWait });
+    try {
     const startedAt = Date.now();
     let stopRequested = false;
     const cancelled = () => stopRequested || !!options.cancelled?.();
@@ -254,6 +260,7 @@ function runSandboxedTestCommand(command, cwd, options = {}) {
     let child;
     try { child = launchNativeProcess(work, request); }
     catch (error) { fs.rmSync(work, { recursive: true, force: true }); throw error; }
+    lease?.attachProcess(child);
     const result = require('../ai/coding-tool-source').runTestCommand(command, cwd, {
       spawnImpl: () => child, killTree: () => child.kill(), timeoutMs: Math.max(1, profile.timeoutMs - (Date.now() - startedAt)),
       terminal: { ...options.terminal, kill: () => child.kill() },
@@ -268,6 +275,7 @@ function runSandboxedTestCommand(command, cwd, options = {}) {
       if (stopped) throw new Error('Sandbox test execution was stopped; processes and scratch were cleaned up');
       return completed;
     } finally { clearInterval(cancellation); }
+    } finally { lease?.release(); }
   });
   testQueue = task.catch(() => {});
   return task;

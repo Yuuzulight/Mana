@@ -43,7 +43,7 @@ function runProcess(command, args, { input = "", timeoutMs = 75000, shouldStop, 
       if (error) {
         if (!child.pid) { child.kill(); reject(error); return; }
         child.once("close", () => reject(error));
-        if (!child.kill()) reject(error);
+        child.kill();
       } else resolve(result);
     };
     const timer = setTimeout(() => finish(new Error("analysis helper timed out")), timeoutMs);
@@ -81,6 +81,12 @@ async function runOneAnalysis(payload, options = {}) {
   const input = JSON.stringify(payload);
   if (Buffer.byteLength(input) > MAX_INPUT_BYTES) throw new Error("analysis sandbox input limit exceeded");
   const run = options.runProcess || runProcess;
+  const coordinator = options.resourceCoordinator || require('../utils/resource-service').getResourceService();
+  const lease = await coordinator?.acquire({ owner: 'Python analysis',
+    estimate: { ramMb: 512, cpu: (os.availableParallelism?.() || os.cpus().length) * 0.1 },
+    cancelled: options.shouldStop, onWait: options.onResourceWait });
+  let cleaned = false, started = false;
+  try {
   const timeout = Math.min(60000, Math.max(100, Number(options.timeoutMs) || 60000));
   const helper = options.helperPath || HELPER_PATH;
   const runtime = options.runtimeDir || RUNTIME_DIR;
@@ -88,6 +94,7 @@ async function runOneAnalysis(payload, options = {}) {
   const work = path.join(os.tmpdir(), `Mana.Analysis.${randomUUID().replaceAll("-", "")}`);
   let result;
   try {
+    started = true;
     result = await run(helper, [runtime, work, String(timeout)], { input, timeoutMs: timeout + 15000, shouldStop: options.shouldStop });
   } finally {
     // The helper's finally cannot run if Windows forcibly terminates it.
@@ -95,12 +102,19 @@ async function runOneAnalysis(payload, options = {}) {
     const cleanup = await run(helper, ["--cleanup", runtime, work], { timeoutMs: 15000 });
     if (cleanup.code !== 0) throw new Error(`analysis cleanup failed: ${cleanup.errors.slice(-2000)}`);
     if (fs.existsSync(work)) throw new Error("analysis cleanup left its scratch directory behind");
+    cleaned = true;
   }
   if (result.code !== 0) throw new Error(`analysis sandbox failed: ${result.errors.slice(-2000)}`);
   const parsed = JSON.parse(result.output);
   if (!parsed || typeof parsed.logs !== "string" || !Array.isArray(parsed.charts)) throw new Error("invalid analysis sandbox response");
   return { logs: parsed.logs.slice(0, 20000), error: parsed.error ? String(parsed.error).slice(0, 4000) : null,
     ...normalizeAnalysisOutputs(parsed) };
+  } finally {
+    // Failure to revoke the job's resources is a recovery problem, not newly
+    // available capacity. Keep the reservation visible instead of overselling it.
+    if (!started || cleaned) lease?.release();
+    else lease?.retain('Python sandbox cleanup failed; reservation retained for recovery.');
+  }
 }
 
 module.exports = { runAnalysisSandbox, runProcess, prepareBundledRuntime, isAnalysisAvailable, MAX_INPUT_BYTES, MAX_CODE_CHARS, HELPER_PATH, RUNTIME_DIR };

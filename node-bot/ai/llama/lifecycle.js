@@ -5,6 +5,7 @@ function stop() {
       context.state.idleTimer = null;
     }
     const child = context.state.child;
+    if (child) context.state.resourceLease?.release();
     context.state.child = null;
     context.state.model = null;
     context.state.mmproj = null;
@@ -32,7 +33,7 @@ function scheduleIdleShutdown() {
       // A timer left over from before an unexpected exit must not kill the
       // restart in progress (a failed start counts against a #693 build);
       // the reply it's for schedules a fresh one.
-      if (context.state.starting) return;
+      if (context.state.starting || context.state.busy || context.state.resourceExecuting) { scheduleIdleShutdown(); return; }
       const port = context.state.port;
       // #872: and the next start is text-only until an image asks again.
       context.state.visionWanted = false;
@@ -93,7 +94,7 @@ function registerExit() {
   // game started). Mid-reply it waits: the last reply to finish calls it
   // again (see inTurn).
   function unloadVision() {
-    if (context.state.busy > 0) {
+    if (context.state.busy > 0 || context.state.resourceExecuting > 0) {
       context.state.visionUnloadPending = true;
       return;
     }
@@ -126,7 +127,7 @@ function registerExit() {
       if (on) unloadVision();
       return;
     }
-    if (context.state.busy > 0) {
+    if (context.state.busy > 0 || context.state.resourceExecuting > 0) {
       context.state.gamingSwapPending = on;
       // The swap drops the mmproj anyway; one restart, not two.
       if (on) context.state.visionUnloadPending = false;
@@ -150,14 +151,28 @@ function registerExit() {
   // setGaming) never restarts the server under it.
   function inTurn(fn) {
     return async (...args) => {
+      const options = [...args].reverse().find(value => value && typeof value === 'object' && !Array.isArray(value)) || {};
+      const request = { background: !!options.resourceBackground, cancelled: options.resourceCancelled, onWait: options.onResourceWait };
+      const run = () => context.resourceContext ? context.resourceContext.run(request, () => perform(...args)) : perform(...args);
+      return context.resourceCoordinator ? context.resourceCoordinator.scope(request, run) : run();
+    };
+    async function perform(...args) {
       context.state.busy += 1;
       const signal = args.find(value => value?.signal)?.signal || args.find(value => value?.extraMessages?.signal)?.extraMessages.signal;
-      const cancelOwned = () => { if (context.state.busy === 1 && context.state.child) stop(); };
+      const request = context.resourceContext?.getStore() || {};
+      request.signal = signal;
+      let lease;
+      const cancelOwned = () => { if (!context.resourceCoordinator && context.state.busy === 1 && context.state.child) stop(); };
       signal?.addEventListener('abort', cancelOwned, { once: true });
       try {
+        lease = await context.resourceCoordinator?.acquire({ owner: request.background ? 'Self-work model turn' : 'Interactive chat',
+          background: request.background, signal, cancelled: request.cancelled, onWait: request.onWait,
+          estimate: {} });
         signal?.throwIfAborted();
+        if (fn.name !== 'runToolAwareReply' && context.resourceCoordinator) return await context.withModelOperation(() => fn(...args), Math.max(1, Number(context.threads) || 1));
         return await fn(...args);
       } finally {
+        lease?.release();
         signal?.removeEventListener('abort', cancelOwned);
         context.state.busy -= 1;
         let cleanupError;
@@ -168,16 +183,16 @@ function registerExit() {
             cleanupError.code = 'LOCAL_CLEANUP_FAILED';
           }
         }
-        if (!signal?.aborted && context.state.busy === 0 && context.state.gamingSwapPending !== null) setGaming(context.state.gamingSwapPending);
-        if (!signal?.aborted && context.state.busy === 0 && context.state.visionUnloadPending) unloadVision();
+        if (!signal?.aborted && context.state.busy === 0 && !context.state.resourceExecuting && context.state.gamingSwapPending !== null) setGaming(context.state.gamingSwapPending);
+        if (!signal?.aborted && context.state.busy === 0 && !context.state.resourceExecuting && context.state.visionUnloadPending) unloadVision();
         // #1214: her context ended while chat replies were in flight.
-        if (context.state.busy === 0 && context.state.contextRestorePending) {
+        if (context.state.busy === 0 && !context.state.resourceExecuting && context.state.contextRestorePending) {
           context.state.contextOverride = null;
           context.state.contextRestorePending = false;
         }
         if (cleanupError) throw cleanupError;
       }
-    };
+    }
   }
 
 // Foundational tool-calling loop (issue #51). Single round only: the
@@ -229,8 +244,8 @@ function registerExit() {
     return async (prompt, toolPolicy, options = {}) => {
       const ctx = Number(options?.contextSize) || 0;
       if (ctx <= context.configuredContext()) return fn(prompt, toolPolicy, options);
-      for (let waited = 0; context.state.busy > 0 && waited < context.CONTEXT_SWITCH_WAIT_MS; waited += 1000) await context.sleep(1000);
-      if (context.state.busy > 0 || !context.contextFits(ctx)) {
+      for (let waited = 0; (context.state.busy > 0 || context.state.resourceExecuting > 0) && waited < context.CONTEXT_SWITCH_WAIT_MS; waited += 1000) await context.sleep(1000);
+      if (context.state.busy > 0 || context.state.resourceExecuting > 0 || !context.contextFits(ctx)) {
         console.warn(`llama-server: staying at ${context.configuredContext()} context, not ${ctx} (${context.state.busy > 0 ? "a reply is still in flight" : "not enough VRAM for its KV cache"})`);
         return fn(prompt, toolPolicy, options);
       }

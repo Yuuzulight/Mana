@@ -43,6 +43,8 @@ function createRetrieverRuntime(options = {}) {
     !(env.NODE_ENV === "test" || env.NODE_TEST_CONTEXT);
 
   const service = createOnDemandProcess({
+    resourceCoordinator: options.resourceCoordinator,
+    resourceEstimate: () => ({ ramMb: 1024 }),
     name: "Python retriever",
     healthUrl: () => `${url.origin}/health`,
     command: () => ({
@@ -69,7 +71,11 @@ function createRetrieverRuntime(options = {}) {
     service.touch();
   }
 
-  return { ensure, stop: service.stop };
+  async function use(fn) {
+    if (!managed || !required.every((file) => fs.existsSync(file))) return fn();
+    return service.use(fn);
+  }
+  return { ensure, use, stop: service.stop };
 }
 
 module.exports = { createRetrieverRuntime };

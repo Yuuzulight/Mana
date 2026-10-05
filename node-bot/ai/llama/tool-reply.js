@@ -30,13 +30,12 @@ async function runToolAwareReply(
       );
     }
     const startedAt = context.nowMs();
-    await context.ensureServer(profile, extraMessages?.images, { signal: extraMessages?.signal });
+    const initialLoad = async () => {
+      await context.ensureServer(profile, extraMessages?.images, { signal: extraMessages?.signal });
+      if (context.state.hasLoraAdapters) await context.applyLoraAdapter('assistant');
+    };
+    await (context.withModelOperation ? context.withModelOperation(initialLoad) : initialLoad());
     extraMessages?.signal?.throwIfAborted();
-
-    // #1343: Tool execution routes to assistant LoRA
-    if (context.state.hasLoraAdapters) {
-      await context.applyLoraAdapter("assistant");
-    }
 
     const goalText = String(goal || "").trim();
     const goalMode = Boolean(goalText);
@@ -71,6 +70,7 @@ async function runToolAwareReply(
     );
 
     async function complete(toolsEnabled) {
+      const generate = async () => {
       // Issue #417: a tool executed mid-loop (vision__look) can swap the
       // local server to a different model out from under this loop --
       // ensureServer() at the top of runToolAwareReply only confirms the
@@ -112,6 +112,8 @@ async function runToolAwareReply(
       if (context.stripThinking(json?.choices?.[0]?.message?.content)?.trim()) extraMessages?.onReplyStarted?.();
       context.logPromptCache("llama-server-tool-reply", json && json.timings);
       return json;
+      };
+      return context.withModelOperation ? context.withModelOperation(generate, Math.max(1, Number(context.threads) || 1)) : generate();
     }
 
     // #1214: all but the last few tool results, cut to their first lines.

@@ -622,14 +622,15 @@ async function buildAssistantReply(
             console.warn("Python retriever unavailable:", e?.message || e),
           );
           // try HTTP retriever first
-          const resp = await fetch(retrieverUrl, {
+          const retrieve = async () => { const resp = await fetch(retrieverUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ query: transcript, k: 5 }),
-          });
+          }); return { ok: resp.ok, status: resp.status, hits: resp.ok ? await resp.json() : null }; };
+          const resp = await (context.retrieverService.use ? context.retrieverService.use(retrieve) : retrieve());
           if (resp.ok) {
             try {
-              const hits = await resp.json();
+              const hits = resp.hits;
               if (Array.isArray(hits) && hits.length) {
                 const maxChars = Number(
                   process.env.RETRIEVER_MAX_CHARS || 3000,
@@ -1059,6 +1060,7 @@ async function buildAssistantReply(
               : []),
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [context.selfWork.chatToolSource(transcript, { sessionId })] : []),
+            ...(userChat ? [require('./resource-tool-source').createResourceToolSource(context.resourceCoordinator)] : []),
             // #1182: git and GitHub, only in my own chat.
             ...(userChat ? [context.gitTools] : []),
             // #906: my email and calendar, only in my own chat (never a
