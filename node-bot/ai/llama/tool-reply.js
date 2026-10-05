@@ -81,6 +81,7 @@ async function runToolAwareReply(
       // isHealthy() check (ensureServerConfig's early-return), not a real
       // restart.
       await context.ensureServer(profile, null, { signal: extraMessages?.signal });
+      if (context.state.hasLoraAdapters) await context.applyLoraAdapter('assistant');
       extraMessages?.signal?.throwIfAborted();
       // #675: never DRY/XTC here, and no thinking unless this is a "think
       // harder" turn -- both can break tool-call JSON. When it thinks,

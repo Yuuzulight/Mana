@@ -61,6 +61,7 @@ function createEmbedder(options = {}) {
   const fs = options.fs || defaultFs;
   const spawn = options.spawn || defaultSpawn;
   const fetchImpl = options.fetch || globalThis.fetch;
+  const threads = Number(options.threads || env.LLAMA_THREADS || 4);
   // From llama-server-runtime: the #693 active build, and whether it knows
   // --load-mode (#747).
   const findServerBin = options.findServerBin;
@@ -85,6 +86,7 @@ function createEmbedder(options = {}) {
           "--port", String(port()),
           "--embedding",
           "--pooling", "last",
+          "-t", String(threads),
           "-ngl", mode === 'cpu' ? '0' : '99',
           ...(mode === 'cpu' ? ['--no-kv-offload'] : []),
           "-c", String(MAX_TOKENS),
@@ -168,7 +170,7 @@ function createEmbedder(options = {}) {
         const vs = vectors.slice(next, (next += p.length));
         if (vs.every(Array.isArray)) out[i] = vs.length === 1 ? vs[0] : unitMean(vs);
       });
-      }, { owner: 'Memory embeddings', background, estimate: { cpu: 1 } });
+      }, { owner: 'Memory embeddings', background, estimate: { cpu: threads } });
     } catch (e) {
       console.warn("Embedding llama-server unavailable:", e?.message || e);
     }

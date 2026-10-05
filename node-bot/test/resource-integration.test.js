@@ -255,3 +255,33 @@ test('cancelled chat retains inference capacity until its owned process actually
   assert.equal(process.exitCode, 0);
   assert.equal(resources.status().active.length, 0);
 });
+
+test('tool rounds restore their adapter after interactive chat runs at a safe boundary', async t => {
+  const resources = coordinator(t);
+  let process, adapter, completions = 0;
+  const observed = [];
+  const runtime = createLlamaServerRuntime({ resourceCoordinator: resources, platform: 'linux',
+    env: { LLAMA_SERVER_BIN: 'C:\\llama\\llama-server.exe', LLAMA_MODEL: 'C:\\models\\mana.gguf', LLAMA_SERVER_IDLE_MS: '0' },
+    fs: { existsSync: () => true, statSync: () => ({ size: 1024 * 1048576, isFile: () => true }) },
+    probeHelp: () => '--device --cache-ram', registerExitHandlers: false, sleep: tick,
+    spawn: () => (process = child(901)),
+    fetch: async (url, options) => {
+      if (String(url).endsWith('/health')) return { ok: !!process && process.exitCode === null };
+      if (String(url).endsWith('/lora-adapters')) {
+        if (options?.method === 'POST') {
+          adapter = JSON.parse(options.body).find(item => item.scale === 1)?.id;
+          return { ok: true, json: async () => ({}) };
+        }
+        return { ok: true, json: async () => [{ id: 1, path: 'companion.gguf' }, { id: 2, path: 'assistant.gguf' }] };
+      }
+      observed.push(adapter); completions += 1;
+      return { ok: true, json: async () => ({ choices: [{ message: completions === 1
+        ? { tool_calls: [{ id: 'call', type: 'function', function: { name: 'work', arguments: '{}' } }] }
+        : { content: 'hello' } }] }) };
+    } });
+  await runtime.runToolAwareReply('Do work.', { tools: [{ type: 'function', function: { name: 'work', parameters: { type: 'object', properties: {} } } }],
+    executeTool: async () => { await runtime.runLocalAssistantReply('Chat during tools.', 8); return 'done'; } }, { maxRounds: 2 });
+  assert.deepEqual(observed, [2, 1, 2]);
+  runtime.stop();
+  assert.equal(resources.status().active.length, 0);
+});
