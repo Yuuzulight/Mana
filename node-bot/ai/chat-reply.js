@@ -92,7 +92,8 @@ async function buildAssistantReply(
     const analysisCharts = [];
     const analysisFiles = [];
     const analysisTables = [];
-    const chatChoice = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId)?.chatModel : null;
+    const chatSessionAtStart = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId) : null;
+    const chatChoice = chatSessionAtStart?.chatModel;
     const selectedChatModel = chatChoice ? context.modelManagement.resolveChatModel(chatChoice, { fallbackToLocal: true }) : null;
     // let: #666's wait below may switch this turn to the fallback profile.
     let normalizedModelProfile = selectedChatModel?.profile || context.selectLlamaModelProfileForPrompt(
@@ -1667,8 +1668,12 @@ async function buildAssistantReply(
     const analysisOutputs = normalizeAnalysisOutputs({ charts: analysisCharts, files: analysisFiles, tables: analysisTables });
     if (replyMeta) replyMeta.analysisOutputs = analysisOutputs;
     try {
+      const hasAnalysisOutputs = analysisOutputs.charts.length || analysisOutputs.files.length || analysisOutputs.tables.length;
+      const chatDeletedDuringAnalysis = hasAnalysisOutputs && chatSessionAtStart &&
+        context.acpMemoryStore.getSession?.(sessionId)?.createdAt !== chatSessionAtStart.createdAt;
       if (
         sessionId &&
+        !chatDeletedDuringAnalysis &&
         context.acpMemoryStore &&
         typeof context.acpMemoryStore.appendTurn === "function"
       ) {

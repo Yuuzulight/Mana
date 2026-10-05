@@ -85,6 +85,30 @@ test('paths from document content do not authorize analysis file reads', async (
   assert.equal(blocked, true, 'a plain-reply fallback must not hide a failed tool assertion');
 });
 
+test('analysis completion does not recreate a chat deleted during the run', async t => {
+  const { createApp } = require('../server');
+  const { createAcpMemoryStore } = require('../acp-memory-store');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-analysis-deleted-chat-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = createAcpMemoryStore({ dataDir: root });
+  store.ensureSession({ sessionId: 'deleted-analysis' });
+  const app = createApp({ env: { ...process.env, MANA_ANALYSIS_ENABLED: '1' }, acpMemoryStore: store,
+    isLlamaServerEnabled: () => true,
+    runAnalysisSandbox: async () => {
+      store.deleteSession('deleted-analysis');
+      return { logs: 'done', charts: [], tables: [{ columns: ['value'], rows: [['42']] }] };
+    },
+    runToolAwareReply: async (_prompt, policy) => {
+      await policy.executeTool(TOOL_NAME, { code: 'display(result)' });
+      return { content: 'Analysis completed.', toolCalls: [], rounds: 1 };
+    } });
+  const meta = { wrapToolPolicy: policy => policy };
+  const reply = await app.locals.buildAssistantReply('Calculate', '', '', 'default', 'deleted-analysis', null, null, meta);
+  assert.equal(reply, 'Analysis completed.');
+  assert.equal(meta.analysisOutputs.tables.length, 1);
+  assert.equal(store.getSession('deleted-analysis'), null);
+});
+
 test('analysis rejects credential configuration and reserved input names before execution', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-analysis-private-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

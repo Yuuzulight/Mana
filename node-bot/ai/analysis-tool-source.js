@@ -10,12 +10,12 @@ const SCHEMA = {
   type: "function",
   function: {
     name: TOOL_NAME,
-    description: "Run Python with pandas, matplotlib and openpyxl in a native Windows AppContainer for analysis or a scratch reproduction. Only input files named by the user in this message are copied into the scratch directory. Call display(dataframe) for a table preview (20 rows, 8 columns). Save PNG charts and downloadable files under output_dir (256KB each, about 1MB total). Charts, tables and files are retained with the chat; scratch and processes are cleaned after every run. Private host files, network and child processes are restricted by Windows. Never use this to run workspace tests that need host access.",
+    description: "Run Python with pandas, matplotlib and openpyxl in a native Windows AppContainer for analysis or a scratch reproduction. Only user-offered files and explicitly approved attachments are copied into scratch. Call display(dataframe) for a table preview (20 rows, 8 columns). Save PNG charts and downloadable files under output_dir (256KB each, about 1MB total). Charts, tables and files are retained with the chat; scratch and processes are cleaned after every run. Private host files, network and child processes are restricted by Windows. Never use this to run workspace tests that need host access.",
     parameters: {
       type: "object",
       properties: {
         code: { type: "string", description: "Python code. Input files are in the current directory, output_dir contains chart outputs." },
-        files: { type: "array", maxItems: 8, items: { type: "string" }, description: "Full paths to files explicitly named in the user's current message." },
+        files: { type: "array", maxItems: 8, items: { type: "string" }, description: "Full paths explicitly named by the user or listed as approved Python analysis inputs for this turn." },
       },
       required: ["code"],
     },

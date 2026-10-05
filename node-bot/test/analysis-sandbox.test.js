@@ -152,13 +152,14 @@ test("live helper termination kills its Python process through the job", { skip:
 });
 
 test("live analysis calculates from CSV and renders a chart with the CPU-only backend", { skip: !live }, async () => {
-  const code = "import pandas as pd\nimport matplotlib\nimport matplotlib.pyplot as plt\nfrom pathlib import Path\nx = pd.read_csv('data.csv')\nassert x.value.mean() == 2\nassert matplotlib.get_backend().lower() == 'agg'\nx.plot()\nplt.savefig(Path(output_dir) / 'chart.png')\ndisplay(x)\nx.to_csv(Path(output_dir) / 'results.csv', index=False)\nprint('mean=2; cpu-only chart')";
+  const code = "import pandas as pd\nimport matplotlib\nimport matplotlib.pyplot as plt\nfrom pathlib import Path\nx = pd.read_csv('data.csv')\nassert x.value.mean() == 2\nassert matplotlib.get_backend().lower() == 'agg'\nx.plot()\nplt.savefig(Path(output_dir) / 'chart.png')\ndisplay(x)\nx.to_csv(Path(output_dir) / 'results.csv', index=False)\nx.to_excel(Path(output_dir) / 'results.xlsx', index=False)\nassert pd.read_excel(Path(output_dir) / 'results.xlsx').value.mean() == 2\nprint('mean=2; cpu-only chart')";
   const result = await runAnalysisSandbox({ code, files: [{ name: "data.csv", data: Buffer.from("value\n1\n2\n3\n").toString("base64") }] });
   assert.equal(result.error, null, result.error);
   assert.match(result.logs, /cpu-only chart/);
   assert.equal(result.charts.length, 1);
   assert.deepEqual(result.tables, [{ columns: ['value'], rows: [['1'], ['2'], ['3']] }]);
   assert.equal(Buffer.from(result.files.find(file => file.name === 'results.csv').data, 'base64').toString().replaceAll('\r', ''), 'value\n1\n2\n3\n');
+  assert.equal(Buffer.from(result.files.find(file => file.name === 'results.xlsx').data, 'base64').subarray(0, 2).toString(), 'PK');
   assert.equal(sandboxProcesses(), "");
 });
 
