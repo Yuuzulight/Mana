@@ -31,7 +31,10 @@ async function synthesizeReply(text, opts = {}) {
     });
 
     let captionServer = null;
+    let resourceLease;
     try {
+      resourceLease = await context.resourceCoordinator?.acquire({ owner: 'Voice synthesis', priority: 0, signal: opts.signal,
+        estimate: { cpu: 2 }, onWait: event => console.log(`[resources] ${event.reason}`) });
       try {
         captionServer = require("../caption-server");
       } catch (e) {
@@ -89,6 +92,7 @@ async function synthesizeReply(text, opts = {}) {
 
       return audio;
     } finally {
+      resourceLease?.release();
       try {
         release();
       } catch (e) {}
@@ -120,8 +124,8 @@ function getLlamaStatus() {
 async function runWhisperHeard(filePath) {
     const parakeet = context.STT_PROVIDER === "parakeet";
     const heard = parakeet
-      ? await runParakeet(filePath)
-      : ((await context.transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
+      ? await withCliMemory(true, () => runParakeet(filePath))
+      : ((await context.transcribeWithWhisperServer(filePath)) ?? await withCliMemory(false, () => runWhisperCli(filePath)));
     const model = parakeet
       ? context.whisperDiscovery.findParakeetModel({ env: process.env })
       : context.whisperDiscovery.findWhisperModel({ env: process.env });
@@ -139,8 +143,20 @@ async function runWhisper(filePath) {
 
 async function runWhisperPartial(filePath) {
     return context.speechVocabulary.correct(
-      (await context.transcribeWithWhisperServer(filePath)) ?? (await runWhisperCliPartial(filePath)),
+      (await context.transcribeWithWhisperServer(filePath)) ?? (await withCliMemory(false, memoryLease => runWhisperCliPartial(filePath, memoryLease))),
     );
+  }
+
+async function withCliMemory(parakeet, fn) {
+    if (!context.resourceCoordinator) return fn();
+    const model = parakeet ? context.whisperDiscovery.findParakeetModel({ env: process.env })
+      : context.whisperDiscovery.findWhisperModel({ env: process.env, language: context.whisperLanguage() });
+    const bin = parakeet ? findParakeetBin() : findWhisperBin();
+    const memory = Math.ceil(context.fs.statSync(model).size / 1048576 * 2);
+    const cuda = context.fs.existsSync(context.path.join(context.path.dirname(bin), 'ggml-cuda.dll'));
+    const lease = await context.resourceCoordinator.acquire({ owner: 'One-shot voice model', priority: 0,
+      estimate: { ramMb: memory, vramMb: cuda ? memory : 0, cpu: Math.max(1, Number(context.whisperThreads()) || 1) } });
+    try { return await fn(lease); } finally { lease.release(); }
   }
 
 function findParakeetBin() {
@@ -291,9 +307,10 @@ function runWhisperCli(filePath) {
     return r.stdout ? r.stdout.trim() : "";
   }
 
-function spawnWhisperCliAsync(whisperBin, args) {
+function spawnWhisperCliAsync(whisperBin, args, lease) {
     return new Promise((resolve, reject) => {
       const child = context.belowNormal(context.spawn(whisperBin, args, { windowsHide: true }));
+      lease?.attachProcess(child);
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk) => {
@@ -309,7 +326,7 @@ function spawnWhisperCliAsync(whisperBin, args) {
     });
   }
 
-async function runWhisperCliPartial(filePath) {
+async function runWhisperCliPartial(filePath, lease) {
     const whisperModel = context.whisperDiscovery.findWhisperModel({ env: process.env, language: context.whisperLanguage() });
     if (!whisperModel) {
       throw new Error(
@@ -343,7 +360,7 @@ async function runWhisperCliPartial(filePath) {
       outBase,
     ];
     args.push("--prompt", context.getWhisperPrompt(), "--carry-initial-prompt");
-    const r = await spawnWhisperCliAsync(whisperBin, args);
+    const r = await spawnWhisperCliAsync(whisperBin, args, lease);
     if (r.status !== 0) {
       console.error("whisper (partial) stderr:", r.stderr);
       throw new Error("whisper (partial) failed: " + r.stderr);

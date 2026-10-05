@@ -41,7 +41,12 @@ async function startServer(model, mmproj = null, profile = null, signal = null) 
     // A just-stopped server holds the port until it has really exited; a
     // new one spawned before that fails to bind, which #693 would count
     // against the build.
-    await context.state.stopping;
+    const stopped = await context.state.stopping;
+    if (context.resourceCoordinator && stopped === false) {
+      const error = new Error('Previous llama-server has not exited; its resources and port remain reserved.');
+      error.code = 'RESOURCE_CLEANUP_FAILED';
+      throw error;
+    }
     if (signal?.aborted && context.state.busy <= 1) signal.throwIfAborted();
 
     // If something already answers on the target port (e.g. a server left
@@ -66,17 +71,59 @@ async function startServer(model, mmproj = null, profile = null, signal = null) 
     }
 
     const args = context.buildServerArgs(model, port, mmproj, profile, bin);
-    if (signal?.aborted && context.state.busy <= 1) signal.throwIfAborted();
+    let lease;
+    if (context.resourceCoordinator) {
+      const footprints = [context.estimateLoadFootprintMb(model)];
+      if (mmproj) footprints.push(context.estimateLoadFootprintMb(mmproj));
+      const draft = args.indexOf('--spec-draft-model');
+      if (draft >= 0) footprints.push(context.estimateLoadFootprintMb(args[draft + 1]));
+      const adapters = args.indexOf('--lora-scaled');
+      if (adapters >= 0) for (const spec of args[adapters + 1].split(',')) footprints.push(context.estimateLoadFootprintMb(spec.replace(/:[0-9.]+$/, '')));
+      const footprint = footprints.reduce((sum, value) => sum + value, 0);
+      const cacheIndex = args.indexOf('--cache-ram');
+      const cache = cacheIndex >= 0 ? Number(args[cacheIndex + 1]) : 8192;
+      if (footprints.some(value => !Number.isFinite(value) || value <= 0) || !Number.isFinite(cache) || cache < 0) {
+        const error = new Error('Resource coordination requires known model files and a bounded host prompt cache.');
+        error.code = 'RESOURCE_ESTIMATE_REQUIRED';
+        throw error;
+      }
+      const contextIndex = args.indexOf('-c');
+      const totalContext = contextIndex >= 0 ? Number(args[contextIndex + 1]) : context.state.ctx;
+      const memory = Math.ceil((footprint + context.kvCacheMb(totalContext) * (draft >= 0 ? 2 : 1)) * 1.2);
+      const cpuOnly = args.includes('-ngl') && Number(args[args.indexOf('-ngl') + 1]) === 0;
+      const request = context.resourceRequest;
+      lease = await context.resourceCoordinator.acquire({ owner: `Chat model: ${context.path.basename(model)}`, kind: 'residency',
+        estimate: { ramMb: memory + cache, vramMb: cpuOnly ? 0 : memory },
+        cpuAlternative: !cpuOnly && !mmproj && context.supportsFlag(bin, '--device') ? { ramMb: memory + cache } : null,
+        background: !!request.background, signal, cancelled: request.cancelled, onWait: request.onWait || (event => console.log(`[resources] ${event.reason}`)),
+        evictIdle: async () => {
+          if (context.state.resourceExecuting || context.state.starting || !context.state.child) return false;
+          context.stop();
+          return await context.state.stopping;
+        },
+      });
+      if (lease.mode === 'cpu') {
+        args[args.indexOf('-ngl') + 1] = '0';
+        if (args.includes('--spec-draft-ngl')) args[args.indexOf('--spec-draft-ngl') + 1] = '0';
+        if (context.supportsFlag(bin, '--device')) args.push('--device', 'none');
+        if (!args.includes('--no-kv-offload')) args.push('--no-kv-offload');
+      }
+    }
     console.log("Starting llama-server:", bin, args.join(" "));
-    const child = context.spawn(bin, args, {
+    let child;
+    try {
+      if (signal?.aborted && context.state.busy <= 1) signal.throwIfAborted();
+      child = context.spawn(bin, args, {
       // bin always names a Windows llama-server.exe -- path.win32 so this
       // resolves the same way regardless of which OS Node itself is
       // running on (bin can come straight from LLAMA_SERVER_BIN unchanged).
       cwd: context.path.win32.dirname(bin),
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
-      env: context.buildServerEnv(),
-    });
+      env: { ...context.buildServerEnv(), ...(lease?.mode === 'cpu' ? { CUDA_VISIBLE_DEVICES: '-1' } : {}) },
+    }); } catch (error) { lease?.release(); throw error; }
+    lease?.attachProcess(child);
+    context.state.resourceLease = lease;
 
     let stderrTail = "";
     let exited = false;
@@ -217,7 +264,9 @@ async function startServer(model, mmproj = null, profile = null, signal = null) 
       return;
     }
 
-    context.assertVramForSwap(model, mmproj);
+    // The shared coordinator queues contention and offers CPU execution. The
+    // old independent preflight remains for runtimes without that coordinator.
+    if (!context.resourceCoordinator) context.assertVramForSwap(model, mmproj);
 
     if (onWait) onWait();
     const swapStartedAt = context.nowMs();
@@ -256,6 +305,7 @@ async function startServer(model, mmproj = null, profile = null, signal = null) 
       }
     } catch (e) {
       if (signal?.aborted) throw signal.reason;
+      if (e?.code?.startsWith('RESOURCE_')) throw e;
       const count = (context.state.startFailures.get(model)?.count || 0) + 1;
       context.state.startFailures.set(model, { at: context.nowMs(), count });
       e.retryAfterMs = startCooldownMs(count);

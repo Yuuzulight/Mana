@@ -310,7 +310,10 @@ function createSelfWork(options = {}) {
   const gitEnv = { ...testEnv(env), GIT_TERMINAL_PROMPT: "0" };
   // #1194: her git tools (ai/git-tool-source.js), for review comments and replies.
   const gitTools = options.gitTools || null;
-  const runLoop = options.runLoop;
+  const coordinator = options.resourceCoordinator;
+  const runLoop = (...args) => options.runLoop(args[0], args[1], { ...args[2], resourceBackground: true,
+    resourceCancelled: () => !!current?.stopRequested,
+    onResourceWait: event => { if (current) log(current, event.reason); } });
   const reviewEdit = options.reviewEdit || null;
   // #1000's guardrail list: her writes never reach it.
   const guard = options.protectedPaths || protectedPaths;
@@ -1573,6 +1576,9 @@ Before it can be a PR:
       tools: [...TOOL_SCHEMAS, ...(extra.schemas || []), ...GOAL_TOOL_SCHEMAS],
       isKnownTool: (name) => name in executors || name === SESSION_GOAL_FINISH_TOOL_NAME,
       async executeTool(name, args) {
+        const boundary = await coordinator?.acquire({ owner: 'Self-work safe boundary', background: true, estimate: {},
+          cancelled: () => r.stopRequested || !!r.halt, onWait: event => log(r, event.reason) });
+        boundary?.release();
         if (r.stopRequested) return JSON.stringify({ status: "blocked", error: `stopped by ${ownerName()}` });
         if (r.halt) return JSON.stringify({ status: "blocked", error: r.halt.text });
         if (isGaming()) return halt("paused", "A game started, so I stopped.");

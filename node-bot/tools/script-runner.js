@@ -17,6 +17,7 @@
 // subagent delegation).
 const { fork } = require("node:child_process");
 const path = require("node:path");
+const os = require('node:os');
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const WORKER_PATH = path.join(__dirname, "script-runner-worker.js");
@@ -35,11 +36,15 @@ async function runToolScript(code, options = {}) {
   const forkFn = options.fork || (process.platform === 'win32' ? require('./native-execution').nativeSkillWorker : fork);
   const workerPath = options.workerPath || WORKER_PATH;
   if (Buffer.byteLength(JSON.stringify({ code, toolNames, inputs })) > 1048576) throw new Error('Skill input size limit exceeded');
+  const coordinator = options.resourceCoordinator || require('../utils/resource-service').getResourceService();
+  const lease = await coordinator?.acquire({ owner: 'Generated JavaScript skill',
+    estimate: { ramMb: 512, cpu: (os.availableParallelism?.() || os.cpus().length) * 0.1 }, signal: options.signal });
 
-  return new Promise((resolve, reject) => {
+  try { return await new Promise((resolve, reject) => {
     const child = forkFn(workerPath, [], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
+    lease?.attachProcess(child);
 
     let settled = false;
     let terminationError = null;
@@ -134,7 +139,7 @@ async function runToolScript(code, options = {}) {
     });
 
     send({ type: "run", code, toolNames, inputs });
-  });
+  }); } finally { lease?.release(); }
 }
 
 module.exports = { runToolScript, DEFAULT_TIMEOUT_MS };

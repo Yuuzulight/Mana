@@ -607,8 +607,12 @@ const localLlamaRuntime = createLocalLlamaRuntime({
 // wizard) is what llama-server actually loads next -- not just what
 // /models/status reports.
 const modelSettingsStore = createModelSettingsStore({});
+const resourceCoordinator = process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT ? null
+  : require('./utils/resource-service').initializeResourceService();
+let nativeResourceBridge = null;
 
 const llamaServerRuntime = createLlamaServerRuntime({
+  resourceCoordinator,
   env: process.env,
   systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
@@ -692,6 +696,7 @@ const reranker = createReranker({
 // unless MANA_EMBEDDER_MODEL names a local .gguf file, in which case it
 // replaces the RETRIEVER_EMBEDDER_URL (local_embedder.py) service.
 const embedder = createEmbedder({
+  resourceCoordinator,
   env: process.env,
   findServerBin: llamaServerRuntime.findLlamaServerBin,
   supportsLoadMode: llamaServerRuntime.supportsLoadMode,
@@ -753,7 +758,7 @@ async function runLocalLlamaReply(
         thinking,
       );
     } catch (e) {
-      if (e?.code === 'LOCAL_CLEANUP_FAILED') throw e;
+      if (e?.code === 'LOCAL_CLEANUP_FAILED' || e?.code?.startsWith('RESOURCE_')) throw e;
       extraMessages?.signal?.throwIfAborted();
       if (extraMessages?.requireCancellable) throw e;
       if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
@@ -768,12 +773,20 @@ async function runLocalLlamaReply(
       );
     }
   }
-  return localLlamaRuntime.runLocalAssistantReply(
+  let lease;
+  if (resourceCoordinator) {
+  const model = localLlamaRuntime.findLlamaModel(profile);
+  const memory = Math.ceil(fs.statSync(model).size / 1048576 * 1.2 + Number(process.env.LLAMA_CONTEXT || process.env.LLAMA_CONTEXT_CAP || 4096) / 1024 * 128);
+  lease = await resourceCoordinator.acquire({ owner: 'One-shot chat inference',
+    estimate: { ramMb: memory, vramMb: process.env.LLAMA_NGL === '0' ? 0 : memory, cpu: Number(process.env.LLAMA_THREADS || 4) },
+    signal: extraMessages?.signal });
+  }
+  try { return localLlamaRuntime.runLocalAssistantReply(
     prompt,
     maxTokens,
     profile,
     overrideSystemPrompt,
-  );
+  ); } finally { lease?.release(); }
 }
 
 function localLlamaReplyAvailable() {
@@ -827,6 +840,8 @@ const characterStore = createCharacterStore({
 });
 
 const ttsRuntime = createTtsRuntime({
+  resourceCoordinator,
+  finishFishResourceTransfer: (...args) => nativeResourceBridge?.finishFishTransfer(...args),
   env: process.env,
   ttsProvider: TTS_PROVIDER,
   getVoice: () => characterStore.active().voice,
@@ -835,6 +850,7 @@ const ttsRuntime = createTtsRuntime({
   logPerf,
   pronunciationLexiconStore,
   ensureKokoro: kokoroRuntime.ensure,
+  useKokoro: kokoroRuntime.use,
 });
 
 // Full-text search over past conversation turns -- an independent SQLite
@@ -1049,6 +1065,7 @@ function whisperThreads() {
 }
 
 const whisperServer = createWhisperServer({
+  resourceCoordinator,
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
   findModel: () => whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() }),
@@ -2993,6 +3010,7 @@ function registerRoutes(app, upload, deps = {}) {
   const selfWork =
     deps.selfWork ||
     createSelfWork({
+      resourceCoordinator,
       approvalGate: activeApprovalGate,
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
@@ -3048,6 +3066,28 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     return res.json(selfWork.status());
   });
+  app.get('/resources/status', (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    res.json(resourceCoordinator?.status() || { active: [], queued: [], history: [] });
+  });
+  nativeResourceBridge = require('./utils/native-resource-bridge').registerNativeResourceRoutes({ app, coordinator: resourceCoordinator,
+    checkAuth: checkAdminAuth, launcherPid: Number(process.env.MANA_LAUNCHER_PID) });
+  if (resourceCoordinator) {
+    activeApprovalGate.registerExecutor('resource-cpu-execution', async ({ requestId }) => {
+      resourceCoordinator.chooseCpu(requestId);
+      return { ok: true, execution: 'cpu', requestId };
+    });
+    const offered = new Set();
+    resourceCoordinator.subscribe(event => {
+      if (event.state === 'released' || event.state === 'refused') { offered.delete(event.id); return; }
+      if (event.state !== 'queued' || !event.cpuAlternative || !/GPU-memory|vramMb/.test(event.reason) || offered.has(event.id)) return;
+      offered.add(event.id);
+      activeApprovalGate.requestApproval('resource-cpu-execution', {
+        forceReview: true, summary: `${event.owner}: GPU execution is queued. Run on CPU instead? This can be slower and uses RAM and CPU.`,
+        payload: { requestId: event.id }, details: { reason: event.reason, cpuEstimate: event.cpuAlternative },
+      }).catch(error => console.warn('CPU alternative approval unavailable:', error.message));
+    });
+  }
   app.post("/self-work/start", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     // #1009: "Allow guardrail changes" is only ever this route's, with my admin key.
@@ -3565,6 +3605,7 @@ function registerRoutes(app, upload, deps = {}) {
   const turnArbiter = require("./utils/turn_arbiter");
 
   const speechRuntime = createSpeechRuntime({
+    get resourceCoordinator() { return resourceCoordinator; },
     get Atomics() { return Atomics; },
     get belowNormal() { return belowNormal; },
     get clampText() { return clampText; },
@@ -3712,6 +3753,7 @@ function registerRoutes(app, upload, deps = {}) {
   function readScreenText(...args) { return speechRuntime.readScreenText(...args); }
 
   const chatReply = createChatReply({
+    get resourceCoordinator() { return resourceCoordinator; },
     get acpMemoryStore() { return deps.acpMemoryStore || acpMemoryStore; },
     get activeApprovalGate() { return activeApprovalGate; },
     get activeBrowserAutomationToolSource() { return activeBrowserAutomationToolSource; },

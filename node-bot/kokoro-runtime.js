@@ -40,6 +40,8 @@ function createKokoroRuntime(options = {}) {
 
   let warnedMissing = false;
   const service = createOnDemandProcess({
+    resourceCoordinator: options.resourceCoordinator,
+    resourceEstimate: () => ({ ramMb: 1024 }),
     name: "Kokoro TTS",
     healthUrl: () => `${url.origin}/health`,
     command: () => {
@@ -73,7 +75,7 @@ function createKokoroRuntime(options = {}) {
     service.touch();
   }
 
-  return { ensure, stop: service.stop };
+  return { ensure, stop: service.stop, use: fn => managed ? service.use(fn) : fn() };
 }
 
 module.exports = { createKokoroRuntime };

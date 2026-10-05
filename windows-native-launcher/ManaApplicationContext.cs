@@ -1245,9 +1245,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
     // above surfaces -- Fish Speech's cold-compile startup (docs/fish_speech_tts.md)
     // is slow/failure-prone enough that "fix the underlying issue, then
     // retry" without restarting the whole tray app is worth having.
-    private void RestartFishSpeech()
+    private async void RestartFishSpeech()
     {
-        processManager.RestartFishSpeech();
+        try { await processManager.RestartFishSpeech(); }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "Mana Status", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         MessageBox.Show(
             processManager.IsFishSpeechAvailable
                 ? "Fish Speech restarted."
