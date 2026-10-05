@@ -1,5 +1,7 @@
 const backendDir = require('node:path').join(__dirname, '..');
 const { wrapUntrusted } = require('./untrusted-content');
+const { createAnalysisToolSource } = require('./analysis-tool-source');
+const { normalizeAnalysisOutputs } = require('../tools/analysis-results');
 
 function createChatReply(context) {
 function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
@@ -87,7 +89,11 @@ async function buildAssistantReply(
     onSentence = null,
   ) {
     const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
-    const chatChoice = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId)?.chatModel : null;
+    const analysisCharts = [];
+    const analysisFiles = [];
+    const analysisTables = [];
+    const chatSessionAtStart = replyMeta && !replyMeta.scheduled && sessionId ? context.acpMemoryStore.getSession?.(sessionId) : null;
+    const chatChoice = chatSessionAtStart?.chatModel;
     const selectedChatModel = chatChoice ? context.modelManagement.resolveChatModel(chatChoice, { fallbackToLocal: true }) : null;
     // let: #666's wait below may switch this turn to the fallback profile.
     let normalizedModelProfile = selectedChatModel?.profile || context.selectLlamaModelProfileForPrompt(
@@ -972,6 +978,18 @@ async function buildAssistantReply(
             context.createSessionSearchToolSource({ acpMemoryStore: context.acpMemoryStore, sessionId }),
             ...(context.projectReferences ? [context.projectReferences.toolSource(sessionId)] : []),
             context.createSkillToolSource({ approvalGate: context.activeApprovalGate, skillsStore: context.activeSkillsStore }),
+            ...(userChat ? [createAnalysisToolSource({
+              env: context.deps.env || process.env,
+              userMessage: replyMeta?.analysisUserMessage ?? transcript,
+              approvedFiles: replyMeta?.analysisFiles,
+              shouldStop: () => Boolean(activityRun?.stopRequested),
+              runSandbox: context.deps.runAnalysisSandbox,
+              onCharts: charts => analysisCharts.push(...charts.slice(0, 4 - analysisCharts.length)),
+              onOutputs: result => {
+                analysisFiles.push(...(result.files || []).slice(0, 8 - analysisFiles.length));
+                analysisTables.push(...(result.tables || []).slice(0, 4 - analysisTables.length));
+              },
+            })] : []),
             context.createSnapshotToolSource({
               approvalGate: context.activeApprovalGate,
               snapshotStore: context.snapshotStore,
@@ -1206,10 +1224,14 @@ async function buildAssistantReply(
               turnTools.push(name);
               ok = true;
               return result;
+            } catch (error) {
+              if (name === 'analysis__run_python') result = error.message;
+              throw error;
             } finally {
               reportTool(name, "end", {
                 ok,
-                result: ok ? context.trimResult(result) : undefined,
+                result: ok || name === 'analysis__run_python'
+                  ? context.trimResult(result, name === 'analysis__run_python' ? 30000 : undefined) : undefined,
                 tokens: context.activeLlamaServerRuntime.getLastPromptUsage?.()?.promptTokens,
                 // #1337: a background task it started gets its own chat line.
                 task: ok ? context.launchedTask(result) : undefined,
@@ -1643,9 +1665,15 @@ async function buildAssistantReply(
       console.warn("Phrasing variation check failed:", e?.message || e);
     }
 
+    const analysisOutputs = normalizeAnalysisOutputs({ charts: analysisCharts, files: analysisFiles, tables: analysisTables });
+    if (replyMeta) replyMeta.analysisOutputs = analysisOutputs;
     try {
+      const hasAnalysisOutputs = analysisOutputs.charts.length || analysisOutputs.files.length || analysisOutputs.tables.length;
+      const chatDeletedDuringAnalysis = hasAnalysisOutputs && chatSessionAtStart &&
+        context.acpMemoryStore.getSession?.(sessionId)?.createdAt !== chatSessionAtStart.createdAt;
       if (
         sessionId &&
+        !chatDeletedDuringAnalysis &&
         context.acpMemoryStore &&
         typeof context.acpMemoryStore.appendTurn === "function"
       ) {
@@ -1665,6 +1693,7 @@ async function buildAssistantReply(
             speaker: context.characterStore.active().name,
             answerModel: replyMeta?.answerModel,
             cloudFallback: replyMeta?.cloudFallback,
+            analysisOutputs,
           })
           .catch((memErr) =>
             console.warn(

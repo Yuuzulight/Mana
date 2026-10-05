@@ -23,6 +23,7 @@ function approvedCopySources() {
 }
 const EXCLUDES = new Set(['.git', '.github', 'bin', 'obj', '.next', 'dist', 'out', 'target', 'tmp']);
 const PRIVATE_CONFIGS = new Set(['.npmrc', '.yarnrc', '.yarnrc.yml', '.pypirc', '.netrc', '_netrc', '.git-credentials', 'nuget.config', 'pip.conf', 'pip.ini']);
+const isPrivateSandboxFile = name => isCredentialPath(name) || PRIVATE_CONFIGS.has(name.toLowerCase());
 const inside = (root, target) => {
   const relative = path.relative(root, target);
   return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
@@ -32,6 +33,7 @@ function copyTree(source, destination, { allowedRoots = [fs.realpathSync(source)
   const walk = (from, to, ancestors, dependency = false) => {
     const real = fs.realpathSync(from);
     if (!allowedRoots.some(root => inside(root, real))) throw new Error(`Copy would leave the approved source: ${from}`);
+    if (isPrivateSandboxFile(path.basename(real))) return;
     const stat = fs.statSync(real);
     if (++budget.entries > 500000 || (budget.bytes += stat.isFile() ? stat.size : 0) > 8 * 1024 ** 3) throw new Error('Disposable workspace copy exceeds its size budget');
     if (stat.isDirectory()) {
@@ -41,7 +43,7 @@ function copyTree(source, destination, { allowedRoots = [fs.realpathSync(source)
       for (const name of fs.readdirSync(real)) {
         const relative = path.relative(source, path.join(from, name)).replaceAll('\\', '/').toLowerCase();
         const packageTree = dependency || name.toLowerCase() === 'node_modules';
-        if (isCredentialPath(name) || PRIVATE_CONFIGS.has(name.toLowerCase()) || (exclude && !packageTree && (EXCLUDES.has(name.toLowerCase()) || relative === 'data' || relative === 'node-bot/data'))) continue;
+        if (isPrivateSandboxFile(name) || (exclude && !packageTree && (EXCLUDES.has(name.toLowerCase()) || relative === 'data' || relative === 'node-bot/data'))) continue;
         walk(path.join(real, name), path.join(to, name), next, packageTree);
       }
     } else if (stat.isFile()) fs.copyFileSync(real, to);
@@ -271,4 +273,4 @@ function runSandboxedTestCommand(command, cwd, options = {}) {
   return task;
 }
 
-module.exports = { launchNativeProcess, nativeSkillWorker, prepareTestExecution, prepareTestExecutionAsync, runSandboxedTestCommand, copyTree, parseArgs, approvedCopySources };
+module.exports = { launchNativeProcess, nativeSkillWorker, prepareTestExecution, prepareTestExecutionAsync, runSandboxedTestCommand, copyTree, parseArgs, approvedCopySources, isPrivateSandboxFile };

@@ -1002,6 +1002,7 @@ internal sealed class ManaBackendClient
                     Thought = turnElement.TryGetProperty("thought", out var thoughtElement) ? thoughtElement.GetString() : null,
                     AnswerModel = turnElement.TryGetProperty("answerModel", out var answerModelEl) ? answerModelEl.GetString() : null,
                     CloudFallback = turnElement.TryGetProperty("cloudFallback", out var fallbackEl) && fallbackEl.ValueKind == JsonValueKind.True,
+                    AnalysisOutputs = AnalysisOutputs.Parse(turnElement),
                     Steps = ParseAgentSteps(turnElement), // #1337: absent on older turns
                     Versions = versionsList,
                     VersionIndex = versionIndex,
@@ -3222,6 +3223,7 @@ internal sealed class ManaBackendClient
             Reply = root.TryGetProperty("reply", out var replyProp) ? replyProp.GetString() : null,
             AnswerModel = root.TryGetProperty("answerModel", out var answerModelProp) ? answerModelProp.GetString() : null,
             CloudFallback = root.TryGetProperty("cloudFallback", out var fallbackProp) && fallbackProp.ValueKind == JsonValueKind.True,
+            AnalysisOutputs = AnalysisOutputs.Parse(root),
             Changed = root.TryGetProperty("changed", out var changedProp) && changedProp.GetBoolean(),
             Expression = root.TryGetProperty("expression", out var exprProp) ? exprProp.GetString() : null,
             Emotion = root.TryGetProperty("emotion", out var emotionProp) && emotionProp.ValueKind == JsonValueKind.String ? emotionProp.GetString() : null,
@@ -3456,6 +3458,7 @@ internal sealed record ManaSavedArtifactList(List<ManaSavedArtifact>? Artifacts)
 
 internal sealed class ManaSessionTurn
 {
+    public AnalysisOutputs AnalysisOutputs { get; init; } = AnalysisOutputs.Empty;
     public string? AnswerModel { get; init; }
     public bool CloudFallback { get; init; }
     public int TurnIndex { get; init; }
@@ -3637,6 +3640,7 @@ internal sealed class ManaHookRule
 
 internal sealed class ReplyStreamEvent
 {
+    public AnalysisOutputs AnalysisOutputs { get; init; } = AnalysisOutputs.Empty;
     public string? AnswerModel { get; init; }
     public bool CloudFallback { get; init; }
     public string Type { get; init; } = "";

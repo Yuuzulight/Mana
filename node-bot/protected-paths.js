@@ -23,6 +23,7 @@ const PROTECTED_PATHS = [
   "node-bot/acp-test-runner.js",
   "node-bot/workspace-scratch-copy.js",
   "node-bot/tools/analysis-sandbox.js",
+  "node-bot/ai/analysis-tool-source.js",
   "tools/analysis-sandbox/",
   "node-bot/tools/native-execution.js",
   "node-bot/tools/native-helper-spawn.js",

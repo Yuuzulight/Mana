@@ -127,6 +127,10 @@
           Outputs="$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.exe;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.dll;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\bundle\Mana.AnalysisSandbox.runtimeconfig.json">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\analysis-sandbox\publish-helper.ps1&quot;" />
   </Target>
+  <Target Name="PrepareNativeAnalysisRuntime" AfterTargets="Build"
+          Condition="'$(MANA_NATIVE_TEST_WORKSPACE)' != '1' and '$(OS)' == 'Windows_NT'">
+    <Exec Command="node &quot;$(MSBuildProjectDirectory)\..\desktop-client\scripts\prepare-portable-python.js&quot; --target analysis" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />

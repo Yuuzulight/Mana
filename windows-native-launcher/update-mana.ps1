@@ -55,6 +55,8 @@ try {
     if (Test-Path $sandboxProject) {
         & (Join-Path $root 'tools\analysis-sandbox\publish-helper.ps1')
         if ($LASTEXITCODE) { throw 'Native execution helper build failed; update was not applied.' }
+        node (Join-Path $root 'desktop-client\scripts\prepare-portable-python.js') --target analysis
+        if ($LASTEXITCODE) { throw 'Analysis runtime preparation failed; update was not applied.' }
     }
     if (Test-Newer (Join-Path $nodeBot 'package-lock.json') (Join-Path $nodeBot 'node_modules\.package-lock.json')) {
         npm install --prefix $nodeBot --no-audit --no-fund
