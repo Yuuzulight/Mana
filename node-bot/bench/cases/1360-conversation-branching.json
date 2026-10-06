@@ -1,0 +1,30 @@
+{
+  "id": "1360-conversation-branching",
+  "kind": "multi-file",
+  "pr": 1360,
+  "issue": 1322,
+  "base": "33534328df3ccc6263980859f91baafa243b56b6",
+  "fix": "8bcfd42e05982fa22553fe6fe5e04e942b9cb863",
+  "title": "Conversations should support editing, regeneration, branching, and version stepping",
+  "body": "Add backend and launcher support for editing a sent message, regenerating an assistant reply, branching a conversation from a prior point, and stepping through turn versions without corrupting memory/search/export state.",
+  "fixFiles": [
+    "node-bot/acp-memory-store.js",
+    "node-bot/approval-gate.js",
+    "node-bot/capabilities/sessions-capability.js",
+    "node-bot/server.js",
+    "node-bot/session-export.js",
+    "node-bot/session-search-index.js",
+    "windows-native-launcher/ChatView.cs",
+    "windows-native-launcher/ManaBackendClient.cs",
+    "windows-native-launcher/SessionListForm.cs",
+    "windows-native-launcher/SessionListFormatter.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/acp-memory-store.test.js",
+    "node-bot/test/session-export.test.js",
+    "node-bot/test/sessions-capability.test.js"
+  ],
+  "testCommand": "node --test test/acp-memory-store.test.js test/session-export.test.js test/sessions-capability.test.js",
+  "interface": "session capability exposes edit/regenerate/branch/version actions and preserves export/search consistency.",
+  "why": "Large cross-module state changes are one of the hardest self-work classes."
+}
