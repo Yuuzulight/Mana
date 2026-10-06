@@ -14,7 +14,7 @@ function setup(env = {}) {
     { message: { content: "It says hello.", reasoning_content: "Done." } },
   ];
   const fetch = async (url, init) => {
-    if (!String(url).startsWith("https://api.deepseek.test")) throw new Error(`unexpected request to ${url}`);
+    if (new URL(url).host !== "api.deepseek.test") throw new Error(`unexpected request to ${url}`);
     requests.push({ url, headers: init.headers, body: JSON.parse(init.body) });
     const { message } = replies[requests.length - 1];
     return { ok: true, json: async () => ({ choices: [{ message }], usage: { prompt_tokens: 100, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 20, completion_tokens: 10 } }) };
