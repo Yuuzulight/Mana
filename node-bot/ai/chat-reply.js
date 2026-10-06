@@ -1061,6 +1061,20 @@ async function buildAssistantReply(
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [context.selfWork.chatToolSource(transcript, { sessionId })] : []),
             ...(userChat ? [require('./resource-tool-source').createResourceToolSource(context.resourceCoordinator)] : []),
+            // #1383: what she can do right now, read when she asks (the tool
+            // list is this reply's final one, so it's what she really has).
+            ...(userChat
+              ? [
+                  require('./capability-inventory').createInventoryToolSource({
+                    ...context.inventorySources,
+                    tools: () => mergedToolPolicy?.tools || [],
+                    mcpServers: () => context.activeMcpClientRegistry?.listServers?.() || [],
+                    modelStatus: () => context.modelManagement?.getModelStatus?.() || null,
+                    approvalMode: () =>
+                      context.resolveToolApprovalMode(context.activeApprovalGate.getToolApprovalMode(), (context.deps.env || process.env).MANA_TOOL_APPROVAL),
+                  }),
+                ]
+              : []),
             // #1182: git and GitHub, only in my own chat.
             ...(userChat ? [context.gitTools] : []),
             // #906: my email and calendar, only in my own chat (never a

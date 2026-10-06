@@ -3807,6 +3807,14 @@ function registerRoutes(app, upload, deps = {}) {
     get createCodingToolSource() { return createCodingToolSource; },
     get createDeepThinkingToolSource() { return createDeepThinkingToolSource; },
     get createDesktopToolSource() { return createDesktopToolSource; },
+    // #1383: what her self-inventory reads, live on each call.
+    get inventorySources() {
+      return {
+        capabilities: () => capabilities,
+        health: () => buildCapabilityHealth(capabilities, capabilityContext),
+        isEnabled: (c) => isPluginEnabled(c, activePluginSettingsStore),
+      };
+    },
     get createExpressionToolSource() { return createExpressionToolSource; },
     get createMailCalendarToolSource() { return createMailCalendarToolSource; },
     get createMemoryToolSource() { return createMemoryToolSource; },
