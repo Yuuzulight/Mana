@@ -55,7 +55,7 @@ const green = { name: "test", bucket: "pass", link: "https://github.com/o/r/acti
 const pending = { ...green, bucket: "pending" };
 
 // polls: what `gh pr checks` answers per poll (the last one repeats).
-async function watching(polls, { gaming = (sleeps) => false, ghLog = "boom\n" } = {}) {
+async function watching(polls, { gaming = (sleeps) => false, ghLog = "boom\n", ciMaxPolls } = {}) {
   const repos = makeRepos();
   const worktree = path.join(repos.worktrees, "mana-7");
   const ghCalls = [];
