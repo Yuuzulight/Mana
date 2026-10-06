@@ -112,6 +112,20 @@ function memoryClaimNote(reply, calls) {
   return `Nothing was saved to memory this turn: no ${MEMORY_REMEMBER_TOOL} call went through. If the user asked you to remember something, call ${MEMORY_REMEMBER_TOOL} now; otherwise answer again without saying you saved it or will remember it.`;
 }
 
+// #1420: a long local generation outlasted undici's 5-minute wait for
+// headers and failed as "fetch failed". Her own llama-server gets a long
+// but finite wait; every other host (DeepSeek, GitHub) keeps the defaults.
+const LOCAL_WAIT_MS = 30 * 60 * 1000;
+function withLocalTimeouts(fetch, Agent) {
+  if (typeof fetch !== "function") return fetch;
+  let localAgent;
+  return (url, init = {}) => {
+    if (!/^http:\/\/127\.0\.0\.1:/.test(String(url))) return fetch(url, init);
+    localAgent ||= new (Agent || require("undici").Agent)({ headersTimeout: LOCAL_WAIT_MS, bodyTimeout: LOCAL_WAIT_MS });
+    return fetch(url, { dispatcher: localAgent, ...init });
+  };
+}
+
 // Persistent llama-server runtime.
 //
 // The one-shot llama-cli path reloads the whole GGUF model on every call,
@@ -125,7 +139,7 @@ function createLlamaServerRuntime(options = {}) {
   const spawn = options.spawn || defaultSpawn;
   const execFile = options.execFile || defaultExecFile;
   const platform = options.platform || process.platform;
-  const fetchImpl = options.fetch || globalThis.fetch;
+  const fetchImpl = options.fetch || withLocalTimeouts(globalThis.fetch);
   const resourceCoordinator = options.resourceCoordinator;
   const resourceContext = new AsyncLocalStorage();
   async function withModelOperation(fn, cpu = 0) {
@@ -580,6 +594,7 @@ function createLlamaServerRuntime(options = {}) {
     get ensureServer() { return ensureServer; },
     get env() { return env; },
     get fetchImpl() { return fetchImpl; },
+    get sleep() { return sleep; },
     get fitThinkingToContext() { return fitThinkingToContext; },
     get getContextSize() { return getContextSize; },
     get goalRecheckMessage() { return goalRecheckMessage; },
@@ -684,4 +699,4 @@ function createLlamaServerRuntime(options = {}) {
   };
 }
 
-module.exports = { createLlamaServerRuntime };
+module.exports = { createLlamaServerRuntime, withLocalTimeouts };
