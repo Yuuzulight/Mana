@@ -180,7 +180,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // sentence by VoiceLoop's own playback.
         // Q8: under Mana while she's showing (Visible/Bounds are plain field reads).
         // #899: above her visible top, not the top of her (framed, bigger) window.
-        captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null);
+        captionOverlay = new CaptionOverlayForm(() => avatarOverlay.Visible ? avatarOverlay.VisibleBounds : null, () => ChatBubblesForm.InView(sessionListForm));
         chatBubbles = new ChatBubblesForm(() => avatarOverlay.Visible ? avatarOverlay.Bounds : null, () => ChatBubblesForm.InView(sessionListForm));
         captionOverlay.Suppressed = !settings.CaptionsShown();
         chatBubbles.BubbleClicked += text =>
