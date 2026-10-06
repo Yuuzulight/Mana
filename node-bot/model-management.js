@@ -476,6 +476,18 @@ function createModelManagement(options = {}) {
     };
   }
 
+  function effectiveFallbackConfig() {
+    const fallback = modelSettingsStore.getFallbackSettings();
+    return {
+      enabled: fallback.enabled === true,
+      timeoutSeconds: fallback.timeoutSeconds,
+      allowRemoteAi: fallback.enabled ? '1' : '',
+      apiKey: fallback.apiKey || env.OPENAI_API_KEY || null,
+      baseUrl: fallback.baseUrl || env.OPENAI_BASE_URL || "https://api.openai.com",
+      model: fallback.model || env.OPENAI_MODEL || '',
+    };
+  }
+
   function getModelStatus() {
     const localGgufs = collectLocalGgufs();
     const profiles = {};
@@ -489,14 +501,26 @@ function createModelManagement(options = {}) {
       allowRemoteAi: env.MANA_ALLOW_REMOTE_AI || "",
       baseUrl,
     });
+    const fallback = effectiveFallbackConfig();
+    const cloudFallbackEnabled =
+      !(isLocalOnly(env) || isLocalOnly()) && fallback.enabled && Boolean(fallback.model) &&
+      shouldUseRemoteAi({
+        apiKey: fallback.apiKey,
+        allowRemoteAi: fallback.allowRemoteAi,
+        baseUrl: fallback.baseUrl,
+      });
 
     const liveVramUsage = getLiveVramUsage();
     return {
       activeProfile,
+      localOnly: isLocalOnly(env) || isLocalOnly(),
       remoteAiEnabled,
       remoteAiWarning: remoteAiEnabled
         ? "Remote AI is enabled. Mana may use paid or proxy chat replies."
+        : cloudFallbackEnabled
+          ? "Cloud fallback is enabled. Mana stays local first and may escalate failed replies to a paid or proxy model."
         : null,
+      cloudFallbackEnabled,
       profiles,
       recommendation: getRecommendedModelProfile(),
       // Issue #320: live usage (changes constantly), separate from
@@ -511,6 +535,10 @@ function createModelManagement(options = {}) {
       brain: (() => {
         const { apiKey, ...rest } = modelSettingsStore.getBrainSettings();
         return { ...rest, hasApiKey: Boolean(apiKey) };
+      })(),
+      fallback: (() => {
+        const { apiKey, ...rest } = modelSettingsStore.getFallbackSettings();
+        return { ...rest, hasApiKey: Boolean(apiKey), active: cloudFallbackEnabled };
       })(),
       vision: modelSettingsStore.getVisionSettings(),
       loadIntoVram: modelSettingsStore.isLoadIntoVram(env),
@@ -620,6 +648,33 @@ function createModelManagement(options = {}) {
     return getModelStatus();
   }
 
+  function setFallbackSettings(partial = {}) {
+    for (const key of ['baseUrl', 'apiKey', 'model']) {
+      if (partial[key] !== undefined && typeof partial[key] !== 'string') throw new Error(`${key} must be a string`);
+    }
+    if (partial.timeoutSeconds !== undefined && ![0, 30, 60].includes(partial.timeoutSeconds)) throw new Error('timeoutSeconds must be 0, 30 or 60');
+    if (partial.baseUrl) {
+      let parsed;
+      try {
+        parsed = new URL(partial.baseUrl);
+      } catch (e) {
+        throw new Error(`baseUrl is not a valid URL: ${partial.baseUrl}`);
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`baseUrl must be http:// or https://: ${partial.baseUrl}`);
+      }
+      if (parsed.username || parsed.password) throw new Error('Use the API key field, not credentials in the endpoint URL');
+    }
+    if (partial.enabled !== undefined && typeof partial.enabled !== "boolean") {
+      throw new Error("enabled must be true or false");
+    }
+    if ((isLocalOnly(env) || isLocalOnly()) && partial.enabled === true) throw new Error('Cloud fallback is disabled in local-only mode');
+    const next = { ...modelSettingsStore.getFallbackSettings(), ...Object.fromEntries(Object.entries(partial).filter(([, value]) => value !== undefined)) };
+    if (next.enabled && !(next.model || env.OPENAI_MODEL)) throw new Error('Configure a fallback model before enabling it');
+    modelSettingsStore.setFallbackSettings(partial);
+    return getModelStatus();
+  }
+
   // Vision GGUF + mmproj override (see findVisionModel/findVisionMmproj in
   // ai/llama-server-runtime.js) -- empty string clears back to
   // auto-detection under tools/llama/gguf-models.
@@ -692,7 +747,39 @@ function createModelManagement(options = {}) {
     }
   }
 
+  function resolveChatModel(id, { fallbackToLocal = false } = {}) {
+    if (!id || id === 'automatic') return null;
+    if (id.startsWith('local:') && getKnownLlamaModelProfiles().includes(id.slice(6))) return { profile: id.slice(6) };
+    if (!['cloud:brain', 'cloud:fallback'].includes(id)) throw new Error('Unknown chat model');
+    try {
+      if (isLocalOnly(env) || isLocalOnly()) throw new Error('Cloud chat models are disabled in local-only mode');
+      let config;
+      if (id === 'cloud:brain') config = effectiveOpenAiConfig();
+      else {
+        config = effectiveFallbackConfig();
+        if (!config.enabled) throw new Error('Cloud fallback is not enabled');
+      }
+      const model = id === 'cloud:brain' ? modelSettingsStore.getBrainSettings().model || env.OPENAI_MODEL : config.model;
+      if (!model || !shouldUseRemoteAi({ ...config, allowRemoteAi: config.allowRemoteAi ?? env.MANA_ALLOW_REMOTE_AI ?? '' })) throw new Error('Cloud chat model is not configured or permitted');
+      return { remoteConfig: { ...config, model } };
+    } catch (error) {
+      if (!fallbackToLocal) throw error;
+      return { profile: getActiveProfile(), localOnly: true };
+    }
+  }
+
+  function getChatModels() {
+    const models = [{ id: 'automatic', label: 'Automatic' }];
+    for (const profile of getKnownLlamaModelProfiles()) models.push({ id: `local:${profile}`, label: `Local: ${profile}` });
+    for (const id of ['cloud:brain', 'cloud:fallback']) {
+      try { const selected = resolveChatModel(id); models.push({ id, label: `Cloud: ${selected.remoteConfig.model}` }); } catch {}
+    }
+    return models;
+  }
+
   return {
+    resolveChatModel,
+    getChatModels,
     getActiveProfile,
     getKnownBrainProviders,
     getModelStatus,
@@ -701,6 +788,7 @@ function createModelManagement(options = {}) {
     scanForModels,
     setActiveProfile,
     setBrainSettings,
+    setFallbackSettings,
     setLoadIntoVram,
     setModelPath,
     setVisionSettings,

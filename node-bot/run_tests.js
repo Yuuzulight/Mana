@@ -26,6 +26,12 @@ try {
 } catch (e) {}
 
 const testDir = path.join(process.cwd(), 'test');
+// AppContainer cannot use Node's usual test-child IPC. Each file still gets
+// its own process; only the redundant inner test subprocess is disabled.
+const testFlags = process.env.MANA_APP_CONTAINER_TEST === '1'
+  ? ['--test', '--experimental-test-isolation=none'] : ['--test'];
+const testPath = name => process.env.MANA_APP_CONTAINER_TEST === '1'
+  ? path.join('test', name) : path.join(testDir, name);
 
 function run(cmd, args, opts={}){
   // shell:false: `node` is invoked directly with no shell features needed,
@@ -53,8 +59,8 @@ const skipHeavy =
 if (skipHeavy){
   // Run only fast, focused tests (paths resolved from current working directory)
   const tests = [
-    ['node', ['--test', path.join(testDir, 'mobile-device-store.test.js')]],
-    ['node', ['--test', path.join(testDir, 'e2e-pairing-smoke.test.js')]],
+    ['node', [...testFlags, testPath('mobile-device-store.test.js')]],
+    ['node', [...testFlags, testPath('e2e-pairing-smoke.test.js')]],
   ];
   for (const [cmd, args] of tests){
     console.log('Running fast test:', cmd, args.join(' '));
@@ -72,7 +78,7 @@ if (skipHeavy){
   const startedAt = Date.now();
   for (const f of files) {
     const fileStartedAt = Date.now();
-    run('node', ['--test', path.join(testDir, f)]);
+    run('node', [...testFlags, testPath(f)]);
     console.log(`--- ${f} finished in ${Date.now() - fileStartedAt}ms`);
   }
   console.log(`All test files passed in ${Date.now() - startedAt}ms`);

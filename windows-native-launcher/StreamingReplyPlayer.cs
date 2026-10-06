@@ -44,6 +44,9 @@ internal sealed class StreamingReplyPlayer
 
     // #1354: the last completed reply's full reasoning thought deliberation (if any).
     public string? FinalThought { get; private set; }
+    public string? FinalAnswerModel { get; private set; }
+    public bool FinalCloudFallback { get; private set; }
+    public AnalysisOutputs FinalAnalysisOutputs { get; private set; } = AnalysisOutputs.Empty;
 
     // #687: the sentence of the reply now playing out that's being
     // synthesized (1-based), or null -- for the chat's status line. The
@@ -122,6 +125,9 @@ internal sealed class StreamingReplyPlayer
         FinalEmotion = finalEvent.Emotion;
         FinalDeepThinking = finalEvent.DeepThinking;
         FinalThought = finalEvent.Thought;
+        FinalAnswerModel = finalEvent.AnswerModel;
+        FinalCloudFallback = finalEvent.CloudFallback;
+        FinalAnalysisOutputs = finalEvent.AnalysisOutputs;
         FinalSources = finalEvent.Sources;
         return (finalEvent.Reply ?? string.Empty, finalEvent.Changed, finalEvent.Expression, false, pending);
     }

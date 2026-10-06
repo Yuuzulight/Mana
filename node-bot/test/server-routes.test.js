@@ -255,6 +255,101 @@ test("model status route reports active profile and configured profiles", async 
   });
 });
 
+test("cloud fallback route persists fallback settings through model management", async () => {
+  const calls = [];
+  const app = createApp({
+    modelManagement: {
+      getModelStatus: () => ({ ok: true }),
+      setFallbackSettings: (settings) => {
+        calls.push(settings);
+        return { fallback: { ...settings, hasApiKey: Boolean(settings.apiKey), apiKey: undefined } };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/models/cloud-fallback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        model: "gpt-test",
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls[0], {
+      enabled: true,
+      timeoutSeconds: undefined,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      model: "gpt-test",
+    });
+    assert.equal(payload.fallback.hasApiKey, true);
+    assert.equal(payload.fallback.apiKey, undefined);
+  });
+});
+test("project routes list, upsert, assign, and clear session projects", async () => {
+  const projects = new Map();
+  const sessions = new Map();
+  const projectStore = {
+    listProjects: () => [...projects.values()],
+    upsertProject: (input) => {
+      const project = { id: input.id || "mana-core", name: input.name, instructions: input.instructions || "", references: input.references || [] };
+      projects.set(project.id, project);
+      return project;
+    },
+    deleteProject: (id) => projects.delete(id),
+    assignSession: (sessionId, projectId) => {
+      if (!projectId) {
+        sessions.delete(sessionId);
+        return null;
+      }
+      const project = projects.get(projectId);
+      if (!project) throw new Error("project not found");
+      sessions.set(sessionId, projectId);
+      return project;
+    },
+    projectForSession: (sessionId) => projects.get(sessions.get(sessionId)) || null,
+    promptBlockForSession: () => "",
+  };
+  const app = createApp({ projectsStore: projectStore });
+
+  await withServer(app, async (baseUrl) => {
+    const created = await fetch(`${baseUrl}/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "mana-core", name: "Mana Core", instructions: "Use repo rules." }),
+    });
+    assert.equal(created.status, 200);
+    assert.equal((await created.json()).id, "mana-core");
+
+    const listed = await (await fetch(`${baseUrl}/projects`)).json();
+    assert.equal(listed.projects.length, 1);
+
+    const assigned = await fetch(`${baseUrl}/sessions/chat-1/project`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: "mana-core" }),
+    });
+    assert.equal(assigned.status, 200);
+    assert.equal((await assigned.json()).project.name, "Mana Core");
+
+    const readBack = await (await fetch(`${baseUrl}/sessions/chat-1/project`)).json();
+    assert.equal(readBack.project.id, "mana-core");
+
+    const cleared = await fetch(`${baseUrl}/sessions/chat-1/project`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: null }),
+    });
+    assert.equal((await cleared.json()).project, null);
+  });
+});
+
 test("gguf-metadata route rejects a missing or invalid path before ever parsing", async () => {
   const app = createApp({
     modelManagement: { isValidGgufFile: () => false },
@@ -823,6 +918,44 @@ test("a selected preset's instructions reach the local model's system prompt", a
     assert.equal(response.status, 200);
     assert.equal(payload.reply, "ok");
     assert.match(capturedSystemPrompt, /Keep every reply under two sentences\./);
+  });
+});
+
+test("an assigned project's standing instructions reach the local model's system prompt", async () => {
+  let capturedSystemPrompt = null;
+  const project = {
+    id: "mana-core",
+    name: "Mana Core",
+    instructions: "Use the Mana repo testing notes before changing code.",
+    references: [],
+  };
+  const projectsStore = {
+    promptBlockForSession: (sessionId) =>
+      sessionId === "chat-project" ? `Project: ${project.name}\n\nStanding instructions:\n${project.instructions}` : "",
+    projectForSession: (sessionId) => (sessionId === "chat-project" ? project : null),
+    listProjects: () => [project],
+    upsertProject: () => project,
+    deleteProject: () => true,
+    assignSession: () => project,
+  };
+  const app = createApp({
+    projectsStore,
+    runLocalAssistantReply: async (prompt, maxTokens, profile, overrideSystemPrompt) => {
+      capturedSystemPrompt = overrideSystemPrompt;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "hello",
+      sessionId: "chat-project",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "ok");
+    assert.match(capturedSystemPrompt, /Project: Mana Core/);
+    assert.match(capturedSystemPrompt, /Use the Mana repo testing notes before changing code\./);
   });
 });
 

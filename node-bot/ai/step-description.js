@@ -15,6 +15,7 @@ const MAX_RESULT_CHARS = 600;
 
 // Tools that run commands or start sub-tasks: their schemas get `description`.
 const STEP_TOOLS = new Set([
+  "analysis__run_python",
   "coding__run_tests",
   "git__change",
   "git__push",
@@ -88,7 +89,7 @@ function stepKind(name) {
   const last = n.split("__").pop().toLowerCase();
   // Sub-tasks first: self_work__start/skill__run look like shell tools.
   if (/^(self_work__(start|refresh)|skill__run)$/.test(n) || SUBTASK_RE.test(last)) return "agent";
-  if (isShellTool(n) || n === "coding__run_tests") return "command";
+  if (isShellTool(n) || n === "coding__run_tests" || n === "analysis__run_python") return "command";
   if (/^(write|create)_?file|^create_?(file|directory)/.test(last)) return "file_create";
   if (/edit|replace|patch|move_?files?|rename/.test(last)) return "file_edit";
   if (/^(browser|web|wiki)/i.test(n) || /^(fetch|browse|navigate)/.test(last)) return "web";
@@ -98,6 +99,7 @@ function stepKind(name) {
 }
 
 const FALLBACKS = {
+  analysis__run_python: () => "Run Python analysis",
   coding__run_tests: (a) => (fileName(a) ? `Run the tests in ${fileName(a)}` : "Run the tests"),
   coding__propose_edit: (a) => `Draft an edit to ${fileName(a) || "a file"}`,
   git__read: (a) => `Read git ${word(a.action) || "state"}`,
@@ -151,6 +153,9 @@ function stepInfo(name, args) {
   const info = { kind, tool: String(name || ""), description: describeStep(name, a) };
   const command = kind === "command" ? extractCommand(name, a) : null;
   if (command) info.detail = { command: clip(sanitizeBridgeOutput(String(command)), MAX_COMMAND_CHARS) };
+  if (name === 'analysis__run_python' && typeof a.code === 'string') {
+    info.detail = { command: clip(sanitizeBridgeOutput(a.code), 40000) };
+  }
   if (kind === "file_create" || kind === "file_edit") {
     const file = displayPath(a);
     if (file) info.file = sanitizeBridgeOutput(file);
@@ -160,7 +165,7 @@ function stepInfo(name, args) {
   return info;
 }
 
-function trimResult(result) {
+function trimResult(result, maxChars = MAX_RESULT_CHARS) {
   // #1338: a preview that can't serialize (circular, BigInt) must not turn
   // a successful call into a failure.
   let text;
@@ -169,7 +174,7 @@ function trimResult(result) {
   } catch {
     text = "[result not shown]";
   }
-  return clip(sanitizeBridgeOutput(text.trim()), MAX_RESULT_CHARS);
+  return clip(sanitizeBridgeOutput(text.trim()), maxChars);
 }
 
 // #1337: a tool that starts a background task names it in its JSON result

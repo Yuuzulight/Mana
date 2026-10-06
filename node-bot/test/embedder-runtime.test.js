@@ -99,7 +99,7 @@ test("embed starts a GPU llama-server on demand and returns vectors in input ord
 
   assert.deepEqual(vectors, [[0, 1], [1, 2048]]);
   const { args } = server.calls.spawn[0];
-  for (const flag of [["-m", model], ["--embedding"], ["--pooling", "last"], ["-ngl", "99"], ["--port", "8092"], ["--load-mode", "none"]]) {
+  for (const flag of [["-m", model], ["--embedding"], ["--pooling", "last"], ["-t", "4"], ["-ngl", "99"], ["--port", "8092"], ["--load-mode", "none"]]) {
     const at = args.indexOf(flag[0]);
     assert.ok(at >= 0, `missing ${flag[0]}`);
     assert.deepEqual(args.slice(at, at + flag.length), flag);

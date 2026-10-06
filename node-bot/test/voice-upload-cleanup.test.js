@@ -4,11 +4,30 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createApp, sweepStaleTmpFiles } = require("../server");
+const { createApp, sweepStaleTmpFiles, deleteUploadFiles } = require("../server");
 const { withServer, useTestAdminToken, useTempDir } = require("./helpers");
 useTempDir("MANA_UPLOAD_TMP_DIR");
 
 const fetch = useTestAdminToken();
+
+test("upload cleanup refuses a matching name outside its configured directory", (t) => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mana-outside-upload-"));
+  const file = path.join(outside, "0123456789abcdef0123456789abcdef");
+  fs.writeFileSync(file, "not an upload");
+  t.after(() => { fs.unlinkSync(file); fs.rmdirSync(outside); });
+  deleteUploadFiles(file);
+  assert.equal(fs.readFileSync(file, "utf8"), "not an upload");
+});
+
+test("upload cleanup deletes only the exact upload and dotted sidecars", () => {
+  const root = process.env.MANA_UPLOAD_TMP_DIR;
+  const name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const files = [name, `${name}.wav`, `${name}.wav.out.json`, `${name}-unrelated`];
+  for (const file of files) fs.writeFileSync(path.join(root, file), "fixture");
+  deleteUploadFiles(path.join(root, name));
+  assert.deepEqual(files.filter(file => fs.existsSync(path.join(root, file))), [`${name}-unrelated`]);
+  fs.unlinkSync(path.join(root, `${name}-unrelated`));
+});
 
 async function gone(files) {
   for (let i = 0; i < 50 && files.some((f) => fs.existsSync(f)); i += 1) {

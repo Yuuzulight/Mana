@@ -24,6 +24,9 @@ function createOnDemandProcess({
   platform = process.platform,
   fetch = globalThis.fetch,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  resourceCoordinator,
+  resourceEstimate,
+  cpuAlternative,
 }) {
   // ready: our own child is up. An adopted server is health-checked on
   // every ensure() instead, so one that went away gets replaced.
@@ -32,8 +35,11 @@ function createOnDemandProcess({
   // running after the stop bound (false); start() waits on it.
   let stopping = Promise.resolve(true);
   let exitHandlerRegistered = false;
+  let users = 0, stopPending = false, resourceLease = null, pendingRequest = null, startController = null, foregroundRequested = false;
 
   function stop() {
+    if (users > 0 && state.child) { stopPending = true; return null; }
+    startController?.abort(new Error(`${name} stopped`));
     clearTimeout(state.idleTimer);
     state.idleTimer = null;
     state.ready = false;
@@ -43,6 +49,7 @@ function createOnDemandProcess({
       killProcessTree(child, { platform, execFile });
       stopping = waitForExit(child, name);
     }
+    resourceLease?.release();
     return child;
   }
 
@@ -54,7 +61,7 @@ function createOnDemandProcess({
     state.idleTimer = setTimeout(() => {
       // A timer left from before an unexpected exit must not kill the
       // restart in progress; that start's touch() schedules a fresh one.
-      if (state.starting) return;
+      if (state.starting || users > 0) { touch(); return; }
       const child = stop();
       if (!child) return; // adopted (not ours to stop) or already gone
       console.log(`${name} idle for ${ms}ms, shutting it down (pid ${child.pid})`);
@@ -75,14 +82,32 @@ function createOnDemandProcess({
     }
   }
 
-  async function spawnAndWait() {
-    const { bin, args, options } = command();
+  async function spawnAndWait(request) {
+    const coordinator = resourceCoordinator || require('./resource-service').getResourceService();
+    if (coordinator && resourceEstimate) {
+      resourceLease = await coordinator.acquire({ owner: name, kind: 'residency',
+        estimate: resourceEstimate(), cpuAlternative: cpuAlternative?.(), background: !!request.background,
+        signal: startController.signal,
+        onWait: event => {
+          pendingRequest = event.id;
+          if (foregroundRequested && event.state === 'queued') coordinator.promote(event.id);
+          request.onWait?.(event);
+        },
+        evictIdle: async () => {
+          if (users || state.starting || !state.child) return false;
+          stop(); return await stopping;
+        },
+      });
+    }
+    const { bin, args, options } = command(resourceLease?.mode || 'gpu');
     console.log(`Starting ${name}:`, bin, args.join(" "));
-    const child = spawn(bin, args, {
+    let child;
+    try { child = spawn(bin, args, {
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
       ...options,
-    });
+    }); } catch (error) { resourceLease?.release(); throw error; }
+    resourceLease?.attachProcess(child);
     let stderrTail = "";
     let exited = false;
     child.stderr?.on?.("data", (chunk) => {
@@ -121,34 +146,63 @@ function createOnDemandProcess({
     console.log(`${name} ready`);
   }
 
-  async function start() {
+  async function start(request) {
     // A just-stopped child holds the port (and may still answer health)
     // until it has really exited; spawning before that fails to bind.
-    await stopping;
+    if (!(await stopping)) throw new Error(`${name} has not finished stopping; resources remain reserved`);
     if (await isHealthy()) return;
     if (Date.now() - state.failedAt < retryCooldownMs) {
       throw new Error(`${name} failed to start recently, retrying later`);
     }
     try {
-      await spawnAndWait();
+      await spawnAndWait(request);
     } catch (e) {
-      state.failedAt = Date.now();
+      if (!state.child) resourceLease?.release();
+      if (e !== startController?.signal.reason && !e?.code?.startsWith('RESOURCE_')) state.failedAt = Date.now();
       throw e;
     }
   }
 
   // Resolves once the service answers; concurrent callers share one start.
-  function ensure() {
+  function ensure(request = {}) {
     if (state.ready) return Promise.resolve();
+    if (!request.background) foregroundRequested = true;
+    if (!request.background && pendingRequest) (resourceCoordinator || require('./resource-service').getResourceService())?.promote(pendingRequest);
     if (!state.starting) {
-      state.starting = start().finally(() => {
+      startController = new AbortController();
+      state.starting = start(request).finally(() => {
         state.starting = null;
+        pendingRequest = null;
+        startController = null;
+        foregroundRequested = false;
       });
     }
     return state.starting;
   }
+  async function use(fn, request = {}) {
+    users += 1;
+    let lease;
+    try {
+      await ensure(request);
+      const coordinator = resourceCoordinator || require('./resource-service').getResourceService();
+      if (request.estimate) lease = await coordinator?.acquire({ ...request, owner: request.owner || `${name} inference` });
+      return await fn();
+    } catch (error) {
+      if (lease && state.child) {
+        lease.attachProcess(state.child);
+        stopPending = true;
+      } else if (lease) lease.retain(`${name} external request failed; completion is unconfirmed. No external process was stopped.`);
+      throw error;
+    }
+    finally {
+      users -= 1;
+      if (!users && stopPending) { stopPending = false; stop(); }
+      else touch();
+      lease?.release();
+    }
+  }
 
-  return { ensure, touch, stop };
+  return { ensure, touch, stop, use };
 }
 
 module.exports = { createOnDemandProcess };

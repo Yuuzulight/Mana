@@ -239,6 +239,27 @@ test("run_tests still asks when the model says it's approved", async () => {
   assert.deepEqual(ran, []);
 });
 
+test('unrestricted reruns require sandbox failure and a fresh explicit access warning', async () => {
+  const ws = tempDir();
+  fs.writeFileSync(path.join(ws, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
+  const gate = fakeGate({ granted: true });
+  const modes = [];
+  const source = createCodingToolSource({ editors: fakeEditors({ workspace: { path: ws } }), approvalGate: gate,
+    runTests: async (_command, _cwd, options) => { modes.push(options.unrestricted); return { exitCode: options.unrestricted ? 0 : 1 }; } });
+  const early = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { execution: 'unrestricted' }));
+  assert.match(early.error, /previous sandbox failure/);
+  assert.equal(gate.requests.length, 0);
+  const failed = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, {}));
+  assert.equal(failed.unrestrictedRetryAvailable, true);
+  const nextReply = createCodingToolSource({ editors: fakeEditors({ workspace: { path: ws } }), approvalGate: gate,
+    runTests: async (_command, _cwd, options) => { modes.push(options.unrestricted); return { exitCode: options.unrestricted ? 0 : 1 }; } });
+  const retried = JSON.parse(await nextReply.executeTool(CODING_TEST_TOOL_NAME, { execution: 'unrestricted' }));
+  assert.equal(retried.passed, true);
+  assert.deepEqual(modes, [false, true]);
+  assert.equal(gate.requests[1].forceReview, true);
+  assert.match(gate.requests[1].summary, /UNRESTRICTED.*host files and network/);
+});
+
 test("run_tests refuses a path outside the workspace", async () => {
   const source = createCodingToolSource({ editors: fakeEditors({ workspace: { path: tempDir() } }), approvalGate: fakeGate({ granted: true }) });
   const result = JSON.parse(await source.executeTool(CODING_TEST_TOOL_NAME, { path: ".." }));

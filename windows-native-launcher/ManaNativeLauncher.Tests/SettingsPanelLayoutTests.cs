@@ -68,6 +68,43 @@ public class SettingsPanelLayoutTests
         });
     }
 
+    [Fact]
+    public void CloudFallback_HasOptInAndAllTimingOptions_OffByDefault()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Size = new System.Drawing.Size(800, 900) };
+            var group = GetAllDescendants(panel).OfType<GroupBox>().Single(g => g.Text == "Chat Cloud Fallback");
+            var toggle = GetAllDescendants(group).OfType<CheckBox>().Single();
+            Assert.False(toggle.Checked);
+            var timing = GetAllDescendants(group).OfType<ComboBox>().Single();
+            Assert.Equal(new[] { "30 seconds", "60 seconds", "No timeout" }, timing.Items.Cast<string>());
+            Assert.Equal("No timeout", timing.SelectedItem);
+            Assert.Contains(GetAllDescendants(group).OfType<TextBox>(), box => box.UseSystemPasswordChar);
+            if (Environment.GetEnvironmentVariable("MANA_CHAT_MODEL_SNAPSHOT_DIR") is { } output)
+            {
+                using var host = new Panel { Size = new System.Drawing.Size(500, 300), BackColor = DarkTheme.Background };
+                host.Controls.Add(group);
+                group.Location = System.Drawing.Point.Empty;
+                host.CreateControl();
+                group.CreateControl();
+                foreach (var child in GetAllDescendants(group)) { child.CreateControl(); _ = child.Handle; }
+                group.PerformLayout();
+                foreach (var box in GetAllDescendants(group).OfType<TextBox>())
+                {
+                    Assert.True(box.Visible);
+                    Assert.True(box.Width >= 180 && box.Height >= 20);
+                    box.Text = box.UseSystemPasswordChar ? "test-key" : "configured-endpoint-model";
+                }
+                using var bitmap = new System.Drawing.Bitmap(group.Width, group.Height);
+                group.DrawToBitmap(bitmap, group.ClientRectangle);
+                Directory.CreateDirectory(output);
+                bitmap.Save(Path.Combine(output, "cloud-fallback-settings.png"));
+            }
+        });
+    }
+
     private static System.Collections.Generic.IEnumerable<Control> GetAllDescendants(Control control)
     {
         yield return control;

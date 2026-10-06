@@ -1,0 +1,62 @@
+name: Native Sandbox (Windows)
+
+on:
+  pull_request:
+    paths:
+      - 'tools/analysis-sandbox/**'
+      - 'node-bot/tools/**'
+      - 'node-bot/test/**'
+      - 'node-bot/ai/coding-tool-source.js'
+      - 'node-bot/self-work.js'
+      - 'node-bot/run_tests.js'
+      - 'desktop-client/scripts/prepare-portable-python.js'
+      - '.github/workflows/native-execution.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/analysis-sandbox/**'
+      - 'node-bot/tools/**'
+      - '.github/workflows/native-execution.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-sandbox:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: '${{ runner.temp }}/mana-fixture-dotnet'
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install backend dependencies
+        working-directory: node-bot
+        run: npm ci
+      - name: Publish native helper
+        run: dotnet publish tools/analysis-sandbox -c Release -r win-x64 --self-contained true -o tools/analysis-sandbox/bundle
+      - name: Prepare private analysis runtime
+        run: node desktop-client/scripts/prepare-portable-python.js --target analysis
+      - name: Prepare offline fixture package cache
+        run: dotnet restore node-bot/test/fixtures/native-dotnet/Fixture.csproj --packages "${{ runner.temp }}/mana-fixture-nuget"
+      - name: Verify live isolation, approvals and cleanup
+        env:
+          MANA_TEST_NATIVE_LIVE: '1'
+          MANA_TEST_NATIVE_DOTNET: '1'
+          MANA_TEST_ANALYSIS_LIVE: '1'
+          MANA_TEST_NUGET_CACHE: '${{ runner.temp }}/mana-fixture-nuget'
+          NODE_ENV: test
+        run: node --test node-bot/test/native-execution.test.js node-bot/test/native-helper-spawn.test.js node-bot/test/analysis-sandbox.test.js node-bot/test/script-runner.test.js node-bot/test/self-work-test-approval.test.js node-bot/test/test-resource-profile.test.js node-bot/test/test-execution-policy.test.js node-bot/test/coding-tool-source.test.js
+      - name: Verify update waits for active sandbox scripts
+        env:
+          MANA_TEST_NATIVE_UPDATE: '1'
+        run: node --test --test-name-pattern="publisher waits" node-bot/test/native-helper-spawn.test.js

@@ -287,6 +287,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // conversation shown. Artifacts stay inline here.
     public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
     {
+        foreach (var image in messages.SelectMany(message => message.Images)) image.Dispose();
         messages.Clear();
         polledSteps.Clear(); // #1318: re-added after the history on the next poll
         streamedSteps.Clear();
@@ -319,6 +320,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var reply = new Message(fromUser: false)
                 {
                     FinalText = text,
+                    AnswerModel = turn.AnswerModel,
+                    CloudFallback = turn.CloudFallback,
                     Steps = group,
                     Thought = first && group is null ? turn.Thought : null,
                     TurnIndex = turnIdx,
@@ -336,6 +339,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 }
                 messages.Add(reply);
             }
+            var outputMessage = messages.LastOrDefault(message => !message.FromUser && message.Steps is null && message.TurnIndex == turnIdx);
+            if (outputMessage is not null) AttachAnalysisOutputs(outputMessage, turn.AnalysisOutputs);
         }
         AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
         Relayout(forceScroll: true);
@@ -350,6 +355,76 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // cut mid-line, so Mana's bubble is re-parsed from the real text. As in
     // Electron, the reply's artifact (a big or ```html/```mermaid block)
     public void ReportReply(string replyText) => ReportReply(replyText, null);
+
+    public void SetAnswerModel(string? model, bool fallback) => RunOnUiThread(() =>
+    {
+        var message = messages.LastOrDefault(m => !m.FromUser && m.Steps is null);
+        if (message is null) return;
+        message.AnswerModel = model;
+        message.CloudFallback = fallback;
+        Relayout(forceScroll: false);
+        Invalidate();
+    });
+
+    public void ReportAnalysisOutputs(AnalysisOutputs outputs) => RunOnUiThread(() =>
+    {
+        var lastUser = messages.FindLastIndex(message => message.FromUser);
+        var message = messages.Skip(lastUser + 1).LastOrDefault(message => !message.FromUser && message.Steps is null);
+        if (message is null) return;
+        AttachAnalysisOutputs(message, outputs);
+        message.Invalidate();
+        Relayout(forceScroll: false);
+    });
+
+    private void AttachAnalysisOutputs(Message message, AnalysisOutputs outputs)
+    {
+        foreach (var image in message.Images) image.Dispose();
+        message.Images.Clear();
+        foreach (var action in message.AnalysisActions) message.Actions.Remove(action);
+        message.AnalysisActions.Clear();
+        foreach (var block in message.AnalysisBlocks) message.Blocks.Remove(block);
+        message.AnalysisBlocks.Clear();
+        foreach (var table in outputs.Tables)
+        {
+            var rows = new List<IReadOnlyList<IReadOnlyList<MarkdownRun>>>();
+            rows.Add(table.Columns.Select(cell => (IReadOnlyList<MarkdownRun>)new[] { new MarkdownRun(cell, true, false, false) }).ToArray());
+            rows.AddRange(table.Rows.Select(row => (IReadOnlyList<IReadOnlyList<MarkdownRun>>)row.Select(cell => (IReadOnlyList<MarkdownRun>)new[] { new MarkdownRun(cell, false, false, false) }).ToArray()));
+            var block = new MarkdownBlock(MarkdownBlockType.Table, [], Rows: rows);
+            message.Blocks.Add(block);
+            message.AnalysisBlocks.Add(block);
+        }
+        var downloads = new List<ChatMenuItem>();
+        void SaveAction(string name, string data)
+        {
+            downloads.Add(new ChatMenuItem(name, true, async () =>
+            {
+                using var dialog = new SaveFileDialog { FileName = name, OverwritePrompt = true, CheckPathExists = true };
+                if (dialog.ShowDialog(FindForm()) == DialogResult.OK)
+                    await System.IO.File.WriteAllBytesAsync(dialog.FileName, Convert.FromBase64String(data));
+                return null;
+            }));
+        }
+        var chartIndex = 0;
+        foreach (var chart in outputs.Charts)
+        {
+            try
+            {
+                using var stream = new System.IO.MemoryStream(Convert.FromBase64String(chart.DataUrl["data:image/png;base64,".Length..]));
+                using var image = Image.FromStream(stream);
+                if (image.Width > 4096 || image.Height > 4096 || (long)image.Width * image.Height > 4000000) continue;
+                message.Images.Add(new Bitmap(image));
+                SaveAction($"chart{++chartIndex}.png", chart.DataUrl["data:image/png;base64,".Length..]);
+            }
+            catch (Exception error) when (error is FormatException or ArgumentException or OutOfMemoryException) { }
+        }
+        foreach (var file in outputs.Files) SaveAction(file.Name, file.Data);
+        if (downloads.Count > 0)
+        {
+            var action = new ChatAction("Save as...", false, downloads[0].Run, Keep: true, Menu: downloads);
+            message.Actions.Add(action);
+            message.AnalysisActions.Add(action);
+        }
+    }
 
     // #1329: ReportReply with verified web sources citations.
     public void ReportReply(string replyText, IReadOnlyList<WebSourceCitation>? sources) => RunOnUiThread(() =>
@@ -721,7 +796,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             var x = message.FromUser ? ViewportWidth - SideMargin - bubbleWidth : SideMargin;
             // #1318: a step line has no "Mana" label above it.
             var labelHeight = message.Steps is null ? labelFont.Height + LabelGap : 0;
-            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, 60, labelHeight);
+            var labelWidth = message.FromUser ? 60 : Math.Min(Math.Max(40, ViewportWidth - SideMargin * 2 - 200), Math.Max(60, Measure(message.Speaker, labelFont)));
+            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, labelWidth, labelHeight);
             message.Bounds = new Rectangle(x, y + labelHeight, bubbleWidth, message.ContentHeight + PadY * 2);
 
             // #1322: Action and version stepper button layout
@@ -910,7 +986,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             var rowHeight = 0;
             foreach (var image in message.Images)
             {
-                var size = ScreenCapture.FitWithin(image.Size, Math.Min(ThumbnailSide, maxWidth));
+                var size = ScreenCapture.FitWithin(image.Size, message.FromUser ? Math.Min(ThumbnailSide, maxWidth) : maxWidth);
                 if (x > 0 && x + size.Width > maxWidth)
                 {
                     y += rowHeight + BlockGap;
@@ -1256,7 +1332,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             var label = message.LabelBounds with { Y = message.LabelBounds.Y - scroll };
             TextRenderer.DrawText(g, message.Speaker, labelFont, label, DarkTheme.Muted,
-                TextFlags | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
+                TextFlags | TextFormatFlags.EndEllipsis | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
 
             // #1322: Draw version stepper controls if multiple versions exist
             if (message.Versions != null && message.Versions.Count > 1)
@@ -1556,11 +1632,13 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         base.OnMouseMove(e);
         var link = LinkAt(e.Location);
+        var label = messages.FirstOrDefault(message => !message.FromUser && message.LabelBounds.Contains(e.X, e.Y + (scrolling ? scrollBar.Value : 0)))?.Speaker;
+        var tip = link ?? label;
         if (link != hoveredLink)
         {
             hoveredLink = link;
-            linkTip.SetToolTip(this, link); // shows where a link really goes before it's clicked
         }
+        if (linkTip.GetToolTip(this) != tip) linkTip.SetToolTip(this, tip);
         var isThoughtHeader = false;
         if (HitTest(e.Location) is var thMoveHit and >= 0 && !string.IsNullOrWhiteSpace(messages[thMoveHit].Thought))
         {
@@ -2215,7 +2293,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public bool FromUser { get; }
         // #914: the character's name on her messages (null: Mana).
         public string? Name { get; init; }
-        public string Speaker => FromUser ? "You" : Name ?? "Mana";
+        public string? AnswerModel { get; set; }
+        public bool CloudFallback { get; set; }
+        public string Speaker => FromUser ? "You" : (Name ?? "Mana") + (AnswerModel is null ? "" : $" · {AnswerModel}{(CloudFallback ? " (fallback)" : "")}");
         public List<MarkdownBlock> Blocks { get; } = new();
         public List<Line> Lines { get; set; } = new();
         public string Text { get; set; } = "";
@@ -2225,6 +2305,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public Rectangle Bounds { get; set; }
         public Rectangle LabelBounds { get; set; }
         public List<ChatAction> Actions { get; } = new();
+        public List<ChatAction> AnalysisActions { get; } = new();
+        public List<MarkdownBlock> AnalysisBlocks { get; } = new();
         public List<Rectangle> ActionBounds { get; } = new();
         public string? Note { get; set; }
         public Rectangle NoteBounds { get; set; }

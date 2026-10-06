@@ -51,6 +51,10 @@ internal sealed partial class SessionListForm : Form
     private readonly Label avatarStatusLabel = new();
     private readonly Label contextMeterLabel = new();
     private readonly Label chatTitleLabel = new();
+    private readonly ComboBox chatModelPicker = new() { Dock = DockStyle.Right, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Chat model" };
+    private bool loadingChatModels;
+    private string? modelsForSession;
+    private int modelLoadVersion;
     private readonly Font chatTitleFont = new("Segoe UI Semibold", 10.5f);
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
@@ -174,7 +178,7 @@ internal sealed partial class SessionListForm : Form
         newChatButton.Height = 36;
         newChatButton.TextAlign = ContentAlignment.MiddleLeft; // the #652 mockup's
         newChatButton.Padding = new Padding(6, 0, 0, 0);
-        newChatButton.Click += (_, _) => StartNewChat();
+        newChatButton.Click += async (_, _) => await StartNewChatAsync();
         // #538's own new-chat button is a solid accent CTA, not the
         // muted flat style DarkTheme.ApplyButton gives every other button
         // in this window -- matched here instead of through that shared
@@ -223,6 +227,7 @@ internal sealed partial class SessionListForm : Form
         list.AfterLabelEdit += OnAfterLabelEdit;
 
         var contextMenu = new ContextMenuStrip();
+        AddMoveToProjectMenu(contextMenu);
         contextMenu.Items.Add("Switch to session", null, (_, _) => SwitchToSelected());
         contextMenu.Items.Add("Rename", null, (_, _) =>
         {
@@ -364,6 +369,7 @@ internal sealed partial class SessionListForm : Form
         sidebar.Controls.Add(searchField);
         sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(newChatButton);
+        sidebar.Controls.Add(BuildProjectControls());
         sidebar.Controls.Add(Gap(DockStyle.Bottom));
         sidebar.Controls.Add(avatarCard);
 
@@ -407,7 +413,7 @@ internal sealed partial class SessionListForm : Form
         RegisterRailTool("terminal", "terminal", "Terminal",
             () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
         // #1122: her browser automation, docked.
-        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient));
+        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient, () => voiceLoop.CurrentSessionId));
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
@@ -501,6 +507,19 @@ internal sealed partial class SessionListForm : Form
         };
         // Last added docks first: toggle left, listen toggle outermost right.
         chatHeader.Controls.Add(chatTitleLabel);
+        chatHeader.Controls.Add(chatModelPicker);
+        chatModelPicker.BackColor = DarkTheme.Panel2;
+        chatModelPicker.ForeColor = DarkTheme.Text;
+        chatModelPicker.DropDown += async (_, _) => await RefreshChatModelsAsync();
+        chatModelPicker.SelectedIndexChanged += async (_, _) =>
+        {
+            if (loadingChatModels || chatModelPicker.SelectedItem is not ManaChatModel model) return;
+            var sessionId = voiceLoop.EnsureSessionId();
+            chatModelPicker.Enabled = false;
+            try { await backendClient.SetChatModelAsync(sessionId, model.Id); }
+            catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, ex.Message, "Chat model", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            finally { if (!IsDisposed) { chatModelPicker.Enabled = true; await RefreshChatModelsAsync(); } }
+        };
         chatHeader.Controls.Add(contextMeterLabel);
         chatHeader.Controls.Add(listenButton);
         chatHeader.Controls.Add(sidebarToggleButton);
@@ -1418,12 +1437,20 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
-    private void StartNewChat()
+    private async Task StartNewChatAsync()
     {
         // No explicit "create session" call -- matches the reference:
         // node-bot's ensureSession lazily creates the row on the first
         // real turn sent with this id, not when the id is merely minted.
-        SwitchTo(Guid.NewGuid().ToString());
+        var sessionId = Guid.NewGuid().ToString();
+        newChatButton.Enabled = false;
+        try
+        {
+            if (SelectedProject is { } project) await backendClient.SetSessionProjectAsync(sessionId, project.Id);
+            if (!IsDisposed) SwitchTo(sessionId);
+        }
+        catch (Exception ex) { if (!IsDisposed) SetListError(ex.Message); }
+        finally { if (!IsDisposed) newChatButton.Enabled = true; }
     }
 
     private void SwitchTo(string sessionId)
@@ -1777,6 +1804,8 @@ internal sealed partial class SessionListForm : Form
         try
         {
             sessions = await backendClient.GetSessionsAsync();
+            var loadedProjects = await backendClient.GetProjectsAsync();
+            if (!IsDisposed) UpdateProjects(loadedProjects);
         }
         catch (Exception ex)
         {
@@ -1862,7 +1891,8 @@ internal sealed partial class SessionListForm : Form
     {
         list.BeginUpdate();
         list.Items.Clear();
-        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId)))
+        list.Groups.Clear();
+        foreach (var session in sessions.Where(s => MatchesProject(s) && (SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId))))
         {
             var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
             {
@@ -1870,6 +1900,10 @@ internal sealed partial class SessionListForm : Form
                 ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
             };
             item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, DateTimeOffset.Now));
+            var groupKey = session.ProjectId is { } id ? $"project:{id}" : "ungrouped";
+            var group = list.Groups[groupKey];
+            if (group is null) { group = new ListViewGroup(groupKey, session.ProjectName ?? "Ungrouped"); list.Groups.Add(group); }
+            item.Group = group;
             list.Items.Add(item);
         }
         list.EndUpdate();
@@ -1878,7 +1912,29 @@ internal sealed partial class SessionListForm : Form
         ShowChatTitle();
     }
 
-    private void ShowChatTitle() => chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+    private void ShowChatTitle()
+    {
+        chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+        if (modelsForSession != activeSessionId || chatModelPicker.Items.Count == 0) _ = RefreshChatModelsAsync();
+    }
+
+    private async Task RefreshChatModelsAsync()
+    {
+        var version = ++modelLoadVersion;
+        var sessionId = voiceLoop.CurrentSessionId;
+        try
+        {
+            var result = await backendClient.GetChatModelsAsync(sessionId);
+            if (IsDisposed || version != modelLoadVersion || sessionId != voiceLoop.CurrentSessionId) return;
+            loadingChatModels = true;
+            chatModelPicker.Items.Clear();
+            foreach (var model in result.Models) chatModelPicker.Items.Add(model);
+            chatModelPicker.SelectedItem = result.Models.FirstOrDefault(m => m.Id == result.Selected);
+            modelsForSession = sessionId;
+        }
+        catch { if (!IsDisposed && version == modelLoadVersion) chatModelPicker.SelectedIndex = -1; }
+        finally { loadingChatModels = false; }
+    }
 
     // The open chat's name for the header; a chat not saved yet is "New chat".
     internal static string ChatTitle(System.Collections.Generic.IReadOnlyList<ManaSession> sessions, string? activeSessionId) =>

@@ -82,8 +82,18 @@ const plan = ["self_work__plan", { steps: ["fix add()", "finish"], no_test: "the
 
 function deps(r, calls) {
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  return { repoRoot: r.repo, worktreesDir: r.worktrees, runLoop: fakeModel(calls, tokens), tokens, ramPercent: () => 50, onEvent: () => {}, sample: async () => ({ vramMb: 9000, ramPercent: 80 }) };
+  // These fixtures exercise scoring on trusted synthetic code, not native approval/isolation.
+  return { repoRoot: r.repo, worktreesDir: r.worktrees, runLoop: fakeModel(calls, tokens), runTests: require('../ai/coding-tool-source').runTestCommand, tokens, ramPercent: () => 50, onEvent: () => {}, sample: async () => ({ vramMb: 9000, ramPercent: 80 }) };
 }
+
+test('Windows benchmark refuses to run model work without its human test-approval gate', { skip: process.platform !== 'win32' }, async () => {
+  const r = makeRepo();
+  let called = false;
+  const runner = require('../self-work').createSelfWork({ repoRoot: r.repo, runLoop: async () => { called = true; } });
+  const result = await runner.bench({ number: 1, title: 'Fixture', body: '' }, r.repo);
+  assert.match(result.error, /human approval gate/);
+  assert.equal(called, false);
+});
 
 test("a case that fixes the bug passes its hidden test, and the worktree is gone after", async () => {
   const r = makeRepo();

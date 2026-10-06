@@ -64,6 +64,11 @@
     },
     "extraResources": [
       {
+        "from": "../tools/analysis-sandbox/bundle",
+        "to": "tools/analysis-sandbox/bundle",
+        "filter": ["**/*"]
+      },
+      {
         "from": "../node-bot",
         "to": "node-bot",
         "filter": [

@@ -17,6 +17,26 @@ function fakeStore(overrides = {}) {
   };
 }
 
+test("session lists include project grouping metadata without changing search scope", async () => {
+  const app = express();
+  const sessions = [{ sessionId: 'a', name: 'Assigned' }, { sessionId: 'b', name: 'Ungrouped' }];
+  sessionsCapability.registerRoutes(app, {
+    acpMemoryStore: fakeStore({ listSessions: () => sessions, sessionIdsMatching: () => new Set(['a']) }),
+    projectsStore: { projectForSession: id => id === 'a' ? { id: 'alpha', name: 'Alpha' } : null },
+  });
+  await withServer(app, async baseUrl => {
+    const all = await (await fetch(`${baseUrl}/sessions`)).json();
+    assert.equal(all.sessions[0].projectId, 'alpha');
+    assert.equal(all.sessions[0].projectName, 'Alpha');
+    assert.equal(all.sessions[1].projectId, null);
+    const filtered = await (await fetch(`${baseUrl}/sessions?q=needle`)).json();
+    assert.equal(filtered.sessions.length, 1);
+    assert.equal(filtered.sessions[0].projectId, 'alpha');
+    assert.equal(filtered.query, 'needle');
+    assert.equal(sessions[0].projectId, undefined);
+  });
+});
+
 test("sessions capability lists sessions from the store", async () => {
   const app = express();
   app.use(express.json());

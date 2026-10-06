@@ -20,8 +20,26 @@ moment, and never appears in my Take over window.
 
 ## One light, persistent session (#1137)
 
+The native launcher's Take over now keeps the interactive page inside Mana's
+Browser panel. Mouse, keyboard, and scrolling use a short-lived manual-control
+token; queued input is revoked before Done resumes the agent. Images and fonts
+are permitted while the user owns the page. Stop and backend shutdown await
+owned browser cleanup. Legacy clients' explicit window takeover remains supported.
+
+For selected personal Chrome tabs and existing logins, install the separate
+[Mana Browser Connection](../browser-control-extension/README.md) extension.
+Access is scoped to a confirmed chat session, optional exact-origin allowlist,
+and explicit tab selection. Every personal-browser click/type/submit and other
+mutating action needs fresh approval, regardless of remembered general grants.
+Disconnect detaches access without closing Chrome or the user's tabs.
+
 - Mana's own profile in `node-bot/data/browser-profile`
   (`launchPersistentContext`), so a site I log in to stays logged in.
+- `MANA_BROWSER_PROFILE_DIR` explicitly selects another persistent user-data
+  directory (an absolute path). Close any browser using it first. It grants
+  Mana access to that profile's signed-in sites; a separate automation profile
+  is recommended. Chromium may refuse automation of a normal default profile.
+  Take over and Done use the same configured directory.
 - Started on her first browser call; one context, one page.
 - `--disable-gpu` (no VRAM) and `--renderer-process-limit=1`.
 - Images, video and fonts are blocked (`page.route`) unless the rail's
@@ -145,12 +163,12 @@ back and opening pages never ask. Always and Never are remembered per site
 
 ## Take over and hand back (#1139)
 
-Chromium can't turn a headless session visible, so **Take over** (the
-Browser panel's button) closes hers and opens the same profile as a normal
-Edge window at her page. I do the login, CAPTCHA or payment there myself;
-nothing I type goes to the model. **Done** closes the window (so does
-closing it myself) and she carries on headless, with my login kept, at the
-page I finished on. While I have it, her browser calls wait.
+In the native launcher, **Take over** controls the existing page through
+interactive frames inside Mana. No additional browser window opens. I do
+the login, CAPTCHA or payment myself; manual input is not sent to the model.
+**Done** revokes the manual token and resumes Mana with a fresh agent handle
+at the page I finished on. While I have it, her browser calls wait.
+Legacy clients can still explicitly request the separate-window takeover.
 
 She never types credentials or pays: on a page with a password, one-time
 code or card field, a payment provider's iframe, or a checkout/payment/
@@ -168,6 +186,11 @@ Each returns `{url, title, elements, text}`, or after an action on the
 same page `{url, title, added, removed, text?}`.
 - `POST /browser/close` -- ends the session.
 - `POST /browser/take-over` -- `{ url? }`, and `POST /browser/hand-back` (admin key too).
+- `POST /browser/manual/start` -- `{ url? }`, returns a manual token.
+- `GET /browser/manual/frame`, `POST /browser/manual/input`, and
+  `POST /browser/manual/done` -- manual token in `X-Mana-Manual-Token`.
+- `POST /browser/personal/start` -- `{ sessionId, origins? }`, returns a
+  single-use extension connection code; `GET /browser/personal/status` reads status.
 
 All local-only (same loopback check `/admin/restart` and the
 brain-provider test route already use) -- this drives a real browser, so
@@ -176,13 +199,11 @@ network-adjacent caller.
 
 ## Verification note
 
-No real browser was launched in the environment that built this (CI
-runners have no Windows/Edge install, and this session's own Browser pane
-was unresponsive throughout). `browser-automation.js`'s actual logic
-(navigation validation, snapshot filtering, ref actions) is verified
-against a fake "page-like" object
-(`{goto, ariaSnapshot, locator, evaluate, title, url}`) in tests -- production code
-passes it a real Playwright `Page`, whose method names and signatures
-already match that shape, so no adapter layer was needed. The
-route-level wiring (executable-path resolution, loopback gating) is
-tested directly; the actual browser launch itself is not.
+Deterministic tests cover page actions, authentication, approvals, ownership,
+transport limits and cleanup. Two opt-in integrations also exercise a real
+browser: set `MANA_BROWSER_TEST_EXECUTABLE` for the selected-page CDP relay,
+and `MANA_EXTENSION_TEST_EXECUTABLE` for the actual unpacked extension.
+Both verify that disconnect leaves the original user's browser usable.
+The extension integration also checks screenshots and manual takeover/Done.
+These integrations ran locally in isolated profiles; CI skips them unless
+the executable paths are supplied. They never install in a personal profile.

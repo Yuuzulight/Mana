@@ -15,6 +15,17 @@ const {
 
 const schema = (name, properties = {}) => ({ type: "function", function: { name, parameters: { type: "object", properties } } });
 
+test('analysis activity retains bounded Python code and output details', () => {
+  const code = 'print(2)\n'.repeat(200);
+  const step = stepInfo('analysis__run_python', { code });
+  assert.equal(step.kind, 'command');
+  assert.equal(step.description, 'Run Python analysis');
+  assert.equal(step.detail.command, code);
+  assert.ok(stepInfo('analysis__run_python', { code: 'x'.repeat(50000) }).detail.command.length <= 40000);
+  assert.equal(trimResult('x'.repeat(1000), 30000).length, 1000);
+  assert.ok(trimResult('x'.repeat(1000)).length <= 600);
+});
+
 test("command and sub-task tools get a description param; it's dropped again before the tool runs", async () => {
   const calls = [];
   const policy = withStepDescriptions({

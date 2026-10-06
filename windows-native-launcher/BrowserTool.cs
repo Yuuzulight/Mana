@@ -9,8 +9,8 @@ namespace Mana.NativeLauncher;
 
 // #1122: the chat rail's Browser tool -- BrowserAutomationPanel's view,
 // docked: the page she's on, its latest screenshot and her last steps,
-// with Stop (ends her browser session) and Take over (#1139: her Edge
-// profile opens as a visible window at her page; Done hands it back), plus
+// with Stop (ends her browser session) and Take over (#704: interactive
+// page frames here, without opening a window; Done hands it back), plus
 // the web pages this turn took in. Polls GET /browser-automation/activity
 // once a second while it's on screen.
 // #1140: opening one of this turn's pages reads it here, drawn by Folio
@@ -19,14 +19,24 @@ internal sealed class BrowserTool : Panel
 {
     private const int PollIntervalMs = 1000;
     private const int MaxSteps = 8;
-    private const string TakeOverName = "Take over: open her browser in a window for me";
+    private const string TakeOverName = "Take over: control her browser here";
     private const string DoneName = "Done: hand her browser back";
 
     private readonly ManaBackendClient client;
+    private readonly Func<string?> currentSession;
+    private string? manualToken;
+    private string? manualImage;
+    private string? manualUrl;
+    private Size manualViewport;
+    private Task inputQueue = Task.CompletedTask;
+    private bool returningBrowser;
+    private readonly Button chromeButton = new() { Text = "Connect Chrome", Dock = DockStyle.Right, Width = 132, AccessibleName = "Connect selected personal Chrome tabs to this chat" };
+    private readonly TextBox connectionCode = new() { Dock = DockStyle.Fill, ReadOnly = true, AccessibleName = "Chrome connection code" };
+    private readonly Panel chromeRow = new() { Dock = DockStyle.Top, Height = 28 };
     private readonly System.Windows.Forms.Timer pollTimer = new() { Interval = PollIntervalMs };
     private readonly Label titleLabel = new() { Dock = DockStyle.Top, Height = 22, AutoEllipsis = true, ForeColor = DarkTheme.Text };
     private readonly Label urlLabel = new() { Dock = DockStyle.Top, Height = 20, AutoEllipsis = true, ForeColor = DarkTheme.Muted };
-    private readonly PictureBox screenshotBox = new() { Dock = DockStyle.Top, Height = 160, SizeMode = PictureBoxSizeMode.Zoom, BackColor = DarkTheme.Background, AccessibleName = "Her browser's latest screenshot" };
+    private readonly BrowserPageView screenshotBox = new() { Dock = DockStyle.Top, Height = 160, SizeMode = PictureBoxSizeMode.Zoom, BackColor = DarkTheme.Background, AccessibleName = "Her browser's latest screenshot" };
     private readonly ListBox stepsBox = new() { Dock = DockStyle.Top, Height = 96, BorderStyle = BorderStyle.None, IntegralHeight = false, AccessibleName = "Her last steps" };
     // #1168: a page that may need the ads/trackers her browser blocked,
     // with "Open in my browser".
@@ -64,9 +74,10 @@ internal sealed class BrowserTool : Panel
 
     internal ReaderView Reader => reader; // tests
 
-    public BrowserTool(ManaBackendClient client)
+    public BrowserTool(ManaBackendClient client, Func<string?>? currentSession = null)
     {
         this.client = client;
+        this.currentSession = currentSession ?? (() => null);
         BackColor = DarkTheme.Panel2;
         Padding = new Padding(6);
         titleFont = new Font(titleLabel.Font, FontStyle.Bold);
@@ -97,11 +108,39 @@ internal sealed class BrowserTool : Panel
         giveFileButton.Click += async (_, _) => await GiveFilesAsync();
         stopButton.Click += async (_, _) => await StopAsync();
         takeOverButton.Click += async (_, _) => await TakeOverOrHandBackAsync();
+        DarkTheme.ApplyButton(chromeButton);
+        chromeButton.Click += async (_, _) => await ConnectChromeAsync();
+        chromeRow.Controls.Add(connectionCode);
+        chromeRow.Controls.Add(chromeButton);
+        screenshotBox.MouseDown += (_, _) => screenshotBox.Focus();
+        screenshotBox.MouseClick += (_, e) =>
+        {
+            var point = BrowserPageView.PagePoint(e.Location, screenshotBox.ClientSize, manualViewport);
+            if (manualToken is not null && point is Point p)
+                QueueInput(new { action = "click", x = p.X, y = p.Y, button = e.Button == MouseButtons.Right ? "right" : "left" });
+        };
+        screenshotBox.MouseWheel += (_, e) => { if (manualToken is not null) QueueInput(new { action = "scroll", dy = Math.Clamp(-e.Delta * 3, -2000, 2000) }); };
+        screenshotBox.KeyPress += (_, e) =>
+        {
+            if (manualToken is null || char.IsControl(e.KeyChar)) return;
+            QueueInput(new { action = "text", text = e.KeyChar.ToString() });
+            e.Handled = true;
+        };
+        screenshotBox.KeyDown += (_, e) =>
+        {
+            if (manualToken is null) return;
+            var key = BrowserPageView.BrowserKey(e);
+            if (key is null) return;
+            QueueInput(new { action = "key", key });
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        };
         DarkTheme.ApplyButton(openInMyBrowserButton);
         openInMyBrowserButton.Click += (_, _) => Open(activity?.BlockedUrl);
         blockedRow.Controls.Add(blockedLabel);
         blockedRow.Controls.Add(openInMyBrowserButton);
-        var buttonRow = new Panel { Dock = DockStyle.Bottom, Height = 32, Padding = new Padding(0, 4, 0, 0) };
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Padding = new Padding(0, 4, 0, 0) };
+        foreach (var button in new[] { reportButton, giveFileButton, takeOverButton, stopButton }) { button.Dock = DockStyle.None; button.Height = 28; button.Margin = new Padding(0, 0, 4, 4); }
         buttonRow.Controls.Add(reportButton);
         buttonRow.Controls.Add(giveFileButton);
         buttonRow.Controls.Add(takeOverButton);
@@ -120,6 +159,7 @@ internal sealed class BrowserTool : Panel
         Controls.Add(screenshotBox);
         Controls.Add(blockedRow);
         Controls.Add(urlLabel);
+        Controls.Add(chromeRow);
         Controls.Add(titleLabel);
 
         pollTimer.Tick += async (_, _) => await RefreshAsync();
@@ -145,11 +185,23 @@ internal sealed class BrowserTool : Panel
         try
         {
             activity = await client.GetBrowserAutomationActivityAsync();
+            if (manualToken is not null)
+            {
+                var token = manualToken;
+                var frame = await client.BrowserManualAsync("frame", token);
+                if (manualToken == token && !IsDisposed)
+                {
+                    manualImage = frame.GetProperty("image").GetString();
+                    manualUrl = frame.GetProperty("url").GetString();
+                    manualViewport = new Size(frame.GetProperty("width").GetInt32(), frame.GetProperty("height").GetInt32());
+                }
+            }
             note = null;
         }
         catch (Exception ex)
         {
             note = $"Couldn't read her browser: {ex.Message}";
+            if (manualToken is not null && activity?.TakenOver == false) { manualToken = null; manualImage = null; manualUrl = null; }
         }
         finally
         {
@@ -167,6 +219,10 @@ internal sealed class BrowserTool : Panel
         try
         {
             await client.CloseBrowserSessionAsync();
+            manualToken = null;
+            manualImage = null;
+            manualUrl = null;
+            connectionCode.Clear();
             endedAtStep = activity?.Log.LastOrDefault()?.At ?? "";
         }
         catch (Exception ex)
@@ -207,13 +263,24 @@ internal sealed class BrowserTool : Panel
         takeOverButton.Enabled = false;
         try
         {
-            if (activity?.TakenOver == true)
+            if (manualToken is not null)
+            {
+                var token = manualToken;
+                returningBrowser = true;
+                await inputQueue;
+                await client.BrowserManualAsync("done", token);
+                manualToken = null;
+                manualImage = null;
+                manualUrl = null;
+            }
+            else if (activity?.TakenOver == true)
             {
                 await client.HandBackBrowserAsync();
             }
             else
             {
-                await client.TakeOverBrowserAsync(IsWebUrl(urlLabel.Text) ? urlLabel.Text : null);
+                var result = await client.BrowserManualAsync("start", payload: new { url = IsWebUrl(urlLabel.Text) ? urlLabel.Text : null });
+                manualToken = result.GetProperty("token").GetString();
             }
             await RefreshAsync();
         }
@@ -225,6 +292,43 @@ internal sealed class BrowserTool : Panel
                 Render();
             }
         }
+        finally { returningBrowser = false; if (!IsDisposed) Render(); }
+    }
+
+    private void QueueInput(object command)
+    {
+        var token = manualToken;
+        if (token is null || returningBrowser) return;
+        inputQueue = inputQueue.ContinueWith(async _ =>
+        {
+            try { if (!IsDisposed && manualToken == token) await client.BrowserManualAsync("input", token, command); }
+            catch (Exception ex) { if (!IsDisposed) BeginInvoke(() => { note = $"Browser input failed: {ex.Message}"; Render(); }); }
+        }, TaskScheduler.Default).Unwrap();
+    }
+
+    private async Task ConnectChromeAsync()
+    {
+        var sessionId = currentSession();
+        if (string.IsNullOrWhiteSpace(sessionId)) { note = "Choose a chat before connecting Chrome."; Render(); return; }
+        using var dialog = new Form { Text = "Connect Personal Chrome", Size = new Size(460, 220), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
+        var consent = new Label { Text = "Connect selected Chrome tabs to this chat? Mana will ask before each action. Disconnect ends her access without closing Chrome.", Dock = DockStyle.Top, Height = 56, Padding = new Padding(8) };
+        var sites = new TextBox { Dock = DockStyle.Top, AccessibleName = "Allowed site origins, comma separated; blank permits any web site" };
+        var label = new Label { Text = "Allowed sites (optional, e.g. https://example.com)", Dock = DockStyle.Top, Height = 26 };
+        var accept = new Button { Text = "Connect", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 32 };
+        dialog.Controls.Add(sites); dialog.Controls.Add(label); dialog.Controls.Add(consent); dialog.Controls.Add(accept);
+        dialog.AcceptButton = accept;
+        if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
+        chromeButton.Enabled = false;
+        try
+        {
+            var origins = sites.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            connectionCode.Text = await client.ConnectPersonalBrowserAsync(sessionId, origins);
+            connectionCode.SelectAll();
+            connectionCode.Focus();
+            note = "Chrome connection is waiting.";
+        }
+        catch (Exception ex) { note = $"Couldn't connect Chrome: {ex.Message}"; }
+        finally { if (!IsDisposed) { chromeButton.Enabled = true; Render(); } }
     }
 
     // Only web pages: a link from outside content never runs anything else.
@@ -256,6 +360,7 @@ internal sealed class BrowserTool : Panel
         // #1168: the blocked-ads note only when there is one.
         blockedRow.Visible = !on && blockedLabel.Text.Length > 0;
         ResumeLayout();
+        Render();
     }
 
     private bool readerOn;
@@ -270,8 +375,17 @@ internal sealed class BrowserTool : Panel
         {
             endedAtStep = null;
         }
-        var pageUrl = endedAtStep is null ? activity?.PageUrl : null;
-        var takenOver = activity?.TakenOver == true;
+        var pageUrl = endedAtStep is null ? manualUrl ?? activity?.PageUrl : null;
+        var takenOver = manualToken is not null || activity?.TakenOver == true;
+        if (!readerOn)
+        {
+            var embedded = manualToken is not null;
+            pagesList.Visible = !embedded;
+            pagesLabel.Visible = !embedded;
+            stepsBox.Visible = !embedded;
+            screenshotBox.Dock = embedded ? DockStyle.Fill : DockStyle.Top;
+            if (!embedded) screenshotBox.Height = 160;
+        }
         titleLabel.Text = note
             ?? (takenOver ? "You have her browser. Press Done when you're finished."
             : activity?.NeedsYou is { Length: > 0 } needsYou ? $"She needs you: {needsYou}"
@@ -285,9 +399,9 @@ internal sealed class BrowserTool : Panel
         reportButton.Enabled = activity?.SiteTestTitle is not null;
         takeOverButton.Text = takenOver ? "Done" : "Take over";
         takeOverButton.AccessibleName = takenOver ? DoneName : TakeOverName;
-        takeOverButton.Enabled = takenOver || IsWebUrl(pageUrl) || activity?.NeedsYou is not null;
+        takeOverButton.Enabled = takenOver || IsWebUrl(pageUrl) || activity?.NeedsYou is not null || connectionCode.TextLength > 0;
 
-        var base64 = endedAtStep is null ? activity?.ScreenshotBase64 : null;
+        var base64 = endedAtStep is null ? manualImage ?? activity?.ScreenshotBase64 : null;
         if (base64 != shownScreenshot)
         {
             shownScreenshot = base64;
@@ -319,10 +433,41 @@ internal sealed class BrowserTool : Panel
     {
         if (disposing)
         {
+            var token = manualToken;
+            manualToken = null;
+            if (token is not null) _ = client.BrowserManualAsync("done", token).ContinueWith(task => { _ = task.Exception; }, TaskScheduler.Default);
             pollTimer.Dispose();
             screenshotBox.Image?.Dispose();
             titleFont.Dispose();
         }
         base.Dispose(disposing);
+    }
+}
+
+internal sealed class BrowserPageView : PictureBox
+{
+    public BrowserPageView() { SetStyle(ControlStyles.Selectable, true); TabStop = true; }
+    protected override bool IsInputKey(Keys keyData) => true;
+
+    internal static Point? PagePoint(Point point, Size control, Size viewport)
+    {
+        if (viewport.Width <= 0 || viewport.Height <= 0 || control.Width <= 0 || control.Height <= 0) return null;
+        var scale = Math.Min((double)control.Width / viewport.Width, (double)control.Height / viewport.Height);
+        var x = (point.X - (control.Width - viewport.Width * scale) / 2) / scale;
+        var y = (point.Y - (control.Height - viewport.Height * scale) / 2) / scale;
+        return x < 0 || y < 0 || x >= viewport.Width || y >= viewport.Height ? null : new Point(Math.Min(viewport.Width - 1, (int)Math.Round(x)), Math.Min(viewport.Height - 1, (int)Math.Round(y)));
+    }
+
+    internal static string? BrowserKey(KeyEventArgs e)
+    {
+        var key = e.KeyCode switch
+        {
+            Keys.Enter => "Enter", Keys.Tab => "Tab", Keys.Escape => "Escape", Keys.Back => "Backspace",
+            Keys.Delete => "Delete", Keys.Space => "Space", Keys.Up => "ArrowUp", Keys.Down => "ArrowDown", Keys.Left => "ArrowLeft", Keys.Right => "ArrowRight",
+            Keys.Home => "Home", Keys.End => "End", Keys.PageUp => "PageUp", Keys.PageDown => "PageDown",
+            _ when (e.Control || e.Alt) && e.KeyCode >= Keys.A && e.KeyCode <= Keys.Z => e.KeyCode.ToString(),
+            _ => null,
+        };
+        return key is null ? null : $"{(e.Control ? "Control+" : "")}{(e.Alt ? "Alt+" : "")}{(e.Shift ? "Shift+" : "")}{key}";
     }
 }
