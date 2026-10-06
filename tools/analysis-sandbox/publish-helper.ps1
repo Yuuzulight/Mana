@@ -26,7 +26,11 @@ try {
     if (-not $RecoverGateOnly) {
         dotnet publish (Join-Path $root 'Mana.AnalysisSandbox.csproj') -c Release -r win-x64 --self-contained true -o $stage -v q --disable-build-servers -p:UseSharedCompilation=false
         if ($LASTEXITCODE) { throw 'Native helper staging build failed; installed helper is unchanged.' }
-        [IO.File]::WriteAllText((Join-Path $stage '.gitkeep'), "`n")
+        # #1422: carry the checked-out .gitkeep over byte for byte; a rewritten
+        # one (LF where git checked out CRLF) shows as changed and blocks pulls.
+        $keep = Join-Path $bundle '.gitkeep'
+        if (Test-Path -LiteralPath $keep) { Copy-Item -LiteralPath $keep -Destination $stage }
+        else { [IO.File]::WriteAllText((Join-Path $stage '.gitkeep'), "`n") }
     }
     $deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
     while (-not $owned) {
