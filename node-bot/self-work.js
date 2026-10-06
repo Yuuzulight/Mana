@@ -754,6 +754,8 @@ function createSelfWork(options = {}) {
     log(r, `I'm starting on #${r.issue}: ${r.title}`, true);
     await git(["fetch", "origin", "main"]);
     await prepare(r, "origin/main");
+    // #1420: a run that died can leave half-edits in a reused worktree.
+    await resetWorktree(r);
 
     log(r, "Working on it in my worktree.");
     await owner();
@@ -1354,15 +1356,17 @@ How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Aim to make your first edit within ${READ_BUDGET_LINES} lines of reading: search first and read only what the change needs; then make the change.
 - Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
+- If a file doesn't exist yet, create it with ${CODING_EDIT_TOOL_NAME} (path and new_text, no old_text) rather than searching for it.
+- Write tests with Node's own runner, require("node:test") and require("node:assert"); chai, mocha and other test libraries aren't installed.
 - If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail before you change the code.
-- Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
-- Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
+- Change files with ${CODING_EDIT_TOOL_NAME}; marking a plan step done changes nothing on disk. Keep the change small and in the style around it, and add or update a test that fails without it.
+- Run the tests you touched with ${CODING_TEST_TOOL_NAME}, passing the test file (e.g. node-bot/test/my.test.js) rather than running the whole suite, and fix what fails.
 ${
   r.flagged
     ? `- ${ownerName()} flagged this run to allow changes to your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction). Change only what the issue needs there.`
     : "- Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."
 }
-- When the tests pass, review your diff with self_work__review (correctness, edge cases, scope) and fix what you find.
+- When the tests pass, review your diff with self_work__review (${Object.keys(reviewPasses).join(", ")}) and fix what you find.
 - Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.${lessonsBlock(r, issue)}`;
   }
 
@@ -1563,10 +1567,16 @@ Before it can be a PR:
       if (!reviewPasses[pass]) throw new Error(`pass is one of: ${Object.keys(reviewPasses).join(", ")}`);
       const diff = await diffNow();
       if (!diff) throw new Error("there's no change to review yet");
+      // #1420: a pass not done since her last edit is progress, even when
+      // it repeats an earlier call word for word.
+      if (!reviewed.has(pass)) progressed = true;
       reviewed.add(pass);
       const left = Object.keys(reviewPasses).filter((p) => !reviewed.has(p));
       log(r, `Reviewing my diff: ${pass}.`);
-      return `Pass: ${pass}. ${reviewPasses[pass]}\nFix anything you find with ${CODING_EDIT_TOOL_NAME} (that starts the review over).${left.length ? ` Passes left: ${left.join(", ")}.` : ""}\n\n${diff.length > MAX_REVIEW_DIFF ? `${diff.slice(0, MAX_REVIEW_DIFF)}\n...[diff cut]` : diff}`;
+      const next = left.length
+        ? ` Passes left: ${left.join(", ")}.`
+        : ` That's every pass. If your tests pass and there's nothing left to fix, call ${SESSION_GOAL_FINISH_TOOL_NAME} now.`;
+      return `Pass: ${pass}. ${reviewPasses[pass]}\nFix anything you find with ${CODING_EDIT_TOOL_NAME} (that starts the review over).${next}\n\n${diff.length > MAX_REVIEW_DIFF ? `${diff.slice(0, MAX_REVIEW_DIFF)}\n...[diff cut]` : diff}`;
     }
 
     // #1213: finishing takes her three passes since her last edit, then the
@@ -1625,7 +1635,11 @@ Before it can be a PR:
     }
 
     async function tests({ path: rel, estimate, execution }) {
-      const target = rel ? posix(inside(rel)) : "";
+      let target = rel ? posix(inside(rel)) : "";
+      // #1420: test/x.test.js without node-bot/ means hers, unless the repo root has it.
+      if (/^test\/[\w.-]+\.test\.js$/.test(target) && !fs.existsSync(path.join(root, target)) && fs.existsSync(path.join(root, "node-bot", target))) {
+        target = `node-bot/${target}`;
+      }
       let cwd = path.join(root, "node-bot");
       let command = "node run_tests.js";
       const nodeTest = /^node-bot\/(test\/[\w.-]+\.test\.js)$/.exec(target);

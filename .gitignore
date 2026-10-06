@@ -176,3 +176,6 @@ node-bot/bench/results/
 tools/analysis-sandbox/bundle.staging.*/
 tools/analysis-sandbox/bundle.previous.*/
 tools/analysis-sandbox/helper-launch.lock/
+
+# #1420: her live skills (use counts, status); shipped ones are in node-bot/skills-default/.
+node-bot/skills/

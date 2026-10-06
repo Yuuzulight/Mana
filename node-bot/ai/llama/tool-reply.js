@@ -1,3 +1,5 @@
+const CONNECTION_RESET = new Set(["ECONNRESET", "UND_ERR_SOCKET"]);
+
 function createToolReply(context) {
 async function runToolAwareReply(
     prompt,
@@ -96,7 +98,7 @@ async function runToolAwareReply(
       if (think === true) await context.fitThinkingToContext(params, { messages, ...toolFields });
       // #1406: a remote OpenAI-compatible endpoint (DeepSeek) runs this
       // same loop through chatUrl and requestHeaders; local is llama-server.
-      const resp = await context.fetchImpl(
+      const send = () => context.fetchImpl(
         context.chatUrl ? context.chatUrl() : `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
         {
           method: "POST",
@@ -105,6 +107,18 @@ async function runToolAwareReply(
           body: JSON.stringify({ messages, ...toolFields, ...params }),
         },
       );
+      // #1420: a connection to her own llama-server that reset produced
+      // nothing, so it's tried once more. A timeout already ran the whole
+      // generation and isn't repeated; a remote model never is.
+      let resp;
+      try {
+        resp = await send();
+      } catch (e) {
+        if (context.chatUrl || !CONNECTION_RESET.has(e?.cause?.code)) throw e;
+        await context.sleep(2000);
+        extraMessages?.signal?.throwIfAborted();
+        resp = await send();
+      }
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
         throw new Error(

@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
+const { createLlamaServerRuntime, withLocalTimeouts } = require("../ai/llama-server-runtime");
 
 function makeFakeChild() {
   const listeners = {};
@@ -3695,4 +3695,49 @@ test("runToolAwareReply reports reply text shown alongside a round's tool calls"
     onRoundText: (text) => texts.push(text),
   });
   assert.deepEqual(texts, ["Let me check that file."]);
+});
+
+// #1420: a reset connection to llama-server is tried once more; a timeout isn't.
+for (const [code, expectRetry] of [["ECONNRESET", true], ["UND_ERR_HEADERS_TIMEOUT", false]]) {
+  test(`runToolAwareReply ${expectRetry ? "retries" : "doesn't retry"} a tool reply after ${code}`, async () => {
+    let serverUp = false;
+    let sends = 0;
+    const runtime = createLlamaServerRuntime({
+      env: makeFakeEnv(),
+      fs: makeFakeFs(),
+      fetch: async (url) => {
+        if (String(url).endsWith("/health")) return { ok: serverUp };
+        if (String(url).endsWith("/v1/chat/completions")) {
+          sends += 1;
+          if (sends === 1) throw Object.assign(new TypeError("fetch failed"), { cause: { code } });
+          return { ok: true, json: async () => ({ choices: [{ message: { content: "back again" } }] }) };
+        }
+        return { ok: false, status: 404, text: async () => "not found" };
+      },
+      spawn: () => {
+        serverUp = true;
+        return makeFakeChild();
+      },
+      sleep: async () => {},
+      registerExitHandlers: false,
+    });
+    const reply = runtime.runToolAwareReply("hi", makeFakePolicy());
+    if (expectRetry) {
+      assert.equal((await reply).content, "back again");
+      assert.equal(sends, 2);
+    } else {
+      await assert.rejects(reply, /fetch failed/);
+      assert.equal(sends, 1);
+    }
+  });
+}
+
+test("withLocalTimeouts gives only her own llama-server the long wait", async () => {
+  const seen = [];
+  class FakeAgent { constructor(opts) { this.opts = opts; } }
+  const fetch = withLocalTimeouts(async (url, init) => seen.push([url, init.dispatcher]), FakeAgent);
+  await fetch("http://127.0.0.1:8080/v1/chat/completions", {});
+  await fetch("https://api.deepseek.com/chat/completions", {});
+  assert.equal(seen[0][1].opts.headersTimeout, 30 * 60 * 1000);
+  assert.equal(seen[1][1], undefined);
 });
