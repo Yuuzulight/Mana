@@ -1,0 +1,21 @@
+{
+  "id": "tool-choice-web",
+  "kind": "tool-choice",
+  "toolResults": {
+    "web_search": "Singapore today: 31°C, thunderstorms in the afternoon.",
+    "web_read": "Singapore today: 31°C, thunderstorms in the afternoon."
+  },
+  "turns": [
+    {
+      "user": "Look up today's weather in Singapore for me.",
+      "expect": {
+        "called": [
+          "^web_(search|read)$"
+        ],
+        "said": [
+          "31|thunder"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "delegation-self-work",
+  "kind": "delegation",
+  "toolResults": {
+    "self_work__start": {
+      "taskId": "self-work",
+      "title": "#42: Fix the tray icon",
+      "status": "started"
+    }
+  },
+  "turns": [
+    {
+      "user": "While I'm away, work on issue #42 in your own repo by yourself.",
+      "expect": {
+        "called": [
+          "^self_work__start$"
+        ],
+        "notCalled": [
+          "^(git__push|github__write)$"
+        ]
+      }
+    }
+  ]
+}

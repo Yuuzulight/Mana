@@ -1,0 +1,17 @@
+{
+  "id": "tool-choice-none-needed",
+  "kind": "tool-choice",
+  "turns": [
+    {
+      "user": "What's 17 times 23?",
+      "expect": {
+        "said": [
+          "391"
+        ],
+        "notCalled": [
+          ".*"
+        ]
+      }
+    }
+  ]
+}

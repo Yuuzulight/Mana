@@ -1,0 +1,25 @@
+{
+  "id": "recall-across-chats-held-out",
+  "kind": "recall",
+  "heldOut": true,
+  "turns": [
+    {
+      "session": "a",
+      "user": "Please remember that I'm allergic to peanuts.",
+      "expect": {
+        "called": [
+          "^memory__remember$"
+        ]
+      }
+    },
+    {
+      "session": "b",
+      "user": "Is there any food I should avoid?",
+      "expect": {
+        "said": [
+          "peanut"
+        ]
+      }
+    }
+  ]
+}
