@@ -1063,6 +1063,21 @@ async function buildAssistantReply(
             ...(userChat ? [require('./resource-tool-source').createResourceToolSource(context.resourceCoordinator)] : []),
             // #1406: "how much have you spent?"
             ...(userChat && context.apiSpending ? [require('../api-spending').createSpendingToolSource(context.apiSpending)] : []),
+            // #1406: a coding request on DeepSeek, only when I ask; its edits
+            // go through this turn's policy, so they're proposals I review.
+            ...(userChat && context.apiSpending && context.modelSettingsStore
+              ? [
+                  require('./deepseek-chat-tool').createDeepSeekChatToolSource({
+                    settings: () => context.modelSettingsStore.getEscalationSettings(),
+                    runtime: context.llamaServerRuntime,
+                    spending: context.apiSpending,
+                    codingSchemas: () =>
+                      context.createCodingToolSource({ editors: context.getEditorIntegrations(), approvalGate: context.activeApprovalGate, reviewEdit: context.reviewEdit }).listToolSchemas(),
+                    policy: () => mergedToolPolicy,
+                    env: context.deps.env || process.env,
+                  }),
+                ]
+              : []),
             // #1383: what she can do right now, read when she asks (the tool
             // list is this reply's final one, so it's what she really has).
             ...(userChat

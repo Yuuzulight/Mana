@@ -4026,6 +4026,7 @@ function registerRoutes(app, upload, deps = {}) {
     get gitTools() { return gitTools; },
     get improvementTools() { return improvementTools; },
     get apiSpending() { return apiSpending; },
+    get modelSettingsStore() { return modelSettingsStore; },
     get GROUP_REACTION_MAX_TOKENS() { return GROUP_REACTION_MAX_TOKENS; },
     get http() { return http; },
     get https() { return https; },
