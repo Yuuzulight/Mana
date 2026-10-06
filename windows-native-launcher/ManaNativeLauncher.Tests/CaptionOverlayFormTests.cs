@@ -20,6 +20,22 @@ public class CaptionOverlayFormTests
         Assert.False(form.Visible);
     }
 
+    // #1424: with the chat window on screen her words are already there.
+    [Fact]
+    public void ChatInView_KeepsTheBarHiddenUntilItCloses()
+    {
+        var chatOpen = true;
+        using var form = new CaptionOverlayForm(chatInView: () => chatOpen);
+        form.ShowSentence("Give me a second, I'm waking up.", TimeSpan.FromSeconds(1));
+        form.ShowSpokenText("One. Two.", TimeSpan.FromSeconds(2));
+        form.SpeechEnded();
+        Assert.False(form.Visible);
+
+        chatOpen = false;
+        form.ShowSentence("Back on screen.", TimeSpan.FromSeconds(1));
+        Assert.True(form.Visible);
+    }
+
     [Fact]
     public void SetCaption_GrowsTheBarToFitEveryWrappedLine()
     {

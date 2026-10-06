@@ -69,6 +69,7 @@ internal sealed class CaptionOverlayForm : Form
     private readonly Queue<(string Text, int Ms)> upcoming = new();
     // Mana's avatar on screen, or null while she's hidden.
     private readonly Func<Rectangle?>? anchor;
+    private readonly Func<bool>? chatInView;
     private string previous = ""; // the reply's sentence before this one, shown in full
     private string current = "";  // the sentence being said, words single-spaced
     private long currentStart;
@@ -80,9 +81,12 @@ internal sealed class CaptionOverlayForm : Form
     private long entranceStart = long.MinValue;
     private double windowAlpha = 255;
 
-    public CaptionOverlayForm(Func<Rectangle?>? anchor = null)
+    // chatInView: #1424, whether the chat window is on screen; her words are
+    // already there, so the bar stays hidden (as chat bubbles do).
+    public CaptionOverlayForm(Func<Rectangle?>? anchor = null, Func<bool>? chatInView = null)
     {
         this.anchor = anchor;
+        this.chatInView = chatInView;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -335,6 +339,15 @@ internal sealed class CaptionOverlayForm : Form
     {
         if (suppressed)
         {
+            return;
+        }
+        if (chatInView?.Invoke() == true)
+        {
+            upcoming.Clear();
+            timer.Stop();
+            frameTimer.Stop();
+            replyEnded = true;
+            Visible = false;
             return;
         }
         previous = replyEnded ? "" : current;
