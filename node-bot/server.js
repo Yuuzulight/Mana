@@ -3546,6 +3546,29 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // #1382: what she's measured, for her planner and for me. Admin-key
+  // protected like every non-public route. Recommendations are advice:
+  // cloud models are never eligible here (no approved fallbacks passed).
+  app.get("/telemetry", (req, res) => {
+    const { buildTelemetry, recommendRoute, plannerSummary, loadReports } = require("./telemetry");
+    const telemetry = buildTelemetry({
+      toolCalls: activeToolCallLog.readRecent(5000),
+      reports: loadReports(path.join(__dirname, "bench", "results")),
+      operations: perfMetrics.operations,
+    });
+    const current = String(activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\\/]/).pop() || null;
+    const kinds = [...new Set(telemetry.models.map((m) => m.kind))];
+    const recommendations = kinds.map((kind) =>
+      recommendRoute(telemetry, {
+        kind,
+        current,
+        candidates: [...new Set(telemetry.models.filter((m) => m.kind === kind).map((m) => m.model))].map((model) => ({ model, local: !/gemini/i.test(model) })),
+        localOnly: require("./local-only").isLocalOnly(),
+      }),
+    );
+    res.json({ ...telemetry, recommendations, planner: plannerSummary(telemetry) });
+  });
+
   app.get("/perf/status", (req, res) => {
     try {
       const gaming = getGamingStatus();
