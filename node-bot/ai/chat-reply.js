@@ -1177,8 +1177,12 @@ async function buildAssistantReply(
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
-          mergedToolPolicy = context.wrapWithToolCallLog(mergedToolPolicy, context.activeToolCallLog, () =>
-            context.activeMoodStore.record("task_failed"),
+          mergedToolPolicy = context.wrapWithToolCallLog(
+            mergedToolPolicy,
+            context.activeToolCallLog,
+            () => context.activeMoodStore.record("task_failed"),
+            // #1382: telemetry keys tool stats by the model that chose the call.
+            () => ({ model: String(context.activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\\/]/).pop() || null }),
           );
           // #486: modify-input hook rules rewrite args first, so every gate
           // above and the audit log see the rewritten call, never the original.
