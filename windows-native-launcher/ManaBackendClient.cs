@@ -597,6 +597,54 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1406: self-work's DeepSeek escalation. The key goes in and never
+    // comes back: the backend only says whether there is one.
+    public async Task<ManaEscalationSettings> GetEscalationAsync()
+    {
+        using var response = await http.GetAsync("/self-work/escalation");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        bool Flag(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.True;
+        return new ManaEscalationSettings(Flag("enabled"), Flag("hasKey"), Flag("localOnly"));
+    }
+
+    public async Task SetEscalationAsync(bool enabled, string? apiKey)
+    {
+        var fields = new Dictionary<string, object> { ["enabled"] = enabled };
+        if (apiKey is not null) fields["apiKey"] = apiKey;
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/self-work/escalation", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1406: Settings > API Spending.
+    public async Task<ManaApiSpending> GetApiSpendingAsync()
+    {
+        using var response = await http.GetAsync("/api-spending");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        static double Number(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0;
+        static ManaSpendingTotals Totals(JsonElement e) => new(
+            Number(e, "usd"), (long)Number(e, "requests"), (long)Number(e, "cacheHit"), (long)Number(e, "cacheMiss"),
+            (long)Number(e, "output"), (long)Number(e, "reasoning"), (long)Number(e, "unpricedRequests"));
+        static IReadOnlyDictionary<string, ManaSpendingTotals> Split(JsonElement e, string name)
+        {
+            var split = new Dictionary<string, ManaSpendingTotals>();
+            if (e.TryGetProperty(name, out var obj) && obj.ValueKind == JsonValueKind.Object)
+                foreach (var p in obj.EnumerateObject()) split[p.Name] = Totals(p.Value);
+            return split;
+        }
+        ManaSpendingPeriod Period(string name) =>
+            root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Object
+                ? new ManaSpendingPeriod(Totals(e), Split(e, "byModel"), Split(e, "byUse"))
+                : new ManaSpendingPeriod(new ManaSpendingTotals(0, 0, 0, 0, 0, 0, 0), new Dictionary<string, ManaSpendingTotals>(), new Dictionary<string, ManaSpendingTotals>());
+        return new ManaApiSpending(Period("total"), Period("today"), Period("month"), root.TryGetProperty("peakNow", out var peak) && peak.ValueKind == JsonValueKind.True);
+    }
+
     public async Task SetActiveProfileAsync(string profile)
     {
         var payload = JsonSerializer.Serialize(new { profile });
@@ -4134,3 +4182,8 @@ internal sealed class ManaLearnedReason
     public double Multiplier { get; init; }
 }
 
+// #1406
+public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool LocalOnly);
+public sealed record ManaSpendingTotals(double Usd, long Requests, long CacheHit, long CacheMiss, long Output, long Reasoning, long UnpricedRequests);
+public sealed record ManaSpendingPeriod(ManaSpendingTotals All, IReadOnlyDictionary<string, ManaSpendingTotals> ByModel, IReadOnlyDictionary<string, ManaSpendingTotals> ByUse);
+public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPeriod Today, ManaSpendingPeriod Month, bool PeakNow);

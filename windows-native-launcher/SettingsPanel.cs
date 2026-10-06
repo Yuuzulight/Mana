@@ -136,6 +136,7 @@ internal sealed class SettingsPanel : UserControl
         tabs.TabPages.Add(BuildPerfTab());
         tabs.TabPages.Add(BuildPresetsTab());
         tabs.TabPages.Add(BuildModelTab());
+        tabs.TabPages.Add(new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }); // #1406
         tabs.TabPages.Add(BuildMobileDevicesTab());
         tabs.TabPages.Add(BuildAccountsTab());
         tabs.TabPages.Add(BuildMailCalendarTab());
