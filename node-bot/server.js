@@ -275,6 +275,7 @@ const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
 const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
 const { createSelfWork } = require("./self-work");
+const { createLessons } = require("./self-work-lessons");
 const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
 const { refuteEdit } = require("./ai/adversarial-verifier");
@@ -3018,6 +3019,9 @@ function registerRoutes(app, upload, deps = {}) {
     if (result.ok) {
       try {
         selfWork.traces?.mark(Number(req.body?.pr), { reverted: true });
+        // #1385: a lesson on the issue that PR was for (only a PR with a training record is hers).
+        const mine = selfWork.traces?.list().find((t) => t.pr === Number(req.body?.pr));
+        if (mine) selfWork.lessons?.record({ issue: mine.issue.number, title: mine.issue.title }, "reverted", String(req.body?.reason || "no reason given"), { kind: "revert", pr: Number(req.body.pr), baseCommit: result.mergeCommit });
       } catch {}
     }
     return res.json(result);
@@ -3041,6 +3045,8 @@ function registerRoutes(app, upload, deps = {}) {
       gemini: true,
       // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
       traces: createTraceStore({ dir: path.join(acpMemoryStore.dataDir, "self-work-traces") }),
+      // #1385: her failed runs' lessons; promoting one to a rule goes through my approval.
+      lessons: createLessons({ file: path.join(acpMemoryStore.dataDir, "self-work-lessons.json"), approvalGate: activeApprovalGate }),
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
@@ -3123,6 +3129,21 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/self-work/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ stopped: selfWork.stop() });
+  });
+  // #1385: her lessons from failed runs; a rule only after my approval.
+  app.get("/self-work/lessons", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return selfWork.lessons ? res.json({ lessons: selfWork.lessons.list() }) : res.status(404).json({ error: "lessons are off" });
+  });
+  app.post("/self-work/lessons/:id/promote", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    if (!selfWork.lessons) return res.status(404).json({ error: "lessons are off" });
+    return res.json(await selfWork.lessons.promote(req.params.id, req.body?.rule));
+  });
+  app.post("/self-work/lessons/:id/supersede", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    if (!selfWork.lessons) return res.status(404).json({ error: "lessons are off" });
+    return res.json(selfWork.lessons.supersede(req.params.id, String(req.body?.by ?? "")));
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
