@@ -86,7 +86,7 @@ internal static class Program
                 if (watch.ElapsedMilliseconds > timeout) throw new TimeoutException("analysis sandbox timed out");
                 try
                 {
-                    if (ScratchBytes(work) > 64 * 1024 * 1024) throw new IOException("analysis scratch storage limit exceeded");
+                    if (ScratchScan.Measure(work, 64 * 1024 * 1024, 5000) > 64 * 1024 * 1024) throw new IOException("analysis scratch storage limit exceeded");
                     inaccessibleScans = 0;
                 }
                 // Windows can briefly deny enumeration of a directory pending deletion.
@@ -158,25 +158,6 @@ internal static class Program
         var acl = info.GetAccessControl();
         acl.PurgeAccessRules(sid);
         info.SetAccessControl(acl);
-    }
-
-    private static long ScratchBytes(string directory)
-    {
-        long total = 0;
-        var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
-        var count = 0;
-        try
-        {
-            foreach (var file in Directory.EnumerateFileSystemEntries(directory, "*", options))
-            {
-                if (++count > 5000) throw new IOException("analysis scratch file count limit exceeded");
-                try { if (!Directory.Exists(file)) total += new FileInfo(file).Length; }
-                catch (FileNotFoundException) { continue; }
-                if (total > 64 * 1024 * 1024) break;
-            }
-        }
-        catch (DirectoryNotFoundException) { /* A script can remove a temporary subtree during enumeration. */ }
-        return total;
     }
 
     private static string ReadBounded(Stream stream, int maxBytes)
