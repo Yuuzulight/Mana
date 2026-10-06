@@ -1,0 +1,22 @@
+{
+  "id": "tool-choice-reminder",
+  "kind": "tool-choice",
+  "heldOut": true,
+  "toolResults": {
+    "reminder__set": {
+      "ok": true,
+      "id": "r1",
+      "at": "in 30 minutes"
+    }
+  },
+  "turns": [
+    {
+      "user": "Remind me to drink some water in 30 minutes.",
+      "expect": {
+        "called": [
+          "^reminder__set$"
+        ]
+      }
+    }
+  ]
+}

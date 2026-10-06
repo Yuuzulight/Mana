@@ -1125,6 +1125,9 @@ async function buildAssistantReply(
                 ]
               : []),
           ]);
+          // #1381: a behaviour eval answers tool calls from its fixtures,
+          // innermost, so the approval gate and hooks still see every call.
+          if (context.evalTools) mergedToolPolicy = context.evalTools(mergedToolPolicy);
           // #1318: command and sub-task tools ask for a `description`.
           mergedToolPolicy = context.withStepDescriptions(mergedToolPolicy);
           // #1318: a step held in the approval queue shows as awaiting

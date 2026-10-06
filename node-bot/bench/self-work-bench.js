@@ -473,7 +473,7 @@ async function geminiModel(repoRoot) {
 // #1221: --server-args starts the bench's llama-server itself with those
 // extra flags (a MoE model with its experts in RAM: "-ngl 99 --n-cpu-moe
 // 20"); the runtime then adopts it as the server for that model.
-function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
+function realModel(repoRoot, tokens, { model, context, serverArgs, adopt } = {}) {
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
   const { refuteEdit } = require("../ai/adversarial-verifier");
   const env = benchEnv(repoRoot);
@@ -512,8 +512,9 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     throw new Error("the bench's own llama-server isn't running");
   };
   // Its VRAM check would only see the bench's own server holding the card.
-  if (serverArgs) env.LLAMA_SERVER_VRAM_GUARD = "0";
-  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs ? { spawn: refuse } : {}) });
+  // #1381: `adopt` uses a server another process of the bench started.
+  if (serverArgs || adopt) env.LLAMA_SERVER_VRAM_GUARD = "0";
+  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs || adopt ? { spawn: refuse } : {}) });
   let server = null;
   // A server the bench starts itself (a model whose experts sit in RAM)
   // is killed the moment RAM passes the bench's limit; the run then stops.
@@ -538,6 +539,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   return {
     start,
     model: path.basename(runtime.findLlamaModel("default") || env.LLAMA_MODEL || "?"),
+    runtime,
     runLoop: (...args) => runtime.runToolAwareReply(...args),
     reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: runtime.runLocalReplyIfSafelyLoaded, env }),
     contextSize: () => runtime.getContextSize(),
@@ -674,4 +676,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp };
+module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, blocker, isGamingNow, benchEnv };

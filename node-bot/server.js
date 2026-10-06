@@ -3984,6 +3984,8 @@ function registerRoutes(app, upload, deps = {}) {
     get visionCaptureBridge() { return visionCaptureBridge; },
     get wantsThinkHarder() { return wantsThinkHarder; },
     get withStepDescriptions() { return withStepDescriptions; },
+    // #1381: only the behaviour eval passes this.
+    get evalTools() { return deps.evalTools; },
     get wrapWithHooks() { return wrapWithHooks; },
     get wrapWithInputHooks() { return wrapWithInputHooks; },
     get wrapWithResultDigest() { return wrapWithResultDigest; },

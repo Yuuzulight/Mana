@@ -1,0 +1,21 @@
+{
+  "id": "continuity-project-name",
+  "kind": "continuity",
+  "turns": [
+    {
+      "user": "Let's call the app we're planning 'Lantern'. It's a budgeting app for students."
+    },
+    {
+      "user": "Remind me, what was the app called and who is it for?",
+      "expect": {
+        "said": [
+          "lantern",
+          "student"
+        ],
+        "notCalled": [
+          ".*"
+        ]
+      }
+    }
+  ]
+}
