@@ -279,6 +279,7 @@ const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio
 const { createSelfWork, systemRamPercent } = require("./self-work");
 const { createPostDeployEval } = require("./post-deploy-eval");
 const { createApiSpending } = require("./api-spending");
+const { createEscalation } = require("./self-work-escalation");
 const { createLessons } = require("./self-work-lessons");
 const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
@@ -3103,6 +3104,14 @@ function registerRoutes(app, upload, deps = {}) {
       // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
       traces: createTraceStore({ dir: path.join(acpMemoryStore.dataDir, "self-work-traces") }),
       lessons,
+      // #1406: DeepSeek when her own attempts fail; off until I switch it on with a key.
+      escalation: createEscalation({
+        file: path.join(acpMemoryStore.dataDir, "self-work-escalation.json"),
+        settings: () => modelSettingsStore.getEscalationSettings(),
+        env: deps.env || process.env,
+      }),
+      remoteLoop: (config) => llamaServerRuntime.remoteToolReply(config),
+      spending: apiSpending,
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
@@ -3257,6 +3266,8 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/self-improvement/:issue/retry", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     const record = selfImprovement.retry(req.params.issue);
+    // #1406: a fresh try gets DeepSeek's tiers back too.
+    if (record) selfWork.escalation?.reset(req.params.issue);
     return record ? res.json({ record }) : res.status(404).json({ error: "No record for that issue." });
   });
   // A merged change checked by an eval/bench report (bench/results/<label>).
