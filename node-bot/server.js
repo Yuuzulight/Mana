@@ -3080,6 +3080,8 @@ function registerRoutes(app, upload, deps = {}) {
       gitTools,
       // #1269: Gemini CLI when every local attempt failed (MANA_SELF_WORK_GEMINI*).
       gemini: true,
+      // #1398: she watches CI on her own PR and fixes red checks (twice at most).
+      watchCi: true,
       // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
       traces: createTraceStore({ dir: path.join(acpMemoryStore.dataDir, "self-work-traces") }),
       // #1385: her failed runs' lessons; promoting one to a rule goes through my approval.
