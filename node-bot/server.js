@@ -205,6 +205,7 @@ const { PluginStore, pluginStore } = require("./plugin-store");
 const { createTtsRuntime, resolveTtsProvider } = require("./tts-runtime");
 const { createKokoroRuntime } = require("./kokoro-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const { createMemoryMaintenance } = require("./memory-maintenance");
 const { createSnapshotStore } = require("./snapshot-store");
 const { createSessionSearchIndex } = require("./session-search-index");
 const { createMemoryGraph } = require("./memory-graph");
@@ -2378,6 +2379,18 @@ function registerRoutes(app, upload, deps = {}) {
   // idle signal (issue #69). Deliberately per-registerRoutes-call state (not
   // module-level) so each app instance -- and each test -- starts fresh.
   let idleConsolidationFiredForCurrentIdlePeriod = false;
+  // #1390: retention and compaction across the memory stores. Not built in
+  // tests unless one is injected: the real one works on node-bot/data.
+  const memoryMaintenance =
+    deps.memoryMaintenance ||
+    (process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : createMemoryMaintenance({
+          store: deps.acpMemoryStore || acpMemoryStore,
+          searchIndex: sessionSearchIndex,
+          memoryGraph: (deps.acpMemoryStore || acpMemoryStore).memoryGraph,
+          isGaming: () => gamingWatch.isGaming(),
+        }));
   const idleGamingStatusCheck = deps.getGamingStatus || getGamingStatus;
   const triggerIdleConsolidation =
     deps.triggerIdleConsolidation ||
@@ -2445,6 +2458,24 @@ function registerRoutes(app, upload, deps = {}) {
           "Idle-triggered pending-fact expiry failed:",
           err && err.message ? err.message : err,
         );
+      }
+      // #1390: the permitted (auto) maintenance steps, at most once a day;
+      // anything destructive waits for approval in /admin/memory/maintenance.
+      if (memoryMaintenance) {
+        try {
+          const lastRun = Date.parse(memoryMaintenance.status().lastRunAt) || 0;
+          if (Date.now() - lastRun >= 24 * 60 * 60 * 1000) {
+            const job = () => memoryMaintenance.run({ mode: "auto" });
+            await (resourceCoordinator
+              ? resourceCoordinator.run({ owner: "Memory maintenance", background: true, estimate: {} }, job)
+              : job());
+          }
+        } catch (err) {
+          console.warn(
+            "Idle-triggered memory maintenance failed:",
+            err && err.message ? err.message : err,
+          );
+        }
       }
       // Deterministic, no-LLM skill pruning (issue #140) -- same idle
       // signal as the memory consolidation above, but this pass never
@@ -2887,6 +2918,7 @@ function registerRoutes(app, upload, deps = {}) {
     wikiLookup: deps.wikiLookup || wikiLookup,
     checkAdminAuth,
     getMemoryVault: () => memoryVault,
+    getMemoryMaintenance: () => memoryMaintenance,
     runBackgroundReviewerPublic: deps.runBackgroundReviewerPublic || runBackgroundReviewerPublic,
     runSkillProposalPublic: deps.runSkillProposalPublic || runSkillProposalPublic,
     asyncLoadBackgroundMemory: deps.asyncLoadBackgroundMemory || asyncLoadBackgroundMemory,
@@ -2926,6 +2958,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        memoryMaintenance: memoryMaintenance?.status(),
         memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
