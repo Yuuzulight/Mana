@@ -652,13 +652,35 @@ function checkMemoryVault(vault) {
   if (vault.error) {
     return makeCheck("memory-vault", label, "warn", `${vault.vaultDir}: ${vault.error}`, vault);
   }
+  // #1389: hygiene findings (memory-vault.js scanHygiene), warn only.
+  const findingLabels = {
+    "misplaced-fact": "Fact notes Mana can't see",
+    "missing-structure": "Missing folders",
+    "competing-output": "Competing memory file",
+    "unowned-view": "Your files in Views/",
+  };
+  const parts = [];
   if (vault.skipped?.length) {
-    const files = vault.skipped.map((s) => `${s.file} (${s.reason})`).join("; ");
-    return makeCheck("memory-vault", label, "warn", `${vault.vaultDir}: ${vault.notes} notes synced; skipped ${files}.`, vault);
+    parts.push(`skipped ${vault.skipped.map((s) => `${s.file} (${s.reason})`).join("; ")}.`);
+  }
+  for (const [kind, title] of Object.entries(findingLabels)) {
+    const group = (vault.findings || []).filter((f) => f.kind === kind);
+    if (!group.length) continue;
+    const shown = group.slice(0, 5).map((f) => f.path).join(", ");
+    const more = group.length > 5 ? ` and ${group.length - 5} more` : "";
+    parts.push(`${title}: ${shown}${more}. ${group[0].why} ${group[0].fix}`);
+  }
+  const capped = vault.findingsTruncated ? " Only part of a big vault was checked." : "";
+  if (parts.length) {
+    const head = vault.skipped?.length ? `${vault.notes} notes synced; ` : "";
+    const ownership = !vault.findings?.length
+      ? ""
+      : " Views/ files starting with Mana's marker are hers and get rewritten; files without it are yours and are never overwritten. Doctor only reports: nothing is imported, moved or deleted.";
+    return makeCheck("memory-vault", label, "warn", `${vault.vaultDir}: ${head}${parts.join(" ")}${ownership}${capped}`, vault);
   }
   // "polling": the file watcher is down and the 60 s sync covers for it.
   const polling = vault.mode === "polling" ? " The file watcher is down, so it checks every 60 s." : "";
-  return makeCheck("memory-vault", label, "pass", `${vault.vaultDir}: writable, ${vault.notes} notes synced.${polling}`, vault);
+  return makeCheck("memory-vault", label, "pass", `${vault.vaultDir}: writable, ${vault.notes} notes synced.${polling}${capped}`, vault);
 }
 
 // #889: which chat model llama-server is running, "(gaming model)" while

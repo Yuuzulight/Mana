@@ -1,0 +1,15 @@
+{
+  "id": "1186-tests-leave-uploads-in-tmp",
+  "kind": "live",
+  "pr": 1271,
+  "issue": 1186,
+  "base": "95424a37bac01aa707314fba11a20e36be11b049",
+  "fix": "8de92f65974ddae6a0b15eb52582b93419410d62",
+  "title": "Tests leave upload files behind in node-bot/tmp",
+  "body": "`node-bot/tmp` has about 900 leftover files with hex names. They come from tests that exercise uploads and write into the real tmp folder instead of a temporary one.\n\nFind which tests write there, and make them use a directory from `fs.mkdtemp(os.tmpdir())` (passed in the same way the code already allows, or through a small option if it doesn't). Clean it up after each test. Don't delete the existing leftover files; I'll clear those myself. Add a check that running those tests leaves `node-bot/tmp` unchanged.",
+  "fixFiles": ["node-bot/acp-autonomous-loop.js", "node-bot/mobile-routes.js", "node-bot/server-routes.js", "node-bot/server.js", "node-bot/utils/live-dirs.js", "node-bot/test/helpers.js", "node-bot/test/admin-accounts-routes.test.js", "node-bot/test/mobile-routes.test.js", "node-bot/test/pending-writes-path-safety.test.js", "node-bot/test/plugin-input-hooks-routes.test.js", "node-bot/test/server-routes.test.js", "node-bot/test/transcribe-partial-real-whisper.test.js", "node-bot/test/transcribe-partial-route.test.js", "node-bot/test/voice-upload-cleanup.test.js"],
+  "hiddenTests": ["node-bot/test/bench-1186-upload-tmp.test.js"],
+  "testCommand": "node --test test/bench-1186-upload-tmp.test.js",
+  "interface": "The upload tests (mobile-routes, plugin-input-hooks-routes, server-routes, transcribe-partial-*, voice-upload-cleanup) still pass and leave node-bot/tmp unchanged.",
+  "why": "One of my live failures: she has to find every test that writes uploads and give it a temp folder, not just patch one."
+}

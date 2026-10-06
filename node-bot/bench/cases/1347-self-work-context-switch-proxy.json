@@ -1,0 +1,19 @@
+{
+  "id": "1347-self-work-context-switch-proxy",
+  "kind": "node-bug",
+  "pr": 1347,
+  "issue": 1281,
+  "base": "efba43be1a7c84bc9a5744ecb5ce43463e4d9e16",
+  "fix": "ba43f37e96a3604ac561d64f3b8fc2880062f1ad",
+  "title": "Self-work context switches wait for in-flight OpenAI-compatible proxy requests",
+  "body": "Self-work and profile switches should not restart llama-server while an OpenAI-compatible /v1 chat completion proxy request is still in flight. Count proxied requests as active turns and delay context switches until they finish.",
+  "fixFiles": [
+    "node-bot/ai/llama-server-runtime.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/llama-server-runtime.test.js"
+  ],
+  "testCommand": "node --test test/llama-server-runtime.test.js",
+  "interface": "proxyChatCompletion participates in the same in-turn accounting used by self-work/profile context switches.",
+  "why": "A self-work run can otherwise unload the model out from under a normal chat/proxy request."
+}

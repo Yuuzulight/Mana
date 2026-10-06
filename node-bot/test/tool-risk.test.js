@@ -412,3 +412,13 @@ test("#669 review: classifier bypass attempts", () => {
   // typed into an already-running shell
   assert.equal(classifyToolCall("mcp__dc__interact_with_process", { pid: 1, input: "rm -rf /" }).tier, "destructive");
 });
+
+// #1399: read-only tools run without asking in smart mode; ones that act still ask.
+test("memory search and self-work's worktree reads are read tier; tools that act aren't", () => {
+  for (const name of ["memory__search_facts", "self_work__files", "self_work__read", "self_work__search", "self_work__plan", "self_work__review"]) {
+    assert.equal(classifyToolCall(name, {}).tier, "read", name);
+  }
+  for (const name of ["analysis__run_python", "mana_update__revert", "self_work__start", "self_work__refresh"]) {
+    assert.equal(classifyToolCall(name, {}).tier, "write", name);
+  }
+});

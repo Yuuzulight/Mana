@@ -1061,8 +1061,24 @@ async function buildAssistantReply(
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [context.selfWork.chatToolSource(transcript, { sessionId })] : []),
             ...(userChat ? [require('./resource-tool-source').createResourceToolSource(context.resourceCoordinator)] : []),
+            // #1383: what she can do right now, read when she asks (the tool
+            // list is this reply's final one, so it's what she really has).
+            ...(userChat
+              ? [
+                  require('./capability-inventory').createInventoryToolSource({
+                    ...context.inventorySources,
+                    tools: () => mergedToolPolicy?.tools || [],
+                    mcpServers: () => context.activeMcpClientRegistry?.listServers?.() || [],
+                    modelStatus: () => context.modelManagement?.getModelStatus?.() || null,
+                    approvalMode: () =>
+                      context.resolveToolApprovalMode(context.activeApprovalGate.getToolApprovalMode(), (context.deps.env || process.env).MANA_TOOL_APPROVAL),
+                  }),
+                ]
+              : []),
             // #1182: git and GitHub, only in my own chat.
             ...(userChat ? [context.gitTools] : []),
+            // #1384: her improvement issues, only in my own chat.
+            ...(userChat ? [context.improvementTools] : []),
             // #906: my email and calendar, only in my own chat (never a
             // scheduled reply or a Discord/Telegram bridge).
             ...(userChat
@@ -1177,8 +1193,12 @@ async function buildAssistantReply(
           // Issue #188: applied last so it catches every tool call from
           // every source (local read_file, browser-automation, MCP) in one
           // shared audit/trace log.
-          mergedToolPolicy = context.wrapWithToolCallLog(mergedToolPolicy, context.activeToolCallLog, () =>
-            context.activeMoodStore.record("task_failed"),
+          mergedToolPolicy = context.wrapWithToolCallLog(
+            mergedToolPolicy,
+            context.activeToolCallLog,
+            () => context.activeMoodStore.record("task_failed"),
+            // #1382: telemetry keys tool stats by the model that chose the call.
+            () => ({ model: String(context.activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\\/]/).pop() || null }),
           );
           // #486: modify-input hook rules rewrite args first, so every gate
           // above and the audit log see the rewritten call, never the original.
