@@ -276,6 +276,7 @@ const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio
 const { createSelfWork } = require("./self-work");
 const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
+const { createImprovementToolSource, createIssueProposals } = require("./issue-proposals");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -3006,6 +3007,9 @@ function registerRoutes(app, upload, deps = {}) {
   const gitTools =
     deps.gitTools ||
     createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
+  // #1384: her improvement issues: duplicate check, evidence, approval bound to the reviewed text.
+  // ponytail: no lessons yet; pass them in once #1385 is merged.
+  const improvementTools = deps.improvementTools || createImprovementToolSource(createIssueProposals({ approvalGate: activeApprovalGate }));
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =
     deps.selfWork ||
@@ -3811,6 +3815,7 @@ function registerRoutes(app, upload, deps = {}) {
     get gentleHint() { return gentleHint; },
     get getEditorIntegrations() { return getEditorIntegrations; },
     get gitTools() { return gitTools; },
+    get improvementTools() { return improvementTools; },
     get GROUP_REACTION_MAX_TOKENS() { return GROUP_REACTION_MAX_TOKENS; },
     get http() { return http; },
     get https() { return https; },

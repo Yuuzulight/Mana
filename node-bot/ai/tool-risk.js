@@ -105,6 +105,8 @@ const BUILTIN_TIERS = {
   // #1192: the same, and network: they ask after outside content, too.
   git__push: "network",
   github__write: "network",
+  // #1384: asks through its own approval type, bound to the reviewed issue.
+  improvement__propose: "write",
   // #1194: asks me every time itself (ai/try-pr-tool-source.js).
   mana_update__pull_main: "write",
   memory__remember: "write",
@@ -163,6 +165,7 @@ const SELF_GATED = new Set([
   "git__change",
   "git__push",
   "github__write",
+  "improvement__propose",
   "mana_update__pull_main",
 ]);
 
