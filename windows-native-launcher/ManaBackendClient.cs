@@ -628,10 +628,14 @@ internal sealed class ManaBackendClient
         using var document = await JsonDocument.ParseAsync(stream);
         var root = document.RootElement;
         static double Number(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0;
+        static double? Maybe(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+        static string? Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        static bool Flag(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
         static ManaSpendingTotals Totals(JsonElement e) => new(
             Number(e, "usd"), (long)Number(e, "requests"), (long)Number(e, "cacheHit"), (long)Number(e, "cacheMiss"),
             (long)Number(e, "output"), (long)Number(e, "reasoning"), (long)Number(e, "unpricedRequests"),
-            Number(e, "usdCacheHit"), Number(e, "usdCacheMiss"), Number(e, "usdOutput"), Number(e, "usdReasoning"));
+            Number(e, "usdCacheHit"), Number(e, "usdCacheMiss"), Number(e, "usdOutput"), Number(e, "usdReasoning"),
+            Number(e, "usdPeakExtra"), Maybe(e, "cacheHitRate"));
         static IReadOnlyDictionary<string, ManaSpendingTotals> Split(JsonElement e, string name)
         {
             var split = new Dictionary<string, ManaSpendingTotals>();
@@ -639,23 +643,50 @@ internal sealed class ManaBackendClient
                 foreach (var p in obj.EnumerateObject()) split[p.Name] = Totals(p.Value);
             return split;
         }
+        static IReadOnlyDictionary<string, double> Amounts(JsonElement e, string name)
+        {
+            var amounts = new Dictionary<string, double>();
+            if (e.TryGetProperty(name, out var obj) && obj.ValueKind == JsonValueKind.Object)
+                foreach (var p in obj.EnumerateObject()) amounts[p.Name] = p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : 0;
+            return amounts;
+        }
+        static IReadOnlyList<ManaIssueCost> Issues(JsonElement e, string name)
+        {
+            var list = new List<ManaIssueCost>();
+            if (!e.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+            foreach (var i in arr.EnumerateArray())
+            {
+                var prs = new List<int>();
+                if (i.TryGetProperty("prs", out var p) && p.ValueKind == JsonValueKind.Array)
+                    foreach (var n in p.EnumerateArray()) if (n.ValueKind == JsonValueKind.Number) prs.Add(n.GetInt32());
+                list.Add(new ManaIssueCost((int)Number(i, "issue"), Str(i, "title"), Str(i, "state"), prs, Number(i, "usd"), (long)Number(i, "requests")));
+            }
+            return list;
+        }
         ManaSpendingPeriod Period(string name) =>
             root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Object
-                ? new ManaSpendingPeriod(Totals(e), Split(e, "byModel"), Split(e, "byUse"))
+                ? new ManaSpendingPeriod(Totals(e), Split(e, "byModel"), Split(e, "byUse"), Maybe(e, "projected"))
                 : new ManaSpendingPeriod(new ManaSpendingTotals(0, 0, 0, 0, 0, 0, 0), new Dictionary<string, ManaSpendingTotals>(), new Dictionary<string, ManaSpendingTotals>());
         var daily = new List<ManaSpendingDay>();
         if (root.TryGetProperty("daily", out var days) && days.ValueKind == JsonValueKind.Array)
-        {
             foreach (var d in days.EnumerateArray())
-            {
-                var byModel = new Dictionary<string, double>();
-                if (d.TryGetProperty("byModel", out var models) && models.ValueKind == JsonValueKind.Object)
-                    foreach (var p in models.EnumerateObject()) byModel[p.Name] = p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : 0;
-                var day = d.TryGetProperty("day", out var dayValue) && dayValue.ValueKind == JsonValueKind.String ? dayValue.GetString() ?? "" : "";
-                daily.Add(new ManaSpendingDay(day, Number(d, "usd"), byModel));
-            }
-        }
-        return new ManaApiSpending(Period("total"), Period("today"), Period("month"), root.TryGetProperty("peakNow", out var peak) && peak.ValueKind == JsonValueKind.True, daily);
+                daily.Add(new ManaSpendingDay(Str(d, "day") ?? "", Number(d, "usd"), Amounts(d, "byModel"), Amounts(d, "byUse"), Number(d, "peakExtra"), Issues(d, "issues")));
+        ManaSpendingResults? results = null;
+        if (root.TryGetProperty("results", out var r) && r.ValueKind == JsonValueKind.Object)
+            results = new ManaSpendingResults((int)Number(r, "mergedPrs"), Number(r, "usdOnMerged"), Maybe(r, "costPerMergedPr"), Number(r, "usdOnHeld"), Issues(r, "top"));
+        ManaBalance? balance = null;
+        if (root.TryGetProperty("balance", out var b) && b.ValueKind == JsonValueKind.Object)
+            balance = new ManaBalance(Str(b, "currency"), Number(b, "total"), Number(b, "granted"), Number(b, "toppedUp"), !b.TryGetProperty("available", out var av) || av.ValueKind != JsonValueKind.False, Str(b, "error"));
+        ManaRunway? runway = null;
+        if (root.TryGetProperty("runway", out var rw) && rw.ValueKind == JsonValueKind.Object)
+            runway = new ManaRunway(Maybe(rw, "daysLeft"), Flag(rw, "low"));
+        return new ManaApiSpending(Period("total"), Period("today"), Period("month"), Flag(root, "peakNow"), daily)
+        {
+            LastMonth = Period("lastMonth"),
+            Results = results,
+            Balance = balance,
+            Runway = runway,
+        };
     }
 
     public async Task SetActiveProfileAsync(string profile)
@@ -4198,7 +4229,18 @@ internal sealed class ManaLearnedReason
 // #1406
 public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool LocalOnly);
 public sealed record ManaSpendingTotals(double Usd, long Requests, long CacheHit, long CacheMiss, long Output, long Reasoning, long UnpricedRequests,
-    double UsdCacheHit = 0, double UsdCacheMiss = 0, double UsdOutput = 0, double UsdReasoning = 0);
-public sealed record ManaSpendingDay(string Day, double Usd, IReadOnlyDictionary<string, double> ByModel);
-public sealed record ManaSpendingPeriod(ManaSpendingTotals All, IReadOnlyDictionary<string, ManaSpendingTotals> ByModel, IReadOnlyDictionary<string, ManaSpendingTotals> ByUse);
-public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPeriod Today, ManaSpendingPeriod Month, bool PeakNow, IReadOnlyList<ManaSpendingDay>? Daily = null);
+    double UsdCacheHit = 0, double UsdCacheMiss = 0, double UsdOutput = 0, double UsdReasoning = 0, double UsdPeakExtra = 0, double? CacheHitRate = null);
+public sealed record ManaIssueCost(int Issue, string? Title, string? State, IReadOnlyList<int> Prs, double Usd, long Requests);
+public sealed record ManaSpendingDay(string Day, double Usd, IReadOnlyDictionary<string, double> ByModel,
+    IReadOnlyDictionary<string, double>? ByUse = null, double PeakExtra = 0, IReadOnlyList<ManaIssueCost>? Issues = null);
+public sealed record ManaSpendingPeriod(ManaSpendingTotals All, IReadOnlyDictionary<string, ManaSpendingTotals> ByModel, IReadOnlyDictionary<string, ManaSpendingTotals> ByUse, double? Projected = null);
+public sealed record ManaSpendingResults(int MergedPrs, double UsdOnMerged, double? CostPerMergedPr, double UsdOnHeld, IReadOnlyList<ManaIssueCost> Top);
+public sealed record ManaBalance(string? Currency, double Total, double Granted, double ToppedUp, bool Available, string? Error);
+public sealed record ManaRunway(double? DaysLeft, bool Low);
+public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPeriod Today, ManaSpendingPeriod Month, bool PeakNow, IReadOnlyList<ManaSpendingDay>? Daily = null)
+{
+    public ManaSpendingPeriod? LastMonth { get; init; }
+    public ManaSpendingResults? Results { get; init; }
+    public ManaBalance? Balance { get; init; }
+    public ManaRunway? Runway { get; init; }
+}

@@ -1062,7 +1062,7 @@ async function buildAssistantReply(
             ...(userChat ? [context.selfWork.chatToolSource(transcript, { sessionId })] : []),
             ...(userChat ? [require('./resource-tool-source').createResourceToolSource(context.resourceCoordinator)] : []),
             // #1406: "how much have you spent?"
-            ...(userChat && context.apiSpending ? [require('../api-spending').createSpendingToolSource(context.apiSpending)] : []),
+            ...(userChat && context.spendingReport ? [require('../api-spending').createSpendingToolSource(() => context.spendingReport({ days: 7 }))] : []),
             // #1406: a coding request on DeepSeek, only when I ask; its edits
             // go through this turn's policy, so they're proposals I review.
             ...(userChat && context.apiSpending && context.modelSettingsStore

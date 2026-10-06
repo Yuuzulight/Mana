@@ -18,7 +18,7 @@ test("escalation settings: off by default, the key is stored but never returned"
   const fetch = useTestAdminToken();
   const apiSpending = createApiSpending({ file: path.join(dir, "spending.json") });
   apiSpending.record({ model: "deepseek-flash", use: "chat", usage: { prompt_tokens: 10, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 10, completion_tokens: 2 } });
-  await withServer(createApp({ apiSpending }), async (base) => {
+  await withServer(createApp({ apiSpending, readBalance: async () => ({ currency: "USD", total: 4, granted: 0, toppedUp: 4, available: true }) }), async (base) => {
     const before = await (await fetch(`${base}/self-work/escalation`)).json();
     assert.deepEqual([before.enabled, before.hasKey, before.baseUrl], [false, false, "https://api.deepseek.com"]);
     const post = (body) => fetch(`${base}/self-work/escalation`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -30,5 +30,8 @@ test("escalation settings: off by default, the key is stored but never returned"
     const spending = await (await fetch(`${base}/api-spending`)).json();
     assert.equal(spending.total.requests, 1);
     assert.equal(spending.total.byUse.chat.cacheMiss, 10);
+    assert.equal(spending.daily.length, 90);
+    assert.equal(spending.balance.total, 4);
+    assert.equal(spending.runway.low, false);
   });
 });

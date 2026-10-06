@@ -30,6 +30,18 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
     internal Label[] FigureNotes { get; } = [NewNote(), NewNote(), NewNote()];
     internal DailySpendChart Daily { get; } = new() { Width = 760, Height = 240, Margin = new Padding(3, 6, 3, 8) };
     internal KindSpendBar Kinds { get; } = new() { Width = 760, Height = 140, Margin = new Padding(3, 0, 3, 8) };
+    internal Label Balance { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Text, MaximumSize = new Size(760, 0), Margin = new Padding(3, 2, 3, 4) };
+    internal Label Insights { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, MaximumSize = new Size(760, 0), Margin = new Padding(3, 0, 3, 6) };
+    internal ComboBox Range { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110, AccessibleName = "Chart range", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+    internal ComboBox ShowBy { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110, AccessibleName = "Show by", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+    internal Label DayTitle { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Text = "Click a day in the chart to see the issues it paid for.", Margin = new Padding(3, 0, 3, 4) };
+    internal ListView DayIssues { get; } = new() { Width = 760, Height = 110, AccessibleName = "Issues the chosen day paid for" };
+    internal Label ResultsSummary { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Text, MaximumSize = new Size(760, 0), Margin = new Padding(3, 0, 3, 6) };
+    internal ListView TopIssues { get; } = new() { Width = 760, Height = 170, AccessibleName = "What each issue cost" };
+    // Opens an issue or PR; tests swap it out.
+    internal Action<string> OpenUrl { get; set; } = url => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true })?.Dispose();
+    // ponytail: her own repository; take it from the backend if she ever works on another.
+    private const string RepoUrl = "https://github.com/Yuuzulight/Mana";
 
     private static Label NewFigure() => new() { AutoSize = true, ForeColor = DarkTheme.Text, Font = new Font(SystemFonts.MessageBoxFont!.FontFamily, 17f, FontStyle.Bold), Margin = new Padding(0, 2, 0, 0) };
     private static Label NewNote() => new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(0) };
@@ -69,6 +81,26 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
             foreach (var column in Columns) list.Columns.Add(column, column == "" ? 150 : 100);
         }
         Split.Columns[0].Text = "Model or use";
+        foreach (var list in new[] { DayIssues, TopIssues })
+        {
+            DarkTheme.ApplyListView(list);
+            list.View = View.Details;
+            list.FullRowSelect = true;
+            list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+            list.Columns.Add("Issue", 70);
+            list.Columns.Add("Title", 340);
+            list.Columns.Add("Outcome", 140);
+            list.Columns.Add("Cost", 90, HorizontalAlignment.Right);
+            list.Columns.Add("Requests", 90, HorizontalAlignment.Right);
+            list.ItemActivate += (_, _) => { if (list.SelectedItems.Count > 0 && list.SelectedItems[0].Tag is string url) OpenUrl(url); };
+        }
+        Range.Items.AddRange(["7 days", "30 days", "90 days"]);
+        Range.SelectedIndex = 1;
+        Range.SelectedIndexChanged += (_, _) => Daily.RangeDays = Range.SelectedIndex switch { 0 => 7, 2 => 90, _ => 30 };
+        ShowBy.Items.AddRange(["Model", "Use"]);
+        ShowBy.SelectedIndex = 0;
+        ShowBy.SelectedIndexChanged += (_, _) => Daily.ByUse = ShowBy.SelectedIndex == 1;
+        Daily.DayClicked += ShowDay;
         SplitPeriod.Items.AddRange(["Today", "This month", "All time"]);
         SplitPeriod.SelectedIndex = 1;
         SplitPeriod.SelectedIndexChanged += (_, _) => ShowSplit();
@@ -80,6 +112,7 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
             NewButton("Clear key", () => { clearingKey = true; Key.Clear(); Key.PlaceholderText = "Key will be cleared on Save"; return Task.CompletedTask; })));
         Controls.Add(KeyStatus);
         Controls.Add(Row(Heading("API spending"), NewButton("Refresh", ReloadAsync)));
+        Controls.Add(Balance);
         // Today, this month and all time: the figure, then requests and tokens.
         var figures = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(3, 4, 3, 6) };
         string[] periods = ["TODAY", "THIS MONTH", "ALL TIME"];
@@ -93,9 +126,17 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
             figures.Controls.Add(cell, i, 0);
         }
         Controls.Add(figures);
+        Controls.Add(Insights);
+        Controls.Add(Row(new Label { Text = "Range", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left }, Range,
+            new Label { Text = "Show by", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(12, 3, 3, 3) }, ShowBy));
         Controls.Add(Daily);
+        Controls.Add(DayTitle);
+        Controls.Add(DayIssues);
         Controls.Add(Row(new Label { Text = "Period", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left }, SplitPeriod));
         Controls.Add(Kinds);
+        Controls.Add(Heading("Cost of results"));
+        Controls.Add(ResultsSummary);
+        Controls.Add(TopIssues);
         Controls.Add(Heading("The numbers"));
         Controls.Add(Totals);
         Controls.Add(Split);
@@ -157,7 +198,15 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
             Figures[i].Text = Dollars(periods[i].Usd);
             FigureNotes[i].Text = $"{periods[i].Requests} requests · {Tokens(periods[i].CacheHit + periods[i].CacheMiss + periods[i].Output)} tokens";
         }
+        // This month: where it's heading, against last month.
+        if (spending.Month.Projected is double projected && spending.LastMonth is { } last)
+            FigureNotes[1].Text += $"\nOn pace for {Dollars(projected)} · last month {Dollars(last.All.Usd)}";
+        ShowBalance();
+        ShowInsights();
+        ShowResults();
         Daily.SetDays(spending.Daily ?? []);
+        DayIssues.Items.Clear();
+        DayTitle.Text = "Click a day in the chart to see the issues it paid for.";
         var unpriced = spending.Total.All.UnpricedRequests;
         SpendingStatus.Text = (spending.PeakNow ? "DeepSeek is at peak price right now (double). " : "")
             + (unpriced > 0 ? $"{unpriced} request(s) went to a model without known prices, so they show tokens only." : "");
@@ -173,6 +222,85 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
         foreach (var (name, totals) in period.ByUse.OrderByDescending(p => p.Value.Usd)) Split.Items.Add(RowOf(UseName(name), totals));
         if (Split.Items.Count == 0) Split.Items.Add(new ListViewItem("Nothing yet") { ForeColor = DarkTheme.Muted });
     }
+
+    private void ShowBalance()
+    {
+        var b = spending?.Balance;
+        var runway = spending?.Runway;
+        Balance.ForeColor = runway?.Low == true ? DarkTheme.Warn : DarkTheme.Text;
+        if (b is null)
+        {
+            Balance.Text = "Add your DeepSeek key above to see your balance.";
+            Balance.ForeColor = DarkTheme.Muted;
+            return;
+        }
+        if (b.Error is not null)
+        {
+            Balance.Text = $"Couldn't read your DeepSeek balance: {b.Error}";
+            Balance.ForeColor = DarkTheme.Muted;
+            return;
+        }
+        var amount = b.Currency == "USD" ? Dollars(b.Total) : $"{b.Total.ToString("0.00", CultureInfo.InvariantCulture)} {b.Currency}";
+        var lasts = runway?.DaysLeft is double days
+            ? days >= 60 ? $", about {Math.Round(days / 30)} months at this pace" : days >= 14 ? $", about {Math.Round(days / 7)} weeks at this pace" : $", about {Math.Max(1, Math.Round(days))} days at this pace"
+            : "";
+        Balance.Text = (runway?.Low == true ? "Running low: " : "") + $"DeepSeek balance {amount}{lasts}." + (b.Available ? "" : " DeepSeek says it's too low to make calls.");
+    }
+
+    private void ShowInsights()
+    {
+        var month = spending!.Month.All;
+        var parts = new List<string>();
+        if (month.UsdPeakExtra > 0) parts.Add($"Peak hours added {Dollars(month.UsdPeakExtra)} this month.");
+        if (month.CacheHitRate is double rate) parts.Add($"{Math.Round(rate * 100)}% of input came from cache this month; cached input costs about 2% as much.");
+        Insights.Text = string.Join(" ", parts);
+    }
+
+    private void ShowResults()
+    {
+        var r = spending?.Results;
+        TopIssues.Items.Clear();
+        if (r is null || r.Top.Count == 0)
+        {
+            ResultsSummary.Text = "No self-work issue has cost anything yet.";
+            return;
+        }
+        ResultsSummary.Text = (r.CostPerMergedPr is double each ? $"{Dollars(each)} per merged PR ({r.MergedPrs} merged, {Dollars(r.UsdOnMerged)} in all). " : "Nothing has merged yet. ")
+            + (r.UsdOnHeld > 0 ? $"{Dollars(r.UsdOnHeld)} went on issues now waiting on you." : "");
+        foreach (var issue in r.Top) TopIssues.Items.Add(IssueRow(issue));
+    }
+
+    internal void ShowDay(ManaSpendingDay day)
+    {
+        DayIssues.Items.Clear();
+        var issues = day.Issues ?? [];
+        DayTitle.Text = issues.Count == 0
+            ? $"{DailySpendChart.DayLabel(day.Day, true)}: {Dollars(day.Usd)}, none of it on a self-work issue."
+            : $"{DailySpendChart.DayLabel(day.Day, true)}: {Dollars(day.Usd)}. Double-click an issue to open it.";
+        foreach (var issue in issues) DayIssues.Items.Add(IssueRow(issue));
+    }
+
+    private static ListViewItem IssueRow(ManaIssueCost issue)
+    {
+        var item = new ListViewItem($"#{issue.Issue}") { ForeColor = DarkTheme.Text, Tag = issue.Prs.Count > 0 ? $"{RepoUrl}/pull/{issue.Prs[^1]}" : $"{RepoUrl}/issues/{issue.Issue}" };
+        item.SubItems.AddRange([issue.Title ?? "", Outcome(issue.State), Dollars(issue.Usd), issue.Requests > 0 ? issue.Requests.ToString(CultureInfo.InvariantCulture) : ""]);
+        return item;
+    }
+
+    internal static string Outcome(string? state) => state switch
+    {
+        "merged" => "Merged",
+        "verified" => "Merged, verified",
+        "regressed" => "Regressed",
+        "needs-you" => "Needs you",
+        "exhausted" => "Out of tries",
+        "retry" => "Will try again",
+        "pr-open" => "PR open",
+        "waiting" => "Waiting",
+        "no-change" => "No change",
+        null or "" => "No record",
+        _ => state,
+    };
 
     private static string UseName(string use) => use switch
     {

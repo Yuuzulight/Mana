@@ -28,6 +28,16 @@ internal static class ChartPalette
         _ => DarkTheme.Muted,
     };
 
+    // Uses: self-work wears the accent, chat and bench its hue turned 120°
+    // either way (checked like the models on every preset).
+    public static Color Use(string use) => use switch
+    {
+        "self-work" => FromAccent(0),
+        "chat" => FromAccent(-120),
+        "bench" => FromAccent(120),
+        _ => DarkTheme.Muted,
+    };
+
     // Token kinds, in the order a request is billed: one ramp from the chart
     // surface toward the text colour, so it never competes with the models.
     private static readonly double[] KindSteps = [0.36, 0.54, 0.72, 0.9];
@@ -213,81 +223,152 @@ internal abstract class SpendingChartBase : Control
     }
 }
 
-// Daily spend, last 30 days: a stacked bar per day by model, with a hover
-// tooltip and a label on the busiest day.
+// Daily spend: a stacked bar per day for the last 7, 30 or 90 days, by model
+// or by use. Hatching marks what peak hours added; the busiest day is
+// labelled; hovering shows the day and clicking picks it (DayClicked).
 internal sealed class DailySpendChart : SpendingChartBase
 {
-    private static readonly string[] Order = ["deepseek-flash", "deepseek-v4-pro"];
-    private static readonly Dictionary<string, string> Names = new() { ["deepseek-flash"] = "DeepSeek Flash", ["deepseek-v4-pro"] = "DeepSeek Pro" };
-    private IReadOnlyList<ManaSpendingDay> days = [];
+    private static readonly string[] ModelOrder = ["deepseek-flash", "deepseek-v4-pro"];
+    private static readonly string[] UseOrder = ["self-work", "chat", "bench"];
+    private static readonly Dictionary<string, string> Names = new()
+    {
+        ["deepseek-flash"] = "DeepSeek Flash",
+        ["deepseek-v4-pro"] = "DeepSeek Pro",
+        ["self-work"] = "Self-work",
+        ["chat"] = "Chat",
+        ["bench"] = "Bench",
+    };
+    private IReadOnlyList<ManaSpendingDay> allDays = [];
+    private int rangeDays = 30;
+    private bool byUse;
     internal int HoverIndex { get; private set; } = -1;
+    internal int SelectedIndex { get; private set; } = -1;
+    public event Action<ManaSpendingDay>? DayClicked;
 
     public DailySpendChart()
     {
-        AccessibleName = "Daily spend, last 30 days, by model";
         AccessibleRole = AccessibleRole.Chart;
+        Cursor = Cursors.Hand;
+    }
+
+    public int RangeDays
+    {
+        get => rangeDays;
+        set { rangeDays = value; SelectedIndex = -1; Refresh(); }
+    }
+
+    public bool ByUse
+    {
+        get => byUse;
+        set { byUse = value; Refresh(); }
     }
 
     public void SetDays(IReadOnlyList<ManaSpendingDay> value)
     {
-        days = value;
-        HoverIndex = -1;
-        AccessibleDescription = string.Join(", ", Models().Select(m => $"{ModelName(m)} {ChartPalette.Dollars(days.Sum(d => d.ByModel.GetValueOrDefault(m)))}"));
-        Invalidate();
+        allDays = value;
+        SelectedIndex = -1;
+        Refresh();
     }
 
-    private static string ModelName(string model) => Names.GetValueOrDefault(model, model);
+    // The days in range, oldest first.
+    internal IReadOnlyList<ManaSpendingDay> Days => allDays.Skip(Math.Max(0, allDays.Count - rangeDays)).ToList();
+
+    public override void Refresh()
+    {
+        HoverIndex = -1;
+        var days = Days;
+        AccessibleName = $"Daily spend, last {rangeDays} days, by {(byUse ? "use" : "model")}";
+        AccessibleDescription = string.Join(", ", Series(days).Select(k => $"{ModelName(k)} {ChartPalette.Dollars(days.Sum(d => Amount(d, k)))}"));
+        base.Refresh();
+    }
+
+    private static string ModelName(string key) => Names.GetValueOrDefault(key, key);
+    private double Amount(ManaSpendingDay d, string key) => (byUse ? d.ByUse : d.ByModel)?.GetValueOrDefault(key) ?? 0;
+    private Color ColorOf(string key) => byUse ? ChartPalette.Use(key) : ChartPalette.Model(key);
 
     // Bottom to top: the known order, then anything else alphabetically.
-    private IEnumerable<string> Models() =>
-        Order.Where(m => days.Any(d => d.ByModel.ContainsKey(m)))
-            .Concat(days.SelectMany(d => d.ByModel.Keys).Distinct().Where(m => !Order.Contains(m)).OrderBy(m => m, StringComparer.Ordinal));
+    private IEnumerable<string> Series(IReadOnlyList<ManaSpendingDay> days)
+    {
+        var order = byUse ? UseOrder : ModelOrder;
+        var keys = days.SelectMany(d => (byUse ? d.ByUse : d.ByModel)?.Keys ?? Enumerable.Empty<string>()).Distinct().ToList();
+        return order.Where(keys.Contains).Concat(keys.Where(k => !order.Contains(k)).OrderBy(k => k, StringComparer.Ordinal));
+    }
 
     private Rectangle Plot => new(52, 60, Math.Max(10, Width - 52 - 14), Math.Max(10, Height - 60 - 28));
 
     internal int IndexAt(int x)
     {
-        if (days.Count == 0) return -1;
+        var count = Days.Count;
+        if (count == 0) return -1;
         var plot = Plot;
-        var i = (int)Math.Floor((x - plot.Left) / (plot.Width / (double)days.Count));
-        return i >= 0 && i < days.Count ? i : -1;
+        var i = (int)Math.Floor((x - plot.Left) / (plot.Width / (double)count));
+        return i >= 0 && i < count ? i : -1;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         Pointer = e.Location;
-        HoverIndex = Plot.Contains(e.Location) || e.Y > Plot.Top ? IndexAt(e.X) : -1;
+        HoverIndex = e.Y > Plot.Top - 20 ? IndexAt(e.X) : -1;
         Invalidate();
         base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        var i = IndexAt(e.X);
+        if (i >= 0 && e.Y > Plot.Top - 20) PickDay(i);
+        base.OnMouseClick(e);
+    }
+
+    internal void PickDay(int index)
+    {
+        if (index < 0 || index >= Days.Count) return;
+        SelectedIndex = index;
+        Invalidate();
+        DayClicked?.Invoke(Days[index]);
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        DrawCard(g, "Daily spend", "Last 30 days, by model");
+        var days = Days;
+        DrawCard(g, "Daily spend", $"Last {rangeDays} days, by {(byUse ? "use" : "model")}. Click a day to see what it paid for.");
         using var small = Small;
         using var bold = Bold;
-        var models = Models().ToList();
+        var keys = Series(days).ToList();
+        var anyPeak = days.Any(d => d.PeakExtra > 0);
 
-        // Legend: swatch, name and its 30-day total, right-aligned on the title row.
+        // Legend, right-aligned on the title row: swatch, name and the range's
+        // total; then the peak surcharge's hatch when the range has any.
         var x = Width - 14;
-        foreach (var model in Enumerable.Reverse(models))
+        if (anyPeak)
         {
-            var total = ChartPalette.Dollars(days.Sum(d => d.ByModel.GetValueOrDefault(model)));
+            var label = "Peak surcharge";
+            var w = TextRenderer.MeasureText(label, small).Width;
+            x -= w;
+            DrawLabel(g, label, small, DarkTheme.Muted, new Rectangle(x, 15, w, 18), TextFormatFlags.Left);
+            x -= 14;
+            using (var fill = new SolidBrush(ChartPalette.Kind(1))) g.FillRectangle(fill, x, 19, 9, 9);
+            using (var hatch = PeakHatch()) g.FillRectangle(hatch, x, 19, 9, 9);
+            x -= 16;
+        }
+        foreach (var key in Enumerable.Reverse(keys))
+        {
+            var total = ChartPalette.Dollars(days.Sum(d => Amount(d, key)));
             var valueW = TextRenderer.MeasureText(total, bold).Width;
-            var nameW = TextRenderer.MeasureText(ModelName(model), small).Width;
+            var nameW = TextRenderer.MeasureText(ModelName(key), small).Width;
             x -= valueW;
             DrawLabel(g, total, bold, DarkTheme.Text, new Rectangle(x, 14, valueW, 18), TextFormatFlags.Left);
             x -= nameW + 5;
-            DrawLabel(g, ModelName(model), small, DarkTheme.Muted, new Rectangle(x, 15, nameW, 18), TextFormatFlags.Left);
+            DrawLabel(g, ModelName(key), small, DarkTheme.Muted, new Rectangle(x, 15, nameW, 18), TextFormatFlags.Left);
             x -= 14;
-            using (var brush = new SolidBrush(ChartPalette.Model(model))) g.FillRectangle(brush, x, 19, 9, 9);
+            using (var brush = new SolidBrush(ColorOf(key))) g.FillRectangle(brush, x, 19, 9, 9);
             x -= 16;
         }
 
-        if (days.Count == 0)
+        if (days.Count == 0 || days.All(d => d.Usd <= 0))
         {
-            DrawLabel(g, "Nothing spent yet.", small, DarkTheme.Muted, Plot, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            DrawLabel(g, "Nothing spent in this range.", small, DarkTheme.Muted, Plot, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             return;
         }
         var plot = Plot;
@@ -309,45 +390,62 @@ internal sealed class DailySpendChart : SpendingChartBase
         }
 
         var slot = plot.Width / (float)days.Count;
-        var barW = Math.Max(3, Math.Min(12, slot - 5));
+        var barW = Math.Max(2, Math.Min(12, slot * 0.62f));
+        var gap = slot >= 6 ? 2 : 1;
+        var labelEvery = rangeDays <= 7 ? 1 : rangeDays <= 30 ? 7 : 14;
         var peak = Enumerable.Range(0, days.Count).OrderByDescending(i => days[i].Usd).First();
+        using var hatchBrush = PeakHatch();
         for (var i = 0; i < days.Count; i++)
         {
             var left = plot.Left + i * slot;
-            if (i == HoverIndex)
+            if (i == HoverIndex || i == SelectedIndex)
             {
-                using var hover = new SolidBrush(ChartPalette.Hover);
+                using var hover = new SolidBrush(i == SelectedIndex ? ChartPalette.Mix(ChartPalette.Surface, DarkTheme.Accent, 0.14) : ChartPalette.Hover);
                 g.FillRectangle(hover, left, plot.Top, slot, plot.Height);
             }
             var bx = left + (slot - barW) / 2;
             var y = (float)plot.Bottom;
-            var segments = models.Select(m => (Model: m, Usd: days[i].ByModel.GetValueOrDefault(m))).Where(s => s.Usd > 0).ToList();
+            var segments = keys.Select(k => (Key: k, Usd: Amount(days[i], k))).Where(s => s.Usd > 0).ToList();
             for (var s = 0; s < segments.Count; s++)
             {
-                // A sliver that's still visible, a 2px surface gap between segments,
+                // A sliver that's still visible, a surface gap between segments,
                 // and only the data end (the top) rounded.
                 var h = Math.Max(2, (float)(segments[s].Usd / top * plot.Height));
-                if (s > 0) y -= 2;
+                if (s > 0) y -= gap;
                 var rect = new RectangleF(bx, y - h, barW, h);
                 using var path = Rounded(rect, 4, top: s == segments.Count - 1, bottom: false);
-                using var brush = new SolidBrush(ChartPalette.Model(segments[s].Model));
+                using var brush = new SolidBrush(ColorOf(segments[s].Key));
                 g.FillPath(brush, path);
                 y -= h;
             }
+            // What peak hours added, hatched over the top of the stack.
+            if (days[i].PeakExtra > 0 && segments.Count > 0)
+            {
+                var h = Math.Max(2, (float)(days[i].PeakExtra / top * plot.Height));
+                var region = new RectangleF(bx, y, barW, Math.Min(h, plot.Bottom - y));
+                using var clip = Rounded(region, 4, top: true, bottom: false);
+                g.FillPath(hatchBrush, clip);
+            }
             if (i == peak && days[i].Usd > 0)
                 DrawLabel(g, ChartPalette.Dollars(days[i].Usd), bold, DarkTheme.Text, new Rectangle((int)(bx + barW / 2) - 40, (int)y - 20, 80, 16), TextFormatFlags.HorizontalCenter);
-            if ((days.Count - 1 - i) % 7 == 0)
-                DrawLabel(g, i == days.Count - 1 ? "Today" : DayLabel(days[i].Day), small, DarkTheme.Muted, new Rectangle((int)(bx + barW / 2) - 40, plot.Bottom + 8, 80, 16), TextFormatFlags.HorizontalCenter);
+            if ((days.Count - 1 - i) % labelEvery == 0)
+                DrawLabel(g, i == days.Count - 1 ? "Today" : DayLabel(days[i].Day, rangeDays <= 7), small, DarkTheme.Muted, new Rectangle((int)(bx + barW / 2) - 40, plot.Bottom + 8, 80, 16), TextFormatFlags.HorizontalCenter);
         }
 
         if (HoverIndex >= 0)
         {
             var d = days[HoverIndex];
-            var rows = Enumerable.Reverse(models).Select(m => ((Color?)ChartPalette.Model(m), ModelName(m), ChartPalette.Dollars(d.ByModel.GetValueOrDefault(m)))).ToList();
+            var rows = Enumerable.Reverse(keys).Select(k => ((Color?)ColorOf(k), ModelName(k), ChartPalette.Dollars(Amount(d, k)))).ToList();
+            if (d.PeakExtra > 0) rows.Add((null, "of which peak surcharge", ChartPalette.Dollars(d.PeakExtra)));
             rows.Add((null, "Total", ChartPalette.Dollars(d.Usd)));
+            var issues = d.Issues?.Count ?? 0;
+            if (issues > 0) rows.Add((null, issues == 1 ? "1 issue" : $"{issues} issues", "click to see"));
             DrawTooltip(g, DayLabel(d.Day, true), rows);
         }
     }
+
+    // Diagonal lines in the surface colour: reads as "part of this bar".
+    private static HatchBrush PeakHatch() => new(HatchStyle.WideUpwardDiagonal, Color.FromArgb(170, ChartPalette.Surface), Color.Transparent);
 
     internal static string DayLabel(string day, bool weekday = false) =>
         DateTime.TryParseExact(day, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
