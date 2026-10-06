@@ -7,7 +7,8 @@ const test = require("node:test");
 
 process.env.MANA_ACP_MEMORY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mana-memory-views-"));
 
-const { visibleEntities } = require("../memory-views");
+const { visibleEntities, buildFactsIndex, buildPendingReview, buildEntitiesIndex } = require("../memory-views");
+const { noteName } = require("../memory-vault");
 const { buildMemoryNotes } = require("../server");
 
 const seen = (display, n = 1, sessionId = "s1") => Array.from({ length: n }, (_, i) => ({ display, sessionId, at: `2026-10-0${i + 1}` }));
@@ -60,4 +61,68 @@ test("notes link only to notes that exist, and facts link through aliases", () =
   const facts = notes.find((n) => n.slug === "key-facts");
   assert.match(facts.body, /Oneesan works at Acme Corp \(\[\[acme-corp\]\], \[\[yuuzu\]\]\)/);
   assert.doesNotMatch(facts.body, /\[\[and\]\]/);
+});
+
+// #1388: the Facts / Pending / Entities index views.
+const fact = (key, status, text = "t", extra = {}) => ({ key, status, text, ...extra });
+const slugOf = (k) => k.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "untitled";
+const bullets = (md) => md.split("\n").filter((l) => l.startsWith("- "));
+
+test("empty vault: each index says there is nothing yet", () => {
+  assert.match(buildFactsIndex([]), /Active facts: 0[\s\S]*_\(none yet\)_/);
+  assert.match(buildPendingReview([]), /waiting for approval: 0[\s\S]*_\(none\)_/);
+  assert.match(buildEntitiesIndex({}, {}, slugOf), /_\(none yet\)_/);
+});
+
+test("facts index lists only active facts, sorted, linked to their real note names", () => {
+  const facts = [
+    fact("zeta", "active"),
+    fact("Alpha/beta: #1", "active"),
+    fact("old", "archived"),
+    fact("superseded", "active", "t", { invalidatedAt: "2026-01-01" }),
+    fact("waiting", "pending"),
+  ];
+  const out = buildFactsIndex(facts);
+  assert.deepEqual(bullets(out), [`- [[Facts/${noteName("Alpha/beta: #1")}|Alpha/beta: #1]]`, "- [[Facts/zeta|zeta]]"]);
+  assert.match(out, /Active facts: 2/);
+  assert.equal(out, buildFactsIndex([...facts].reverse()));
+});
+
+test("special characters can't break the wikilink or the filename", () => {
+  const [line] = bullets(buildFactsIndex([fact("a|b]] [[c\nd: e?", "active")]));
+  const [, target, text] = /^- \[\[([^|]*)\|([^\]]*)\]\]$/.exec(line);
+  assert.match(target, /^Facts\/[^/\<>:"|?*[\]#^\n]+$/);
+  assert.equal(text, "a b c d: e?");
+});
+
+test("pending review links to the pending notes and says a link never approves", () => {
+  const out = buildPendingReview([fact("b", "pending", "likes\ntea"), fact("a", "pending", "x"), fact("c", "active")]);
+  assert.match(out, /never approves anything/);
+  assert.deepEqual(bullets(out), ["- [[Facts/Pending/a|a]]: x", "- [[Facts/Pending/b|b]]: likes tea"]);
+});
+
+test("entities index groups by type, keeps untyped under Unclassified, shows aliases", () => {
+  const index = { "jane doe": seen("Jane Doe"), jd: seen("JD"), kyoto: seen("Kyoto", 2), "the thing": seen("The Thing", 2), and: seen("And", 5), nope: seen("Nope") };
+  const types = {
+    "jane doe": { type: "person" },
+    jd: { type: "person", canonicalKey: "jane doe" },
+    kyoto: { type: "place" },
+    nope: { type: "not_an_entity" },
+  };
+  const out = buildEntitiesIndex(visibleEntities(index, types).entities, types, slugOf);
+  assert.match(out, /## People\n\n- \[\[Views\/Entities\/jane-doe\|Jane Doe\]\] \(also: jd\)\n/);
+  assert.match(out, /## Places\n\n- \[\[Views\/Entities\/kyoto\|Kyoto\]\]\n/);
+  assert.match(out, /## Unclassified\n\n- \[\[Views\/Entities\/the-thing\|The Thing\]\]\n/);
+  assert.doesNotMatch(out, /Nope|And|## Objects/);
+  assert.ok(out.indexOf("## People") < out.indexOf("## Places") && out.indexOf("## Places") < out.indexOf("## Unclassified"));
+});
+
+test("every entity link in the index is a note buildMemoryNotes writes", () => {
+  const index = { "jane doe": seen("Jane Doe"), jd: seen("JD"), "c++ & rust!": seen("C++ & Rust!", 2), and: seen("And", 4) };
+  const types = { "jane doe": { type: "person" }, jd: { type: "person", canonicalKey: "jane doe" } };
+  const written = new Set(buildMemoryNotes(index, [], [], types).map((n) => `Views/Entities/${n.slug}`));
+  const out = buildEntitiesIndex(visibleEntities(index, types).entities, types, require("../server").slugifyEntityName);
+  const linked = [...out.matchAll(/\[\[([^\]|]+)\|/g)].map((m) => m[1]);
+  assert.equal(linked.length, 2);
+  for (const l of linked) assert.ok(written.has(l), `dangling link ${l}`);
 });
