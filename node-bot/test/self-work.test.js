@@ -491,8 +491,11 @@ test("20 minutes idle tries an idle start once per idle period", async () => {
   const fetch = useTestAdminToken();
   let idleStarts = 0;
   const fake = { startIdle: async () => (idleStarts++, { ok: false }), status: () => ({ state: "idle" }) };
+  // #1407: a deployed merge's evals go first; while they run, her own pick waits.
+  let evaluating = false;
   const app = createApp({
     selfWork: fake,
+    postDeployEval: { maybeRun: async () => evaluating },
     getGamingStatus: () => ({ gamingAppRunning: false }),
     triggerIdleConsolidation: async () => {},
   });
@@ -503,6 +506,10 @@ test("20 minutes idle tries an idle start once per idle period", async () => {
     await report(1300);
     await report(1400);
     assert.equal(idleStarts, 1);
+    await report(10);
+    await report(1300);
+    assert.equal(idleStarts, 2);
+    evaluating = true;
     await report(10);
     await report(1300);
     assert.equal(idleStarts, 2);

@@ -276,7 +276,8 @@ const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
 const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
-const { createSelfWork } = require("./self-work");
+const { createSelfWork, systemRamPercent } = require("./self-work");
+const { createPostDeployEval } = require("./post-deploy-eval");
 const { createLessons } = require("./self-work-lessons");
 const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
@@ -2542,7 +2543,12 @@ function registerRoutes(app, upload, deps = {}) {
     // issues. Not in tests, unless they bring their own runner: the real
     // one asks gh about the real repo.
     if (deps.selfWork || (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT)) {
-      selfWork.startIdle().catch(() => {});
+      // #1407: a deployed merge's evals go first; her own work waits for them.
+      postDeployEval
+        .maybeRun()
+        .catch(() => false)
+        .then((evaluating) => evaluating || selfWork.startIdle())
+        .catch(() => {});
     }
     triggerIdleConsolidation().catch((err) =>
       console.warn(
@@ -3067,11 +3073,16 @@ function registerRoutes(app, upload, deps = {}) {
   const gitTools =
     deps.gitTools ||
     createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
-  // #1386: her improvement lifecycle, kept across restarts.
-  const selfImprovement = deps.selfImprovement || createLifecycle({ file: path.join(acpMemoryStore.dataDir, "self-improvement.json") });
-  // #1384: her improvement issues: duplicate check, evidence, approval bound to the reviewed text.
-  // ponytail: no lessons yet; pass them in once #1385 is merged.
-  const improvementTools = deps.improvementTools || createImprovementToolSource(createIssueProposals({ approvalGate: activeApprovalGate }));
+  // #1385: her failed runs' lessons; promoting one to a rule goes through my approval.
+  const lessons = createLessons({ file: path.join(acpMemoryStore.dataDir, "self-work-lessons.json"), approvalGate: activeApprovalGate });
+  // #1386: her improvement lifecycle, kept across restarts; an issue out of tries quotes its lesson (#1407).
+  const selfImprovement = deps.selfImprovement || createLifecycle({ file: path.join(acpMemoryStore.dataDir, "self-improvement.json"), lessons });
+  // #1384: her improvement issues: duplicate check (her open lessons too), evidence, approval bound to the reviewed text.
+  const improvementTools =
+    deps.improvementTools ||
+    createImprovementToolSource(
+      createIssueProposals({ approvalGate: activeApprovalGate, lessons: { listOpen: () => lessons.list().filter((l) => l.status === "open") } }),
+    );
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =
     deps.selfWork ||
@@ -3088,8 +3099,7 @@ function registerRoutes(app, upload, deps = {}) {
       watchCi: true,
       // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
       traces: createTraceStore({ dir: path.join(acpMemoryStore.dataDir, "self-work-traces") }),
-      // #1385: her failed runs' lessons; promoting one to a rule goes through my approval.
-      lessons: createLessons({ file: path.join(acpMemoryStore.dataDir, "self-work-lessons.json"), approvalGate: activeApprovalGate }),
+      lessons,
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
@@ -3106,6 +3116,27 @@ function registerRoutes(app, upload, deps = {}) {
             status: ["pr-open", "pr-updated", "up-to-date", "no-change", "stopped"].includes(run.state) ? "done" : "failed",
           });
         }
+      },
+    });
+  // #1407: her behaviour evals once per deployed merge of hers, in an idle
+  // period when she isn't working, no game, RAM under 90% and her chat model
+  // unloaded. A failed gate holds the issue and tells me; nothing reverts.
+  const postDeployEval =
+    deps.postDeployEval ||
+    createPostDeployEval({
+      lifecycle: selfImprovement,
+      repoRoot: path.join(__dirname, ".."),
+      stateFile: path.join(acpMemoryStore.dataDir, "post-deploy-eval.json"),
+      blocked: async () => {
+        if (selfWork.status().state === "running") return "she's working";
+        if ((deps.isGaming || gamingWatch.isGaming)()) return "a game is running";
+        if (systemRamPercent() > 90) return "RAM is high";
+        if (llamaServerRuntime.getStatus().running) return "her chat model is loaded";
+        return null;
+      },
+      notify: (text) => {
+        console.log(`[post-deploy eval] ${text}`);
+        notifyTray({ type: "self-work", title: "Mana's own code", text });
       },
     });
   // #1265: Mana keeps Folio up to date: an hourly job (Folio looked at

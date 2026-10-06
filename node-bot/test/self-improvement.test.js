@@ -33,6 +33,18 @@ test("failures use up the budget, then the issue is held and the idle picker ski
   assert.equal(life.get(42).attempts, 0);
 });
 
+test("out of tries, the explanation quotes her lesson on the issue", () => {
+  const lessons = { list: () => [{ issue: 42, status: "open", observed: ["No PR was opened."], hypothesis: "the tray test needs a display" }] };
+  const life = createLifecycle({ file: tmpFile(), lessons });
+  life.onRunEnd(run("tests-failing"));
+  life.onRunEnd(run("tests-failing"));
+  assert.match(life.skip(42), /^exhausted: tried 2 times; lesson: the tray test needs a display \(unverified\); last: ended tests-failing/);
+  // A broken lessons store never gets in the way.
+  const broken = createLifecycle({ file: tmpFile(), maxAttempts: 1, lessons: { list: () => { throw new Error("x"); } } });
+  broken.onRunEnd(run("failed"));
+  assert.match(broken.skip(42), /^exhausted: tried 1 times; last:/);
+});
+
 test("a PR, needs-you and the transitions are kept with their evidence", () => {
   const life = createLifecycle({ file: tmpFile() });
   life.onRunEnd(run("pr-open", { prUrl: "https://github.com/Yuuzulight/Mana/pull/900" }));
