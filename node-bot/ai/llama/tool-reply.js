@@ -94,22 +94,26 @@ async function runToolAwareReply(
       const think = typeof thinking === "function" ? thinking() : thinking;
       const { params } = context.buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env: context.env });
       if (think === true) await context.fitThinkingToContext(params, { messages, ...toolFields });
+      // #1406: a remote OpenAI-compatible endpoint (DeepSeek) runs this
+      // same loop through chatUrl and requestHeaders; local is llama-server.
       const resp = await context.fetchImpl(
-        `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
+        context.chatUrl ? context.chatUrl() : `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
         {
           method: "POST",
           signal: extraMessages?.signal,
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...(context.requestHeaders ? context.requestHeaders() : {}) },
           body: JSON.stringify({ messages, ...toolFields, ...params }),
         },
       );
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
         throw new Error(
-          `llama-server reply failed (${resp.status}): ${text.slice(0, 500)}`,
+          `${context.chatUrl ? "remote model" : "llama-server"} reply failed (${resp.status}): ${text.slice(0, 500)}`,
         );
       }
       const json = await resp.json();
+      // #1406: a remote reply's usage, for API spending.
+      context.onResponse?.(json);
       if (context.stripThinking(json?.choices?.[0]?.message?.content)?.trim()) extraMessages?.onReplyStarted?.();
       context.logPromptCache("llama-server-tool-reply", json && json.timings);
       return json;
@@ -127,6 +131,14 @@ async function runToolAwareReply(
         trimmed.add(m);
       }
     }
+
+    // #1406: DeepSeek's thinking mode wants every earlier turn's reasoning
+    // sent back while tools are on (a 400 otherwise); llama-server doesn't.
+    const said = (fields) => ({
+      role: "assistant",
+      ...fields,
+      ...(context.keepReasoning && message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
+    });
 
     const executedToolCalls = [];
     // #787: what each call returned, for the goal review only -- kept out of
@@ -162,7 +174,7 @@ async function runToolAwareReply(
       const note = context.memoryClaimNote(reply, reviewLog);
       if (!note) return false;
       memoryRechecked = true;
-      messages.push({ role: "assistant", content: reply }, { role: "user", content: note });
+      messages.push(said({ content: reply }), { role: "user", content: note });
       return true;
     }
 
@@ -198,7 +210,7 @@ async function runToolAwareReply(
       stalled = false;
       unansweredRechecks = 0;
       messages.push(
-        { role: "assistant", content: message.content || "" },
+        said({ content: message.content || "" }),
         context.goalRecheckMessage(goalText, review.missing),
       );
       return true;
@@ -229,7 +241,7 @@ async function runToolAwareReply(
         notDone = unparsed ? "the tool calls kept failing to parse" : "the conversation outgrew the model's context";
         break;
       }
-      promptTokens = (Number(json?.timings?.cache_n) || 0) + (Number(json?.timings?.prompt_n) || 0);
+      promptTokens = (Number(json?.timings?.cache_n) || 0) + (Number(json?.timings?.prompt_n) || 0) || Number(json?.usage?.prompt_tokens) || 0;
       message = (json && json.choices && json.choices[0] && json.choices[0].message) || {};
       const visibleContent = context.stripThinking(message.content);
       let requestedToolCalls = Array.isArray(message.tool_calls)
@@ -276,7 +288,7 @@ async function runToolAwareReply(
         if (goalMode && !outOfBudget()) {
           if (unansweredRechecks < 2) {
             unansweredRechecks += 1;
-            messages.push({ role: "assistant", content: visibleContent }, context.goalRecheckMessage(goalText));
+            messages.push(said({ content: visibleContent }), context.goalRecheckMessage(goalText));
             continue;
           }
           stalled = true;
@@ -295,11 +307,10 @@ async function runToolAwareReply(
       const boundedCalls = requestedToolCalls.slice(0, callsPerRoundLimit);
       // #1337: awaited, so its sentences go out before this round's tool events.
       if (visibleContent) await onRoundText?.(visibleContent);
-      messages.push({
-        role: "assistant",
+      messages.push(said({
         content: visibleContent || null,
         tool_calls: boundedCalls,
-      });
+      }));
 
       for (const call of boundedCalls) {
         const name = call.function && call.function.name;
