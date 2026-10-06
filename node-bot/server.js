@@ -236,7 +236,7 @@ const { createRelationshipCapability } = require("./capabilities/relationship-ca
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
-const { visibleEntities } = require("./memory-views");
+const { visibleEntities, buildFactsIndex, buildPendingReview, buildEntitiesIndex } = require("./memory-views");
 // Issue #267: one generic composer instead of a buildToolPolicyWithX per
 // tool source -- see ai/tool-source.js. Each create*ToolSource() factory
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
@@ -1501,9 +1501,16 @@ function buildVaultViews(mood) {
     `- Stress: ${levelWord(mood.stress)}`,
     "",
   ].join("\n");
+  // #1388: indexes of the facts, the pending ones and the entities above.
+  const types = readMemoryJson("entity-types.json");
+  const { entities } = visibleEntities(readMemoryJson("entity-index.json"), types);
+  const facts = acpMemoryStore.listFacts();
   return [
     { rel: "Views/Summary.md", body: summary },
     { rel: "Views/Mood.md", body: moodBody },
+    { rel: "Views/Facts Index.md", body: buildFactsIndex(facts) },
+    { rel: "Views/Pending Review.md", body: buildPendingReview(facts) },
+    { rel: "Views/Entities Index.md", body: buildEntitiesIndex(entities, types, slugifyEntityName) },
     ...currentMemoryNotes().map((note) => ({ rel: `Views/Entities/${note.slug}.md`, body: note.body })),
   ];
 }
@@ -4348,6 +4355,7 @@ module.exports = {
   manaProcessesUnder,
   buildMemoryNotes,
   buildVaultViews,
+  slugifyEntityName,
   buildSkillsIndexBlock,
   checkEmotionalReflexes,
   DEEP_RESEARCH_SUBTASK_PROFILE,

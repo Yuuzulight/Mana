@@ -766,4 +766,4 @@ function createMemoryVault(options = {}) {
   return { start, stop, sync, refreshViews, writeJournal, getStatus };
 }
 
-module.exports = { VIEWS_MARKER, createMemoryVault, noteName, keyFromName, parseNote, renderNote };
+module.exports = { VIEWS_MARKER, createMemoryVault, noteName, statusOf, keyFromName, parseNote, renderNote };
