@@ -64,9 +64,11 @@ function costParts(model, tokens, peak) {
   };
 }
 const USD_KINDS = ["usdCacheHit", "usdCacheMiss", "usdOutput", "usdReasoning"];
+// Not part of usd's sum: what peak hours added to it.
+const EXTRAS = ["usdPeakExtra"];
 
 function emptyTotals() {
-  return { requests: 0, usd: 0, unpricedRequests: 0, ...Object.fromEntries([...KINDS, ...USD_KINDS].map((k) => [k, 0])) };
+  return { requests: 0, usd: 0, unpricedRequests: 0, ...Object.fromEntries([...KINDS, ...USD_KINDS, ...EXTRAS].map((k) => [k, 0])) };
 }
 
 function add(into, b) {
@@ -74,13 +76,13 @@ function add(into, b) {
   into.usd += b.usd;
   into.unpricedRequests += b.unpricedRequests;
   // A bucket from before the dollars were split counts as 0 there.
-  for (const k of [...KINDS, ...USD_KINDS]) into[k] += b[k] || 0;
+  for (const k of [...KINDS, ...USD_KINDS, ...EXTRAS]) into[k] += b[k] || 0;
 }
 
 function createApiSpending({ file, now = () => new Date() }) {
-  let data = { version: 1, buckets: {} };
+  let data = { version: 2, buckets: {}, issues: {}, issueDays: {} };
   try {
-    if (fs.existsSync(file)) data = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (fs.existsSync(file)) data = { ...data, ...JSON.parse(fs.readFileSync(file, "utf8")) };
   } catch {
     // A broken file starts fresh rather than stopping her.
   }
@@ -91,58 +93,152 @@ function createApiSpending({ file, now = () => new Date() }) {
     fs.renameSync(`${file}.tmp`, file);
   }
 
-  // One API response's usage. Returns what it cost, for the run's own line.
-  function record({ model, use, usage, at = now() }) {
+  // One API response's usage, and the issue it was for when there is one
+  // (self-work). Returns what it cost, for the run's own line.
+  function record({ model, use, usage, at = now(), issue = null }) {
     if (!USES.includes(use)) throw new Error(`unknown API use: ${use}`);
     const tokens = tokensOf(usage);
     const peak = isPeak(at);
     const parts = costParts(model, tokens, peak);
     const usd = parts && USD_KINDS.reduce((sum, k) => sum + parts[k], 0);
-    const key = `${at.toISOString().slice(0, 10)}|${model}|${use}`;
-    const b = (data.buckets[key] ||= emptyTotals());
-    add(b, { requests: 1, usd: usd ?? 0, unpricedRequests: usd === null ? 1 : 0, ...tokens, ...parts });
+    const day = at.toISOString().slice(0, 10);
+    const b = (data.buckets[`${day}|${model}|${use}`] ||= emptyTotals());
+    // What peak hours added: half of a peak request's price.
+    add(b, { requests: 1, usd: usd ?? 0, unpricedRequests: usd === null ? 1 : 0, ...tokens, ...parts, usdPeakExtra: peak && usd ? usd / 2 : 0 });
     if (peak) b.peakRequests = (b.peakRequests || 0) + 1;
+    const n = Number(issue);
+    if (Number.isInteger(n) && n > 0) {
+      const i = (data.issues[n] ||= { usd: 0, requests: 0, firstAt: at.toISOString() });
+      i.usd += usd ?? 0;
+      i.requests += 1;
+      i.lastAt = at.toISOString();
+      data.issueDays[`${day}|${n}`] = (data.issueDays[`${day}|${n}`] || 0) + (usd ?? 0);
+    }
     save();
     return { ...tokens, usd, peak };
   }
 
-  // All-time, today and this month (UTC days), each split by model and use,
-  // and the last `days` days one by one (dollars by model), for the chart.
-  function summary({ days = 30 } = {}) {
-    const today = now().toISOString().slice(0, 10);
-    const month = today.slice(0, 7);
-    const periods = { total: () => true, today: (d) => d === today, month: (d) => d.startsWith(month) };
-    const out = {};
-    for (const [name, inPeriod] of Object.entries(periods)) {
-      const all = emptyTotals();
-      const byModel = {};
-      const byUse = {};
-      for (const [key, b] of Object.entries(data.buckets)) {
-        const [day, model, use] = key.split("|");
-        if (!inPeriod(day)) continue;
-        add(all, b);
-        add((byModel[model] ||= emptyTotals()), b);
-        add((byUse[use] ||= emptyTotals()), b);
-      }
-      out[name] = { ...all, byModel, byUse };
+  const dayOf = (offset) => new Date(now().getTime() - offset * 864e5).toISOString().slice(0, 10);
+
+  function period(inPeriod) {
+    const all = emptyTotals();
+    const byModel = {};
+    const byUse = {};
+    for (const [key, b] of Object.entries(data.buckets)) {
+      const [day, model, use] = key.split("|");
+      if (!inPeriod(day)) continue;
+      add(all, b);
+      add((byModel[model] ||= emptyTotals()), b);
+      add((byUse[use] ||= emptyTotals()), b);
     }
+    const input = all.cacheHit + all.cacheMiss;
+    return { ...all, cacheHitRate: input ? all.cacheHit / input : null, byModel, byUse };
+  }
+
+  // All-time, today, this month and last month (UTC), each split by model
+  // and use; this month's projection; the last `days` days one by one (by
+  // model, by use, the peak surcharge and the issues paid for); and what
+  // each issue cost with its outcome from outcomeOf(issue) -> { title,
+  // state, prs }, so the cost of a result shows.
+  function summary({ days = 30, outcomeOf = null } = {}) {
+    const today = dayOf(0);
+    const month = today.slice(0, 7);
+    const d = now();
+    const lastMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+    const out = {
+      total: period(() => true),
+      today: period((day) => day === today),
+      month: period((day) => day.startsWith(month)),
+      lastMonth: period((day) => day.startsWith(lastMonth)),
+    };
+    const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+    out.month.projected = (out.month.usd / d.getUTCDate()) * daysInMonth;
+
     const daily = [];
     for (let i = days - 1; i >= 0; i -= 1) {
-      const day = new Date(now().getTime() - i * 864e5).toISOString().slice(0, 10);
-      const byModel = {};
-      let usd = 0;
+      const day = dayOf(i);
+      const entry = { day, usd: 0, peakExtra: 0, byModel: {}, byUse: {}, issues: [] };
       for (const [key, b] of Object.entries(data.buckets)) {
-        const [d, model] = key.split("|");
-        if (d !== day) continue;
-        byModel[model] = (byModel[model] || 0) + b.usd;
-        usd += b.usd;
+        const [bd, model, use] = key.split("|");
+        if (bd !== day) continue;
+        entry.usd += b.usd;
+        entry.peakExtra += b.usdPeakExtra || 0;
+        entry.byModel[model] = (entry.byModel[model] || 0) + b.usd;
+        entry.byUse[use] = (entry.byUse[use] || 0) + b.usd;
       }
-      daily.push({ day, usd, byModel });
+      for (const [key, usd] of Object.entries(data.issueDays)) {
+        const [bd, issue] = key.split("|");
+        if (bd === day) entry.issues.push({ issue: Number(issue), usd, ...(outcomeOf?.(Number(issue)) || {}) });
+      }
+      entry.issues.sort((a, b) => b.usd - a.usd);
+      daily.push(entry);
     }
-    return { ...out, daily, peakNow: isPeak(now()), prices: PRICES };
+
+    // The cost of results: what merged (or merged and verified) issues cost,
+    // per PR that merged, and what went on issues now waiting on me.
+    const issues = Object.entries(data.issues)
+      .map(([n, i]) => ({ issue: Number(n), ...i, ...(outcomeOf?.(Number(n)) || {}) }))
+      .sort((a, b) => b.usd - a.usd);
+    const landed = issues.filter((i) => ["merged", "verified"].includes(i.state));
+    const mergedPrs = landed.reduce((sum, i) => sum + Math.max(1, (i.prs || []).length), 0);
+    const usdOnMerged = landed.reduce((sum, i) => sum + i.usd, 0);
+    const results = {
+      mergedPrs,
+      usdOnMerged,
+      costPerMergedPr: mergedPrs ? usdOnMerged / mergedPrs : null,
+      usdOnHeld: issues.filter((i) => ["needs-you", "exhausted", "regressed"].includes(i.state)).reduce((sum, i) => sum + i.usd, 0),
+      top: issues.slice(0, 10),
+    };
+
+    // Average over the last 14 days, for how long a balance lasts.
+    const recent = daily.slice(-14);
+    const avgDaily = recent.length ? recent.reduce((sum, x) => sum + x.usd, 0) / recent.length : 0;
+    return { ...out, daily, results, avgDaily, peakNow: isPeak(now()), prices: PRICES };
   }
 
   return { record, summary };
+}
+
+// #1406: the DeepSeek account's prepaid balance (GET /user/balance), read
+// at most every 5 minutes with the key from Settings; never in local-only
+// mode. runway() says how long it lasts at a daily average in dollars.
+function createBalanceReader({ settings, fetchImpl = globalThis.fetch, env = process.env, now = () => Date.now(), ttlMs = 5 * 60 * 1000 }) {
+  let cached = null;
+  return async function balance() {
+    const { isLocalOnly } = require("./local-only");
+    const s = settings();
+    if (isLocalOnly(env) || !s.apiKey) return null;
+    if (cached && now() - cached.at < ttlMs) return cached.value;
+    let value;
+    try {
+      const resp = await fetchImpl(`${String(s.baseUrl).replace(/\/+$/, "")}/user/balance`, {
+        headers: { Authorization: `Bearer ${s.apiKey}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!resp.ok) throw new Error(`DeepSeek answered ${resp.status}`);
+      const json = await resp.json();
+      const info = (json.balance_infos || []).find((b) => b.currency === "USD") || (json.balance_infos || [])[0];
+      if (!info) throw new Error("no balance in DeepSeek's answer");
+      value = {
+        currency: info.currency,
+        total: Number(info.total_balance) || 0,
+        granted: Number(info.granted_balance) || 0,
+        toppedUp: Number(info.topped_up_balance) || 0,
+        available: json.is_available !== false,
+      };
+    } catch (e) {
+      value = { error: String(e.message || e).slice(0, 200) };
+    }
+    cached = { at: now(), value };
+    return value;
+  };
+}
+
+// Days a balance lasts at a daily average (dollars only); low under a week or $1.
+function runway(balance, avgDaily) {
+  if (!balance || balance.error || balance.currency !== "USD") return null;
+  const daysLeft = avgDaily > 0 ? balance.total / avgDaily : null;
+  return { daysLeft, low: balance.total < 1 || (daysLeft !== null && daysLeft < 7) };
 }
 
 // "412k in (380k cached), 31k out (12k reasoning), $0.04"
@@ -153,7 +249,8 @@ function describeUsage(t) {
 }
 
 // "How much have you spent?" in my chat: the same numbers as Settings.
-function createSpendingToolSource(spending) {
+// report: async () => the same object Settings gets (summary, balance, runway).
+function createSpendingToolSource(report) {
   const name = "api_spending__summary";
   return {
     listToolSchemas: () => [
@@ -162,7 +259,7 @@ function createSpendingToolSource(spending) {
         function: {
           name,
           description:
-            "Read what your API use has cost (DeepSeek and any other remote model): all-time, today and this month, in dollars and tokens (input from cache, input not from cache, output, reasoning), split by model and by use (self-work, chat, bench). Use it when the user asks what you've spent; quote the numbers, don't estimate.",
+            "Read what your API use has cost (DeepSeek and any other remote model): all-time, today and this month, in dollars and tokens (input from cache, input not from cache, output, reasoning), split by model and by use (self-work, chat, bench). It also has the DeepSeek balance and how long it lasts, this month's projection, last month, what peak hours added, the cache hit rate, and what each issue cost with its outcome. Use it when the user asks what you've spent; quote the numbers, don't estimate.",
           parameters: { type: "object", properties: {} },
         },
       },
@@ -170,9 +267,9 @@ function createSpendingToolSource(spending) {
     isKnownToolName: (candidate) => candidate === name,
     executeTool: async (candidate) => {
       if (candidate !== name) throw new Error("Unknown spending tool");
-      return JSON.stringify(spending.summary({ days: 7 }));
+      return JSON.stringify(await report());
     },
   };
 }
 
-module.exports = { createApiSpending, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, costParts, describeUsage, PRICES, USES };
+module.exports = { createApiSpending, createBalanceReader, runway, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, costParts, describeUsage, PRICES, USES };

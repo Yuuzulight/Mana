@@ -21,8 +21,9 @@ public sealed class ApiSpendingPanelTests
         "{\"peakNow\":true," +
         "\"today\":{\"usd\":0.004,\"requests\":3,\"cacheHit\":1500,\"cacheMiss\":500,\"output\":300,\"reasoning\":120,\"unpricedRequests\":0," +
         "\"byModel\":{\"deepseek-flash\":{\"usd\":0.004,\"requests\":3,\"cacheHit\":1500,\"cacheMiss\":500,\"output\":300,\"reasoning\":120}},\"byUse\":{\"chat\":{\"usd\":0.004,\"requests\":3}}}," +
-        "\"daily\":[{\"day\":\"2026-10-05\",\"usd\":0,\"byModel\":{}},{\"day\":\"2026-10-06\",\"usd\":0.6,\"byModel\":{\"deepseek-flash\":0.2,\"deepseek-v4-pro\":0.4}},{\"day\":\"2026-10-07\",\"usd\":0.004,\"byModel\":{\"deepseek-flash\":0.004}}]," +
-        "\"month\":{\"usd\":1.25,\"usdCacheHit\":0.05,\"usdCacheMiss\":0.45,\"usdOutput\":0.5,\"usdReasoning\":0.25,\"requests\":40,\"cacheHit\":2500000,\"cacheMiss\":400000,\"output\":90000,\"reasoning\":30000,\"unpricedRequests\":0," +
+        "\"lastMonth\":{\"usd\":2.25,\"requests\":50,\"byModel\":{},\"byUse\":{}},\"results\":{\"mergedPrs\":1,\"usdOnMerged\":0.5,\"costPerMergedPr\":0.5,\"usdOnHeld\":0.2,\"top\":[{\"issue\":12,\"usd\":0.5,\"requests\":3,\"title\":\"Fix the tray\",\"state\":\"merged\",\"prs\":[900]},{\"issue\":13,\"usd\":0.2,\"requests\":2,\"title\":\"Speed up recall\",\"state\":\"exhausted\",\"prs\":[]}]},\"balance\":{\"currency\":\"USD\",\"total\":1.2,\"granted\":0,\"toppedUp\":1.2,\"available\":true},\"runway\":{\"daysLeft\":4,\"low\":true}," +
+        "\"daily\":[{\"day\":\"2026-10-05\",\"usd\":0,\"byModel\":{}},{\"day\":\"2026-10-06\",\"usd\":0.6,\"peakExtra\":0.1,\"byModel\":{\"deepseek-flash\":0.2,\"deepseek-v4-pro\":0.4},\"byUse\":{\"self-work\":0.5,\"chat\":0.1},\"issues\":[{\"issue\":12,\"usd\":0.5,\"requests\":3,\"title\":\"Fix the tray\",\"state\":\"merged\",\"prs\":[900]}]},{\"day\":\"2026-10-07\",\"usd\":0.004,\"byModel\":{\"deepseek-flash\":0.004}}]," +
+        "\"month\":{\"usd\":1.25,\"projected\":5.5,\"usdPeakExtra\":0.38,\"cacheHitRate\":0.82,\"usdCacheHit\":0.05,\"usdCacheMiss\":0.45,\"usdOutput\":0.5,\"usdReasoning\":0.25,\"requests\":40,\"cacheHit\":2500000,\"cacheMiss\":400000,\"output\":90000,\"reasoning\":30000,\"unpricedRequests\":0," +
         "\"byModel\":{\"deepseek-flash\":{\"usd\":0.25,\"requests\":30},\"deepseek-v4-pro\":{\"usd\":1.0,\"requests\":10}},\"byUse\":{\"self-work\":{\"usd\":1.2,\"requests\":38},\"chat\":{\"usd\":0.05,\"requests\":2}}}," +
         "\"total\":{\"usd\":3.5,\"requests\":90,\"cacheHit\":6000000,\"cacheMiss\":900000,\"output\":200000,\"reasoning\":70000,\"unpricedRequests\":2,\"byModel\":{},\"byUse\":{}}}";
 
@@ -66,7 +67,33 @@ public sealed class ApiSpendingPanelTests
 
             // The figures, the daily chart and where the money went.
             Assert.Equal(new[] { "< $0.01", "$1.25", "$3.50" }, panel.Figures.Select(l => l.Text));
-            Assert.Equal("40 requests · 3.0M tokens", panel.FigureNotes[1].Text);
+            Assert.Equal("40 requests · 3.0M tokens\nOn pace for $5.50 · last month $2.25", panel.FigureNotes[1].Text);
+
+            // The balance, how long it lasts, and the low warning.
+            Assert.Equal("Running low: DeepSeek balance $1.20, about 4 days at this pace.", panel.Balance.Text);
+            Assert.Contains("Peak hours added $0.38 this month.", panel.Insights.Text);
+            Assert.Contains("82% of input came from cache this month", panel.Insights.Text);
+
+            // The cost of results, each issue linked to its PR (or the issue).
+            Assert.Equal("$0.50 per merged PR (1 merged, $0.50 in all). $0.20 went on issues now waiting on you.", panel.ResultsSummary.Text);
+            var issues = panel.TopIssues.Items.Cast<ListViewItem>().ToList();
+            Assert.Equal("#12 | Fix the tray | Merged | $0.50 | 3", string.Join(" | ", issues[0].SubItems.Cast<ListViewItem.ListViewSubItem>().Select(x => x.Text)));
+            Assert.Equal("https://github.com/Yuuzulight/Mana/pull/900", issues[0].Tag);
+            Assert.Equal("https://github.com/Yuuzulight/Mana/issues/13", issues[1].Tag);
+            Assert.Equal("Out of tries", issues[1].SubItems[2].Text);
+
+            // A day in the chart: its issues; and the range and show-by pickers.
+            panel.Daily.PickDay(1);
+            Assert.StartsWith("Tue 6 Oct: $0.60.", panel.DayTitle.Text);
+            Assert.Equal(new[] { "#12" }, panel.DayIssues.Items.Cast<ListViewItem>().Select(i => i.Text));
+            panel.Daily.PickDay(0);
+            Assert.Contains("none of it on a self-work issue", panel.DayTitle.Text);
+            panel.Range.SelectedIndex = 0;
+            Assert.Equal(7, panel.Daily.RangeDays);
+            panel.ShowBy.SelectedIndex = 1;
+            Assert.True(panel.Daily.ByUse);
+            Assert.Contains("Self-work $0.50", panel.Daily.AccessibleDescription);
+            panel.ShowBy.SelectedIndex = 0;
             panel.SplitPeriod.SelectedIndex = 1;
             Assert.Equal(new[] { 0.05, 0.45, 0.5, 0.25 }, panel.Kinds.Parts.Select(p => p.Usd));
             Assert.Equal(new[] { 2_500_000L, 400_000L, 60_000L, 30_000L }, panel.Kinds.Parts.Select(p => p.Tokens));

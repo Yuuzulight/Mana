@@ -997,7 +997,7 @@ function createSelfWork(options = {}) {
           model: tier.model,
           thinking: tier.thinking,
           onResponse: (json) => {
-            const t = spending?.record({ model: tier.model, use: "self-work", usage: json?.usage || {} });
+            const t = spending?.record({ model: tier.model, use: "self-work", usage: json?.usage || {}, issue: r.issue });
             if (t) {
               for (const k of ["cacheHit", "cacheMiss", "output", "reasoning"]) used[k] += t[k];
               used.usd = t.usd === null || used.usd === null ? null : used.usd + t.usd;

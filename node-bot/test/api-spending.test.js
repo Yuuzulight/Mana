@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createApiSpending, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, describeUsage } = require("../api-spending");
+const { createApiSpending, createBalanceReader, runway, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, describeUsage } = require("../api-spending");
 
 const tmpFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mana-spending-")), "api-spending.json");
 // DeepSeek's usage block for 1M hit, 1M miss, 1M out of which 400k reasoning.
@@ -92,10 +92,74 @@ test("dollars by token kind add up to the total, and the daily series covers the
   assert.equal(s.summary({ days: 7 }).daily.length, 7);
 });
 
+test("issues: what each cost with its outcome, the cost per merged PR, and each day's issues", () => {
+  const s = createApiSpending({ file: tmpFile(), now: () => OFF });
+  s.record({ model: "deepseek-flash", use: "self-work", usage, at: OFF, issue: 12 });
+  s.record({ model: "deepseek-flash", use: "self-work", usage, at: OFF, issue: 12 });
+  s.record({ model: "deepseek-flash", use: "self-work", usage, at: OFF, issue: 13 });
+  s.record({ model: "deepseek-flash", use: "chat", usage, at: OFF });
+  const flash = 0.003 + 0.15 + 0.6;
+  const outcomes = { 12: { title: "Fix the tray", state: "merged", prs: [900] }, 13: { title: "Speed up recall", state: "exhausted", prs: [] } };
+  const sum = s.summary({ outcomeOf: (n) => outcomes[n] });
+  assert.deepEqual(sum.results.top.map((i) => [i.issue, i.title, i.state, i.requests]), [[12, "Fix the tray", "merged", 2], [13, "Speed up recall", "exhausted", 1]]);
+  assert.equal(sum.results.mergedPrs, 1);
+  assert.ok(Math.abs(sum.results.costPerMergedPr - 2 * flash) < 1e-9);
+  assert.ok(Math.abs(sum.results.usdOnHeld - flash) < 1e-9);
+  const today = sum.daily.at(-1);
+  assert.deepEqual(today.issues.map((i) => i.issue), [12, 13]);
+  assert.ok(Math.abs(today.byUse["self-work"] - 3 * flash) < 1e-9 && Math.abs(today.byUse.chat - flash) < 1e-9);
+});
+
+test("peak surcharge, cache hit rate, last month and this month's projection", () => {
+  const s = createApiSpending({ file: tmpFile(), now: () => OFF });
+  s.record({ model: "deepseek-flash", use: "chat", usage, at: PEAK });
+  s.record({ model: "deepseek-flash", use: "chat", usage, at: OFF });
+  s.record({ model: "deepseek-flash", use: "chat", usage, at: new Date("2026-09-15T12:00:00Z") });
+  const sum = s.summary();
+  const flash = 0.003 + 0.15 + 0.6;
+  assert.ok(Math.abs(sum.today.usdPeakExtra - flash) < 1e-9, "the peak request's extra is half its double price");
+  assert.ok(Math.abs(sum.daily.at(-1).peakExtra - flash) < 1e-9);
+  assert.equal(sum.today.cacheHitRate, 0.5);
+  assert.ok(Math.abs(sum.lastMonth.usd - flash) < 1e-9);
+  // 3 x flash spent by the 7th of a 31-day month.
+  assert.ok(Math.abs(sum.month.projected - (3 * flash / 7) * 31) < 1e-9);
+  // Sep 15 is outside the last 14 days.
+  assert.ok(Math.abs(sum.avgDaily - 3 * flash / 14) < 1e-9);
+});
+
+test("the DeepSeek balance: read with the key, cached, never in local-only; runway in days", async () => {
+  let calls = 0;
+  const fetchImpl = async (url, init) => {
+    calls += 1;
+    assert.equal(url, "https://api.deepseek.test/user/balance");
+    assert.equal(init.headers.Authorization, "Bearer sk-test");
+    return { ok: true, json: async () => ({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "50.00" }, { currency: "USD", total_balance: "7.40", granted_balance: "0.00", topped_up_balance: "7.40" }] }) };
+  };
+  let t = 0;
+  const settings = () => ({ baseUrl: "https://api.deepseek.test/", apiKey: "sk-test" });
+  const read = createBalanceReader({ settings, fetchImpl, env: {}, now: () => t });
+  assert.deepEqual(await read(), { currency: "USD", total: 7.4, granted: 0, toppedUp: 7.4, available: true });
+  t = 60 * 1000;
+  await read();
+  assert.equal(calls, 1, "cached for 5 minutes");
+  t = 6 * 60 * 1000;
+  await read();
+  assert.equal(calls, 2);
+  assert.equal(await createBalanceReader({ settings, fetchImpl, env: { MANA_LOCAL_ONLY: "1" } })(), null);
+  assert.equal(await createBalanceReader({ settings: () => ({ apiKey: "" }), fetchImpl, env: {} })(), null);
+  const failing = createBalanceReader({ settings, fetchImpl: async () => ({ ok: false, status: 401 }), env: {} });
+  assert.match((await failing()).error, /401/);
+
+  assert.deepEqual(runway({ currency: "USD", total: 7.4 }, 0.2), { daysLeft: 37, low: false });
+  assert.equal(runway({ currency: "USD", total: 1.2 }, 0.3).low, true);
+  assert.equal(runway({ currency: "USD", total: 0.5 }, 0).low, true);
+  assert.equal(runway({ currency: "CNY", total: 50 }, 0.3), null);
+});
+
 test("her chat tool reads the same summary", async () => {
   const s = createApiSpending({ file: tmpFile(), now: () => OFF });
   s.record({ model: "deepseek-flash", use: "chat", usage, at: OFF });
-  const tool = createSpendingToolSource(s);
+  const tool = createSpendingToolSource(async () => s.summary({ days: 7 }));
   assert.equal(tool.isKnownToolName("api_spending__summary"), true);
   const out = JSON.parse(await tool.executeTool("api_spending__summary"));
   assert.equal(out.today.requests, 1);

@@ -278,7 +278,7 @@ const { createReverter } = require("./revert-pr");
 const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
 const { createSelfWork, systemRamPercent } = require("./self-work");
 const { createPostDeployEval } = require("./post-deploy-eval");
-const { createApiSpending } = require("./api-spending");
+const { createApiSpending, createBalanceReader, runway } = require("./api-spending");
 const { createEscalation } = require("./self-work-escalation");
 const { createLessons } = require("./self-work-lessons");
 const { createTraceStore } = require("./self-work-traces");
@@ -3220,10 +3220,22 @@ function registerRoutes(app, upload, deps = {}) {
   // #1385: her lessons from failed runs; a rule only after my approval.
   // #1406: API spending for Settings, and self-work's DeepSeek escalation.
   // The key goes in and never comes back out: only whether there is one.
-  app.get("/api-spending", (req, res) => {
+  app.get("/api-spending", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
-    return res.json(apiSpending.summary());
+    return res.json(await spendingReport({ days: 90 }));
   });
+  // #1406: Settings' and her chat's spending report: the ledger with each
+  // issue's outcome from her lifecycle, the DeepSeek balance and how long it lasts.
+  const readBalance = deps.readBalance || createBalanceReader({ settings: () => modelSettingsStore.getEscalationSettings(), env: deps.env || process.env });
+  async function spendingReport({ days }) {
+    const outcomeOf = (n) => {
+      const r = selfImprovement.get(n);
+      return r ? { title: r.title, state: r.state, prs: r.prs } : {};
+    };
+    const summary = apiSpending.summary({ days, outcomeOf });
+    const balance = await readBalance().catch((e) => ({ error: e.message }));
+    return { ...summary, balance, runway: runway(balance, summary.avgDaily) };
+  }
   const escalationView = () => {
     const { enabled, baseUrl, apiKey } = modelSettingsStore.getEscalationSettings();
     return { enabled, baseUrl, hasKey: Boolean(apiKey), localOnly: require("./local-only").isLocalOnly(deps.env || process.env) };
@@ -4026,6 +4038,7 @@ function registerRoutes(app, upload, deps = {}) {
     get gitTools() { return gitTools; },
     get improvementTools() { return improvementTools; },
     get apiSpending() { return apiSpending; },
+    get spendingReport() { return spendingReport; },
     get modelSettingsStore() { return modelSettingsStore; },
     get GROUP_REACTION_MAX_TOKENS() { return GROUP_REACTION_MAX_TOKENS; },
     get http() { return http; },
