@@ -71,6 +71,27 @@ test("totals by period, model and use survive a restart; a broken file starts fr
   assert.equal(createApiSpending({ file }).summary().total.requests, 0);
 });
 
+test("dollars by token kind add up to the total, and the daily series covers the last 30 days", () => {
+  const s = createApiSpending({ file: tmpFile(), now: () => OFF });
+  s.record({ model: "deepseek-flash", use: "self-work", usage, at: OFF });
+  s.record({ model: "deepseek-v4-pro", use: "chat", usage, at: PEAK });
+  s.record({ model: "deepseek-flash", use: "bench", usage, at: new Date("2026-09-30T12:00:00Z") });
+  const sum = s.summary();
+  const t = sum.today;
+  // Flash off-peak: 1M hit, 1M miss, 600k answer + 400k reasoning at the output price.
+  const f = sum.today.byModel["deepseek-flash"];
+  assert.ok(Math.abs(f.usdCacheHit - 0.003) < 1e-9 && Math.abs(f.usdCacheMiss - 0.15) < 1e-9);
+  assert.ok(Math.abs(f.usdOutput - 0.36) < 1e-9 && Math.abs(f.usdReasoning - 0.24) < 1e-9);
+  assert.ok(Math.abs(t.usdCacheHit + t.usdCacheMiss + t.usdOutput + t.usdReasoning - t.usd) < 1e-9);
+  assert.equal(sum.daily.length, 30);
+  assert.equal(sum.daily.at(-1).day, "2026-10-07");
+  assert.equal(sum.daily[0].day, "2026-09-08");
+  assert.ok(Math.abs(sum.daily.at(-1).byModel["deepseek-v4-pro"] - 2 * (0.022 + 0.66 + 1.98)) < 1e-9);
+  assert.ok(Math.abs(sum.daily.find((d) => d.day === "2026-09-30").usd - (0.003 + 0.15 + 0.6)) < 1e-9);
+  assert.equal(sum.daily[1].usd, 0);
+  assert.equal(s.summary({ days: 7 }).daily.length, 7);
+});
+
 test("her chat tool reads the same summary", async () => {
   const s = createApiSpending({ file: tmpFile(), now: () => OFF });
   s.record({ model: "deepseek-flash", use: "chat", usage, at: OFF });
