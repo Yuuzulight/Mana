@@ -45,7 +45,18 @@ function maxTier(a, b) {
 // reminders the user asked for.
 const BUILTIN_TIERS = {
   read_file: "read",
+  // #1383: her self-inventory and #1380's resource status only read state.
+  capabilities__inventory: "read",
+  resources__status: "read",
   session_search__query: "read",
+  // #1399: searching her own memory, and self-work's tools that only read
+  // her worktree (plan records her own plan; review asks her reviewer).
+  memory__search_facts: "read",
+  self_work__files: "read",
+  self_work__read: "read",
+  self_work__search: "read",
+  self_work__plan: "read",
+  self_work__review: "read",
   project_references__search: "read",
   project_references__link: "write",
   skill__view: "read",
@@ -677,5 +688,6 @@ module.exports = {
   extractCommand,
   isShellTool,
   resolveExecutable,
+  SELF_GATED,
   wrapWithRiskGate,
 };
