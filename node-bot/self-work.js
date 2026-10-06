@@ -46,6 +46,7 @@ const { findSecret, runCommand, stripAttribution, testEnv } = require("./ai/git-
 const { createGeminiFallback } = require("./gemini-fallback");
 const { wrapUntrusted } = require("./ai/untrusted-content");
 const { sanitizeBridgeOutput } = require("./bridge-output-sanitizer");
+const { describeUsage } = require("./api-spending");
 
 // The label that makes an issue hers to work on. I add it (or starting a
 // run from the launcher adds it for me).
@@ -273,7 +274,13 @@ const CHAT_START_SCHEMA = {
       "Start working on one of the GitHub issues of the person you're talking to, for your own code, in your own worktree, ending in a PR for them to review. Only when they ask you to in their message, naming the issue number.",
     parameters: {
       type: "object",
-      properties: { issue: { type: "integer", description: "The issue number from their message." } },
+      properties: {
+        issue: { type: "integer", description: "The issue number from their message." },
+        go_ahead: {
+          type: "boolean",
+          description: "True only when they tell you to go ahead with DeepSeek on this issue now: past the off-peak wait or today's run limit.",
+        },
+      },
       required: ["issue"],
     },
   },
@@ -356,6 +363,13 @@ function createSelfWork(options = {}) {
   // her worktrees, or a fallback of the caller's (the tests' fake); none by default.
   const gemini =
     options.gemini === true ? createGeminiFallback({ env, ledgerFile: path.join(worktreesDir, "self-work-gemini.json") }) : options.gemini || null;
+  // #1406: DeepSeek when her own attempts all fail (self-work-escalation.js):
+  // escalation decides when, remoteLoop(config) is her tool loop on the
+  // remote model, spending meters it. None by default.
+  const escalation = options.escalation || null;
+  const remoteLoop = options.remoteLoop || null;
+  const spending = options.spending || null;
+  const thoughtsDir = path.join(worktreesDir, "self-work-reasoning");
   // #1287: her training records (self-work-traces.js); none by default.
   const traces = options.traces || null;
   // #1386: her improvement lifecycle; issues waiting on me aren't picked again.
@@ -510,7 +524,7 @@ function createSelfWork(options = {}) {
       )
         .map((i) => i.number)
         .filter((n) => !open.some((p) => p.headRefName.startsWith(`mana/${n}-`)))
-        .filter((n) => !lifecycle?.skip(n))
+        .filter((n) => !lifecycle?.skip(n) && !escalation?.waitingNow(n))
         .sort((a, b) => a - b);
     } catch (e) {
       return { ok: false, error: e.message };
@@ -751,11 +765,24 @@ function createSelfWork(options = {}) {
 
     log(r, "Working on it in my worktree.");
     await owner();
-    let best = await bestOf(r, issue, attemptCount());
+    // #1406: held for off-peak or the day's cap: her attempts already failed,
+    // so straight to DeepSeek with what they found.
+    const waiting = escalation?.held(r.issue);
+    if (waiting) {
+      r.priorFacts = waiting.facts;
+      log(r, "My own attempts at this already failed, so I'm going straight to DeepSeek.");
+    }
+    let best = waiting ? { reply: null, kept: 0, none: true } : await bestOf(r, issue, attemptCount());
     if (haltedEnd(r)) return;
+    if (escalation && remoteLoop && (await ownFailed(r, best))) {
+      const e = await escalate(r, issue);
+      if (haltedEnd(r)) return;
+      if (e?.held) return end(r, "waiting", `None of my attempts at #${r.issue} passed. ${e.held}`);
+      if (e) best = e;
+    }
     // #1269: none of hers passed (and none came close enough for a draft):
     // Gemini CLI's try, which she then takes over as her own.
-    if (gemini && (await ownFailed(r, best))) best = (await geminiFallback(r, issue)) || best;
+    if (gemini && !escalation && (await ownFailed(r, best))) best = (await geminiFallback(r, issue)) || best;
     const summary = stripAttribution(best.reply?.content);
     r.finalWords = summary; // #1385: her own words, kept only as a guess
 
@@ -804,7 +831,10 @@ function createSelfWork(options = {}) {
     const origin = r.fromGemini
       ? `\n\n## Where this came from\nNone of my ${tries} local attempt${tries > 1 ? "s" : ""} passed, so this change came from my Gemini fallback (Gemini CLI, model: ${r.fromGemini.model}). I checked its diff against my write rules, ran the tests, reviewed it in my three passes and my reviewer read it, as for my own.`
       : "";
-    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${origin}${guardrails}\n\n## Testing\n${testing}${reviewer}`;
+    const remote = r.fromRemote
+      ? `\n\n## Where this came from\n${r.priorFacts ? "My own attempts didn't pass, so this" : "This"} change came from ${r.fromRemote.label} (${r.fromRemote.model}) running my self-work loop. My tests ran on it and my local reviewer passed it, as for my own.`
+      : "";
+    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${origin}${remote}${guardrails}\n\n## Testing\n${testing}${reviewer}`;
     let url;
     try {
       url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", title, "--body", body, ...(touched.length || closest ? ["--draft"] : [])], r.worktree);
@@ -826,6 +856,8 @@ function createSelfWork(options = {}) {
   // in the way of the run.
   async function saveTrace(r, issue) {
     if (!traces?.enabled()) return;
+    // #1406: fine-tuning data is only her own or a local model's.
+    if (r.fromRemote) return;
     try {
       const saved = traces.save({
         pr: Number(/\/pull\/(\d+)/.exec(r.prUrl)?.[1]),
@@ -845,14 +877,14 @@ function createSelfWork(options = {}) {
   // Goal mode over her worktree tools, for a real run and a bench run alike.
   // #1259: review is a short round on an attempt whose tests pass but that
   // she didn't finish: her three passes and finish (so her reviewer too).
-  function loop(r, issue, review = false) {
+  function loop(r, issue, review = false, runner = runLoop) {
     const tools = worktreeTools(r, { intent: `#${r.issue}: ${r.title}\n${String(issue.body || "")}`, mustReview: review });
     // #1287: each loop's messages, for this attempt's training record.
     const keep = (reply) => {
       (r.conversations ||= []).push({ review, rounds: reply?.rounds, messages: reply?.messages || null });
       return reply;
     };
-    return runLoop(review ? reviewPrompt(r, issue) : buildPrompt(r, issue), tools, {
+    return runner(review ? reviewPrompt(r, issue) : buildPrompt(r, issue), tools, {
       // The review's goal still asks for the whole issue (goal mode's check
       // reads it with her prompt, which has the issue), but without an edit
       // verb: goal mode would refuse a finish with no new edit in the round.
@@ -882,6 +914,144 @@ function createSelfWork(options = {}) {
     } catch (e) {
       return { reply: null, run: r, error: e.message };
     }
+  }
+
+  // #1406: what her failed attempts found, as facts (never her diff).
+  function failureFacts(r) {
+    const lines = (r.attempts || []).map(
+      (a) => `Attempt ${a.attempt}: ${a.finished ? "finished" : "not finished"}, ${a.passed ? "tests passing" : `${a.failures} failing${a.failing?.length ? ` (${a.failing.slice(0, 5).join("; ")})` : ""}`}`,
+    );
+    for (const n of new Set(r.reviewNotes || [])) lines.push(`My reviewer: ${String(n).slice(0, 300)}`);
+    if (!lines.length && r.step) lines.push(`My last step: ${String(r.step).slice(0, 300)}`);
+    return sanitizeBridgeOutput(lines.slice(-12).join("\n"), { env });
+  }
+
+  // #1406: one remote attempt, judged like hers: tests, and a review round
+  // when its tests pass but it didn't hand in.
+  async function remoteAttempt(r, issue, runner) {
+    let reply = await loop(r, issue, false, runner);
+    if (r.halt || r.stopRequested || r.refuted) return { reply };
+    const finished = Boolean(r.finished) && !/^Not done yet/i.test(reply?.content || "");
+    const verdict = await judge(r);
+    if (!verdict) return { reply };
+    if (verdict.passed && finished) return { reply, passed: true };
+    if (verdict.passed) {
+      r.finished = false;
+      delete r.reviewedTree;
+      reply = await loop(r, issue, true, runner);
+      if (r.finished && !/^Not done yet/i.test(reply?.content || "")) return { reply, passed: true };
+      return { reply };
+    }
+    return { reply, failures: verdict.failures, failing: verdict.failing };
+  }
+
+  // #1406: a failed tier's reasoning, kept for me to read: redacted, capped,
+  // in a file beside her worktrees. A tier that passes keeps none.
+  function keepThoughts(r, tier, thoughts) {
+    const text = sanitizeBridgeOutput(thoughts.join("\n\n---\n\n"), { env }).slice(-20000);
+    if (!text.trim()) return;
+    try {
+      fs.mkdirSync(thoughtsDir, { recursive: true });
+      const file = path.join(thoughtsDir, `${r.issue}-${tier.id}-${Date.now()}.txt`);
+      fs.writeFileSync(file, text);
+      log(r, `${tier.label}'s reasoning on this is in ${file}.`);
+    } catch {}
+  }
+
+  // #1406: DeepSeek, one tier at a time, from a clean worktree with the
+  // facts of her attempts. Returns her reply to go on with (a tier passed),
+  // { held } (off-peak or the day's cap: try later), or null with her own
+  // last attempt put back.
+  async function escalate(r, issue) {
+    const no = escalation.unavailable();
+    if (no) {
+      log(r, `No DeepSeek escalation: ${no}.`);
+      return null;
+    }
+    const tiers = escalation.tiersLeft(r.issue);
+    if (!tiers.length) {
+      r.fallbackNote = "I've already tried DeepSeek on this one; say retry and I'll give it a fresh go.";
+      return null;
+    }
+    let facts = r.priorFacts || failureFacts(r);
+    const patchFile = path.join(os.tmpdir(), `mana-self-work-${r.issue}-${process.pid}-own.patch`);
+    const own = await snapshot(r);
+    if (own) fs.writeFileSync(patchFile, own);
+    const saved = Object.fromEntries(ATTEMPT_STATE.map((k) => [k, r[k]]));
+    // Her own attempt's refutation would stop each tier at its first check.
+    const refuted = r.refuted;
+    delete r.refuted;
+    const notes = [];
+    const putBack = async () => {
+      await resetWorktree(r);
+      if (own) await applyPatch(r, patchFile);
+      fs.rmSync(patchFile, { force: true });
+      Object.assign(r, saved);
+      if (refuted) r.refuted = refuted;
+      if (notes.length) r.fallbackNote = notes.join(" ");
+    };
+    for (const tier of tiers) {
+      const gate = escalation.gate(r.issue);
+      if (!gate.ok) {
+        escalation.hold(r.issue, facts, gate.kind);
+        await putBack();
+        return { held: gate.why };
+      }
+      escalation.begin(r.issue, tier);
+      escalation.release(r.issue);
+      await resetWorktree(r);
+      for (const key of ATTEMPT_STATE) delete r[key];
+      r.round = 0;
+      r.priorFacts = facts;
+      log(r, `None of my attempts at #${r.issue} passed, so I'm asking ${tier.label}.`, true);
+      const used = { cacheHit: 0, cacheMiss: 0, output: 0, reasoning: 0, usd: 0, peak: false };
+      const thoughts = [];
+      let runner;
+      try {
+        runner = remoteLoop({
+          ...escalation.config(),
+          model: tier.model,
+          thinking: tier.thinking,
+          onResponse: (json) => {
+            const t = spending?.record({ model: tier.model, use: "self-work", usage: json?.usage || {} });
+            if (t) {
+              for (const k of ["cacheHit", "cacheMiss", "output", "reasoning"]) used[k] += t[k];
+              used.usd = t.usd === null || used.usd === null ? null : used.usd + t.usd;
+              used.peak ||= t.peak;
+            }
+            const thought = json?.choices?.[0]?.message?.reasoning_content;
+            if (thought) thoughts.push(String(thought));
+          },
+        });
+      } catch (e) {
+        log(r, `I couldn't reach ${tier.label}: ${e.message}`, true);
+        break;
+      }
+      let out;
+      try {
+        out = await remoteAttempt(r, issue, runner);
+      } catch (e) {
+        out = { error: e.message };
+      }
+      const line = `${tier.label}: ${describeUsage(used)}${used.peak ? ", peak" : ", off-peak"}.`;
+      notes.push(line);
+      log(r, line);
+      if (out.passed) {
+        r.fromRemote = { label: tier.label, model: tier.model };
+        fs.rmSync(patchFile, { force: true });
+        r.fallbackNote = notes.join(" ");
+        return { reply: out.reply, kept: 1 };
+      }
+      keepThoughts(r, tier, thoughts);
+      if (r.halt || r.stopRequested) break;
+      const how = out.error ? `it failed (${String(out.error).slice(0, 200)})` : out.failing ? `${out.failures} tests still failing (${out.failing.slice(0, 5).join("; ")})` : "it didn't finish";
+      log(r, `${tier.label} didn't get #${r.issue} passing: ${how}.`);
+      facts = `${facts}\n${tier.label}'s try: ${how}`.slice(-4000);
+      // A refutation ends this tier the way it ends her own attempt.
+      delete r.refuted;
+    }
+    await putBack();
+    return null;
   }
 
   // #1269: her own run ended with nothing a PR could carry: no attempt
@@ -1366,7 +1536,7 @@ How to work:
 
 Issue #${r.issue}: ${r.title}
 ${String(issue.body || "").slice(0, 4000)}
-
+${r.priorFacts ? `\nEarlier attempts at this issue didn't pass. What they found:\n${r.priorFacts}\nDon't repeat what already failed.\n` : ""}
 How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Aim to make your first edit within ${READ_BUDGET_LINES} lines of reading: search first and read only what the change needs; then make the change.
@@ -1751,6 +1921,8 @@ Before it can be a PR:
         }
         const n = Number(args?.issue);
         if (!asked.has(n)) return JSON.stringify({ status: "error", error: `#${n} isn't in their message.` });
+        // #1406: "go ahead on #N" -- one DeepSeek run past the off-peak wait or the day's limit.
+        if (args?.go_ahead === true) escalation?.goAhead(n);
         const result = await start(n, { by: "chat", sessionId });
         if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
         const { worktree, branch, title } = result.status;
@@ -1759,7 +1931,7 @@ Before it can be a PR:
     };
   }
 
-  return { start, startIdle, refresh, stop, status, chatToolSource, bench, benchGemini, traces, lessons, _current: () => current };
+  return { start, startIdle, refresh, stop, status, chatToolSource, bench, benchGemini, traces, lessons, escalation, _current: () => current };
 }
 
 module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
