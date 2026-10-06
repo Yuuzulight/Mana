@@ -1,0 +1,25 @@
+{
+  "id": "1351-tri-mode-lora-telemetry",
+  "kind": "multi-file",
+  "pr": 1351,
+  "issue": 1343,
+  "base": "11b082efa695550398bb9580aa185678c2ca8d07",
+  "fix": "e1a12a66a5ec1389cc6544ebb5a62552603a3fbe",
+  "title": "Tri-mode architecture should expose dynamic LoRA routing and VRAM telemetry",
+  "body": "Implement dynamic LoRA adapter loading/hot-swapping for the resident model, expose live VRAM telemetry in Doctor, and add launcher/backend status hooks for coding mode.",
+  "fixFiles": [
+    "node-bot/ai/llama-server-runtime.js",
+    "node-bot/doctor.js",
+    "node-bot/server.js",
+    "windows-native-launcher/ManaApplicationContext.cs",
+    "windows-native-launcher/ManaBackendClient.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/lora-adapters.test.js",
+    "node-bot/test/doctor.test.js",
+    "windows-native-launcher/ManaNativeLauncher.Tests/ManaBackendClientTests.cs"
+  ],
+  "testCommand": "node --test test/lora-adapters.test.js test/doctor.test.js",
+  "interface": "llama-server runtime can register/apply LoRA adapters, and Doctor includes VRAM/coding-session health.",
+  "why": "Model-routing reliability is part of the self-sufficiency shortlist."
+}
