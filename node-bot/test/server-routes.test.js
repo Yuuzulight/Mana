@@ -1906,6 +1906,8 @@ test("buildMemoryNotes creates a Key Facts note linking to mentioned entities", 
     { "ffxiv": [{ sessionId: "s1", at: "t1", display: "FFXIV" }] },
     ["Plays FFXIV on weekends", "Prefers concise replies"],
     [],
+    // #1387: typed, so one mention is enough for a note.
+    { ffxiv: { type: "project" } },
   );
   const facts = notes.find((n) => n.slug === "key-facts");
   assert.ok(facts);

@@ -236,6 +236,7 @@ const { createRelationshipCapability } = require("./capabilities/relationship-ca
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
+const { visibleEntities } = require("./memory-views");
 // Issue #267: one generic composer instead of a buildToolPolicyWithX per
 // tool source -- see ai/tool-source.js. Each create*ToolSource() factory
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
@@ -1376,18 +1377,27 @@ function slugifyEntityName(name) {
 // the clustering. No new clustering algorithm: this is entirely a reshape of
 // data Mana already computes (entity-index.json, important_facts,
 // connections).
-function buildMemoryNotes(entityIndex, facts, connections) {
+// #1387: only entities memory-views.js keeps get a note (aliases folded into
+// their canonical one), so nothing links to a note that isn't there.
+function buildMemoryNotes(rawIndex, facts, connections, types = {}) {
   const notes = [];
-  const entityNames = Object.keys(entityIndex || {});
+  const { entities } = visibleEntities(rawIndex, types);
+  const entityIndex = Object.fromEntries(Object.entries(entities).map(([k, e]) => [k, e.mentions]));
+  const entityNames = Object.keys(entityIndex);
   const slugFor = {};
   for (const key of entityNames) {
     slugFor[key] = slugifyEntityName(key);
+  }
+  // A fact names an entity by its canonical key or any of its aliases.
+  const namesFor = Object.fromEntries(entityNames.map((k) => [k, [k]]));
+  for (const [alias, meta] of Object.entries(types)) {
+    if (meta?.canonicalKey && namesFor[meta.canonicalKey]) namesFor[meta.canonicalKey].push(alias);
   }
 
   for (const key of entityNames) {
     const mentions = entityIndex[key] || [];
     if (!mentions.length) continue;
-    const display = mentions[mentions.length - 1].display || key;
+    const display = entities[key].display || key;
     const sessionIds = new Set(mentions.map((m) => m.sessionId));
 
     const linkedKeys = entityNames.filter(
@@ -1426,7 +1436,7 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   if (facts && facts.length) {
     const factLines = facts.map((f) => {
       const mentioned = entityNames.filter((key) =>
-        String(f).toLowerCase().includes(key),
+        namesFor[key].some((name) => String(f).toLowerCase().includes(name)),
       );
       const linkSuffix = mentioned.length
         ? ` (${mentioned.map((k) => `[[${slugFor[k]}]]`).join(", ")})`
@@ -1455,15 +1465,20 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   return notes;
 }
 
+function readMemoryJson(name) {
+  const file = path.join(acpMemoryStore.dataDir, name);
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8") || "{}") : {};
+}
+
 function currentMemoryNotes() {
-  const entityIndexPath = path.join(acpMemoryStore.dataDir, "entity-index.json");
-  let entityIndex = {};
-  if (fs.existsSync(entityIndexPath)) {
-    entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
-  }
   const facts = BACKGROUND_MEMORY_META.important_facts || [];
   const connections = BACKGROUND_MEMORY_META.connections || [];
-  return buildMemoryNotes(entityIndex, facts, connections);
+  return buildMemoryNotes(readMemoryJson("entity-index.json"), facts, connections, readMemoryJson("entity-types.json"));
+}
+
+// #1387: what didn't get a note, and why.
+function excludedMemoryEntities() {
+  return visibleEntities(readMemoryJson("entity-index.json"), readMemoryJson("entity-types.json")).excluded;
 }
 
 // #935: the vault's read-only Views/ -- the MEMORY.md summary, Mana's mood
@@ -4078,6 +4093,14 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/api/memory/notes", authMiddleware, async (req, res) => {
     try {
       res.json(currentMemoryNotes());
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  app.get("/api/memory/notes/excluded", authMiddleware, async (req, res) => {
+    try {
+      res.json({ excluded: excludedMemoryEntities() });
     } catch (e) {
       res.status(500).json({ error: e?.message || String(e) });
     }
