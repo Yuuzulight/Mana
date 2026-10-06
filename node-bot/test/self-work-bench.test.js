@@ -117,32 +117,17 @@ test("a case that fixes the bug passes its hidden test, and the worktree is gone
   assert.equal(git(r.repo, "rev-parse", "HEAD"), r.c.fix);
 });
 
-// #1269: --gemini runs only her Gemini fallback on the case, under her write rules.
-test("the Gemini config scores Gemini CLI's own change, and a change outside her write rules is refused", async () => {
-  const r = makeRepo();
-  const gemini = (writes) => ({
-    model: "fake",
-    run: async ({ worktree, prompt }) => {
-      assert.match(prompt, /add\(2, 3\) gives -1\./);
-      for (const [rel, text] of Object.entries(writes)) {
-        fs.mkdirSync(path.dirname(path.join(worktree, rel)), { recursive: true });
-        fs.writeFileSync(path.join(worktree, rel), text);
-      }
-      return { outcome: "ok", ms: 5, response: "Fixed add()." };
-    },
-  });
-  const fixed = "function add(a, b) {\n  return a + b;\n}\nmodule.exports = { add };\n";
-  const ok = await runCase(r.c, { ...deps(r, []), gemini: gemini({ "node-bot/util.js": fixed }) });
-  assert.equal(ok.passed, true, ok.hiddenTail);
-  assert.equal(ok.ended, "ok");
-  assert.equal(ok.toolCalls, 0);
-  assert.deepEqual(ok.diff.files, ["node-bot/util.js"]);
-
-  const refused = await runCase(r.c, { ...deps(r, []), gemini: gemini({ "node-bot/util.js": fixed, ".github/workflows/x.yml": "on: push\n" }) });
-  assert.equal(refused.ended, "refused");
-  assert.equal(refused.failure, "refused: outside her write rules");
-  assert.equal(refused.passed, false);
-  assert.deepEqual(refused.diff.files, []);
+// #1406/#1411: --remote runs her loop on a DeepSeek model, with the key from Settings.
+test("--remote needs the DeepSeek key from Settings and names the model, thinking and reviewer", () => {
+  const { remoteModel } = require("../bench/self-work-bench");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-bench-remote-"));
+  const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
+  assert.throws(() => remoteModel(root, tokens, {}, { model: "deepseek-flash", thinking: true }), /no DeepSeek key/);
+  fs.mkdirSync(path.join(root, "node-bot", "data"), { recursive: true });
+  fs.writeFileSync(path.join(root, "node-bot", "data", "model-settings.json"), JSON.stringify({ escalation: { enabled: true, apiKey: "sk-test" } }));
+  const m = remoteModel(root, tokens, {}, { model: "deepseek-flash", thinking: false });
+  assert.ok(m.model.startsWith("deepseek-flash (thinking off; reviewer: "), m.model);
+  assert.equal(typeof m.runLoop, "function");
 });
 
 test("a wrong fix fails the hidden test, and files outside the real fix are named", async () => {

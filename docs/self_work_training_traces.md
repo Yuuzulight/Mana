@@ -10,14 +10,14 @@ When a self-work run opens a PR whose tests passed and whose diff her reviewer p
 - `conversations`: one per loop of hers on the kept attempt (her main loop, plus a review round when she had one), with `messages` exactly as the model saw them: system, user, assistant turns with `tool_calls`, and `tool` results
 - `diff`: the commit she pushed
 - `tests`: the test command that passed, and her attempts when she made several
-- `source`: `local`, or `gemini-cli` when the change came from her Gemini fallback
+- `source`: `local` (a change from a remote model, such as DeepSeek escalation, is never kept)
 - `outcome`: `testsPassed`, `reviewPassed`, `merged` (set when she next sees her merged PRs) and `reverted` (set when I revert the PR from Mana)
 
 A draft PR whose tests still fail isn't kept.
 
 ## Rules
 
-- **Local model only.** A record whose `source` isn't `local` is never written. A change that started as Gemini CLI's (or any cloud model's) doesn't count as hers to learn from.
+- **Local model only.** A record whose `source` isn't `local` is never written. A change from a remote model (DeepSeek escalation, or any cloud model) doesn't count as hers to learn from.
 - **Scrubbed.** Every string goes through the same sanitizer her GitHub text does (`bridge-output-sanitizer.js`): keys, tokens and the values of secret env vars are redacted, and local paths outside the repo become `[local path]`.
 - **Capped.** The folder is kept under `MANA_SELF_WORK_TRACES_MAX_MB` (200 MB by default); the oldest records go first.
 - **Can be turned off.** `MANA_SELF_WORK_TRACES=0` in `.env` stops her saving records.

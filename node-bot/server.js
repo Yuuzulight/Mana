@@ -3097,8 +3097,6 @@ function registerRoutes(app, upload, deps = {}) {
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
       gitTools,
-      // #1269: Gemini CLI when every local attempt failed (MANA_SELF_WORK_GEMINI*).
-      gemini: true,
       // #1398: she watches CI on her own PR and fixes red checks (twice at most).
       watchCi: true,
       // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
@@ -3746,7 +3744,7 @@ function registerRoutes(app, upload, deps = {}) {
       recommendRoute(telemetry, {
         kind,
         current,
-        candidates: [...new Set(telemetry.models.filter((m) => m.kind === kind).map((m) => m.model))].map((model) => ({ model, local: !/gemini/i.test(model) })),
+        candidates: [...new Set(telemetry.models.filter((m) => m.kind === kind).map((m) => m.model))].map((model) => ({ model, local: !/gemini|deepseek/i.test(model) })),
         localOnly: require("./local-only").isLocalOnly(),
       }),
     );

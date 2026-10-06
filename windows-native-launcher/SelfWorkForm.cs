@@ -22,7 +22,7 @@ internal sealed class SelfWorkForm : Form
     private readonly LinkLabel prLink = new();
     private readonly TextBox stepsBox = new();
     private readonly Label noteLabel = new();
-    private readonly Label geminiLabel = new();
+    private readonly Label escalationLabel = new();
     private readonly System.Windows.Forms.Timer refreshTimer = new() { Interval = 3000 };
 
     public SelfWorkForm(ManaBackendClient backendClient)
@@ -73,11 +73,11 @@ internal sealed class SelfWorkForm : Form
         summaryLabel.ForeColor = DarkTheme.Text;
         summaryLabel.Padding = new Padding(4, 6, 0, 0);
 
-        // #1269: whether her Gemini fallback is on, or how to set it up.
-        geminiLabel.Dock = DockStyle.Top;
-        geminiLabel.Height = 36;
-        geminiLabel.ForeColor = DarkTheme.Muted;
-        geminiLabel.Padding = new Padding(4, 2, 0, 0);
+        // #1406: whether her DeepSeek escalation is on, or why not.
+        escalationLabel.Dock = DockStyle.Top;
+        escalationLabel.Height = 36;
+        escalationLabel.ForeColor = DarkTheme.Muted;
+        escalationLabel.Padding = new Padding(4, 2, 0, 0);
 
         prLink.Dock = DockStyle.Top;
         prLink.Height = 22;
@@ -95,7 +95,7 @@ internal sealed class SelfWorkForm : Form
 
         Controls.Add(stepsBox);
         Controls.Add(prLink);
-        Controls.Add(geminiLabel);
+        Controls.Add(escalationLabel);
         Controls.Add(summaryLabel);
         Controls.Add(noteLabel);
         Controls.Add(topRow);
@@ -168,7 +168,7 @@ internal sealed class SelfWorkForm : Form
         }
         summaryLabel.Text = Describe(status);
         stepsBox.Text = string.Join(Environment.NewLine, status.Log);
-        geminiLabel.Text = status.Gemini ?? "";
+        escalationLabel.Text = status.Escalation ?? "";
         prLink.Text = status.PrUrl ?? "";
         prLink.Tag = status.PrUrl;
         var running = status.State == "running";

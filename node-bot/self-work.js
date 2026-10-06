@@ -22,9 +22,8 @@
 // git runs with her git tools' runner (a timeout on every call) and a
 // clean environment, so hooks don't see the backend's keys.
 //
-// #1269: when every local attempt at an issue failed, Gemini CLI may try it
-// (gemini-fallback.js); she then checks, tests and reviews its change as
-// her own, and its PR says where the change came from.
+// #1406: when every local attempt at an issue failed, DeepSeek may run her
+// loop on it (self-work-escalation.js), judged by her tests and reviewer.
 //
 // ponytail: one run at a time, state in memory -- a backend restart ends
 // the run and leaves the worktree for the next one to pick up.
@@ -43,7 +42,6 @@ const { createEditProposalStore } = require("./zed-integration");
 const protectedPaths = require("./protected-paths");
 // #1182: the git safety helpers now live with her git tools.
 const { findSecret, runCommand, stripAttribution, testEnv } = require("./ai/git-tool-source");
-const { createGeminiFallback } = require("./gemini-fallback");
 const { wrapUntrusted } = require("./ai/untrusted-content");
 const { sanitizeBridgeOutput } = require("./bridge-output-sanitizer");
 const { describeUsage } = require("./api-spending");
@@ -60,8 +58,6 @@ const GUARDRAIL_LABEL = "mana-guardrail";
 // #1212: a test file, which she may write before she's seen a test fail.
 const TEST_PATH_RE = /(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i;
 const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
-// #1269: and from Gemini CLI, its own settings and context files.
-const GEMINI_NEVER_RE = /(^|\/)(\.gemini(\/|$)|GEMINI\.md$)/i;
 // #1253: a comment line in a whole-file rewrite that stands in for code
 // ("// ... rest unchanged", "# existing code omitted", a bare "// ...").
 const ELIDED_RE = /^\s*(?:\/\/|#|\/\*|<!--)\s*(?:\.\.\.|…|(?:rest|remainder)\b|.*\b(?:existing|remaining|rest of|other|previous|original|same)\b.*\b(?:unchanged|omitted|as before)\b)/i;
@@ -359,10 +355,6 @@ function createSelfWork(options = {}) {
   const maxOpenPrs = Math.max(1, Number(env.MANA_SELF_WORK_MAX_OPEN_PRS) || DEFAULT_MAX_OPEN_PRS);
   const onEvent = options.onEvent || ((run, text) => console.log(`[self-work #${run.issue}] ${text}`));
   const proposals = createEditProposalStore();
-  // #1269: her cloud fallback: true for Gemini CLI with its run log beside
-  // her worktrees, or a fallback of the caller's (the tests' fake); none by default.
-  const gemini =
-    options.gemini === true ? createGeminiFallback({ env, ledgerFile: path.join(worktreesDir, "self-work-gemini.json") }) : options.gemini || null;
   // #1406: DeepSeek when her own attempts all fail (self-work-escalation.js):
   // escalation decides when, remoteLoop(config) is her tool loop on the
   // remote model, spending meters it. None by default.
@@ -447,7 +439,9 @@ function createSelfWork(options = {}) {
   }
 
   function status() {
-    const fallback = gemini ? { gemini: gemini.info() } : {};
+    // #1406: DeepSeek escalation, on or why not, as one line.
+    const no = escalation?.unavailable();
+    const fallback = escalation ? { escalation: { enabled: !no, text: no ? `DeepSeek escalation: off -- ${no}.` : "DeepSeek escalation: on, when my own attempts fail." } } : {};
     if (!current) return { state: "idle", ...fallback };
     const { done, stopRequested, lastTestPassed, halt, reviewedTree, ciFix, finalWords, ...shown } = current;
     return { ...shown, ...fallback, log: [...current.log] };
@@ -666,8 +660,6 @@ function createSelfWork(options = {}) {
     ciWatch = null;
     if (current?.state !== "running") return watching;
     current.stopRequested = true;
-    // #1269: a Gemini CLI run under way ends now, not at its own end.
-    gemini?.stop?.();
     return true;
   }
 
@@ -780,9 +772,6 @@ function createSelfWork(options = {}) {
       if (e?.held) return end(r, "waiting", `None of my attempts at #${r.issue} passed. ${e.held}`);
       if (e) best = e;
     }
-    // #1269: none of hers passed (and none came close enough for a draft):
-    // Gemini CLI's try, which she then takes over as her own.
-    if (gemini && !escalation && (await ownFailed(r, best))) best = (await geminiFallback(r, issue)) || best;
     const summary = stripAttribution(best.reply?.content);
     r.finalWords = summary; // #1385: her own words, kept only as a guess
 
@@ -820,21 +809,16 @@ function createSelfWork(options = {}) {
     const title = touched.length ? `[Guardrail] ${r.title}` : r.title;
     const testing = closest
       ? `None of my ${r.attempts.length} attempts finished with all its tests passing. Attempt ${best.kept} came closest: it finished, but these still fail, so it's a draft until they pass:\n${best.failing.map((f) => `- ${f}`).join("\n") || "- (no test names in the output)"}`
-      : `${r.lastTestCommand}: passed.${!r.fromGemini && r.attempts?.length > 1 ? ` (Attempt ${best.kept} of ${r.attempts.length}.)` : ""}`;
+      : `${r.lastTestCommand}: passed.${!r.fromRemote && r.attempts?.length > 1 ? ` (Attempt ${best.kept} of ${r.attempts.length}.)` : ""}`;
     // #1251: everything my reviewer said this run, refutations I fixed and notes.
     const notes = [...new Set(r.reviewNotes)];
     const reviewer = notes.length
       ? `\n\n## My reviewer\n${notes.slice(0, MAX_PR_REVIEW_NOTES).map((n) => `- ${n.slice(0, 500)}`).join("\n")}${notes.length > MAX_PR_REVIEW_NOTES ? `\n- ...and ${notes.length - MAX_PR_REVIEW_NOTES} more` : ""}`
       : "";
-    // #1269: a change that started as Gemini CLI's says so.
-    const tries = r.attempts?.length || 1;
-    const origin = r.fromGemini
-      ? `\n\n## Where this came from\nNone of my ${tries} local attempt${tries > 1 ? "s" : ""} passed, so this change came from my Gemini fallback (Gemini CLI, model: ${r.fromGemini.model}). I checked its diff against my write rules, ran the tests, reviewed it in my three passes and my reviewer read it, as for my own.`
-      : "";
     const remote = r.fromRemote
       ? `\n\n## Where this came from\n${r.priorFacts ? "My own attempts didn't pass, so this" : "This"} change came from ${r.fromRemote.label} (${r.fromRemote.model}) running my self-work loop. My tests ran on it and my local reviewer passed it, as for my own.`
       : "";
-    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${origin}${remote}${guardrails}\n\n## Testing\n${testing}${reviewer}`;
+    const body = `Closes #${r.issue}.\n\n## What changed\n${summary.slice(0, 4000) || "(no summary)"}${remote}${guardrails}\n\n## Testing\n${testing}${reviewer}`;
     let url;
     try {
       url = await gh(["pr", "create", "--base", "main", "--head", r.branch, "--title", title, "--body", body, ...(touched.length || closest ? ["--draft"] : [])], r.worktree);
@@ -852,7 +836,7 @@ function createSelfWork(options = {}) {
   }
 
   // #1287: a PR whose tests passed and whose diff my reviewer passed, as a
-  // training record (its source: a Gemini CLI change isn't kept). Never
+  // training record (#1406: never a remote model's change). Never
   // in the way of the run.
   async function saveTrace(r, issue) {
     if (!traces?.enabled()) return;
@@ -862,7 +846,7 @@ function createSelfWork(options = {}) {
       const saved = traces.save({
         pr: Number(/\/pull\/(\d+)/.exec(r.prUrl)?.[1]),
         issue: { number: r.issue, title: r.title, body: String(issue.body || "") },
-        source: r.fromGemini ? "gemini-cli" : "local",
+        source: "local",
         conversations: r.conversations || [],
         diff: await git(["diff", "--binary", "HEAD~1", "HEAD"], r.worktree),
         tests: { command: r.lastTestCommand || null, passed: true, attempts: r.attempts || null },
@@ -1064,121 +1048,6 @@ function createSelfWork(options = {}) {
     return !(await git(["diff", "--name-only", "HEAD"], r.worktree));
   }
 
-  // #1269: Gemini CLI's try in her worktree, then hers over its diff as
-  // over her own edits: the same write rules, her tests, her three review
-  // passes and her reviewer on finish (the PR checks after that are the
-  // usual ones). Returns her reply when it goes on to them; null when it
-  // didn't run or was refused, with her own last attempt put back and
-  // r.fallbackNote saying why.
-  async function geminiFallback(r, issue) {
-    const no = await gemini.blocked(r.issue);
-    if (no) {
-      log(r, `No Gemini fallback: ${no.why}`, no.notice);
-      return null;
-    }
-    log(r, `None of my attempts at #${r.issue} passed, so I'm asking Gemini CLI, my cloud fallback.`, true);
-    const patchFile = path.join(os.tmpdir(), `mana-self-work-${r.issue}-${process.pid}-own.patch`);
-    const own = await snapshot(r);
-    if (own) fs.writeFileSync(patchFile, own);
-    const saved = Object.fromEntries(ATTEMPT_STATE.map((k) => [k, r[k]]));
-    const putBack = async (note) => {
-      await resetWorktree(r);
-      if (own) await applyPatch(r, patchFile);
-      Object.assign(r, saved);
-      r.fallbackNote = note;
-      return null;
-    };
-    await resetWorktree(r);
-    for (const key of ATTEMPT_STATE) delete r[key];
-    const g = await geminiRun(r, issue, true);
-    log(r, `Gemini CLI: ${g.outcome} after ${Math.round(g.ms / 1000)}s.`);
-    if (g.outcome === "quota") {
-      log(r, "Gemini CLI says I'm out of quota for today, so I won't ask it again until tomorrow.", true);
-      return putBack("Gemini CLI was out of quota, so it couldn't try either.");
-    }
-    if (g.outcome === "unsafe-settings") log(r, `I didn't run Gemini CLI: ${g.error}`, true);
-    if (g.outcome !== "ok") return putBack(`My Gemini fallback didn't work either (${g.outcome}).`);
-    if (g.refused.length) {
-      log(r, `Gemini CLI changed ${g.refused.join(", ")}, which it may not; I reverted its change and refused it.`, true);
-      return putBack(`My Gemini fallback's change touched ${g.refused.join(", ")}, so I refused it.`);
-    }
-    if (!g.changed.length) return putBack("My Gemini fallback didn't change anything either.");
-    // Its change is the one going on; mine isn't coming back.
-    fs.rmSync(patchFile, { force: true });
-    r.fromGemini = { model: gemini.model };
-    r.takeover = true;
-    r.round = 0;
-    log(r, `Gemini CLI changed ${g.changed.join(", ")}. I'm checking it as my own now.`);
-    const reply = await runLoop(
-      takeoverPrompt(r, issue, g.changed),
-      worktreeTools(r, { intent: `#${r.issue}: ${r.title}\n${String(issue.body || "")}`, edited: g.changed }),
-      {
-        // No edit verb: she needn't change anything if it holds up.
-        goal: `Review, test and finish the change Gemini CLI made for issue #${r.issue}`,
-        maxRounds: r.maxRounds,
-        contextSize: Number(env.MANA_SELF_WORK_LLAMA_CONTEXT ?? DEFAULT_SELF_WORK_CONTEXT) || undefined,
-        onRound: (round) => {
-          r.round = round;
-        },
-        maxMs: Infinity,
-        maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
-        overrideSystemPrompt:
-          "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
-      },
-    );
-    // Her tests, whatever she ran: the ones for every file in the diff.
-    if (r.finished && r.lastTestPassed && !r.halt && !r.stopRequested && !r.refuted) {
-      // No tests to judge it by fails it too (a change no node test covers).
-      const verdict = await judge(r);
-      if (verdict && !(verdict.ran && verdict.passed)) {
-        r.lastTestPassed = false;
-        log(r, `My tests on Gemini CLI's change ${verdict.ran ? "fail" : "can't judge it"}: ${verdict.failing.join(", ")}.`);
-      }
-    }
-    return { reply, kept: 1 };
-  }
-
-  // Gemini CLI headless in her worktree, with node_modules' link out of its
-  // reach (it can't run anything that needs it). What it changed, and what
-  // it may not have: a tracked path against her edit tool's rules and
-  // Gemini's own files, a new gitignored file (a .env, say) or the
-  // worktree's .git file. Those are reverted here; a refused run's other
-  // changes stay for the caller to reset.
-  async function geminiRun(r, issue, logged) {
-    const link = path.join(r.worktree, "node-bot", "node_modules");
-    let target = null;
-    try {
-      target = fs.readlinkSync(link);
-    } catch {}
-    // Non-recursive: only the link goes, never the packages behind it.
-    if (target) process.platform === "win32" ? fs.rmdirSync(link) : fs.unlinkSync(link);
-    const dotGit = path.join(r.worktree, ".git");
-    const ignored = async () => (await git(["ls-files", "-o", "-i", "--exclude-standard", "--directory"], r.worktree)).split(/\r?\n/).filter(Boolean);
-    let gitFile = null;
-    let g;
-    let strays = [];
-    // Everything after the link went is in here, so it always comes back.
-    try {
-      gitFile = fs.statSync(dotGit).isFile() ? fs.readFileSync(dotGit) : null;
-      const before = new Set(await ignored());
-      g = await gemini.run({ worktree: r.worktree, prompt: geminiPrompt(r, issue), issue: r.issue, log: logged });
-      strays = (await ignored()).filter((f) => !before.has(f));
-      for (const f of strays) fs.rmSync(path.join(r.worktree, f), { recursive: true, force: true });
-    } finally {
-      if (target && !fs.existsSync(link)) fs.symlinkSync(target, link, "junction");
-      if (gitFile && !(fs.statSync(dotGit, { throwIfNoEntry: false })?.isFile() && fs.readFileSync(dotGit).equals(gitFile))) {
-        fs.rmSync(dotGit, { recursive: true, force: true });
-        fs.writeFileSync(dotGit, gitFile);
-        strays.push(".git");
-      }
-    }
-    await git(["add", "-A", "-N"], r.worktree);
-    const changed = (await git(["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", "HEAD"], r.worktree)).split(/\r?\n/).filter(Boolean);
-    const refused = [...strays, ...changed.filter((f) => GEMINI_NEVER_RE.test(f) || writeRefusal(r, path.join(r.worktree, f), f))];
-    if (refused.length) await resetWorktree(r);
-    return { ...g, changed, refused };
-  }
-
   // Her edit tool's rules for a path in her worktree: why it isn't hers to
   // write, or null.
   function writeRefusal(r, full, relPath) {
@@ -1190,62 +1059,6 @@ function createSelfWork(options = {}) {
       return guard.protectedPathMessage(blocked);
     }
     return null;
-  }
-
-  // #1269: her own prompt's asks, for a model that can't run anything.
-  function geminiPrompt(r, issue) {
-    return `You're resolving issue #${r.issue} in this repository, Mana (a Node.js backend in node-bot/, tested with node:test in node-bot/test/, and a C# Windows launcher). Work only in this folder.
-
-Issue #${r.issue}: ${r.title}
-${String(issue.body || "").slice(0, 4000)}
-
-How to work:
-- Find the code the issue is about and read it before you change anything.
-- Make the smallest change that resolves the issue, in the style of the code around it.
-- Add or update a test (node-bot/test/<name>.test.js for node-bot/<name>.js) that fails without your change.
-- You can't run commands here; the tests are run after you finish.
-- Don't touch .github, .git, node_modules, .gemini, .env or other credential files, or Mana's guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction)${r.flagged ? " beyond what the issue needs" : ""}.
-- When you're done, reply with a short summary of what you changed and which test covers it.`;
-  }
-
-  function takeoverPrompt(r, issue, changed) {
-    return `You're working on your own code, the Mana repo, on issue #${r.issue} in your own git worktree (branch ${r.branch}). Nothing here touches your live copy. None of your own attempts passed, so Gemini CLI, your cloud fallback, made a change for it. It goes up as your PR only if you'd stand behind it.
-
-Issue #${r.issue}: ${r.title}
-${String(issue.body || "").slice(0, 4000)}
-
-Files it changed:
-${changed.map((f) => `- ${f}`).join("\n")}
-
-How to work:
-- Read its change with self_work__review and the code around it with self_work__read.
-- Run the tests that cover it with ${CODING_TEST_TOOL_NAME}: the test files it changed or added, and the ones for the files it changed. Fix what fails with ${CODING_EDIT_TOOL_NAME}, keeping the change small.
-${
-  r.flagged
-    ? `- ${ownerName()} flagged this run to allow changes to your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction). Change only what the issue needs there.`
-    : "- Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."
-}
-- When the tests pass, review the diff with self_work__review (correctness, edge cases, scope) and fix what you find.
-- Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what the change does and how you tested it. It becomes the PR description.`;
-  }
-
-  // #1269: the benchmark's way to measure Gemini CLI on its own: its run on
-  // an issue's text in a worktree the caller made, with the write rules
-  // applied and nothing of hers after it. Not counted against the caps.
-  async function benchGemini(issue, worktree) {
-    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench" });
-    try {
-      const g = await geminiRun(r, issue, false);
-      r.finished = g.outcome === "ok" && !g.refused.length;
-      return {
-        reply: { content: g.response },
-        run: r,
-        gemini: { outcome: g.outcome, ms: g.ms, refused: g.refused },
-        error: g.outcome === "ok" ? undefined : `${g.outcome}: ${g.error}`,
-      };
-    } catch (e) {
-      return { reply: null, run: r, error: e.message };
-    }
   }
 
   // Her worktree on r.branch (a new branch starts at start), with
@@ -1600,8 +1413,8 @@ Before it can be a PR:
     // A review round (#1259) reviews an attempt's edits, so its reads aren't budgeted.
     let madeEdit = Boolean(extra.mustReview);
     // #1213: files she's changed this run, and review passes since her last
-    // change. #1269: a takeover starts with Gemini CLI's files in it.
-    const edited = new Set(extra.edited || []);
+    // change.
+    const edited = new Set();
     const reviewed = new Set();
     // #1251: per file, the last refuted diff, its verdict and how many so far
     // (#1259: an attempt's review round goes on counting from its attempt).
@@ -1644,7 +1457,7 @@ Before it can be a PR:
     function read({ path: rel, start_line, end_line }) {
       const full = inside(rel);
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to read a credential file");
-      const budgeted = !isRefresh(r) && !r.takeover && !madeEdit;
+      const budgeted = !isRefresh(r) && !madeEdit;
       const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
       const from = Math.max(1, Number(start_line) || 1);
       const to = Math.min(lines.length, Number(end_line) || from + DEFAULT_READ_LINES - 1, from + MAX_READ_LINES - 1);
@@ -1679,9 +1492,8 @@ Before it can be a PR:
     }
 
     async function edit({ path: rel, old_text: oldText = "", new_text: newText, summary }) {
-      // A refresh (#1194) works from main's changes and the review comments
-      // instead, and a takeover (#1269) from Gemini CLI's change.
-      const ownWork = !isRefresh(r) && !r.takeover;
+      // A refresh (#1194) works from main's changes and the review comments instead.
+      const ownWork = !isRefresh(r);
       if (!r.plan && ownWork) throw new Error("Write a short plan with self_work__plan before your first edit.");
       if (typeof newText !== "string") throw new Error("new_text is required");
       const full = inside(rel);
@@ -1931,7 +1743,7 @@ Before it can be a PR:
     };
   }
 
-  return { start, startIdle, refresh, stop, status, chatToolSource, bench, benchGemini, traces, lessons, escalation, _current: () => current };
+  return { start, startIdle, refresh, stop, status, chatToolSource, bench, traces, lessons, escalation, _current: () => current };
 }
 
 module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
