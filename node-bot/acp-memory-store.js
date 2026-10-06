@@ -903,15 +903,25 @@ function createAcpMemoryStore(options = {}) {
   // snapshot restorer and its approval.
   function getFactHistory(key) {
     const lowerKey = cleanText(key, 200).toLowerCase();
-    if (!lowerKey || !fs.existsSync(factsLogPath)) return [];
+    if (!lowerKey) return [];
     const entries = [];
-    for (const line of fs.readFileSync(factsLogPath, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (String(entry.key).toLowerCase() === lowerKey) entries.push(entry);
-      } catch (e) {
-        // A torn last line from a crash mid-append; skip it.
+    // #1390: memory maintenance moves old lines to archive/facts-log-<year>.jsonl;
+    // those predate anything live, so they're read first.
+    const archiveDir = path.join(dataDir, "archive");
+    const files = fs.existsSync(archiveDir)
+      ? fs.readdirSync(archiveDir).filter((f) => /^facts-log-.*\.jsonl$/.test(f)).sort().map((f) => path.join(archiveDir, f))
+      : [];
+    files.push(factsLogPath);
+    for (const file of files) {
+      if (!fs.existsSync(file)) continue;
+      for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (String(entry.key).toLowerCase() === lowerKey) entries.push(entry);
+        } catch (e) {
+          // A torn last line from a crash mid-append; skip it.
+        }
       }
     }
     return entries;

@@ -215,6 +215,33 @@ function registerMemoryFactsRoutes(app, context = {}) {
     }
   });
 
+  // #1390: the dry-run plan (what maintenance would do, what it keeps, how
+  // big each store is). Changes nothing.
+  app.get("/admin/memory/maintenance", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const maintenance = context.getMemoryMaintenance?.();
+    if (!maintenance) return res.status(503).json({ ok: false, error: "memory maintenance isn't available" });
+    try {
+      return res.json({ ok: true, ...maintenance.plan(), status: maintenance.status() });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // #1390: runs the auto steps plus the needs-approval steps named in the
+  // body {approve: [stepIds]} -- that list is the approval.
+  app.post("/admin/memory/maintenance/run", adminMemoryRateLimiter, async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const maintenance = context.getMemoryMaintenance?.();
+    if (!maintenance) return res.status(503).json({ ok: false, error: "memory maintenance isn't available" });
+    try {
+      const approve = Array.isArray(req.body?.approve) ? req.body.approve.map(String) : [];
+      return res.json({ ok: true, ...(await maintenance.run({ mode: "approved", approve })) });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
   // Issue #698: pause/resume a standing intent (a fact with a trigger) --
   // a paused one never fires. Body {paused: boolean}, same shape as pin.
   app.post("/admin/memory/facts/:key/pause", adminMemoryRateLimiter, (req, res) => {

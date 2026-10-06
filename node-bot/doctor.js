@@ -628,6 +628,19 @@ function checkMemoryGraphHistory(size) {
   );
 }
 
+// #1390: the last memory maintenance pass (memory-maintenance.js status()).
+function checkMemoryMaintenance(m) {
+  if (!m) return null;
+  const label = "Memory maintenance";
+  if (m.failed?.length) {
+    const steps = m.failed.map((f) => `${f.id} (${f.error})`).join("; ");
+    return makeCheck("memory-maintenance", label, "warn", `Last run failed and was rolled back: ${steps}.`, m);
+  }
+  if (!m.lastRunAt) return makeCheck("memory-maintenance", label, "pass", "Hasn't run yet.", m);
+  const waiting = m.proposed ? `; ${m.proposed} step${m.proposed === 1 ? "" : "s"} waiting for approval` : "";
+  return makeCheck("memory-maintenance", label, "pass", `Last ran ${m.lastRunAt}${waiting}.`, m);
+}
+
 // #935: the Obsidian vault sync (memory-vault.js getStatus()); {} when
 // MANA_VAULT_DIR isn't set.
 function checkMemoryVault(vault) {
@@ -985,6 +998,7 @@ function runDoctorChecks(options = {}) {
     checkStorage(paths),
     checkPlainTextSecrets(options.plainTextSecrets),
     checkMemoryGraphHistory(options.memoryGraphHistory),
+    checkMemoryMaintenance(options.memoryMaintenance),
     checkMemoryVault(options.memoryVault),
     checkChatModel(options.chatModel),
     ...checkEditorIntegrations({
