@@ -36,16 +36,16 @@ test("off and unhealthy plugins say why; healthy ones don't; credentials never a
 });
 
 test("approval is described from the risk gate's tiers and the mode, not granted", () => {
-  const tools = [tool("read_file"), tool("calendar__add_event"), tool("git__push"), tool("exec_shell_command")];
+  const tools = [tool("read_file"), tool("notes__save"), tool("git__push"), tool("exec_shell_command")];
   const smart = Object.fromEntries(buildInventory({ tools, approvalMode: "smart" }).tools.map((t) => [t.name, t.approval]));
   assert.deepEqual(smart, {
     read_file: "runs without asking",
-    calendar__add_event: "asks first",
+    notes__save: "asks first",
     git__push: "asks for itself when it needs to",
     exec_shell_command: "depends on the command",
   });
   // A permission change shows up as soon as the mode does.
-  const off = buildInventory({ tools, approvalMode: "off" }).tools.find((t) => t.name === "calendar__add_event");
+  const off = buildInventory({ tools, approvalMode: "off" }).tools.find((t) => t.name === "notes__save");
   assert.equal(off.approval, "runs without asking");
 });
 
@@ -92,18 +92,24 @@ test("in her reply path it lists the tools she really has this turn and runs wit
   try {
     const { createApp } = require("../server");
     let result;
+    let memory;
+    let all;
     const app = createApp({
       env: { ...process.env, MANA_TOOL_APPROVAL: "smart" },
       llamaServerRuntime: { isEnabled: () => true },
       runToolAwareReply: async (prompt, toolPolicy) => {
-        result = JSON.parse(await toolPolicy.executeTool(NAME, {}));
+        result = JSON.parse(await toolPolicy.executeTool(NAME, { about: "inventory" }));
+        memory = JSON.parse(await toolPolicy.executeTool(NAME, { about: "memory" }));
+        all = JSON.parse(await toolPolicy.executeTool(NAME, {}));
         return { content: "ok", toolCalls: [], rounds: 2 };
       },
     });
     await app.locals.buildAssistantReply("what can you do?", "", "", "default", "inventory", null, null, {});
     assert.ok(result.tools.some((t) => t.name === NAME && t.approval === "runs without asking"));
-    assert.ok(result.tools.some((t) => t.name === "memory__remember"));
-    assert.ok(Array.isArray(result.plugins) && result.plugins.length > 0);
+    assert.ok(memory.tools.some((t) => t.name === "memory__remember"));
+    // Everything at once stays within its size.
+    assert.ok(JSON.stringify(all).length <= MAX_CHARS);
+    assert.ok(all.plugins.length > 0 || all.leftOut?.plugins > 0);
   } finally {
     delete process.env.MANA_TOOL_CALLING_ENABLED;
   }
