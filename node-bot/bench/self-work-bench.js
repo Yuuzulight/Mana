@@ -25,17 +25,18 @@
 // only has to fail at the base. A case with a fix can keep its hidden tests
 // there too, when the fix's own tests don't check the behaviour.
 //
-// #1269: --gemini runs only her Gemini CLI fallback on each case (no local
-// model, nothing of hers after it), to measure Gemini on its own. It needs
-// Gemini CLI installed and signed in, and spends real quota: each case is
-// one run of many requests. MANA_SELF_WORK_GEMINI_MODEL picks the model;
-// --model, --context, --server-args and --attempts don't apply.
+// #1406/#1411: --remote <model> [--thinking on|off] runs her loop on that
+// DeepSeek model instead of her local one, with her local reviewer on the
+// bench's own llama-server (so --model, --context and --server-args still
+// pick that). It needs the DeepSeek key in Settings and spends real money:
+// each run's tokens and dollars go in the report and in API spending (use:
+// bench). Off-peak is half price.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { createSelfWork, testEnv, systemRamPercent } = require("../self-work");
-const { createGeminiFallback } = require("../gemini-fallback");
+const { tokensOf, costOf, isPeak, createApiSpending } = require("../api-spending");
 
 const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_DIR = path.join(__dirname, "hidden");
@@ -178,8 +179,7 @@ async function blocker({ isGaming, ramPercent, backendModelUp }) {
 // One case. deps: repoRoot, worktreesDir, runLoop, and optionally
 // reviewEdit, isGaming, ramPercent, runTests, tokens (a {prompt, completion,
 // peak, textCalls}
-// counter the model's fetch adds to), gemini (#1269: her Gemini fallback,
-// run on the case instead of her loop).
+// counter the model's fetch adds to).
 async function runCase(c, deps) {
   const { repoRoot, worktreesDir } = deps;
   const wt = path.join(worktreesDir, `bench-${c.id}`);
@@ -218,7 +218,6 @@ async function runCase(c, deps) {
       ramPercent: deps.ramPercent,
       runTests: deps.runTests,
       approvalGate: deps.approvalGate,
-      gemini: deps.gemini || null,
       onEvent: deps.onEvent || ((run, text) => console.log(`[bench ${c.id}] ${text}`)),
     });
     // The interface the hidden tests call (names, options, messages), when
@@ -227,9 +226,7 @@ async function runCase(c, deps) {
     const started = Date.now();
     const issue = { number: c.issue, title: c.title, body };
     // #1247: --attempts N is her best-of-N (where self-work has it).
-    const { reply, run, error, gemini } = deps.gemini
-      ? await selfWork.benchGemini(issue, wt)
-      : await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
+    const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
     const peak = await peaks.stop();
     const contextSize = deps.contextSize ? await deps.contextSize() : null;
@@ -267,14 +264,9 @@ async function runCase(c, deps) {
       diff: { files: diff.files, added: diff.added, removed: diff.removed },
       outside: diff.files.filter((f) => !allowed.has(f)),
       // How her loop ended: finished, or why not.
-      ended: gemini
-        ? gemini.refused.length
-          ? "refused"
-          : gemini.outcome
-        : error
-          ? "error"
-          : run.halt?.state ||
-            (run.refuted ? "refuted" : run.finished && !/^Not done yet/i.test(reply?.content || "") ? "finished" : "not-finished"),
+      ended: error
+        ? "error"
+        : run.halt?.state || (run.refuted ? "refuted" : run.finished && !/^Not done yet/i.test(reply?.content || "") ? "finished" : "not-finished"),
       lastTestPassed: run.lastTestPassed,
       error: error ? error.slice(0, 300) : undefined,
       summary: String(reply?.content || "").slice(0, 600),
@@ -298,9 +290,6 @@ function failureKind(r, c) {
   if (r.ended === "refuted") return "no valid edit: reviewer refusal";
   if (/parse tool call/i.test(r.error || "")) return "no valid edit: parse failure";
   if (r.ended === "error") return "error";
-  // #1269: a Gemini run that ended without its change being scored.
-  if (r.ended === "refused") return "refused: outside her write rules";
-  if (["quota", "timeout", "turn-limit", "missing"].includes(r.ended)) return `gemini: ${r.ended}`;
   if (!r.diff.files.length) {
     if (r.editErrors) return "no valid edit: bad arguments";
     // The forced final answer after the last round often holds one more
@@ -457,12 +446,23 @@ function benchEnv(repoRoot) {
   return { ...process.env, ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {}) };
 }
 
-// #1269: Gemini CLI in place of her model, when it's installed and signed in.
-async function geminiModel(repoRoot) {
-  const gemini = createGeminiFallback({ env: benchEnv(repoRoot) });
-  const s = await gemini.state();
-  if (!s.installed || !s.signedIn) throw new Error(s.why);
-  return { model: `Gemini CLI ${s.version} (${s.model})`, gemini, start: async () => {}, aborted: () => null, stop: async () => {} };
+// #1406/#1411: her loop on a DeepSeek model, with her local reviewer (the
+// bench's own llama-server) and the key from Settings. spend adds up this
+// run's tokens and dollars; API spending gets each reply too (use: bench).
+function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
+  const { createModelSettingsStore } = require("../model-settings-store");
+  const settings = createModelSettingsStore({ dataDir: path.join(repoRoot, "node-bot", "data") }).getEscalationSettings();
+  if (!settings.apiKey) throw new Error("there's no DeepSeek key in Settings");
+  const ledger = createApiSpending({ file: path.join(process.env.MANA_ACP_MEMORY_DIR || path.join(repoRoot, "node-bot", "data", "acp-memory"), "api-spending.json") });
+  const base = realModel(repoRoot, tokens, local);
+  const onResponse = (json) => {
+    const t = tokensOf(json?.usage || {});
+    for (const k of Object.keys(t)) spend[k] = (spend[k] || 0) + t[k];
+    spend.usd = (spend.usd || 0) + (costOf(model, t, isPeak()) || 0);
+    ledger.record({ model, use: "bench", usage: json?.usage || {} });
+  };
+  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse });
+  return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, runLoop: loop };
 }
 
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
@@ -490,7 +490,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs, adopt } = {})
   }
   const fetch = async (url, init) => {
     const resp = await globalThis.fetch(url, init);
-    if (resp.ok && /\/v1\/chat\/completions$/.test(url)) {
+    if (resp.ok && /\/chat\/completions$/.test(url)) {
       const json = await resp.clone().json().catch(() => null);
       const prompt = Number(json?.usage?.prompt_tokens) || 0;
       tokens.prompt += prompt;
@@ -611,13 +611,13 @@ async function main(argv) {
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
-  const useGemini = argv.includes("--gemini");
+  const remote = opt("--remote")[0];
+  const thinking = opt("--thinking")[0] !== "off";
+  const spend = {};
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
-    // Gemini runs in the cloud: her chat model's VRAM isn't in its way.
     backendModelUp: () =>
-      !useGemini &&
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
 
@@ -631,8 +631,8 @@ async function main(argv) {
   }
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  const model = useGemini ? await geminiModel(repoRoot) : realModel(repoRoot, tokens, config);
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000 };
+  const model = remote ? remoteModel(repoRoot, tokens, spend, { model: remote, thinking }, config) : realModel(repoRoot, tokens, config);
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
@@ -656,10 +656,6 @@ async function main(argv) {
         break;
       }
       results.push(result);
-      if (result.ended === "quota") {
-        console.log(`Stopping at ${c.id}: Gemini CLI is out of quota.`);
-        break;
-      }
       writeReport(results, outDir, meta);
     }
   } finally {
@@ -676,4 +672,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, blocker, isGamingNow, benchEnv };
+module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };

@@ -48,16 +48,16 @@ public class SelfWorkFormTests
         var status = await ClientReturning("""{"state":"idle"}""").GetSelfWorkAsync();
         Assert.Null(status.Issue);
         Assert.Equal("I'm not working on my own code right now.", SelfWorkForm.Describe(status));
-        Assert.Null(status.Gemini);
+        Assert.Null(status.Escalation);
     }
 
-    // #1269
+    // #1406
     [Fact]
-    public async Task GetSelfWorkAsync_ReadsTheGeminiFallbackLine()
+    public async Task GetSelfWorkAsync_ReadsTheEscalationLine()
     {
         var status = await ClientReturning(
-            """{"state":"idle","gemini":{"enabled":false,"text":"Gemini fallback: unavailable -- Gemini CLI isn't installed."}}""").GetSelfWorkAsync();
-        Assert.Equal("Gemini fallback: unavailable -- Gemini CLI isn't installed.", status.Gemini);
+            """{"state":"idle","escalation":{"enabled":false,"text":"DeepSeek escalation: off -- there's no DeepSeek key in Settings."}}""").GetSelfWorkAsync();
+        Assert.Equal("DeepSeek escalation: off -- there's no DeepSeek key in Settings.", status.Escalation);
     }
 
     [Fact]
