@@ -48,6 +48,8 @@ const BUILTIN_TIERS = {
   // #1383: her self-inventory and #1380's resource status only read state.
   capabilities__inventory: "read",
   resources__status: "read",
+  // #1406: what her API use has cost.
+  api_spending__summary: "read",
   session_search__query: "read",
   // #1399: searching her own memory, and self-work's tools that only read
   // her worktree (plan records her own plan; review asks her reviewer).

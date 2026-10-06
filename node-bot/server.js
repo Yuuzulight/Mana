@@ -278,6 +278,7 @@ const { createReverter } = require("./revert-pr");
 const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
 const { createSelfWork, systemRamPercent } = require("./self-work");
 const { createPostDeployEval } = require("./post-deploy-eval");
+const { createApiSpending } = require("./api-spending");
 const { createLessons } = require("./self-work-lessons");
 const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
@@ -3073,6 +3074,8 @@ function registerRoutes(app, upload, deps = {}) {
   const gitTools =
     deps.gitTools ||
     createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
+  // #1406: what her API use costs (DeepSeek and others), for Settings and her chat.
+  const apiSpending = deps.apiSpending || createApiSpending({ file: path.join(acpMemoryStore.dataDir, "api-spending.json") });
   // #1385: her failed runs' lessons; promoting one to a rule goes through my approval.
   const lessons = createLessons({ file: path.join(acpMemoryStore.dataDir, "self-work-lessons.json"), approvalGate: activeApprovalGate });
   // #1386: her improvement lifecycle, kept across restarts; an issue out of tries quotes its lesson (#1407).
@@ -3208,6 +3211,28 @@ function registerRoutes(app, upload, deps = {}) {
     return res.json({ stopped: selfWork.stop() });
   });
   // #1385: her lessons from failed runs; a rule only after my approval.
+  // #1406: API spending for Settings, and self-work's DeepSeek escalation.
+  // The key goes in and never comes back out: only whether there is one.
+  app.get("/api-spending", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(apiSpending.summary());
+  });
+  const escalationView = () => {
+    const { enabled, baseUrl, apiKey } = modelSettingsStore.getEscalationSettings();
+    return { enabled, baseUrl, hasKey: Boolean(apiKey), localOnly: require("./local-only").isLocalOnly(deps.env || process.env) };
+  };
+  app.get("/self-work/escalation", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(escalationView());
+  });
+  app.post("/self-work/escalation", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const { enabled, apiKey } = req.body || {};
+    if (enabled !== undefined && typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
+    if (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.length > 512)) return res.status(400).json({ error: "apiKey must be a string" });
+    modelSettingsStore.setEscalationSettings({ enabled, apiKey });
+    return res.json(escalationView());
+  });
   app.get("/self-work/lessons", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return selfWork.lessons ? res.json({ lessons: selfWork.lessons.list() }) : res.status(404).json({ error: "lessons are off" });
@@ -3991,6 +4016,7 @@ function registerRoutes(app, upload, deps = {}) {
     get getEditorIntegrations() { return getEditorIntegrations; },
     get gitTools() { return gitTools; },
     get improvementTools() { return improvementTools; },
+    get apiSpending() { return apiSpending; },
     get GROUP_REACTION_MAX_TOKENS() { return GROUP_REACTION_MAX_TOKENS; },
     get http() { return http; },
     get https() { return https; },

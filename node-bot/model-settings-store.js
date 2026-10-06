@@ -178,6 +178,34 @@ function createModelSettingsStore(options = {}) {
     return getFallbackSettings();
   }
 
+  // #1406: self-work's DeepSeek escalation. Off until I switch it on with
+  // a key in Settings; the key is protected like the others, and routes
+  // only ever say whether there is one.
+  function getEscalationSettings() {
+    const settings = readAll();
+    const e = settings.escalation && typeof settings.escalation === "object" ? settings.escalation : {};
+    return {
+      enabled: e.enabled === true,
+      baseUrl: typeof e.baseUrl === "string" && e.baseUrl ? e.baseUrl : "https://api.deepseek.com",
+      apiKey: readApiKey(e),
+    };
+  }
+
+  function setEscalationSettings(partial = {}) {
+    const settings = readAll();
+    const next = settings.escalation && typeof settings.escalation === "object" ? { ...settings.escalation } : {};
+    if (partial.enabled !== undefined) next.enabled = partial.enabled === true;
+    if (partial.baseUrl !== undefined) next.baseUrl = String(partial.baseUrl || "").trim();
+    if (partial.apiKey !== undefined) {
+      delete next.apiKey;
+      delete next.apiKeyProtected;
+      Object.assign(next, apiKeyFields(String(partial.apiKey || "").trim()));
+    }
+    settings.escalation = next;
+    writeAll(settings);
+    return getEscalationSettings();
+  }
+
   // Which vision GGUF + mmproj pair Mana's "eyes" use. Empty strings mean
   // "keep auto-detecting under tools/llama/gguf-models" (see
   // findVisionModel/findVisionMmproj in ai/llama-server-runtime.js), same
@@ -226,6 +254,8 @@ function createModelSettingsStore(options = {}) {
     setBrainSettings,
     getFallbackSettings,
     setFallbackSettings,
+    getEscalationSettings,
+    setEscalationSettings,
     getVisionSettings,
     setVisionSettings,
   };

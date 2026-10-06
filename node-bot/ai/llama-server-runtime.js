@@ -6,6 +6,7 @@ const { createCompletions } = require('./llama/completions');
 const { createToolCalls } = require('./llama/tool-calls');
 const { createGoalReview } = require('./llama/goal-review');
 const { createToolReply } = require('./llama/tool-reply');
+const { isLocalOnly } = require("../local-only");
 const { AsyncLocalStorage } = require('node:async_hooks');
 const defaultFs = require("node:fs");
 const { streamSentences } = require("../utils/sse-sentence-stream");
@@ -567,7 +568,7 @@ function createLlamaServerRuntime(options = {}) {
 
   function contextFits(...args) { return serverConfig.contextFits(...args); }
 
-  const toolReply = createToolReply({
+  const toolContext = {
     get withModelOperation() { return withModelOperation; },
     get resourceCoordinator() { return resourceCoordinator; },
     get resourceRequest() { return resourceContext.getStore() || {}; },
@@ -600,8 +601,35 @@ function createLlamaServerRuntime(options = {}) {
     get systemPromptOf() { return systemPromptOf; },
     get TOOL_CALL_UNPARSED_NOTE() { return TOOL_CALL_UNPARSED_NOTE; },
     get WeakSet() { return WeakSet; },
-  });
+  };
+  const toolReply = createToolReply(toolContext);
   function runToolAwareReply(...args) { return toolReply.runToolAwareReply(...args); }
+
+  // #1406: the same tool loop on a remote OpenAI-compatible model
+  // (DeepSeek), with every helper of hers (prompts, tool-call repair, goal
+  // review) and only the request swapped. onResponse sees each reply's JSON
+  // (usage, reasoning). Local-only mode refuses it.
+  function remoteToolReply({ baseUrl, apiKey, model, thinking = true, maxTokens = 32768, contextSize = 131072, onResponse = null }) {
+    if (isLocalOnly(env)) throw new Error("local-only mode is on, so I can't use a remote model");
+    if (!baseUrl || !apiKey || !model) throw new Error("a remote model needs a base URL, an API key and a model");
+    const own = {
+      chatUrl: () => `${String(baseUrl).replace(/\/+$/, "")}/chat/completions`,
+      requestHeaders: () => ({ Authorization: `Bearer ${apiKey}` }),
+      keepReasoning: thinking,
+      onResponse,
+      ensureServer: async () => {},
+      applyLoraAdapter: async () => {},
+      state: { hasLoraAdapters: false },
+      withModelOperation: null,
+      getContextSize: async () => contextSize,
+      // The tier sets thinking; temperature and the like do nothing in DeepSeek's thinking mode.
+      buildSamplingParams: () => ({ params: { model, max_tokens: maxTokens, thinking: { type: thinking ? "enabled" : "disabled" } } }),
+      fitThinkingToContext: async () => {},
+      logPromptCache: () => {},
+    };
+    const remote = createToolReply(Object.create(toolContext, Object.fromEntries(Object.entries(own).map(([k, value]) => [k, { value }]))));
+    return (...args) => remote.runToolAwareReply(...args);
+  }
 
   function runBestOfNReply(...args) { return completions.runBestOfNReply(...args); }
 
@@ -633,6 +661,7 @@ function createLlamaServerRuntime(options = {}) {
     waitForServer: inTurn(waitForServer),
     runLocalAssistantReply: inTurn(runLocalAssistantReply),
     runToolAwareReply: withContextSize(inTurn(runToolAwareReply)),
+    remoteToolReply,
     runVisionReply: inTurn(runVisionReply),
     getStatus,
     getLastPromptUsage,

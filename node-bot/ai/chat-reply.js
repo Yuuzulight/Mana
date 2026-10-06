@@ -1061,6 +1061,8 @@ async function buildAssistantReply(
             // #1008: "work on #N" -- only a number from my own message.
             ...(userChat ? [context.selfWork.chatToolSource(transcript, { sessionId })] : []),
             ...(userChat ? [require('./resource-tool-source').createResourceToolSource(context.resourceCoordinator)] : []),
+            // #1406: "how much have you spent?"
+            ...(userChat && context.apiSpending ? [require('../api-spending').createSpendingToolSource(context.apiSpending)] : []),
             // #1383: what she can do right now, read when she asks (the tool
             // list is this reply's final one, so it's what she really has).
             ...(userChat
