@@ -115,7 +115,8 @@ internal static class ProcessSandbox
                 {
                     try
                     {
-                        CheckStorage(work, skill ? 256L * 1024 * 1024 : 8L * 1024 * 1024 * 1024, skill ? 5000 : 500000);
+                        var maxBytes = skill ? 256L * 1024 * 1024 : 8L * 1024 * 1024 * 1024;
+                        if (ScratchScan.Measure(work, maxBytes, skill ? 5000 : 500000) > maxBytes) throw new IOException("Sandbox scratch storage limit exceeded");
                         inaccessibleScans = 0;
                     }
                     // Pending deletions can briefly deny enumeration; persistent denial stops execution.
@@ -177,23 +178,6 @@ internal static class ProcessSandbox
         }
     }
 
-    private static void CheckStorage(string root, long maxBytes, int maxEntries)
-    {
-        long bytes = 0;
-        var count = 0;
-        var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
-        try
-        {
-            foreach (var entry in Directory.EnumerateFileSystemEntries(root, "*", options))
-            {
-                if (++count > maxEntries) throw new IOException("Sandbox scratch entry limit exceeded");
-                try { if (!Directory.Exists(entry)) bytes += new FileInfo(entry).Length; }
-                catch (FileNotFoundException) { continue; }
-                if (bytes > maxBytes) throw new IOException("Sandbox scratch storage limit exceeded");
-            }
-        }
-        catch (DirectoryNotFoundException) { /* Test runners can remove temporary subtrees during enumeration. */ }
-    }
     private static void ValidateWork(string work)
     {
         var full = Path.GetFullPath(work);
