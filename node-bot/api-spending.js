@@ -46,21 +46,35 @@ function tokensOf(usage = {}) {
 // Dollars for those tokens, or null for a model without prices. Reasoning is
 // part of output, so it isn't charged twice.
 function costOf(model, tokens, peak) {
-  const p = PRICES[model];
-  if (!p) return null;
-  const m = peak ? 2 : 1;
-  return ((tokens.cacheHit * p.hit + tokens.cacheMiss * p.miss + tokens.output * p.out) * m) / 1e6;
+  const parts = costParts(model, tokens, peak);
+  return parts && parts.usdCacheHit + parts.usdCacheMiss + parts.usdOutput + parts.usdReasoning;
 }
 
+// The same dollars by token kind, for Settings' "where the money went":
+// output here is the answer only; its reasoning part is billed at the same rate.
+function costParts(model, tokens, peak) {
+  const p = PRICES[model];
+  if (!p) return null;
+  const m = (peak ? 2 : 1) / 1e6;
+  return {
+    usdCacheHit: tokens.cacheHit * p.hit * m,
+    usdCacheMiss: tokens.cacheMiss * p.miss * m,
+    usdOutput: (tokens.output - tokens.reasoning) * p.out * m,
+    usdReasoning: tokens.reasoning * p.out * m,
+  };
+}
+const USD_KINDS = ["usdCacheHit", "usdCacheMiss", "usdOutput", "usdReasoning"];
+
 function emptyTotals() {
-  return { requests: 0, usd: 0, unpricedRequests: 0, ...Object.fromEntries(KINDS.map((k) => [k, 0])) };
+  return { requests: 0, usd: 0, unpricedRequests: 0, ...Object.fromEntries([...KINDS, ...USD_KINDS].map((k) => [k, 0])) };
 }
 
 function add(into, b) {
   into.requests += b.requests;
   into.usd += b.usd;
   into.unpricedRequests += b.unpricedRequests;
-  for (const k of KINDS) into[k] += b[k];
+  // A bucket from before the dollars were split counts as 0 there.
+  for (const k of [...KINDS, ...USD_KINDS]) into[k] += b[k] || 0;
 }
 
 function createApiSpending({ file, now = () => new Date() }) {
@@ -82,17 +96,19 @@ function createApiSpending({ file, now = () => new Date() }) {
     if (!USES.includes(use)) throw new Error(`unknown API use: ${use}`);
     const tokens = tokensOf(usage);
     const peak = isPeak(at);
-    const usd = costOf(model, tokens, peak);
+    const parts = costParts(model, tokens, peak);
+    const usd = parts && USD_KINDS.reduce((sum, k) => sum + parts[k], 0);
     const key = `${at.toISOString().slice(0, 10)}|${model}|${use}`;
     const b = (data.buckets[key] ||= emptyTotals());
-    add(b, { requests: 1, usd: usd ?? 0, unpricedRequests: usd === null ? 1 : 0, ...tokens });
+    add(b, { requests: 1, usd: usd ?? 0, unpricedRequests: usd === null ? 1 : 0, ...tokens, ...parts });
     if (peak) b.peakRequests = (b.peakRequests || 0) + 1;
     save();
     return { ...tokens, usd, peak };
   }
 
-  // All-time, today and this month (UTC days), each split by model and use.
-  function summary() {
+  // All-time, today and this month (UTC days), each split by model and use,
+  // and the last `days` days one by one (dollars by model), for the chart.
+  function summary({ days = 30 } = {}) {
     const today = now().toISOString().slice(0, 10);
     const month = today.slice(0, 7);
     const periods = { total: () => true, today: (d) => d === today, month: (d) => d.startsWith(month) };
@@ -110,7 +126,20 @@ function createApiSpending({ file, now = () => new Date() }) {
       }
       out[name] = { ...all, byModel, byUse };
     }
-    return { ...out, peakNow: isPeak(now()), prices: PRICES };
+    const daily = [];
+    for (let i = days - 1; i >= 0; i -= 1) {
+      const day = new Date(now().getTime() - i * 864e5).toISOString().slice(0, 10);
+      const byModel = {};
+      let usd = 0;
+      for (const [key, b] of Object.entries(data.buckets)) {
+        const [d, model] = key.split("|");
+        if (d !== day) continue;
+        byModel[model] = (byModel[model] || 0) + b.usd;
+        usd += b.usd;
+      }
+      daily.push({ day, usd, byModel });
+    }
+    return { ...out, daily, peakNow: isPeak(now()), prices: PRICES };
   }
 
   return { record, summary };
@@ -141,9 +170,9 @@ function createSpendingToolSource(spending) {
     isKnownToolName: (candidate) => candidate === name,
     executeTool: async (candidate) => {
       if (candidate !== name) throw new Error("Unknown spending tool");
-      return JSON.stringify(spending.summary());
+      return JSON.stringify(spending.summary({ days: 7 }));
     },
   };
 }
 
-module.exports = { createApiSpending, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, describeUsage, PRICES, USES };
+module.exports = { createApiSpending, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, costParts, describeUsage, PRICES, USES };

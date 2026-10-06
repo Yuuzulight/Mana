@@ -630,7 +630,8 @@ internal sealed class ManaBackendClient
         static double Number(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0;
         static ManaSpendingTotals Totals(JsonElement e) => new(
             Number(e, "usd"), (long)Number(e, "requests"), (long)Number(e, "cacheHit"), (long)Number(e, "cacheMiss"),
-            (long)Number(e, "output"), (long)Number(e, "reasoning"), (long)Number(e, "unpricedRequests"));
+            (long)Number(e, "output"), (long)Number(e, "reasoning"), (long)Number(e, "unpricedRequests"),
+            Number(e, "usdCacheHit"), Number(e, "usdCacheMiss"), Number(e, "usdOutput"), Number(e, "usdReasoning"));
         static IReadOnlyDictionary<string, ManaSpendingTotals> Split(JsonElement e, string name)
         {
             var split = new Dictionary<string, ManaSpendingTotals>();
@@ -642,7 +643,19 @@ internal sealed class ManaBackendClient
             root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Object
                 ? new ManaSpendingPeriod(Totals(e), Split(e, "byModel"), Split(e, "byUse"))
                 : new ManaSpendingPeriod(new ManaSpendingTotals(0, 0, 0, 0, 0, 0, 0), new Dictionary<string, ManaSpendingTotals>(), new Dictionary<string, ManaSpendingTotals>());
-        return new ManaApiSpending(Period("total"), Period("today"), Period("month"), root.TryGetProperty("peakNow", out var peak) && peak.ValueKind == JsonValueKind.True);
+        var daily = new List<ManaSpendingDay>();
+        if (root.TryGetProperty("daily", out var days) && days.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var d in days.EnumerateArray())
+            {
+                var byModel = new Dictionary<string, double>();
+                if (d.TryGetProperty("byModel", out var models) && models.ValueKind == JsonValueKind.Object)
+                    foreach (var p in models.EnumerateObject()) byModel[p.Name] = p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : 0;
+                var day = d.TryGetProperty("day", out var dayValue) && dayValue.ValueKind == JsonValueKind.String ? dayValue.GetString() ?? "" : "";
+                daily.Add(new ManaSpendingDay(day, Number(d, "usd"), byModel));
+            }
+        }
+        return new ManaApiSpending(Period("total"), Period("today"), Period("month"), root.TryGetProperty("peakNow", out var peak) && peak.ValueKind == JsonValueKind.True, daily);
     }
 
     public async Task SetActiveProfileAsync(string profile)
@@ -4184,6 +4197,8 @@ internal sealed class ManaLearnedReason
 
 // #1406
 public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool LocalOnly);
-public sealed record ManaSpendingTotals(double Usd, long Requests, long CacheHit, long CacheMiss, long Output, long Reasoning, long UnpricedRequests);
+public sealed record ManaSpendingTotals(double Usd, long Requests, long CacheHit, long CacheMiss, long Output, long Reasoning, long UnpricedRequests,
+    double UsdCacheHit = 0, double UsdCacheMiss = 0, double UsdOutput = 0, double UsdReasoning = 0);
+public sealed record ManaSpendingDay(string Day, double Usd, IReadOnlyDictionary<string, double> ByModel);
 public sealed record ManaSpendingPeriod(ManaSpendingTotals All, IReadOnlyDictionary<string, ManaSpendingTotals> ByModel, IReadOnlyDictionary<string, ManaSpendingTotals> ByUse);
-public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPeriod Today, ManaSpendingPeriod Month, bool PeakNow);
+public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPeriod Today, ManaSpendingPeriod Month, bool PeakNow, IReadOnlyList<ManaSpendingDay>? Daily = null);

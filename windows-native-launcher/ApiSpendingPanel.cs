@@ -10,7 +10,9 @@ namespace Mana.NativeLauncher;
 
 // #1406: Settings > API Spending -- switching on her DeepSeek escalation
 // with its key, and what her API use has cost: today, this month and all
-// time, and the split by token kind, model and use.
+// time as figures, the last 30 days as a chart by model, where the money
+// went by token kind, and the same numbers as tables. The charts take their
+// colours from the theme in use (SpendingCharts.cs).
 internal sealed class ApiSpendingPanel : FlowLayoutPanel
 {
     private static readonly string[] Columns = ["", "Spent", "Requests", "Input (cached)", "Input (not cached)", "Output", "of which reasoning"];
@@ -24,6 +26,13 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
     internal ComboBox SplitPeriod { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140, AccessibleName = "Split period", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
     internal ListView Split { get; } = new() { Width = 760, Height = 200, AccessibleName = "Spending split" };
     internal Label SpendingStatus { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, MaximumSize = new Size(760, 0) };
+    internal Label[] Figures { get; } = [NewFigure(), NewFigure(), NewFigure()];
+    internal Label[] FigureNotes { get; } = [NewNote(), NewNote(), NewNote()];
+    internal DailySpendChart Daily { get; } = new() { Width = 760, Height = 240, Margin = new Padding(3, 6, 3, 8) };
+    internal KindSpendBar Kinds { get; } = new() { Width = 760, Height = 140, Margin = new Padding(3, 0, 3, 8) };
+
+    private static Label NewFigure() => new() { AutoSize = true, ForeColor = DarkTheme.Text, Font = new Font(SystemFonts.MessageBoxFont!.FontFamily, 17f, FontStyle.Bold), Margin = new Padding(0, 2, 0, 0) };
+    private static Label NewNote() => new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(0) };
     private ManaApiSpending? spending;
 
     // loadNow: false in tests, which call ReloadAsync themselves.
@@ -71,8 +80,24 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
             NewButton("Clear key", () => { clearingKey = true; Key.Clear(); Key.PlaceholderText = "Key will be cleared on Save"; return Task.CompletedTask; })));
         Controls.Add(KeyStatus);
         Controls.Add(Row(Heading("API spending"), NewButton("Refresh", ReloadAsync)));
+        // Today, this month and all time: the figure, then requests and tokens.
+        var figures = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(3, 4, 3, 6) };
+        string[] periods = ["TODAY", "THIS MONTH", "ALL TIME"];
+        for (var i = 0; i < 3; i++)
+        {
+            figures.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
+            var cell = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background, Margin = new Padding(0) };
+            cell.Controls.Add(new Label { Text = periods[i], AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(0) });
+            cell.Controls.Add(Figures[i]);
+            cell.Controls.Add(FigureNotes[i]);
+            figures.Controls.Add(cell, i, 0);
+        }
+        Controls.Add(figures);
+        Controls.Add(Daily);
+        Controls.Add(Row(new Label { Text = "Period", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left }, SplitPeriod));
+        Controls.Add(Kinds);
+        Controls.Add(Heading("The numbers"));
         Controls.Add(Totals);
-        Controls.Add(Row(new Label { Text = "Split for", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left }, SplitPeriod));
         Controls.Add(Split);
         Controls.Add(SpendingStatus);
         if (loadNow) _ = ReloadAsync();
@@ -126,6 +151,13 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
         Totals.Items.Add(RowOf("Today", spending.Today.All));
         Totals.Items.Add(RowOf("This month", spending.Month.All));
         Totals.Items.Add(RowOf("All time", spending.Total.All));
+        ManaSpendingTotals[] periods = [spending.Today.All, spending.Month.All, spending.Total.All];
+        for (var i = 0; i < 3; i++)
+        {
+            Figures[i].Text = Dollars(periods[i].Usd);
+            FigureNotes[i].Text = $"{periods[i].Requests} requests · {Tokens(periods[i].CacheHit + periods[i].CacheMiss + periods[i].Output)} tokens";
+        }
+        Daily.SetDays(spending.Daily ?? []);
         var unpriced = spending.Total.All.UnpricedRequests;
         SpendingStatus.Text = (spending.PeakNow ? "DeepSeek is at peak price right now (double). " : "")
             + (unpriced > 0 ? $"{unpriced} request(s) went to a model without known prices, so they show tokens only." : "");
@@ -135,6 +167,7 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
     {
         if (spending is null) return;
         var period = SplitPeriod.SelectedIndex switch { 0 => spending.Today, 2 => spending.Total, _ => spending.Month };
+        Kinds.SetTotals(period.All, SplitPeriod.SelectedIndex switch { 0 => "today", 2 => "all time", _ => "this month" });
         Split.Items.Clear();
         foreach (var (name, totals) in period.ByModel.OrderByDescending(p => p.Value.Usd)) Split.Items.Add(RowOf(name, totals));
         foreach (var (name, totals) in period.ByUse.OrderByDescending(p => p.Value.Usd)) Split.Items.Add(RowOf(UseName(name), totals));

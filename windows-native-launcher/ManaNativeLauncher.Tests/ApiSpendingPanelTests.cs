@@ -21,7 +21,8 @@ public sealed class ApiSpendingPanelTests
         "{\"peakNow\":true," +
         "\"today\":{\"usd\":0.004,\"requests\":3,\"cacheHit\":1500,\"cacheMiss\":500,\"output\":300,\"reasoning\":120,\"unpricedRequests\":0," +
         "\"byModel\":{\"deepseek-flash\":{\"usd\":0.004,\"requests\":3,\"cacheHit\":1500,\"cacheMiss\":500,\"output\":300,\"reasoning\":120}},\"byUse\":{\"chat\":{\"usd\":0.004,\"requests\":3}}}," +
-        "\"month\":{\"usd\":1.25,\"requests\":40,\"cacheHit\":2500000,\"cacheMiss\":400000,\"output\":90000,\"reasoning\":30000,\"unpricedRequests\":0," +
+        "\"daily\":[{\"day\":\"2026-10-05\",\"usd\":0,\"byModel\":{}},{\"day\":\"2026-10-06\",\"usd\":0.6,\"byModel\":{\"deepseek-flash\":0.2,\"deepseek-v4-pro\":0.4}},{\"day\":\"2026-10-07\",\"usd\":0.004,\"byModel\":{\"deepseek-flash\":0.004}}]," +
+        "\"month\":{\"usd\":1.25,\"usdCacheHit\":0.05,\"usdCacheMiss\":0.45,\"usdOutput\":0.5,\"usdReasoning\":0.25,\"requests\":40,\"cacheHit\":2500000,\"cacheMiss\":400000,\"output\":90000,\"reasoning\":30000,\"unpricedRequests\":0," +
         "\"byModel\":{\"deepseek-flash\":{\"usd\":0.25,\"requests\":30},\"deepseek-v4-pro\":{\"usd\":1.0,\"requests\":10}},\"byUse\":{\"self-work\":{\"usd\":1.2,\"requests\":38},\"chat\":{\"usd\":0.05,\"requests\":2}}}," +
         "\"total\":{\"usd\":3.5,\"requests\":90,\"cacheHit\":6000000,\"cacheMiss\":900000,\"output\":200000,\"reasoning\":70000,\"unpricedRequests\":2,\"byModel\":{},\"byUse\":{}}}";
 
@@ -62,6 +63,16 @@ public sealed class ApiSpendingPanelTests
             panel.SplitPeriod.SelectedIndex = 2;
             Assert.Equal(new[] { "Nothing yet" }, panel.Split.Items.Cast<ListViewItem>().Select(i => i.Text));
             Assert.True(panel.UseDeepSeek.Checked);
+
+            // The figures, the daily chart and where the money went.
+            Assert.Equal(new[] { "< $0.01", "$1.25", "$3.50" }, panel.Figures.Select(l => l.Text));
+            Assert.Equal("40 requests · 3.0M tokens", panel.FigureNotes[1].Text);
+            panel.SplitPeriod.SelectedIndex = 1;
+            Assert.Equal(new[] { 0.05, 0.45, 0.5, 0.25 }, panel.Kinds.Parts.Select(p => p.Usd));
+            Assert.Equal(new[] { 2_500_000L, 400_000L, 60_000L, 30_000L }, panel.Kinds.Parts.Select(p => p.Tokens));
+            Assert.Contains("DeepSeek Pro $0.40", panel.Daily.AccessibleDescription);
+            Assert.Equal(2, panel.Daily.IndexAt(panel.Daily.Width - 20));
+            Assert.Equal(-1, panel.Daily.IndexAt(5));
             Assert.Contains("configured", panel.Key.PlaceholderText);
         });
     }
@@ -89,6 +100,62 @@ public sealed class ApiSpendingPanelTests
         await client.SetEscalationAsync(true, "sk-new");
         Assert.Equal("POST /self-work/escalation {\"enabled\":false}", requests[0]);
         Assert.Equal("POST /self-work/escalation {\"enabled\":true,\"apiKey\":\"sk-new\"}", requests[1]);
+    }
+
+    // Every preset's chart colours: Pro and Flash at 3:1 on the chart surface
+    // and well apart in OKLab, and the token-kind ramp stepping steadily away
+    // from the surface. Both charts paint on light and dark themes.
+    [Theory]
+    [InlineData("violet")]
+    [InlineData("neutral")]
+    [InlineData("light")]
+    [InlineData("highContrast")]
+    [InlineData("mana")]
+    public void ChartColoursFollowTheTheme(string preset)
+    {
+        RunSta(() =>
+        {
+            try
+            {
+                DarkTheme.ApplyPreset(preset, null);
+                var surface = ChartPalette.Surface;
+                Assert.True(Contrast(ChartPalette.Pro, surface) >= 3, $"Pro {ChartPalette.Pro} on {surface}");
+                Assert.True(Contrast(ChartPalette.Flash, surface) >= 3, $"Flash {ChartPalette.Flash} on {surface}");
+                Assert.True(Distance(ChartPalette.Pro, ChartPalette.Flash) >= 0.15, $"{ChartPalette.Pro} vs {ChartPalette.Flash}");
+                var steps = Enumerable.Range(0, 4).Select(i => Distance(ChartPalette.Kind(i), surface)).ToList();
+                Assert.True(steps.Zip(steps.Skip(1)).All(p => p.Second - p.First >= 0.05), string.Join(", ", steps));
+
+                using var daily = new DailySpendChart { Width = 760, Height = 240 };
+                daily.SetDays([new("2026-10-06", 0.6, new Dictionary<string, double> { ["deepseek-flash"] = 0.2, ["deepseek-v4-pro"] = 0.4 }), new("2026-10-07", 0, new Dictionary<string, double>())]);
+                using var kinds = new KindSpendBar { Width = 760, Height = 120 };
+                kinds.SetTotals(new ManaSpendingTotals(1, 1, 10, 10, 10, 2, 0, 0.1, 0.3, 0.4, 0.2), "this month");
+                using var bitmap = new System.Drawing.Bitmap(760, 240);
+                daily.DrawToBitmap(bitmap, new System.Drawing.Rectangle(0, 0, 760, 240));
+                kinds.DrawToBitmap(bitmap, new System.Drawing.Rectangle(0, 0, 760, 120));
+            }
+            finally
+            {
+                DarkTheme.ApplyPreset("violet", null);
+            }
+        });
+    }
+
+    private static double Contrast(System.Drawing.Color a, System.Drawing.Color b)
+    {
+        static double Lum(System.Drawing.Color c)
+        {
+            static double L(int v) { var s = v / 255.0; return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4); }
+            return 0.2126 * L(c.R) + 0.7152 * L(c.G) + 0.0722 * L(c.B);
+        }
+        var (x, y) = (Lum(a), Lum(b));
+        return (Math.Max(x, y) + 0.05) / (Math.Min(x, y) + 0.05);
+    }
+
+    private static double Distance(System.Drawing.Color a, System.Drawing.Color b)
+    {
+        var (l1, a1, b1) = ChartPalette.ToOklab(a);
+        var (l2, a2, b2) = ChartPalette.ToOklab(b);
+        return Math.Sqrt((l1 - l2) * (l1 - l2) + (a1 - a2) * (a1 - a2) + (b1 - b2) * (b1 - b2));
     }
 
     [Fact]
