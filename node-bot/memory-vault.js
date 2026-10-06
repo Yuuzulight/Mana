@@ -43,6 +43,13 @@ const DELETED = "deleted";
 // Views/ and Journal/: Mana writes these, the user only reads them.
 const VIEWS_MARKER = "> Written by Mana from her memory: edits here are overwritten. Edit facts in Facts/ instead.";
 const VIEWS_REFRESH_MS = 5 * 60 * 1000;
+// #1389: the read-only hygiene walk behind getStatus().findings never visits
+// more than this many entries, goes deeper than this, or lists more findings.
+const HYGIENE_MAX_ENTRIES = 1000;
+const HYGIENE_MAX_DEPTH = 4;
+const HYGIENE_MAX_FINDINGS = 50;
+// Folders the user keeps on purpose as history: never looked into.
+const HYGIENE_SKIP_DIRS = new Set(["legacy", "reference"]);
 // A journal entry is a short diary paragraph, never a transcript.
 const JOURNAL_MAX_CHARS = 1200;
 const JOURNAL_SESSION_CHARS = 1500;
@@ -737,10 +744,84 @@ function createMemoryVault(options = {}) {
     }
   }
 
+  // #1389: read-only walk for what Doctor should tell the user: fact-shaped
+  // notes outside the three Facts folders (never read today), missing
+  // folders, and output that competes with Mana's (an old "Mana Memory.md",
+  // a Views/ file without her marker). Legacy/ and Reference/ are skipped.
+  // Reads at most HYGIENE_MAX_ENTRIES entries, only small .md files; never
+  // writes. Paths are relative to the vault.
+  function scanHygiene() {
+    const findings = [];
+    if (!vaultExists()) return { findings, truncated: false };
+    const add = (kind, rel, why, fix) => findings.length < HYGIENE_MAX_FINDINGS && findings.push({ kind, path: rel, why, fix });
+    const created = new Set(loadState().created || []);
+    const factFolders = new Set(Object.values(FOLDERS).map((f) => f.toLowerCase()));
+    if (status.lastSyncAt) {
+      const expected = [...Object.values(FOLDERS), ...(options.buildViews ? ["Views"] : [])];
+      for (const folder of expected) {
+        if (fs.existsSync(full(folder))) continue;
+        add("missing-structure", folder, "Mana expects this folder and it isn't there.", "Mana recreates it on her next sync; if it keeps vanishing, check what removes it.");
+      }
+    }
+    let visited = 0;
+    let truncated = false;
+    const queue = [{ rel: "", depth: 0 }];
+    while (queue.length && !truncated) {
+      const { rel: dirRel, depth } = queue.shift();
+      const dirLower = dirRel.toLowerCase();
+      const inViews = dirLower === "views" || dirLower.startsWith("views/");
+      let entries = [];
+      try {
+        entries = fs.readdirSync(full(dirRel), { withFileTypes: true });
+      } catch (e) {
+        continue;
+      }
+      for (const entry of entries) {
+        if (++visited > HYGIENE_MAX_ENTRIES) {
+          truncated = true;
+          break;
+        }
+        const name = entry.name;
+        const rel = dirRel ? `${dirRel}/${name}` : name;
+        if (/^[.~]/.test(name)) continue;
+        if (entry.isDirectory()) {
+          const lower = name.toLowerCase();
+          if (HYGIENE_SKIP_DIRS.has(lower) || (!dirRel && lower === "journal")) continue;
+          if (depth < HYGIENE_MAX_DEPTH) queue.push({ rel, depth: depth + 1 });
+          continue;
+        }
+        if (!entry.isFile() || !/\.md$/i.test(name)) continue;
+        if (!dirRel && /^mana memory\.md$/i.test(name)) {
+          add("competing-output", rel, "An older single-file memory export that competes with Facts/ and Views/.", "Keep it as history by moving it into a Legacy/ folder, or delete it if you don't need it; Mana never touches it.");
+          continue;
+        }
+        if (factFolders.has(dirLower)) continue;
+        try {
+          if (fs.statSync(full(rel)).size > MAX_NOTE_BYTES) continue;
+          const content = fs.readFileSync(full(rel), "utf8");
+          if (inViews) {
+            if (!created.has(rel.toLowerCase()) && !content.startsWith(VIEWS_MARKER)) {
+              add("unowned-view", rel, "It has no Mana marker, so Mana treats it as yours: she never overwrites or removes it, and won't write a view under this name.", "Rename it or move it out of Views/ if you want Mana to write that view.");
+            }
+            continue;
+          }
+          const parsed = parseNote(content);
+          if (!parsed.error && parsed.body && ["active", "pending", "archived"].includes(String(parsed.header.status).toLowerCase())) {
+            add("misplaced-fact", rel, "It looks like a Mana fact note, but Mana only reads Facts/, Facts/Pending and Facts/Archived.", "Move it into Facts/ to have Mana read it; she never imports or moves it herself.");
+          }
+        } catch (e) {
+          // Unreadable: the sync already reports unreadable notes in Facts/.
+        }
+      }
+    }
+    return { findings, truncated };
+  }
+
   // mode: "watching" (file watcher up), "polling" (it's down: only the
   // POLL_MS syncs) or "stopped".
   function getStatus() {
-    return { ...status, mode: !started ? "stopped" : watcher ? "watching" : "polling" };
+    const { findings, truncated } = scanHygiene();
+    return { ...status, mode: !started ? "stopped" : watcher ? "watching" : "polling", findings, findingsTruncated: truncated };
   }
 
   function start() {
@@ -766,4 +847,4 @@ function createMemoryVault(options = {}) {
   return { start, stop, sync, refreshViews, writeJournal, getStatus };
 }
 
-module.exports = { VIEWS_MARKER, createMemoryVault, noteName, keyFromName, parseNote, renderNote };
+module.exports = { VIEWS_MARKER, createMemoryVault, noteName, statusOf, keyFromName, parseNote, renderNote };

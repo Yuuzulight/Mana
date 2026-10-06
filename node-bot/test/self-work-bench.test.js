@@ -210,6 +210,20 @@ test("a live case's hidden tests come from its own folder, and verify only needs
   assert.deepEqual(verifyCase(live, { repoRoot: r.repo, worktreesDir: r.worktrees }).ok, true);
 });
 
+test("a fixed case with its own hidden folder uses those tests, not the fix's", () => {
+  const r = makeRepo();
+  const hiddenFrom = path.join(r.repo, "..", "hidden");
+  fs.mkdirSync(path.join(hiddenFrom, "node-bot", "test"), { recursive: true });
+  // Fails even with the fix, so only these tests can make verify fail.
+  fs.writeFileSync(
+    path.join(hiddenFrom, "node-bot", "test", "util.test.js"),
+    'const test = require("node:test");\nconst assert = require("node:assert");\ntest("adds", () => assert.equal(require("../util").add(1, 1), 3));\n',
+  );
+  const v = verifyCase({ ...r.c, id: "3-fixed-hidden", hiddenFrom }, { repoRoot: r.repo, worktreesDir: r.worktrees });
+  assert.equal(v.failsAtBase, true);
+  assert.equal(v.passesWithFix, false);
+});
+
 test("pass@1 is the mean over repeats, pass@k any repeat, the spread the fewest and most passes", () => {
   const run = (id, kind, repeat, passed) => ({ id, kind, repeat, passed, wallMs: 1000, rounds: 5, toolCalls: 5, tokens: { prompt: 10, completion: 1, peak: 10 } });
   const s = summarize([

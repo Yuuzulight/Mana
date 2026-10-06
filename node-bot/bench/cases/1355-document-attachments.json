@@ -1,0 +1,28 @@
+{
+  "id": "1355-document-attachments",
+  "kind": "multi-file",
+  "pr": 1355,
+  "issue": 1325,
+  "base": "00a28b5ad8bf48af970c035fd656e12f02f9263d",
+  "fix": "8b05a62bea09b0508f008ab2bd7171f8a7dda842",
+  "title": "Attached documents should be extracted into reply context",
+  "body": "Extend chat attachments beyond images so PDF, Word, Excel, PowerPoint, and CSV documents are extracted locally and included in the prompt context used for replies.",
+  "fixFiles": [
+    "node-bot/server.js",
+    "node-bot/server-routes.js",
+    "plugins/document-reader/document-extract.js",
+    "plugins/document-reader/document-reader.js",
+    "plugins/document-reader/index.js",
+    "plugins/document-reader/pdf-text.js",
+    "windows-native-launcher/ChatView.cs",
+    "windows-native-launcher/IChatLog.cs",
+    "windows-native-launcher/ImageAttachmentStrip.cs",
+    "windows-native-launcher/ManaBackendClient.cs"
+  ],
+  "hiddenTests": [
+    "plugins/document-reader/test/document-reader.test.js"
+  ],
+  "testCommand": "node --test ..\\plugins\\document-reader\\test\\document-reader.test.js",
+  "interface": "document-reader extracts attached PDF, Word, Excel, PowerPoint and CSV content for chat context.",
+  "why": "Document attachment support is one of the capability-roadmap items and forces multi-file backend/frontend reasoning."
+}

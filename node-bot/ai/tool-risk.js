@@ -45,7 +45,18 @@ function maxTier(a, b) {
 // reminders the user asked for.
 const BUILTIN_TIERS = {
   read_file: "read",
+  // #1383: her self-inventory and #1380's resource status only read state.
+  capabilities__inventory: "read",
+  resources__status: "read",
   session_search__query: "read",
+  // #1399: searching her own memory, and self-work's tools that only read
+  // her worktree (plan records her own plan; review asks her reviewer).
+  memory__search_facts: "read",
+  self_work__files: "read",
+  self_work__read: "read",
+  self_work__search: "read",
+  self_work__plan: "read",
+  self_work__review: "read",
   project_references__search: "read",
   project_references__link: "write",
   skill__view: "read",
@@ -105,6 +116,8 @@ const BUILTIN_TIERS = {
   // #1192: the same, and network: they ask after outside content, too.
   git__push: "network",
   github__write: "network",
+  // #1384: asks through its own approval type, bound to the reviewed issue.
+  improvement__propose: "write",
   // #1194: asks me every time itself (ai/try-pr-tool-source.js).
   mana_update__pull_main: "write",
   memory__remember: "write",
@@ -163,6 +176,7 @@ const SELF_GATED = new Set([
   "git__change",
   "git__push",
   "github__write",
+  "improvement__propose",
   "mana_update__pull_main",
 ]);
 
@@ -677,5 +691,6 @@ module.exports = {
   extractCommand,
   isShellTool,
   resolveExecutable,
+  SELF_GATED,
   wrapWithRiskGate,
 };

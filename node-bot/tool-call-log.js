@@ -8,6 +8,7 @@ const path = require("path");
 
 const DEFAULT_LOG_PATH = path.join(__dirname, "data", "tool-call-log", "tool-calls.jsonl");
 const DEFAULT_RECENT_LIMIT = 200;
+const MAX_LOG_BYTES = 4 * 1024 * 1024;
 // Caps a call's serialized args in the log -- large tool inputs (e.g. a
 // long file path list or page text passed to a browser-automation tool)
 // shouldn't make one log line dominate the file. Matches the same
@@ -122,6 +123,8 @@ function createToolCallLog(options = {}) {
   const logPath = options.logPath || DEFAULT_LOG_PATH;
   const now = options.now || (() => new Date().toISOString());
 
+  const maxBytes = options.maxBytes || MAX_LOG_BYTES;
+
   function append(entry) {
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     const record = { at: now(), ...entry, args: serializeArgs(entry.args) };
@@ -130,6 +133,11 @@ function createToolCallLog(options = {}) {
     if (typeof record.error === "string") record.error = redactText(record.error);
     const line = JSON.stringify(record);
     fs.appendFileSync(logPath, `${line}\n`, "utf8");
+    // #1382: bounded -- past maxBytes, keep the newest half.
+    if (fs.statSync(logPath).size > maxBytes) {
+      const lines = fs.readFileSync(logPath, "utf8").trim().split("\n");
+      fs.writeFileSync(logPath, `${lines.slice(Math.floor(lines.length / 2)).join("\n")}\n`, "utf8");
+    }
   }
 
   function readRecent(limit = DEFAULT_RECENT_LIMIT) {
@@ -157,7 +165,36 @@ function createToolCallLog(options = {}) {
 // has already been folded in, so this one wrap catches everything.
 // onFailure (optional): called with the tool name when a call throws --
 // issue #700's mood hears about failed tasks through it.
-function wrapWithToolCallLog(policy, toolCallLog, onFailure) {
+// #1382: what a returned result says about the task, apart from the call
+// returning at all. A plain string isn't proof the task worked; only an
+// explicit status/error in a JSON result counts either way.
+function resultOutcome(result) {
+  let r = result;
+  if (typeof r === "string") {
+    try {
+      r = JSON.parse(r);
+    } catch {
+      return "returned";
+    }
+  }
+  if (!r || typeof r !== "object") return "returned";
+  const status = String(r.status || "").toLowerCase();
+  if (["denied", "blocked", "refused"].includes(status)) return "denied";
+  if (status === "pending") return "pending";
+  if (r.error || r.ok === false || ["error", "failed"].includes(status)) return "task-failed";
+  if (r.ok === true || ["ok", "done", "success", "approved", "started"].includes(status)) return "succeeded";
+  return "returned";
+}
+
+// meta (optional): extra fields per entry, e.g. the active model (#1382).
+function wrapWithToolCallLog(policy, toolCallLog, onFailure, meta) {
+  const extra = () => {
+    try {
+      return meta ? meta() || {} : {};
+    } catch {
+      return {};
+    }
+  };
   return {
     tools: policy.tools,
     isKnownTool: policy.isKnownTool,
@@ -165,10 +202,10 @@ function wrapWithToolCallLog(policy, toolCallLog, onFailure) {
       const startedAt = Date.now();
       try {
         const result = await policy.executeTool(name, args);
-        toolCallLog.append({ name, args, ok: true, durationMs: Date.now() - startedAt });
+        toolCallLog.append({ name, args, ok: true, outcome: resultOutcome(result), durationMs: Date.now() - startedAt, ...extra() });
         return result;
       } catch (e) {
-        toolCallLog.append({ name, args, ok: false, error: e.message, durationMs: Date.now() - startedAt });
+        toolCallLog.append({ name, args, ok: false, outcome: "threw", error: e.message, durationMs: Date.now() - startedAt, ...extra() });
         if (onFailure) onFailure(name);
         throw e;
       }
@@ -176,4 +213,4 @@ function wrapWithToolCallLog(policy, toolCallLog, onFailure) {
   };
 }
 
-module.exports = { DEFAULT_LOG_PATH, REDACTED, createToolCallLog, isSecretKey, redactSecrets, redactText, wrapWithToolCallLog };
+module.exports = { DEFAULT_LOG_PATH, REDACTED, createToolCallLog, isSecretKey, redactSecrets, redactText, resultOutcome, wrapWithToolCallLog };
