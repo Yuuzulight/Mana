@@ -1843,7 +1843,7 @@ test("buildVaultViews gives the summary, a mood view in level words and the enti
   const byRel = Object.fromEntries(views.map((v) => [v.rel, v.body]));
   assert.ok("Views/Summary.md" in byRel);
   assert.match(byRel["Views/Mood.md"], /Right now: tired, chatty\.\n\n- Energy: low\n- Sociability: high\n- Stress: moderate/);
-  assert.ok(views.every((v) => /^Views\/(Summary|Mood|Entities\/[a-z0-9-]+)\.md$/.test(v.rel)));
+  assert.ok(views.every((v) => /^Views\/(Summary|Mood|Facts Index|Pending Review|Entities Index|Entities\/[a-z0-9-]+)\.md$/.test(v.rel)));
 });
 
 test("formatMemoryMarkdown omits the Connections section when there are none (issue #75)", () => {
@@ -1906,6 +1906,8 @@ test("buildMemoryNotes creates a Key Facts note linking to mentioned entities", 
     { "ffxiv": [{ sessionId: "s1", at: "t1", display: "FFXIV" }] },
     ["Plays FFXIV on weekends", "Prefers concise replies"],
     [],
+    // #1387: typed, so one mention is enough for a note.
+    { ffxiv: { type: "project" } },
   );
   const facts = notes.find((n) => n.slug === "key-facts");
   assert.ok(facts);

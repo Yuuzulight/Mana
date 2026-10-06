@@ -351,6 +351,8 @@ function createSelfWork(options = {}) {
     options.gemini === true ? createGeminiFallback({ env, ledgerFile: path.join(worktreesDir, "self-work-gemini.json") }) : options.gemini || null;
   // #1287: her training records (self-work-traces.js); none by default.
   const traces = options.traces || null;
+  // #1385: what her runs that didn't end well taught her (self-work-lessons.js); none by default.
+  const lessons = options.lessons || null;
   let current = null;
 
   async function run(cmd, args, cwd) {
@@ -416,7 +418,7 @@ function createSelfWork(options = {}) {
   function status() {
     const fallback = gemini ? { gemini: gemini.info() } : {};
     if (!current) return { state: "idle", ...fallback };
-    const { done, stopRequested, lastTestPassed, halt, reviewedTree, ...shown } = current;
+    const { done, stopRequested, lastTestPassed, halt, reviewedTree, finalWords, ...shown } = current;
     return { ...shown, ...fallback, log: [...current.log] };
   }
 
@@ -633,6 +635,10 @@ function createSelfWork(options = {}) {
       ? ` I also needed to change my guardrails (${r.guardrailsNeeded.join(", ")}); that takes a run you flag with "Allow guardrail changes" in What I'm working on.`
       : "";
     log(r, text + needed + (r.fallbackNote ? ` ${r.fallbackNote}` : ""), true);
+    // #1385: never in the way of the run.
+    try {
+      lessons?.record(r, state, text);
+    } catch {}
   }
 
   async function work(r, issue) {
@@ -648,6 +654,7 @@ function createSelfWork(options = {}) {
     // Gemini CLI's try, which she then takes over as her own.
     if (gemini && (await ownFailed(r, best))) best = (await geminiFallback(r, issue)) || best;
     const summary = stripAttribution(best.reply?.content);
+    r.finalWords = summary; // #1385: her own words, kept only as a guess
 
     if (haltedEnd(r)) return;
     // Everything in the worktree, whoever wrote it (her tests run code too).
@@ -1101,7 +1108,7 @@ How to work:
         if (closest) r.halt.text += ` My closest attempt so far (${closest.kept}) is saved in ${patchFile}.`;
         return { reply, kept: i };
       }
-      r.attempts.push({ attempt: i, finished, passed: verdict.passed, failures: verdict.failures });
+      r.attempts.push({ attempt: i, finished, passed: verdict.passed, failures: verdict.failures, failing: verdict.failing });
       log(r, `Attempt ${i} of ${attempts}: ${finished ? "finished" : "not finished"}, ${verdict.passed ? "tests passing" : `${verdict.failures} failing`}.`);
       if (verdict.passed && !finished) {
         log(r, `Attempt ${i}'s tests pass, so I'm checking it against the issue and reviewing it before I hand it in.`);
@@ -1263,7 +1270,23 @@ ${
     : "- Your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction) are off limits; writes there are refused."
 }
 - When the tests pass, review your diff with self_work__review (correctness, edge cases, scope) and fix what you find.
-- Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.`;
+- Then call ${SESSION_GOAL_FINISH_TOOL_NAME} and reply with a short first-person summary of what you changed and how you tested it. It becomes the PR description.${lessonsBlock(r, issue)}`;
+  }
+
+  // #1385: what earlier failed runs on this issue (or its files) observed, her
+  // unverified guesses labelled as such, and the rules I approved.
+  function lessonsBlock(r, issue) {
+    try {
+      const paths = [...new Set(String(issue.body || "").match(/[\w./-]+\.(?:js|json|md|ps1|cs)\b/g) || [])].slice(0, 10);
+      const earlier = lessons?.forIssue(r.issue, paths);
+      const rules = lessons?.standingRules() || [];
+      return (
+        (earlier ? `\n\nWhat earlier runs on this left behind (what I observed is fact; "my guess" was never checked, so test it before you rely on it):\n${earlier}` : "") +
+        (rules.length ? `\n\nRules ${ownerName()} approved for your self-work:\n${rules.map((x) => `- ${x}`).join("\n")}` : "")
+      );
+    } catch {
+      return "";
+    }
   }
 
   // #1259: her change passes its tests but she didn't finish: she checks it
@@ -1626,7 +1649,7 @@ Before it can be a PR:
     };
   }
 
-  return { start, startIdle, refresh, stop, status, chatToolSource, bench, benchGemini, traces, _current: () => current };
+  return { start, startIdle, refresh, stop, status, chatToolSource, bench, benchGemini, traces, lessons, _current: () => current };
 }
 
 module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
