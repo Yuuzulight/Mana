@@ -164,6 +164,9 @@ internal sealed class SettingsPanel : UserControl
         searchResults.ItemActivate += (_, _) => OpenResult(searchResults.FocusedItem);
         searchResults.MouseClick += (_, e) => OpenResult(searchResults.GetItemAt(e.X, e.Y));
         content.Controls.Add(searchResults);
+        // Last added docks first: the header and its page pills sit above the page.
+        content.Controls.Add(pagePills);
+        content.Controls.Add(BuildHeader());
         Controls.Add(content);
         Controls.Add(BuildSidebar());
 
@@ -187,24 +190,37 @@ internal sealed class SettingsPanel : UserControl
         Disposed += (_, _) =>
         {
             DarkTheme.Changed -= UpdateNav;
-            navBold?.Dispose();
+            groupFont.Dispose();
+            activeGroupFont.Dispose();
+            descriptionFont.Dispose();
+            titleFont.Dispose();
         };
         ShowGroup("general");
     }
 
-    internal sealed record SettingsGroup(string Id, string Label, TabControl Tabs);
+    internal sealed record SettingsGroup(string Id, string Label, string Description, TabControl Tabs);
 
     private readonly List<SettingsGroup> groups = new();
     private readonly Panel content = new();
-    private readonly FlowLayoutPanel nav = new();
+    private readonly ListView nav = new();
+    private readonly ImageList navRowHeight = new();
     private readonly TextBox searchBox = new();
     private readonly ListView searchResults = new();
-    private readonly Dictionary<string, Button> navButtons = new();
-    private Font? navBold;
+    private readonly Label titleLabel = new();
+    private readonly Label descriptionLabel = new();
+    private readonly FlowLayoutPanel pagePills = new();
+    // #1426: the chat window's sidebar fonts, so its rows read the same.
+    private readonly Font groupFont = new("Segoe UI", 9.75f);
+    private readonly Font activeGroupFont = new("Segoe UI Semibold", 9.75f);
+    private readonly Font descriptionFont = new("Segoe UI", 9f);
+    private readonly Font titleFont = new("Segoe UI Semibold", 10.5f);
+    private bool showingNav;
 
     internal IReadOnlyList<SettingsGroup> Groups => groups; // tests
     internal TextBox SearchBox => searchBox; // tests
     internal ListView SearchResults => searchResults; // tests
+    internal ListView Nav => nav; // tests
+    internal FlowLayoutPanel PagePills => pagePills; // tests
     internal string CurrentGroup { get; private set; } = "";
 
     // The group that was showing, each time another one opens.
@@ -232,6 +248,20 @@ internal sealed class SettingsPanel : UserControl
         ["Timings"] = "performance perf speed",
     };
 
+    // What each group is for, under its name in the sidebar and the header.
+    private static readonly Dictionary<string, string> GroupDescriptions = new()
+    {
+        ["general"] = "How Mana starts and looks",
+        ["voice"] = "How she listens and answers",
+        ["checkins"] = "When she speaks up on her own",
+        ["memory"] = "What she knows and how she replies",
+        ["models"] = "Which brain she uses, and the cost",
+        ["permissions"] = "What she may do without asking",
+        ["privacy"] = "What happens to your data",
+        ["connections"] = "Accounts, devices and services",
+        ["advanced"] = "Backend and diagnostics",
+    };
+
     private void AddGroup(string id, string label, params TabPage[] pages)
     {
         var tabs = new TabControl { Dock = DockStyle.Fill, Visible = false, AccessibleName = label };
@@ -242,24 +272,24 @@ internal sealed class SettingsPanel : UserControl
             page.AutoScroll = true;
             tabs.TabPages.Add(page);
         }
-        if (pages.Length == 1)
-        {
-            // One page: no strip to pick from.
-            tabs.SizeMode = TabSizeMode.Fixed;
-            tabs.ItemSize = new Size(0, 1);
-        }
-        groups.Add(new SettingsGroup(id, label, tabs));
+        // The pills under the header pick the page, so the strip folds away.
+        tabs.SizeMode = TabSizeMode.Fixed;
+        tabs.ItemSize = new Size(0, 1);
+        tabs.SelectedIndexChanged += (_, _) => UpdatePills();
+        groups.Add(new SettingsGroup(id, label, GroupDescriptions.GetValueOrDefault(id, ""), tabs));
     }
 
+    // #1426: the chat window's sidebar: its glass search field, then the
+    // groups as its rows are drawn (a name over a muted line, the open one
+    // on a card), under "Settings" and "More" headers.
     private Control BuildSidebar()
     {
-        var sidebar = new Panel { Dock = DockStyle.Left, Width = 200, BackColor = DarkTheme.Panel, Padding = new Padding(8) };
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 230, BackColor = DarkTheme.Background, Padding = new Padding(10) };
         searchBox.Dock = DockStyle.Top;
         searchBox.PlaceholderText = "Search settings";
         searchBox.AccessibleName = "Search settings";
-        searchBox.BackColor = DarkTheme.Panel2;
+        searchBox.BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
         searchBox.ForeColor = DarkTheme.Text;
-        searchBox.BorderStyle = BorderStyle.FixedSingle;
         searchBox.TextChanged += (_, _) => Search(searchBox.Text);
         searchBox.KeyDown += (_, e) =>
         {
@@ -274,39 +304,156 @@ internal sealed class SettingsPanel : UserControl
                 e.SuppressKeyPress = true;
             }
         };
+        var searchField = GlassSurface.Field(searchBox, new Padding(10, 8, 10, 0));
+        searchField.Dock = DockStyle.Top;
+        searchField.Height = 32;
+
         nav.Dock = DockStyle.Fill;
-        nav.FlowDirection = FlowDirection.TopDown;
-        nav.WrapContents = false;
-        nav.Padding = new Padding(0, 8, 0, 0);
+        nav.View = View.Details;
+        nav.HeaderStyle = ColumnHeaderStyle.None;
+        nav.FullRowSelect = true;
+        nav.HideSelection = false;
+        nav.MultiSelect = false;
+        nav.BorderStyle = BorderStyle.None;
+        nav.BackColor = DarkTheme.Background;
+        nav.ForeColor = DarkTheme.Text;
         nav.AccessibleName = "Settings groups";
+        nav.Columns.Add("Group", 200);
+        nav.OwnerDraw = true;
+        nav.DrawItem += OnDrawGroupItem;
+        nav.ClientSizeChanged += (_, _) => nav.Columns[0].Width = nav.ClientSize.Width;
+        navRowHeight.ImageSize = new Size(1, LogicalToDeviceUnits(48));
+        nav.SmallImageList = navRowHeight;
+        var main = new ListViewGroup("main", "Settings");
+        var more = new ListViewGroup("more", "More");
+        nav.Groups.Add(main);
+        nav.Groups.Add(more);
         foreach (var group in groups)
         {
-            if (group.Id == "advanced")
-            {
-                // Advanced sits last, under a line.
-                nav.Controls.Add(new Label { Width = 180, Height = 1, BackColor = DarkTheme.Border, Margin = new Padding(4, 8, 4, 8) });
-            }
-            var button = new Button
-            {
-                Text = group.Label,
-                Width = 176,
-                Height = 30,
-                TextAlign = ContentAlignment.MiddleLeft,
-                FlatStyle = FlatStyle.Flat,
-                Margin = new Padding(0, 0, 0, 2),
-                Padding = new Padding(6, 0, 0, 0),
-                Cursor = Cursors.Hand,
-            };
-            button.FlatAppearance.BorderSize = 0;
-            button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
-            var id = group.Id;
-            button.Click += (_, _) => ShowGroup(id);
-            navButtons[id] = button;
-            nav.Controls.Add(button);
+            nav.Items.Add(new ListViewItem(new[] { group.Label, group.Description }, group.Id == "advanced" ? more : main) { Tag = group.Id });
         }
+        nav.SelectedIndexChanged += (_, _) =>
+        {
+            if (!showingNav && nav.SelectedItems.Count > 0 && nav.SelectedItems[0].Tag is string id)
+            {
+                ShowGroup(id);
+            }
+        };
+
         sidebar.Controls.Add(nav);
-        sidebar.Controls.Add(searchBox);
+        sidebar.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 8, BackColor = Color.Transparent });
+        sidebar.Controls.Add(searchField);
         return sidebar;
+    }
+
+    // As SessionListForm.OnDrawSessionItem draws a chat: glass card under the
+    // open group in the Mana preset, an accent tint elsewhere.
+    private void OnDrawGroupItem(object? sender, DrawListViewItemEventArgs e)
+    {
+        var g = e.Graphics;
+        var bounds = e.Bounds with { Width = nav.ClientSize.Width };
+        var card = Rectangle.Inflate(bounds, 0, -1);
+        var active = (string?)e.Item.Tag == CurrentGroup && !searchResults.Visible;
+        if (DarkTheme.IsGlass)
+        {
+            GlassSurface.PaintGlowBehind(g, nav, bounds);
+            if (active)
+            {
+                using var fill = new SolidBrush(Color.FromArgb(179, 255, 255, 255));
+                g.FillRectangle(fill, card);
+                GlassSurface.PaintGlassEdges(g, card, null);
+            }
+        }
+        else
+        {
+            using var back = new SolidBrush(nav.BackColor);
+            g.FillRectangle(back, bounds);
+            if (active)
+            {
+                using var tint = new SolidBrush(Color.FromArgb(56, DarkTheme.Accent));
+                g.FillRectangle(tint, card);
+            }
+        }
+        var pad = LogicalToDeviceUnits(10);
+        var font = active ? activeGroupFont : groupFont;
+        var gap = LogicalToDeviceUnits(2);
+        var top = card.Y + (card.Height - font.Height - gap - descriptionFont.Height) / 2;
+        const TextFormatFlags flags = TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        TextRenderer.DrawText(g, e.Item.Text, font, new Rectangle(card.X + pad, top, card.Width - pad * 2, font.Height), active && !DarkTheme.IsGlass ? DarkTheme.Accent : DarkTheme.Text, flags);
+        TextRenderer.DrawText(g, e.Item.SubItems[1].Text, descriptionFont, new Rectangle(card.X + pad, top + font.Height + gap, card.Width - pad * 2, descriptionFont.Height), DarkTheme.Muted, flags);
+        if (e.Item.Focused && nav.Focused && GlassSurface.ShowsFocusCues(nav))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -2, -1));
+        }
+    }
+
+    // #1426: the chat window's 36px header: the group's name in its title
+    // font, what it's for beside it, a hairline under.
+    private Control BuildHeader()
+    {
+        var header = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = DarkTheme.Background, Padding = new Padding(12, 4, 12, 4) };
+        header.Paint += (_, e) =>
+        {
+            using var line = new Pen(DarkTheme.IsGlass ? Color.FromArgb(36, 106, 95, 184) : DarkTheme.Border);
+            e.Graphics.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
+        };
+        titleLabel.Dock = DockStyle.Left;
+        titleLabel.AutoSize = true;
+        titleLabel.Font = titleFont;
+        titleLabel.ForeColor = DarkTheme.Text;
+        titleLabel.Padding = new Padding(0, 5, 8, 0);
+        descriptionLabel.Dock = DockStyle.Fill;
+        descriptionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        descriptionLabel.ForeColor = DarkTheme.Muted;
+        descriptionLabel.AutoEllipsis = true;
+        header.Controls.Add(descriptionLabel);
+        header.Controls.Add(titleLabel);
+
+        pagePills.Dock = DockStyle.Top;
+        pagePills.AutoSize = true;
+        pagePills.WrapContents = true;
+        pagePills.Padding = new Padding(10, 8, 10, 2);
+        pagePills.BackColor = DarkTheme.Background;
+        pagePills.AccessibleName = "Pages";
+        return header;
+    }
+
+    // One pill per page of the open group; none when it has one page.
+    private void UpdatePills()
+    {
+        var group = groups.Find(g => g.Id == CurrentGroup);
+        pagePills.SuspendLayout();
+        foreach (Control old in pagePills.Controls.Cast<Control>().ToList())
+        {
+            old.Dispose();
+        }
+        if (group is not null && group.Tabs.TabCount > 1 && !searchResults.Visible)
+        {
+            foreach (TabPage page in group.Tabs.TabPages)
+            {
+                var on = group.Tabs.SelectedTab == page;
+                var pill = new Button
+                {
+                    Text = page.Text,
+                    AutoSize = true,
+                    UseMnemonic = false,
+                    Margin = new Padding(0, 0, 6, 6),
+                    Padding = new Padding(8, 2, 8, 2),
+                    AccessibleDescription = on ? "Showing" : null,
+                };
+                DarkTheme.ApplyButton(pill);
+                if (on)
+                {
+                    pill.ForeColor = DarkTheme.Accent;
+                    pill.FlatAppearance.BorderColor = DarkTheme.Accent;
+                }
+                var target = page;
+                pill.Click += (_, _) => group.Tabs.SelectedTab = target;
+                pagePills.Controls.Add(pill);
+            }
+        }
+        pagePills.Visible = pagePills.Controls.Count > 0;
+        pagePills.ResumeLayout();
     }
 
     internal void ShowGroup(string id)
@@ -332,14 +479,17 @@ internal sealed class SettingsPanel : UserControl
 
     private void UpdateNav()
     {
-        foreach (var (id, button) in navButtons)
+        var group = groups.Find(g => g.Id == CurrentGroup);
+        titleLabel.Text = searchResults.Visible ? "Search" : group?.Label ?? "";
+        descriptionLabel.Text = searchResults.Visible ? "Settings whose words match" : group?.Description ?? "";
+        showingNav = true;
+        foreach (ListViewItem item in nav.Items)
         {
-            var on = id == CurrentGroup && !searchResults.Visible;
-            button.BackColor = on ? DarkTheme.Panel2 : DarkTheme.Panel;
-            button.ForeColor = on ? DarkTheme.Accent : DarkTheme.Text;
-            button.Font = on ? navBold ??= new Font(Font, FontStyle.Bold) : Font;
-            button.AccessibleDescription = on ? "Showing" : null;
+            item.Selected = (string?)item.Tag == CurrentGroup && !searchResults.Visible;
         }
+        showingNav = false;
+        nav.Invalidate();
+        UpdatePills();
     }
 
     // Every word a page shows (labels, checkboxes, buttons, box titles,

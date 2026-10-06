@@ -35,6 +35,14 @@ internal sealed class SettingsDialog : Form
             Size = new Size(960, 680);
         }
         DarkTheme.ApplyForm(this);
+        try
+        {
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        }
+        catch (Exception)
+        {
+            // The default icon will do.
+        }
 
         Panel = panel;
         Controls.Add(panel);
