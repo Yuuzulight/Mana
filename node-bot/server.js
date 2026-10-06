@@ -236,6 +236,7 @@ const { createRelationshipCapability } = require("./capabilities/relationship-ca
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
+const { createLifecycle } = require("./self-improvement");
 // Issue #267: one generic composer instead of a buildToolPolicyWithX per
 // tool source -- see ai/tool-source.js. Each create*ToolSource() factory
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
@@ -3006,10 +3007,13 @@ function registerRoutes(app, upload, deps = {}) {
   const gitTools =
     deps.gitTools ||
     createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
+  // #1386: her improvement lifecycle, kept across restarts.
+  const selfImprovement = deps.selfImprovement || createLifecycle({ file: path.join(acpMemoryStore.dataDir, "self-improvement.json") });
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =
     deps.selfWork ||
     createSelfWork({
+      lifecycle: selfImprovement,
       resourceCoordinator,
       approvalGate: activeApprovalGate,
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
@@ -3025,6 +3029,9 @@ function registerRoutes(app, upload, deps = {}) {
         console.log(`[self-work #${run.issue}] ${text}`);
         if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
         if (notice && run.endedAt) {
+          try {
+            selfImprovement.onRunEnd(run);
+          } catch {}
           backgroundTaskDone({
             sessionId: run.sessionId,
             taskId: "self-work",
@@ -3101,6 +3108,34 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/self-work/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ stopped: selfWork.stop() });
+  });
+
+  // #1386: her improvement lifecycle -- every issue's state and why.
+  app.get("/self-improvement", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json({ records: selfImprovement.list() });
+  });
+  // "Try that again": clears a hold and the retry budget.
+  app.post("/self-improvement/:issue/retry", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const record = selfImprovement.retry(req.params.issue);
+    return record ? res.json({ record }) : res.status(404).json({ error: "No record for that issue." });
+  });
+  // A merged change checked by an eval/bench report (bench/results/<label>).
+  app.post("/self-improvement/:issue/verify", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const label = String(req.body?.label || "");
+    if (!/^[\w.-]+$/.test(label) || label.includes("..")) return res.status(400).json({ error: "label must be a bench/results folder name" });
+    const file = path.join(__dirname, "bench", "results", label, "report.json");
+    if (!fs.existsSync(file)) return res.status(404).json({ error: "No report.json in that folder." });
+    let report;
+    try {
+      report = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (e) {
+      return res.status(400).json({ error: `report.json didn't parse: ${e.message}` });
+    }
+    const record = selfImprovement.verify(req.params.issue, { ...report, label });
+    return record ? res.json({ record }) : res.status(404).json({ error: "No record for that issue." });
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
