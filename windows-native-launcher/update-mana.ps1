@@ -59,7 +59,10 @@ try {
         if ($LASTEXITCODE) { throw 'Analysis runtime preparation failed; update was not applied.' }
     }
     if (Test-Newer (Join-Path $nodeBot 'package-lock.json') (Join-Path $nodeBot 'node_modules\.package-lock.json')) {
-        npm install --prefix $nodeBot --no-audit --no-fund
+        # #1422: npm 10 reads "install --prefix <dir>" as a package to add and
+        # looks for package.json in the repo root, so install from node-bot.
+        Push-Location $nodeBot
+        try { npm install --no-audit --no-fund } finally { Pop-Location }
         if ($LASTEXITCODE) { throw 'npm install failed' }
     }
 
