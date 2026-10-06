@@ -97,6 +97,7 @@ async function watching(polls, { gaming = (sleeps) => false, ghLog = "boom\n" } 
     ramPercent: () => 50,
     isGaming: () => clock.gaming,
     watchCi: true,
+    ciMaxPolls,
     // No real waiting: each "minute" is a turn of the event loop.
     ciSleep: async () => {
       clock.sleeps++;
@@ -164,7 +165,7 @@ test("#1398: a game running pauses the watch without counting a poll or a try", 
 });
 
 test("#1398: stop() cancels a watch that is waiting", async () => {
-  const { sw, clock, checks } = await watching([[pending]]);
+  const { sw, clock, checks } = await watching([[pending]], { ciMaxPolls: 1e9 });
   await until("a poll", () => checks() >= 1);
   assert.equal(sw.stop(), true);
   const seen = checks();
