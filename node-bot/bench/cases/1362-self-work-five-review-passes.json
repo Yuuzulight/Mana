@@ -1,0 +1,19 @@
+{
+  "id": "1362-self-work-five-review-passes",
+  "kind": "node-feature",
+  "pr": 1362,
+  "issue": 1202,
+  "base": "a12943a18171b4c918499d383e432853d8588d0a",
+  "fix": "42a2064b1c47b7ab71f694fc8fecba2965af15d4",
+  "title": "Self-work should support optional five review passes and restart reviews after edits",
+  "body": "Add an optional mode where self-work requires five focused review passes, including tests and regressions. If any review pass changes files, the review count resets so the final diff has five clean passes after the last edit.",
+  "fixFiles": [
+    "node-bot/self-work.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/self-work.test.js"
+  ],
+  "testCommand": "node --test --test-name-pattern \"MANA_SELF_WORK_REVIEW_PASSES=5\" test/self-work.test.js",
+  "interface": "MANA_SELF_WORK_REVIEW_PASSES accepts the extended pass list, and any edit after review progress resets the clean review count.",
+  "why": "This directly measures the review discipline the user asked for in this run."
+}

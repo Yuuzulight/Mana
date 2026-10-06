@@ -1,0 +1,24 @@
+{
+  "id": "1358-chat-export-markdown-html",
+  "kind": "multi-file",
+  "pr": 1358,
+  "issue": 1323,
+  "base": "9c8b0606ee09fdba60dedebbfbe9073d81c238b5",
+  "fix": "f79d546611dc5616e447b4edf1807530858973db",
+  "title": "Chats should export as Markdown, readable HTML, or JSONL",
+  "body": "Add conversation export formats for Markdown, Folio-styled standalone HTML, and JSON Lines. Support optional tool calls and reasoning/thoughts, preserve code blocks and inline images, and expose the options through the launcher.",
+  "fixFiles": [
+    "node-bot/capabilities/sessions-capability.js",
+    "node-bot/session-export.js",
+    "windows-native-launcher/ExportChatDialog.cs",
+    "windows-native-launcher/ManaBackendClient.cs",
+    "windows-native-launcher/SessionListForm.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/session-export.test.js",
+    "node-bot/test/sessions-capability.test.js"
+  ],
+  "testCommand": "node --test test/session-export.test.js test/sessions-capability.test.js",
+  "interface": "session export supports format=markdown/html/jsonl and optional tools/thoughts flags.",
+  "why": "Export and data-portability work is a realistic multi-file backend plus launcher feature."
+}

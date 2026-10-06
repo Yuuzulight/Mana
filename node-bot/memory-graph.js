@@ -247,7 +247,31 @@ function createMemoryGraph(options = {}) {
     return historySizeStmt.get();
   }
 
-  return { reinforce, getNeighbors, listStrongestEdges, getHistorySize, close };
+  // #1390: closed windows (kept in the edges table or archived) whose closure
+  // is older than `iso`. Live edges are never counted or pruned.
+  const countHistoryStmt = db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM memory_graph_edges WHERE invalidated_at IS NOT NULL AND invalidated_at < ?) AS closed,
+      (SELECT COUNT(*) FROM memory_graph_edge_history WHERE invalidated_at < ?) AS history
+  `);
+  function countHistoryBefore(iso) {
+    return countHistoryStmt.get(String(iso), String(iso));
+  }
+
+  const pruneHistoryBefore = db.transaction((iso) => {
+    const counts = countHistoryStmt.get(String(iso), String(iso));
+    db.prepare("DELETE FROM memory_graph_edges WHERE invalidated_at IS NOT NULL AND invalidated_at < ?").run(String(iso));
+    db.prepare("DELETE FROM memory_graph_edge_history WHERE invalidated_at < ?").run(String(iso));
+    return counts;
+  });
+
+  // #1390: a consistent copy of the db (better-sqlite3's online backup); async.
+  function backup(destPath) {
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    return db.backup(destPath);
+  }
+
+  return { reinforce, getNeighbors, listStrongestEdges, getHistorySize, countHistoryBefore, pruneHistoryBefore, backup, close };
 }
 
 module.exports = {

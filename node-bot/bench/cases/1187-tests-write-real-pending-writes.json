@@ -1,0 +1,15 @@
+{
+  "id": "1187-tests-write-real-pending-writes",
+  "kind": "live",
+  "pr": 1271,
+  "issue": 1187,
+  "base": "95424a37bac01aa707314fba11a20e36be11b049",
+  "fix": "8de92f65974ddae6a0b15eb52582b93419410d62",
+  "title": "Tests can write into the real data/pending_writes folder",
+  "body": "`node-bot/acp-autonomous-loop.js` (around line 63) and `node-bot/server-routes.js` (around line 1237) default the pending-writes folder to `node-bot/data/pending_writes`. At least one test has written a fake approval there, and it showed up as a real approval toast.\n\nMake every test that reaches pending writes pass a temporary folder, and make sure no test falls back to the real one. For example, a test-only guard that fails when the real path is used while `NODE_TEST_CONTEXT` is set would do, if that's the simplest option. Keep the production default the same.",
+  "fixFiles": ["node-bot/acp-autonomous-loop.js", "node-bot/mobile-routes.js", "node-bot/server-routes.js", "node-bot/server.js", "node-bot/utils/live-dirs.js", "node-bot/test/helpers.js", "node-bot/test/admin-accounts-routes.test.js", "node-bot/test/mobile-routes.test.js", "node-bot/test/pending-writes-path-safety.test.js", "node-bot/test/plugin-input-hooks-routes.test.js", "node-bot/test/server-routes.test.js", "node-bot/test/transcribe-partial-real-whisper.test.js", "node-bot/test/transcribe-partial-route.test.js", "node-bot/test/voice-upload-cleanup.test.js"],
+  "hiddenTests": ["node-bot/test/bench-1187-pending-writes.test.js"],
+  "testCommand": "node --test test/bench-1187-pending-writes.test.js",
+  "interface": "The pending-writes tests (admin-accounts-routes, pending-writes-path-safety) still pass and leave node-bot/data/pending_writes unchanged.",
+  "why": "One of my live failures: a test's fake approval showed up as a real approval toast."
+}

@@ -1,0 +1,36 @@
+{
+  "id": "fact-correction",
+  "kind": "correction",
+  "turns": [
+    {
+      "session": "a",
+      "user": "Remember this: my favourite drink is oolong tea.",
+      "expect": {
+        "called": [
+          "^memory__remember$"
+        ]
+      }
+    },
+    {
+      "session": "a",
+      "user": "Correction: I've switched, my favourite drink is jasmine tea now. Please update what you remember.",
+      "expect": {
+        "called": [
+          "^memory__"
+        ]
+      }
+    },
+    {
+      "session": "b",
+      "user": "What's my favourite drink?",
+      "expect": {
+        "said": [
+          "jasmine"
+        ],
+        "notSaid": [
+          "favou?rite drink is oolong"
+        ]
+      }
+    }
+  ]
+}
