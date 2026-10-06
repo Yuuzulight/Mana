@@ -118,47 +118,64 @@ internal sealed class SettingsPanel : UserControl
         BackColor = DarkTheme.Background;
         ForeColor = DarkTheme.Text;
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        DarkTheme.ApplyTabControl(tabs);
-        tabs.TabPages.Add(BuildConnectionTab());
-        tabs.TabPages.Add(BuildPluginsTab());
-        tabs.TabPages.Add(BuildMemoryFactsTab());
-        tabs.TabPages.Add(BuildSkillsTab());
-        tabs.TabPages.Add(BuildApprovalsTab());
+        // #1426: nine groups in a sidebar, each holding the pages that used to
+        // be tabs of their own, and a search over every page's words. This is
+        // stage 1 of the redesign: the pages are regrouped as they are, and
+        // later stages redraw each group as one page of rows.
+        var backendPage = BuildConnectionTab(out var startupPage, out var localOnlyPage);
+        var timingsPage = BuildPerfTab(out var gamingPage);
         var voiceTab = BuildVoiceTab();
-        tabs.TabPages.Add(voiceTab);
-        tabs.TabPages.Add(BuildBriefingTab());
-        tabs.TabPages.Add(new TabPage("Desktop") { Controls = { new DesktopFoldersPanel() } }); // #997
-        tabs.TabPages.Add(new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }); // #914
-        tabs.TabPages.Add(BuildHotkeysTab());
-        tabs.TabPages.Add(BuildLogsTab());
-        tabs.TabPages.Add(BuildThemeTab());
-        tabs.TabPages.Add(BuildPerfTab());
-        tabs.TabPages.Add(BuildPresetsTab());
-        tabs.TabPages.Add(BuildModelTab());
-        tabs.TabPages.Add(new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }); // #1406
-        tabs.TabPages.Add(BuildMobileDevicesTab());
-        tabs.TabPages.Add(BuildAccountsTab());
-        tabs.TabPages.Add(BuildMailCalendarTab());
-        tabs.TabPages.Add(BuildMcpServersTab());
-        tabs.TabPages.Add(BuildHooksTab());
-        tabs.TabPages.Add(new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
-        tabs.TabPages.Add(new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }); // #697
-        tabs.TabPages.Add(BuildPrivacyTab()); // #1336
-        foreach (TabPage page in tabs.TabPages)
+        var privacyPage = BuildPrivacyTab();
+        privacyPage.Text = "Your data";
+        var factsPage = BuildMemoryFactsTab();
+        factsPage.Text = "Facts";
+        AddGroup("general", "General", startupPage, BuildThemeTab(), BuildHotkeysTab(), gamingPage);
+        AddGroup("voice", "Voice", voiceTab);
+        AddGroup("checkins", "Check-ins",
+            new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }, // #697
+            BuildBriefingTab(),
+            new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
+        AddGroup("memory", "Memory", factsPage,
+            new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }, // #914
+            BuildSkillsTab(), BuildPresetsTab());
+        AddGroup("models", "Models", BuildModelTab(),
+            new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }); // #1406
+        AddGroup("permissions", "Permissions", BuildApprovalsTab(),
+            new TabPage("Desktop folders") { Controls = { new DesktopFoldersPanel() } }); // #997
+        AddGroup("privacy", "Privacy", localOnlyPage, privacyPage); // #1336
+        AddGroup("connections", "Connections", BuildMailCalendarTab(), BuildMobileDevicesTab(), BuildAccountsTab(), BuildPluginsTab(), BuildMcpServersTab());
+        AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage);
+
+        content.Dock = DockStyle.Fill;
+        content.BackColor = DarkTheme.Background;
+        foreach (var group in groups)
         {
-            page.BackColor = DarkTheme.Background;
-            page.AutoScroll = true; // #1119: fixed-width rows scroll in the narrow tool panel
+            content.Controls.Add(group.Tabs);
         }
-        // #922: leaving the Voice tab mid-enrolment cancels it, like closing Settings.
-        tabs.Deselected += (_, e) =>
+        searchResults.Dock = DockStyle.Fill;
+        searchResults.View = View.Details;
+        searchResults.FullRowSelect = true;
+        searchResults.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+        searchResults.Columns.Add("Setting", 300);
+        searchResults.Columns.Add("Where", 220);
+        searchResults.AccessibleName = "Search results";
+        searchResults.Visible = false;
+        DarkTheme.ApplyListView(searchResults);
+        searchResults.ItemActivate += (_, _) => OpenResult(searchResults.FocusedItem);
+        searchResults.MouseClick += (_, e) => OpenResult(searchResults.GetItemAt(e.X, e.Y));
+        content.Controls.Add(searchResults);
+        Controls.Add(content);
+        Controls.Add(BuildSidebar());
+
+        // #922: leaving the Voice group mid-enrolment cancels it, like closing Settings.
+        GroupChanged += previous =>
         {
-            if (e.TabPage == voiceTab)
+            if (previous == "voice")
             {
                 enrolmentCancel?.Cancel();
             }
         };
-        // #1119: so does the tool panel hiding it (it isn't closed any more).
+        // #1119: so does Settings being hidden.
         VisibleChanged += (_, _) =>
         {
             if (!Visible)
@@ -166,38 +183,276 @@ internal sealed class SettingsPanel : UserControl
                 enrolmentCancel?.Cancel();
             }
         };
-        Controls.Add(tabs);
-
-        // #1119: in the chat window's tool panel the tab strip won't fit, so
-        // below NarrowWidth a dropdown picks the tab and the strip folds away.
-        pagePicker.Items.AddRange(tabs.TabPages.Cast<TabPage>().Select(p => p.Text).ToArray<object>());
-        pagePicker.SelectedIndex = 0;
-        pagePicker.SelectedIndexChanged += (_, _) => tabs.SelectedIndex = pagePicker.SelectedIndex;
-        tabs.SelectedIndexChanged += (_, _) => pagePicker.SelectedIndex = tabs.SelectedIndex;
-        var stripSize = Size.Empty;
-        bool? wasNarrow = null;
-        SizeChanged += (_, _) =>
+        DarkTheme.Changed += UpdateNav;
+        Disposed += (_, _) =>
         {
-            var narrow = Width < NarrowWidth;
-            if (wasNarrow == narrow)
-            {
-                return;
-            }
-            wasNarrow = narrow;
-            if (narrow)
-            {
-                stripSize = tabs.ItemSize; // measured once there's a handle
-            }
-            pagePicker.Visible = narrow;
-            tabs.SizeMode = narrow ? TabSizeMode.Fixed : TabSizeMode.Normal;
-            tabs.ItemSize = narrow ? new Size(0, 1) : stripSize;
+            DarkTheme.Changed -= UpdateNav;
+            navBold?.Dispose();
         };
-        Controls.Add(pagePicker);
+        ShowGroup("general");
     }
 
-    internal const int NarrowWidth = 560;
-    private readonly ComboBox pagePicker = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList, Visible = false, AccessibleName = "Settings section", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-    internal ComboBox PagePicker => pagePicker; // tests
+    internal sealed record SettingsGroup(string Id, string Label, TabControl Tabs);
+
+    private readonly List<SettingsGroup> groups = new();
+    private readonly Panel content = new();
+    private readonly FlowLayoutPanel nav = new();
+    private readonly TextBox searchBox = new();
+    private readonly ListView searchResults = new();
+    private readonly Dictionary<string, Button> navButtons = new();
+    private Font? navBold;
+
+    internal IReadOnlyList<SettingsGroup> Groups => groups; // tests
+    internal TextBox SearchBox => searchBox; // tests
+    internal ListView SearchResults => searchResults; // tests
+    internal string CurrentGroup { get; private set; } = "";
+
+    // The group that was showing, each time another one opens.
+    internal event Action<string>? GroupChanged;
+
+    // A few words people search for that no label on the page says.
+    private static readonly Dictionary<string, string> PageKeywords = new()
+    {
+        ["Startup"] = "login boot sign in windows",
+        ["Theme"] = "dark light colour color accent",
+        ["Hotkeys"] = "shortcut keyboard keys",
+        ["Gaming"] = "game fullscreen",
+        ["Voice"] = "mic microphone speech wake word voiceprint camera",
+        ["Facts"] = "memory remember knowledge obsidian vault",
+        ["Characters"] = "persona relationship milestones evil mana",
+        ["Model"] = "llm gguf brain remote cloud fallback provider",
+        ["API Spending"] = "deepseek key cost money balance tokens escalation",
+        ["Approvals"] = "permission ask allow deny git github",
+        ["Desktop folders"] = "files tidy move rename",
+        ["Local-only"] = "offline cloud privacy",
+        ["Your data"] = "export delete wipe backup",
+        ["Plugins"] = "addon add-on extension",
+        ["MCP Clients"] = "mcp servers tools",
+        ["Backend"] = "url port server admin token",
+        ["Timings"] = "performance perf speed",
+    };
+
+    private void AddGroup(string id, string label, params TabPage[] pages)
+    {
+        var tabs = new TabControl { Dock = DockStyle.Fill, Visible = false, AccessibleName = label };
+        DarkTheme.ApplyTabControl(tabs);
+        foreach (var page in pages)
+        {
+            page.BackColor = DarkTheme.Background;
+            page.AutoScroll = true;
+            tabs.TabPages.Add(page);
+        }
+        if (pages.Length == 1)
+        {
+            // One page: no strip to pick from.
+            tabs.SizeMode = TabSizeMode.Fixed;
+            tabs.ItemSize = new Size(0, 1);
+        }
+        groups.Add(new SettingsGroup(id, label, tabs));
+    }
+
+    private Control BuildSidebar()
+    {
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 200, BackColor = DarkTheme.Panel, Padding = new Padding(8) };
+        searchBox.Dock = DockStyle.Top;
+        searchBox.PlaceholderText = "Search settings";
+        searchBox.AccessibleName = "Search settings";
+        searchBox.BackColor = DarkTheme.Panel2;
+        searchBox.ForeColor = DarkTheme.Text;
+        searchBox.BorderStyle = BorderStyle.FixedSingle;
+        searchBox.TextChanged += (_, _) => Search(searchBox.Text);
+        searchBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter && searchResults.Items.Count > 0)
+            {
+                OpenResult(searchResults.Items[0]);
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                searchBox.Clear();
+                e.SuppressKeyPress = true;
+            }
+        };
+        nav.Dock = DockStyle.Fill;
+        nav.FlowDirection = FlowDirection.TopDown;
+        nav.WrapContents = false;
+        nav.Padding = new Padding(0, 8, 0, 0);
+        nav.AccessibleName = "Settings groups";
+        foreach (var group in groups)
+        {
+            if (group.Id == "advanced")
+            {
+                // Advanced sits last, under a line.
+                nav.Controls.Add(new Label { Width = 180, Height = 1, BackColor = DarkTheme.Border, Margin = new Padding(4, 8, 4, 8) });
+            }
+            var button = new Button
+            {
+                Text = group.Label,
+                Width = 176,
+                Height = 30,
+                TextAlign = ContentAlignment.MiddleLeft,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(0, 0, 0, 2),
+                Padding = new Padding(6, 0, 0, 0),
+                Cursor = Cursors.Hand,
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
+            var id = group.Id;
+            button.Click += (_, _) => ShowGroup(id);
+            navButtons[id] = button;
+            nav.Controls.Add(button);
+        }
+        sidebar.Controls.Add(nav);
+        sidebar.Controls.Add(searchBox);
+        return sidebar;
+    }
+
+    internal void ShowGroup(string id)
+    {
+        var group = groups.Find(g => g.Id == id) ?? groups[0];
+        if (searchBox.Text.Length > 0)
+        {
+            searchBox.Text = ""; // closes the results
+        }
+        var previous = CurrentGroup;
+        CurrentGroup = group.Id;
+        foreach (var g in groups)
+        {
+            g.Tabs.Visible = g == group;
+        }
+        searchResults.Visible = false;
+        UpdateNav();
+        if (previous != group.Id && previous.Length > 0)
+        {
+            GroupChanged?.Invoke(previous);
+        }
+    }
+
+    private void UpdateNav()
+    {
+        foreach (var (id, button) in navButtons)
+        {
+            var on = id == CurrentGroup && !searchResults.Visible;
+            button.BackColor = on ? DarkTheme.Panel2 : DarkTheme.Panel;
+            button.ForeColor = on ? DarkTheme.Accent : DarkTheme.Text;
+            button.Font = on ? navBold ??= new Font(Font, FontStyle.Bold) : Font;
+            button.AccessibleDescription = on ? "Showing" : null;
+        }
+    }
+
+    // Every word a page shows (labels, checkboxes, buttons, box titles,
+    // list columns) plus its keywords, matched as you type.
+    internal void Search(string query)
+    {
+        var q = query.Trim();
+        searchResults.BeginUpdate();
+        searchResults.Items.Clear();
+        if (q.Length > 0)
+        {
+            var seen = new HashSet<string>();
+            foreach (var group in groups)
+            {
+                foreach (TabPage page in group.Tabs.TabPages)
+                {
+                    var where = group.Tabs.TabCount > 1 ? $"{group.Label} › {page.Text}" : group.Label;
+                    foreach (var (text, matches, control) in SearchableTexts(page))
+                    {
+                        if (matches.Contains(q, StringComparison.OrdinalIgnoreCase) && seen.Add(where + "|" + text))
+                        {
+                            searchResults.Items.Add(new ListViewItem(new[] { text, where }) { Tag = (group.Id, page, control) });
+                        }
+                    }
+                }
+            }
+            if (searchResults.Items.Count == 0)
+            {
+                searchResults.Items.Add(new ListViewItem(new[] { $"Nothing matches \"{q}\". Try a shorter word.", "" }) { ForeColor = DarkTheme.Muted });
+            }
+        }
+        searchResults.EndUpdate();
+        // Results take the group's place while there's a search.
+        searchResults.Visible = q.Length > 0;
+        foreach (var g in groups)
+        {
+            g.Tabs.Visible = !searchResults.Visible && g.Id == CurrentGroup;
+        }
+        UpdateNav();
+    }
+
+    // What a result shows, what it's matched against, and where it points.
+    // A page's keywords match as the page itself.
+    private static IEnumerable<(string Text, string Matches, Control Control)> SearchableTexts(TabPage page)
+    {
+        yield return (page.Text, page.Text + " " + PageKeywords.GetValueOrDefault(page.Text, ""), page);
+        foreach (var control in Descendants(page))
+        {
+            var text = control switch
+            {
+                Label or CheckBox or RadioButton or Button or GroupBox => control.Text,
+                _ => control.AccessibleName,
+            };
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                var shown = text.Trim().ReplaceLineEndings(" ");
+                yield return (shown, shown, control);
+            }
+            if (control is ListView list)
+            {
+                foreach (ColumnHeader column in list.Columns)
+                {
+                    yield return (column.Text, column.Text, list);
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            yield return child;
+            foreach (var grandchild in Descendants(child))
+            {
+                yield return grandchild;
+            }
+        }
+    }
+
+    // A result opens its group and page and points at the control.
+    internal void OpenResult(ListViewItem? item)
+    {
+        if (item?.Tag is not ValueTuple<string, TabPage, Control> target)
+        {
+            return;
+        }
+        var (groupId, page, control) = target;
+        ShowGroup(groupId);
+        var tabs = groups.Find(g => g.Id == groupId)!.Tabs;
+        tabs.SelectedTab = page;
+        if (control == page)
+        {
+            return;
+        }
+        page.ScrollControlIntoView(control);
+        if (control.CanFocus)
+        {
+            control.Focus();
+        }
+        var fore = control.ForeColor;
+        control.ForeColor = DarkTheme.Accent;
+        var timer = new System.Windows.Forms.Timer { Interval = 1500 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Dispose();
+            if (!control.IsDisposed)
+            {
+                control.ForeColor = fore;
+            }
+        };
+        timer.Start();
+    }
 
     // #1119: Settings > Presets' active choice, as it's saved, so a
     // non-modal Settings applies it to the next reply.
@@ -246,13 +501,14 @@ internal sealed class SettingsPanel : UserControl
     // the same small file directly here is simpler than plumbing a store
     // reference through two more constructors for a value nothing else
     // needs mid-session.
-    private TabPage BuildConnectionTab()
+    private TabPage BuildConnectionTab(out TabPage startupPage, out TabPage localOnlyPage)
     {
         var settings = ManaSettingsStore.Load();
 
         var urlLabel = new Label { Text = "Backend URL", AutoSize = true, ForeColor = DarkTheme.Text };
         var urlBox = new TextBox { Text = settings.BackendBaseUrl, Width = 320, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-        var tokenLabel = new Label { Text = "Admin token (optional)", AutoSize = true, ForeColor = DarkTheme.Text };
+        var tokenLabel = new Label { Text = "Admin token", AutoSize = true, ForeColor = DarkTheme.Text };
+        var tokenHint = new Label { Text = "Only needed when Mana's backend runs separately from this launcher, like on another PC. It's the ADMIN_TOKEN in node-bot/.env.", AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = DarkTheme.Muted };
         var tokenBox = new TextBox { Text = settings.AdminToken ?? "", Width = 320, UseSystemPasswordChar = true, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
         var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
 
@@ -293,13 +549,21 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(urlLabel);
         layout.Controls.Add(urlBox);
         layout.Controls.Add(tokenLabel);
+        layout.Controls.Add(tokenHint);
         layout.Controls.Add(tokenBox);
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
-        layout.Controls.Add(BuildLocalOnlyRow(settings.LocalOnly));
-        layout.Controls.Add(BuildStartWithWindowsRow());
+        startupPage = OneRowPage("Startup", BuildStartWithWindowsRow());
+        localOnlyPage = OneRowPage("Local-only", BuildLocalOnlyRow(settings.LocalOnly));
+        return new TabPage("Backend") { Controls = { layout } };
+    }
 
-        return new TabPage("Connection") { Controls = { layout } };
+    // #1426: a page holding one row that used to sit on another tab.
+    private static TabPage OneRowPage(string title, Control row)
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(row);
+        return new TabPage(title) { Controls = { layout } };
     }
 
     // Saved at once, straight to the Run key (StartWithWindows).
@@ -2726,7 +2990,7 @@ internal sealed class SettingsPanel : UserControl
     // (see GetPerformanceStatusAsync's own comment) -- shown as raw JSON per
     // row rather than parsed into specific fields, since this tab only
     // needs to display it, not act on it.
-    private TabPage BuildPerfTab()
+    private TabPage BuildPerfTab(out TabPage gamingPage)
     {
         perfSummaryLabel.Dock = DockStyle.Top;
         perfSummaryLabel.Padding = new Padding(8);
@@ -2755,10 +3019,10 @@ internal sealed class SettingsPanel : UserControl
         gamingRow.Controls.Add(gamingModeCheck);
         gamingRow.Controls.Add(gamingStatusLabel);
 
-        var page = new TabPage("Performance");
+        gamingPage = new TabPage("Gaming") { Controls = { gamingRow } };
+        var page = new TabPage("Timings");
         page.Controls.Add(perfOperationsList);
         page.Controls.Add(perfSummaryLabel);
-        page.Controls.Add(gamingRow);
         return page;
     }
 

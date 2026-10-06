@@ -455,11 +455,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         menu.Items.Add(moodItem); // #700
         // #689: Electron's tray entries, plus its two quick buttons.
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
-        menu.Items.Add("Settings…", null, (_, _) =>
-        {
-            ShowSessionList(); // #1119: Settings opens in its tool panel
-            sessionListForm.OpenSettings();
-        });
+        menu.Items.Add("Settings…", null, (_, _) => sessionListForm.OpenSettings()); // #1426: its own window
         menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
         menu.Items.Add("Look at my screen now", null, (_, _) => _ = voiceLoop.SubmitVisionHotkeyAsync());
         menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());

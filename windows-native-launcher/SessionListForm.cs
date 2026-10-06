@@ -394,8 +394,12 @@ internal sealed partial class SessionListForm : Form
 
         // #538's rail: Artifacts, Background tasks, Terminal and Browser on top,
         // Settings docked at the bottom.
-        // #1119: Settings opens in the tool panel.
-        RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
+        // #1426: Settings is its own window again, so its cog opens that
+        // rather than a tool in the panel.
+        var settingsButton = MakeRailButton("settings", "Settings");
+        settingsButton.Dock = DockStyle.Bottom;
+        settingsButton.Click += (_, _) => OpenSettings();
+        toolRail.Controls.Add(settingsButton);
         // #1127: Mana's docs, opened from Settings (OpenDoc); no rail icon.
         toolPanel.Add("docs", "Docs", null, () => docsPanel = new DocsPanel(ManaApplicationContext.FindRootDirectory()));
         // #1120: the Artifacts panel. A new artifact in the chat selects
@@ -1340,9 +1344,6 @@ internal sealed partial class SessionListForm : Form
     // couldn't, or null. Set by ManaApplicationContext, which owns the hotkeys.
     public Func<HotkeyAction, Keys?, string?>? BindHotkey { get; set; }
 
-    // #1119: the tray's Settings… -- the tool panel on Settings, with focus
-    // in it (so the chat getting focus as the window activates doesn't
-    // close it). Call after showing the window.
     // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
     // bringing this window up if it's hidden (Settings' own window).
     private DocsPanel? docsPanel;
@@ -1359,15 +1360,28 @@ internal sealed partial class SessionListForm : Form
         toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
     }
 
-    internal void OpenSettings()
-    {
-        toolPanel.Open("settings");
-        toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
-    }
-
-    // The same Settings, non-modal: the tool panel's, and its "Open in its
-    // own window" (a second open just brings that window forward).
+    // #1426: the rail's cog and the tray's Settings… -- one Settings window;
+    // opening it again brings that window forward, on the group asked for.
     private SettingsDialog? settingsWindow;
+
+    internal void OpenSettings(string? group = null)
+    {
+        if (settingsWindow is { IsDisposed: false })
+        {
+            if (group is not null)
+            {
+                settingsWindow.Panel.ShowGroup(group);
+            }
+            if (settingsWindow.WindowState == FormWindowState.Minimized)
+            {
+                settingsWindow.WindowState = FormWindowState.Normal;
+            }
+            settingsWindow.Activate();
+            return;
+        }
+        settingsWindow = new SettingsDialog(NewSettingsPanel(), group);
+        settingsWindow.Show();
+    }
 
     private SettingsPanel NewSettingsPanel()
     {
@@ -1380,42 +1394,6 @@ internal sealed partial class SessionListForm : Form
         panel.ActivePresetChanged = voiceLoop.SetPresetId;
         panel.OpenDoc = OpenDoc;
         return panel;
-    }
-
-    private Control CreateSettingsTool()
-    {
-        var panel = NewSettingsPanel();
-        // Fresh data whenever it comes into view, as each dialog open did.
-        Task? refresh = null;
-        panel.VisibleChanged += async (_, _) =>
-        {
-            if (panel.Visible && refresh is not { IsCompleted: false })
-            {
-                refresh = panel.RefreshAllAsync();
-                await refresh;
-            }
-        };
-        var ownWindow = new Button { Text = "Open in its own window", Dock = DockStyle.Right, AutoSize = true };
-        DarkTheme.ApplyButton(ownWindow);
-        ownWindow.Click += (_, _) => OpenSettingsWindow();
-        var row = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(4) };
-        row.Controls.Add(ownWindow);
-        var tool = new Panel();
-        tool.Controls.Add(panel);
-        tool.Controls.Add(row);
-        return tool;
-    }
-
-    private void OpenSettingsWindow()
-    {
-        toolPanel.Close();
-        if (settingsWindow is { IsDisposed: false })
-        {
-            settingsWindow.Activate();
-            return;
-        }
-        settingsWindow = new SettingsDialog(NewSettingsPanel());
-        settingsWindow.Show(this);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
