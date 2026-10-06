@@ -1,0 +1,27 @@
+{
+  "id": "1345-call-media-awareness",
+  "kind": "launcher",
+  "pr": 1345,
+  "issue": 697,
+  "base": "13c97802bcfdb4f362a4d73c9690247b9686812a",
+  "fix": "efba43be1a7c84bc9a5744ecb5ce43463e4d9e16",
+  "title": "Call and media awareness should hold proactive speech during external audio",
+  "body": "Mana should notice active external audio/call sessions and avoid speaking proactive announcements over them. Add a native audio-session detector, wire it into the voice loop, and expose the proactive audio-awareness controls in Settings.",
+  "fixFiles": [
+    "node-bot/proactive.js",
+    "windows-native-launcher/AudioSessionActivity.cs",
+    "windows-native-launcher/ManaApplicationContext.cs",
+    "windows-native-launcher/ManaBackendClient.cs",
+    "windows-native-launcher/ManaSettingsStore.cs",
+    "windows-native-launcher/ProactivePanel.cs",
+    "windows-native-launcher/SettingsPanel.cs",
+    "windows-native-launcher/VoiceLoop.cs"
+  ],
+  "hiddenTests": [
+    "windows-native-launcher/ManaNativeLauncher.Tests/AudioSessionActivityTests.cs",
+    "windows-native-launcher/ManaNativeLauncher.Tests/ProactivePanelTests.cs"
+  ],
+  "testCommand": "cd ..\\windows-native-launcher && dotnet test ManaNativeLauncher.Tests\\ManaNativeLauncher.Tests.csproj --filter \"FullyQualifiedName~AudioSessionActivityTests|FullyQualifiedName~ProactivePanelTests\" --nologo",
+  "interface": "Settings exposes HoldSpeechDuringAudio controls, and VoiceLoop accepts an external-audio busy predicate before proactive announcements.",
+  "why": "Launcher-side OS awareness is required for self-sustaining background work that does not interrupt calls or media."
+}
