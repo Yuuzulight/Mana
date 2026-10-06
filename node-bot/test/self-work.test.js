@@ -1320,3 +1320,29 @@ test("#1287: a passing PR from her local model is kept as a training record", as
   assert.equal(rec.tests.command, "node --test test/util.test.js");
   assert.deepEqual(rec.outcome, { testsPassed: true, reviewPassed: true, merged: false, reverted: false });
 });
+
+test("#1385: a failed run leaves a lesson, the next run on the issue is told, and a failing lessons store never stops a run", async () => {
+  const { createLessons } = require("../self-work-lessons");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-lessons-run-"));
+  const lessons = createLessons({ file: path.join(dir, "lessons.json"), env: {} });
+  const first = selfWork(makeRepos(), { calls: [fix, runTests, finish], passed: false, lessons });
+  await first.sw.start(7);
+  await first.sw._current().done;
+  assert.equal(first.sw.status().state, "tests-failing");
+  const [lesson] = lessons.list();
+  assert.equal(lesson.issue, 7);
+  assert.ok(lesson.observed.includes("No PR was opened."));
+  assert.equal(lesson.occurrences[0].state, "tests-failing");
+  const seen = [];
+  const second = selfWork(makeRepos(), { calls: [fix, runTests, finish], passed: false, lessons, seen });
+  await second.sw.start(7);
+  await second.sw._current().done;
+  assert.match(seen[0].prompt, /What earlier runs on this left behind[\s\S]*No PR was opened/);
+  assert.equal(lessons.list().length, 1);
+  assert.equal(lessons.list()[0].occurrences.length, 2);
+  const throwing = () => { throw new Error("disk full"); };
+  const broken = selfWork(makeRepos(), { calls: [fix, runTests, finish], passed: false, lessons: { record: throwing, forIssue: throwing, standingRules: throwing } });
+  await broken.sw.start(7);
+  await broken.sw._current().done;
+  assert.equal(broken.sw.status().state, "tests-failing");
+});

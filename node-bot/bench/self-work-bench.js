@@ -22,7 +22,8 @@
 // --verify checks the cases themselves instead: the hidden tests fail at
 // the base commit and pass with the fix's files. A live case (no merged
 // fix yet, fix: null) keeps its hidden tests in bench/hidden/<id>/ and
-// only has to fail at the base.
+// only has to fail at the base. A case with a fix can keep its hidden tests
+// there too, when the fix's own tests don't check the behaviour.
 //
 // #1269: --gemini runs only her Gemini CLI fallback on each case (no local
 // model, nothing of hers after it), to measure Gemini on its own. It needs
@@ -65,8 +66,10 @@ function loadCases(dir = CASES_DIR) {
       if (!/^[\w.-]+$/.test(String(c.id)) || String(c.id).includes("..")) throw new Error(`${f}: bad case id ${JSON.stringify(c.id)}`);
       const bad = (c.hiddenTests || []).find(badPath);
       if (bad !== undefined) throw new Error(`${f}: hidden test ${JSON.stringify(bad)} must be a relative path inside the repo`);
-      // A live case's hidden tests live in the bench folder.
-      return c.fix ? c : { hiddenFrom: path.join(HIDDEN_DIR, c.id), ...c };
+      // A live case's hidden tests live in the bench folder; so do a fixed
+      // case's when that folder exists.
+      const hiddenFrom = path.join(HIDDEN_DIR, c.id);
+      return c.fix && !fs.existsSync(hiddenFrom) ? c : { hiddenFrom, ...c };
     });
 }
 
@@ -113,12 +116,12 @@ function applyMutation(wt, c) {
   return git(wt, "rev-parse", "HEAD");
 }
 
-// From the fix's commit, or for a live case from its hiddenFrom folder.
+// From its hiddenFrom folder when it has one, else the fix's commit.
 function copyHiddenTests(repoRoot, wt, c) {
   for (const rel of c.hiddenTests) {
     const full = path.join(wt, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
-    const text = c.fix ? git(repoRoot, "show", `${c.fix}:${rel}`) + "\n" : fs.readFileSync(path.join(c.hiddenFrom, rel), "utf8");
+    const text = c.hiddenFrom ? fs.readFileSync(path.join(c.hiddenFrom, rel), "utf8") : git(repoRoot, "show", `${c.fix}:${rel}`) + "\n";
     fs.writeFileSync(full, text);
   }
 }
@@ -470,7 +473,7 @@ async function geminiModel(repoRoot) {
 // #1221: --server-args starts the bench's llama-server itself with those
 // extra flags (a MoE model with its experts in RAM: "-ngl 99 --n-cpu-moe
 // 20"); the runtime then adopts it as the server for that model.
-function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
+function realModel(repoRoot, tokens, { model, context, serverArgs, adopt } = {}) {
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
   const { refuteEdit } = require("../ai/adversarial-verifier");
   const env = benchEnv(repoRoot);
@@ -509,8 +512,9 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     throw new Error("the bench's own llama-server isn't running");
   };
   // Its VRAM check would only see the bench's own server holding the card.
-  if (serverArgs) env.LLAMA_SERVER_VRAM_GUARD = "0";
-  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs ? { spawn: refuse } : {}) });
+  // #1381: `adopt` uses a server another process of the bench started.
+  if (serverArgs || adopt) env.LLAMA_SERVER_VRAM_GUARD = "0";
+  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs || adopt ? { spawn: refuse } : {}) });
   let server = null;
   // A server the bench starts itself (a model whose experts sit in RAM)
   // is killed the moment RAM passes the bench's limit; the run then stops.
@@ -535,6 +539,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   return {
     start,
     model: path.basename(runtime.findLlamaModel("default") || env.LLAMA_MODEL || "?"),
+    runtime,
     runLoop: (...args) => runtime.runToolAwareReply(...args),
     reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: runtime.runLocalReplyIfSafelyLoaded, env }),
     contextSize: () => runtime.getContextSize(),
@@ -671,4 +676,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp };
+module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, blocker, isGamingNow, benchEnv };

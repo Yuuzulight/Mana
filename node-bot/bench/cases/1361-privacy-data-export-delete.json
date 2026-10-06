@@ -1,0 +1,23 @@
+{
+  "id": "1361-privacy-data-export-delete",
+  "kind": "multi-file",
+  "pr": 1361,
+  "issue": 1336,
+  "base": "8bcfd42e05982fa22553fe6fe5e04e942b9cb863",
+  "fix": "a12943a18171b4c918499d383e432853d8588d0a",
+  "title": "All personal data should be exportable and deletable",
+  "body": "Add a privacy-data backend capability that exports chats, memory facts, vault sync records, voice samples, artifacts, and redacted settings into a portable ZIP. Add a typed confirmation endpoint to delete all personal data or selected categories.",
+  "fixFiles": [
+    "node-bot/capabilities/privacy-data-capability.js",
+    "node-bot/server.js",
+    "node-bot/tool-call-log.js",
+    "windows-native-launcher/ManaBackendClient.cs",
+    "windows-native-launcher/SettingsPanel.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/privacy-data-capability.test.js"
+  ],
+  "testCommand": "node --test test/privacy-data-capability.test.js",
+  "interface": "privacy-data-capability exports a ZIP and deletes only after the typed delete-everything confirmation.",
+  "why": "Data lifecycle controls are a high-risk feature that self-work must learn to handle carefully."
+}

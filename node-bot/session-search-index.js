@@ -396,6 +396,38 @@ function createSessionSearchIndex(options = {}) {
     return new Set(rows.map((row) => row.sessionId));
   }
 
+  // #1390: the sessions that still have indexed messages, so maintenance can
+  // tell which belong to a session file that no longer exists.
+  function listSessionIds() {
+    return db.prepare("SELECT DISTINCT sessionId FROM messages_fts").all().map((row) => row.sessionId);
+  }
+
+  // #1390: drops every indexed row (keyword and vector) of the given
+  // sessions, in one transaction; returns how many messages_fts rows went.
+  const removeSessions = db.transaction((ids) => {
+    const hasVec = vectorEnabled && db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'turns_vec'").get();
+    let removed = 0;
+    for (const id of ids) {
+      if (hasVec) {
+        // One rowid at a time: vec0 deletes by rowid, not by a subquery.
+        const deleteVec = db.prepare("DELETE FROM turns_vec WHERE rowid = ?");
+        for (const row of db.prepare("SELECT rowid FROM turns_vec_meta WHERE sessionId = ?").all(id)) deleteVec.run(row.rowid);
+      }
+      if (vectorEnabled) db.prepare("DELETE FROM turns_vec_meta WHERE sessionId = ?").run(id);
+      removed += db.prepare("DELETE FROM messages_fts WHERE sessionId = ?").run(id).changes;
+    }
+    // fts5 reuses the top rowids after a delete; keep the embed cursor from
+    // sitting past them or the next turns would never be embedded.
+    if (vecModel) {
+      const max = db.prepare("SELECT COALESCE(MAX(rowid), 0) AS max FROM messages_fts").get().max;
+      if (max < vecModel.cursor) {
+        db.prepare("UPDATE turns_vec_model SET cursor = ? WHERE id = 1").run(max);
+        vecModel.cursor = max;
+      }
+    }
+    return removed;
+  });
+
   function close() {
     db.close();
   }
@@ -404,7 +436,7 @@ function createSessionSearchIndex(options = {}) {
   // actually loaded -- e.g. sqlite-vec's platform binary being unavailable
   // in an environment (see the `catch` above) is a real, expected state,
   // not just an internal implementation detail.
-  return { indexTurn, syncEmbeddings, search, sessionIdsMatching, close, vectorEnabled: () => vectorEnabled };
+  return { indexTurn, syncEmbeddings, search, sessionIdsMatching, listSessionIds, removeSessions, close, vectorEnabled: () => vectorEnabled };
 }
 
 module.exports = { createSessionSearchIndex, DEFAULT_DB_PATH };

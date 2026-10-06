@@ -205,6 +205,7 @@ const { PluginStore, pluginStore } = require("./plugin-store");
 const { createTtsRuntime, resolveTtsProvider } = require("./tts-runtime");
 const { createKokoroRuntime } = require("./kokoro-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const { createMemoryMaintenance } = require("./memory-maintenance");
 const { createSnapshotStore } = require("./snapshot-store");
 const { createSessionSearchIndex } = require("./session-search-index");
 const { createMemoryGraph } = require("./memory-graph");
@@ -236,6 +237,7 @@ const { createRelationshipCapability } = require("./capabilities/relationship-ca
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
+const { visibleEntities, buildFactsIndex, buildPendingReview, buildEntitiesIndex } = require("./memory-views");
 // Issue #267: one generic composer instead of a buildToolPolicyWithX per
 // tool source -- see ai/tool-source.js. Each create*ToolSource() factory
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
@@ -274,8 +276,10 @@ const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
 const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
 const { createSelfWork } = require("./self-work");
+const { createLessons } = require("./self-work-lessons");
 const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
+const { createImprovementToolSource, createIssueProposals } = require("./issue-proposals");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -1376,18 +1380,27 @@ function slugifyEntityName(name) {
 // the clustering. No new clustering algorithm: this is entirely a reshape of
 // data Mana already computes (entity-index.json, important_facts,
 // connections).
-function buildMemoryNotes(entityIndex, facts, connections) {
+// #1387: only entities memory-views.js keeps get a note (aliases folded into
+// their canonical one), so nothing links to a note that isn't there.
+function buildMemoryNotes(rawIndex, facts, connections, types = {}) {
   const notes = [];
-  const entityNames = Object.keys(entityIndex || {});
+  const { entities } = visibleEntities(rawIndex, types);
+  const entityIndex = Object.fromEntries(Object.entries(entities).map(([k, e]) => [k, e.mentions]));
+  const entityNames = Object.keys(entityIndex);
   const slugFor = {};
   for (const key of entityNames) {
     slugFor[key] = slugifyEntityName(key);
+  }
+  // A fact names an entity by its canonical key or any of its aliases.
+  const namesFor = Object.fromEntries(entityNames.map((k) => [k, [k]]));
+  for (const [alias, meta] of Object.entries(types)) {
+    if (meta?.canonicalKey && namesFor[meta.canonicalKey]) namesFor[meta.canonicalKey].push(alias);
   }
 
   for (const key of entityNames) {
     const mentions = entityIndex[key] || [];
     if (!mentions.length) continue;
-    const display = mentions[mentions.length - 1].display || key;
+    const display = entities[key].display || key;
     const sessionIds = new Set(mentions.map((m) => m.sessionId));
 
     const linkedKeys = entityNames.filter(
@@ -1426,7 +1439,7 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   if (facts && facts.length) {
     const factLines = facts.map((f) => {
       const mentioned = entityNames.filter((key) =>
-        String(f).toLowerCase().includes(key),
+        namesFor[key].some((name) => String(f).toLowerCase().includes(name)),
       );
       const linkSuffix = mentioned.length
         ? ` (${mentioned.map((k) => `[[${slugFor[k]}]]`).join(", ")})`
@@ -1455,15 +1468,20 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   return notes;
 }
 
+function readMemoryJson(name) {
+  const file = path.join(acpMemoryStore.dataDir, name);
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8") || "{}") : {};
+}
+
 function currentMemoryNotes() {
-  const entityIndexPath = path.join(acpMemoryStore.dataDir, "entity-index.json");
-  let entityIndex = {};
-  if (fs.existsSync(entityIndexPath)) {
-    entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
-  }
   const facts = BACKGROUND_MEMORY_META.important_facts || [];
   const connections = BACKGROUND_MEMORY_META.connections || [];
-  return buildMemoryNotes(entityIndex, facts, connections);
+  return buildMemoryNotes(readMemoryJson("entity-index.json"), facts, connections, readMemoryJson("entity-types.json"));
+}
+
+// #1387: what didn't get a note, and why.
+function excludedMemoryEntities() {
+  return visibleEntities(readMemoryJson("entity-index.json"), readMemoryJson("entity-types.json")).excluded;
 }
 
 // #935: the vault's read-only Views/ -- the MEMORY.md summary, Mana's mood
@@ -1486,9 +1504,16 @@ function buildVaultViews(mood) {
     `- Stress: ${levelWord(mood.stress)}`,
     "",
   ].join("\n");
+  // #1388: indexes of the facts, the pending ones and the entities above.
+  const types = readMemoryJson("entity-types.json");
+  const { entities } = visibleEntities(readMemoryJson("entity-index.json"), types);
+  const facts = acpMemoryStore.listFacts();
   return [
     { rel: "Views/Summary.md", body: summary },
     { rel: "Views/Mood.md", body: moodBody },
+    { rel: "Views/Facts Index.md", body: buildFactsIndex(facts) },
+    { rel: "Views/Pending Review.md", body: buildPendingReview(facts) },
+    { rel: "Views/Entities Index.md", body: buildEntitiesIndex(entities, types, slugifyEntityName) },
     ...currentMemoryNotes().map((note) => ({ rel: `Views/Entities/${note.slug}.md`, body: note.body })),
   ];
 }
@@ -2354,6 +2379,18 @@ function registerRoutes(app, upload, deps = {}) {
   // idle signal (issue #69). Deliberately per-registerRoutes-call state (not
   // module-level) so each app instance -- and each test -- starts fresh.
   let idleConsolidationFiredForCurrentIdlePeriod = false;
+  // #1390: retention and compaction across the memory stores. Not built in
+  // tests unless one is injected: the real one works on node-bot/data.
+  const memoryMaintenance =
+    deps.memoryMaintenance ||
+    (process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : createMemoryMaintenance({
+          store: deps.acpMemoryStore || acpMemoryStore,
+          searchIndex: sessionSearchIndex,
+          memoryGraph: (deps.acpMemoryStore || acpMemoryStore).memoryGraph,
+          isGaming: () => gamingWatch.isGaming(),
+        }));
   const idleGamingStatusCheck = deps.getGamingStatus || getGamingStatus;
   const triggerIdleConsolidation =
     deps.triggerIdleConsolidation ||
@@ -2421,6 +2458,24 @@ function registerRoutes(app, upload, deps = {}) {
           "Idle-triggered pending-fact expiry failed:",
           err && err.message ? err.message : err,
         );
+      }
+      // #1390: the permitted (auto) maintenance steps, at most once a day;
+      // anything destructive waits for approval in /admin/memory/maintenance.
+      if (memoryMaintenance) {
+        try {
+          const lastRun = Date.parse(memoryMaintenance.status().lastRunAt) || 0;
+          if (Date.now() - lastRun >= 24 * 60 * 60 * 1000) {
+            const job = () => memoryMaintenance.run({ mode: "auto" });
+            await (resourceCoordinator
+              ? resourceCoordinator.run({ owner: "Memory maintenance", background: true, estimate: {} }, job)
+              : job());
+          }
+        } catch (err) {
+          console.warn(
+            "Idle-triggered memory maintenance failed:",
+            err && err.message ? err.message : err,
+          );
+        }
       }
       // Deterministic, no-LLM skill pruning (issue #140) -- same idle
       // signal as the memory consolidation above, but this pass never
@@ -2863,6 +2918,7 @@ function registerRoutes(app, upload, deps = {}) {
     wikiLookup: deps.wikiLookup || wikiLookup,
     checkAdminAuth,
     getMemoryVault: () => memoryVault,
+    getMemoryMaintenance: () => memoryMaintenance,
     runBackgroundReviewerPublic: deps.runBackgroundReviewerPublic || runBackgroundReviewerPublic,
     runSkillProposalPublic: deps.runSkillProposalPublic || runSkillProposalPublic,
     asyncLoadBackgroundMemory: deps.asyncLoadBackgroundMemory || asyncLoadBackgroundMemory,
@@ -2902,6 +2958,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        memoryMaintenance: memoryMaintenance?.status(),
         memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
@@ -2996,6 +3053,9 @@ function registerRoutes(app, upload, deps = {}) {
     if (result.ok) {
       try {
         selfWork.traces?.mark(Number(req.body?.pr), { reverted: true });
+        // #1385: a lesson on the issue that PR was for (only a PR with a training record is hers).
+        const mine = selfWork.traces?.list().find((t) => t.pr === Number(req.body?.pr));
+        if (mine) selfWork.lessons?.record({ issue: mine.issue.number, title: mine.issue.title }, "reverted", String(req.body?.reason || "no reason given"), { kind: "revert", pr: Number(req.body.pr), baseCommit: result.mergeCommit });
       } catch {}
     }
     return res.json(result);
@@ -3006,6 +3066,9 @@ function registerRoutes(app, upload, deps = {}) {
   const gitTools =
     deps.gitTools ||
     createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
+  // #1384: her improvement issues: duplicate check, evidence, approval bound to the reviewed text.
+  // ponytail: no lessons yet; pass them in once #1385 is merged.
+  const improvementTools = deps.improvementTools || createImprovementToolSource(createIssueProposals({ approvalGate: activeApprovalGate }));
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =
     deps.selfWork ||
@@ -3021,6 +3084,8 @@ function registerRoutes(app, upload, deps = {}) {
       watchCi: true,
       // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
       traces: createTraceStore({ dir: path.join(acpMemoryStore.dataDir, "self-work-traces") }),
+      // #1385: her failed runs' lessons; promoting one to a rule goes through my approval.
+      lessons: createLessons({ file: path.join(acpMemoryStore.dataDir, "self-work-lessons.json"), approvalGate: activeApprovalGate }),
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
@@ -3103,6 +3168,21 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/self-work/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ stopped: selfWork.stop() });
+  });
+  // #1385: her lessons from failed runs; a rule only after my approval.
+  app.get("/self-work/lessons", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return selfWork.lessons ? res.json({ lessons: selfWork.lessons.list() }) : res.status(404).json({ error: "lessons are off" });
+  });
+  app.post("/self-work/lessons/:id/promote", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    if (!selfWork.lessons) return res.status(404).json({ error: "lessons are off" });
+    return res.json(await selfWork.lessons.promote(req.params.id, req.body?.rule));
+  });
+  app.post("/self-work/lessons/:id/supersede", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    if (!selfWork.lessons) return res.status(404).json({ error: "lessons are off" });
+    return res.json(selfWork.lessons.supersede(req.params.id, String(req.body?.by ?? "")));
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
@@ -3548,6 +3628,29 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // #1382: what she's measured, for her planner and for me. Admin-key
+  // protected like every non-public route. Recommendations are advice:
+  // cloud models are never eligible here (no approved fallbacks passed).
+  app.get("/telemetry", (req, res) => {
+    const { buildTelemetry, recommendRoute, plannerSummary, loadReports } = require("./telemetry");
+    const telemetry = buildTelemetry({
+      toolCalls: activeToolCallLog.readRecent(5000),
+      reports: loadReports(path.join(__dirname, "bench", "results")),
+      operations: perfMetrics.operations,
+    });
+    const current = String(activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\\/]/).pop() || null;
+    const kinds = [...new Set(telemetry.models.map((m) => m.kind))];
+    const recommendations = kinds.map((kind) =>
+      recommendRoute(telemetry, {
+        kind,
+        current,
+        candidates: [...new Set(telemetry.models.filter((m) => m.kind === kind).map((m) => m.model))].map((model) => ({ model, local: !/gemini/i.test(model) })),
+        localOnly: require("./local-only").isLocalOnly(),
+      }),
+    );
+    res.json({ ...telemetry, recommendations, planner: plannerSummary(telemetry) });
+  });
+
   app.get("/perf/status", (req, res) => {
     try {
       const gaming = getGamingStatus();
@@ -3786,6 +3889,14 @@ function registerRoutes(app, upload, deps = {}) {
     get createCodingToolSource() { return createCodingToolSource; },
     get createDeepThinkingToolSource() { return createDeepThinkingToolSource; },
     get createDesktopToolSource() { return createDesktopToolSource; },
+    // #1383: what her self-inventory reads, live on each call.
+    get inventorySources() {
+      return {
+        capabilities: () => capabilities,
+        health: () => buildCapabilityHealth(capabilities, capabilityContext),
+        isEnabled: (c) => isPluginEnabled(c, activePluginSettingsStore),
+      };
+    },
     get createExpressionToolSource() { return createExpressionToolSource; },
     get createMailCalendarToolSource() { return createMailCalendarToolSource; },
     get createMemoryToolSource() { return createMemoryToolSource; },
@@ -3813,6 +3924,7 @@ function registerRoutes(app, upload, deps = {}) {
     get gentleHint() { return gentleHint; },
     get getEditorIntegrations() { return getEditorIntegrations; },
     get gitTools() { return gitTools; },
+    get improvementTools() { return improvementTools; },
     get GROUP_REACTION_MAX_TOKENS() { return GROUP_REACTION_MAX_TOKENS; },
     get http() { return http; },
     get https() { return https; },
@@ -3874,6 +3986,8 @@ function registerRoutes(app, upload, deps = {}) {
     get visionCaptureBridge() { return visionCaptureBridge; },
     get wantsThinkHarder() { return wantsThinkHarder; },
     get withStepDescriptions() { return withStepDescriptions; },
+    // #1381: only the behaviour eval passes this.
+    get evalTools() { return deps.evalTools; },
     get wrapWithHooks() { return wrapWithHooks; },
     get wrapWithInputHooks() { return wrapWithInputHooks; },
     get wrapWithResultDigest() { return wrapWithResultDigest; },
@@ -4080,6 +4194,14 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/api/memory/notes", authMiddleware, async (req, res) => {
     try {
       res.json(currentMemoryNotes());
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  app.get("/api/memory/notes/excluded", authMiddleware, async (req, res) => {
+    try {
+      res.json({ excluded: excludedMemoryEntities() });
     } catch (e) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -4327,6 +4449,7 @@ module.exports = {
   manaProcessesUnder,
   buildMemoryNotes,
   buildVaultViews,
+  slugifyEntityName,
   buildSkillsIndexBlock,
   checkEmotionalReflexes,
   DEEP_RESEARCH_SUBTASK_PROFILE,
