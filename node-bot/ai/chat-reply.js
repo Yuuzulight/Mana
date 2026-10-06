@@ -1077,6 +1077,8 @@ async function buildAssistantReply(
               : []),
             // #1182: git and GitHub, only in my own chat.
             ...(userChat ? [context.gitTools] : []),
+            // #1384: her improvement issues, only in my own chat.
+            ...(userChat ? [context.improvementTools] : []),
             // #906: my email and calendar, only in my own chat (never a
             // scheduled reply or a Discord/Telegram bridge).
             ...(userChat
