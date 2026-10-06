@@ -664,11 +664,12 @@ function createSelfWork(options = {}) {
     const needed = r.guardrailsNeeded.length
       ? ` I also needed to change my guardrails (${r.guardrailsNeeded.join(", ")}); that takes a run you flag with "Allow guardrail changes" in What I'm working on.`
       : "";
-    log(r, text + needed + (r.fallbackNote ? ` ${r.fallbackNote}` : ""), true);
-    // #1385: never in the way of the run.
+    // #1385: never in the way of the run. Before the end notice, so the
+    // lifecycle (#1407) can quote this run's lesson when it's out of tries.
     try {
       lessons?.record(r, state, text);
     } catch {}
+    log(r, text + needed + (r.fallbackNote ? ` ${r.fallbackNote}` : ""), true);
     if (state === "pr-open" || state === "pr-updated") startCiWatch(r);
   }
 

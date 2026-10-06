@@ -14,7 +14,8 @@ const FAILED = new Set(["not-done", "tests-failing", "failed", "stuck"]);
 // States the idle picker leaves alone until I act.
 const HOLD = new Set(["needs-you", "exhausted", "regressed"]);
 
-function createLifecycle({ file, now = () => new Date().toISOString(), maxAttempts = 2 } = {}) {
+// lessons: #1385's store (list()); an issue out of tries quotes its lesson.
+function createLifecycle({ file, now = () => new Date().toISOString(), maxAttempts = 2, lessons = null } = {}) {
   let data = { version: 1, records: {} };
   try {
     if (fs.existsSync(file)) data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -60,20 +61,33 @@ function createLifecycle({ file, now = () => new Date().toISOString(), maxAttemp
     if (FAILED.has(run.state)) {
       const attempts = (r?.attempts || 0) + 1;
       const state = attempts >= maxAttempts ? "exhausted" : "retry";
-      const note = state === "exhausted" ? `tried ${attempts} times; last: ${why}` : why;
+      const note = state === "exhausted" ? `tried ${attempts} times; ${lessonOf(run.issue)}last: ${why}` : why;
       return move(run.issue, state, note, { title, prs, attempts });
     }
     // no-change, stopped, paused: recorded, not counted.
     return move(run.issue, run.state === "no-change" ? "no-change" : "waiting", why, { title, prs });
   }
 
-  // From offerUpdate's merged list: { number, headRefName }.
+  // Her open lesson on the issue, quoted briefly, or "".
+  function lessonOf(issue) {
+    try {
+      const l = lessons?.list().find((x) => x.issue === Number(issue) && x.status === "open");
+      const said = l && (l.hypothesis ? `${l.hypothesis} (unverified)` : l.observed.at(-1));
+      return said ? `lesson: ${String(said).slice(0, 150)}; ` : "";
+    } catch {
+      return "";
+    }
+  }
+
+  // From offerUpdate's merged list: { number, headRefName, mergeCommit }.
   function onMerged(pr) {
     const issue = Number(/^mana\/(\d+)-/.exec(pr?.headRefName || "")?.[1]);
     if (!issue || data.records[String(issue)]?.state === "merged") return null;
     const r = data.records[String(issue)];
     if (r && ["verified", "regressed"].includes(r.state)) return null;
-    return move(issue, "merged", `PR #${pr.number} merged`, { prs: [...new Set([...(r?.prs || []), pr.number])] });
+    // #1407: the merge commit tells the post-deploy eval when her live copy runs it.
+    const mergeCommit = pr.mergeCommit?.oid || null;
+    return move(issue, "merged", `PR #${pr.number} merged`, { prs: [...new Set([...(r?.prs || []), pr.number])], mergeCommit });
   }
 
   // A behaviour-eval or bench report.json after the merge is running:

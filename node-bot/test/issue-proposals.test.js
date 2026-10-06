@@ -94,6 +94,8 @@ test("an unrelated proposal is filed after approval, with its evidence and what 
   assert.equal(created.length, 1);
   const args = created[0];
   assert.ok(args.includes("--title=Cache emoji sprites between renders"));
+  // #1407: what I approve becomes her task.
+  assert.ok(args.includes("--label=mana-task"));
   const body = args.find((a) => a.startsWith("--body="));
   assert.match(body, /## Evidence\n- trace: run 4411/);
   assert.match(body, /## Related/);

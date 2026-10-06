@@ -10,6 +10,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { runCommand, stripAttribution } = require("./ai/git-tool-source");
 const { sanitizeBridgeOutput } = require("./bridge-output-sanitizer");
+// self-work.js's TASK_LABEL; not required from there, which would load her whole runner.
+const TASK_LABEL = "mana-task";
 
 // Its own action type: neither a remembered git-github grant nor the
 // GitHub "off" setting covers it.
@@ -54,7 +56,7 @@ function ghRunner(repoRoot) {
 }
 
 // gh: async (args) => stdout, throws on failure (a fake in tests).
-// lessons: optional (#1385, not merged yet); assumed shape { listOpen(): [{ title, observed }] }.
+// lessons: optional (#1385's store, open ones only): { listOpen(): [{ title, observed }] }.
 function createIssueProposals({ gh, repoRoot = path.join(__dirname, ".."), approvalGate, lessons = null, env = process.env } = {}) {
   if (!approvalGate) throw new Error("approvalGate is required");
   const run = gh || ghRunner(repoRoot);
@@ -169,7 +171,8 @@ function createIssueProposals({ gh, repoRoot = path.join(__dirname, ".."), appro
       }
       // Another proposal may have reached the approval queue while the search ran.
       if (similarPending(t)) return already;
-      const labels = [];
+      // #1407: what I approve becomes one of her tasks; the label is in the reviewed payload.
+      const labels = [TASK_LABEL];
       const full = outgoing(
         [
           b,
@@ -186,7 +189,7 @@ function createIssueProposals({ gh, repoRoot = path.join(__dirname, ".."), appro
       const payload = { title: t, body: full, labels };
       payload.digest = digestOf(payload);
       const outcome = await approvalGate.requestApproval(IMPROVEMENT_ISSUE_ACTION, {
-        summary: `Open an improvement issue: "${t}" (${proof.length} evidence item(s), ${matches.length} related checked)`,
+        summary: `Open an improvement issue labelled ${TASK_LABEL}, so she may work on it: "${t}" (${proof.length} evidence item(s), ${matches.length} related checked)`,
         payload,
         grantKey: `${IMPROVEMENT_ISSUE_ACTION}:${payload.digest}`,
         forceReview: true,
