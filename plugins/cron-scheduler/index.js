@@ -234,7 +234,8 @@ module.exports = {
   key: "cronScheduler",
   name: "Cron Scheduler",
   category: "Automation",
-  defaultEnabled: false,
+  // #1426: on by default -- Settings > Check-ins > Heartbeat lives in it.
+  defaultEnabled: true,
   description:
     "Run a script action or a full agent prompt on a fixed schedule (interval or daily-at-time), independent of chat or idle activity. Results are delivered as a chat turn in the job's session.",
   registerRoutes: registerCronSchedulerRoutes,

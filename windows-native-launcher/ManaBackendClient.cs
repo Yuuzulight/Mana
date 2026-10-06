@@ -30,9 +30,9 @@ internal sealed class ManaBackendClient
     // devices, llama.cpp builds, skill import) need it or ADMIN_TOKEN now.
     public ManaBackendClient(HttpMessageHandler? handler = null, string? baseUrl = null, string? adminToken = null, string? launcherKey = null)
     {
-        http = handler is null
-            ? new HttpClient()
-            : new HttpClient(handler);
+        // #1426: an error response's {"error": "..."} becomes its reason
+        // phrase, so a failure says what the backend said.
+        http = new HttpClient(new BackendErrorHandler { InnerHandler = handler ?? new HttpClientHandler() });
         http.BaseAddress = new System.Uri(baseUrl ?? "http://127.0.0.1:5005");
         if (!string.IsNullOrEmpty(adminToken))
         {
@@ -4243,4 +4243,54 @@ public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPerio
     public ManaSpendingResults? Results { get; init; }
     public ManaBalance? Balance { get; init; }
     public ManaRunway? Runway { get; init; }
+}
+
+// #1426: puts the backend's own error message where EnsureSuccessStatusCode
+// reads it. The body is buffered, so callers can still read it themselves.
+internal sealed class BackendErrorHandler : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var response = await base.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == "application/json")
+        {
+            try
+            {
+                await response.Content.LoadIntoBufferAsync();
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("error", out var error)
+                    && error.ValueKind == JsonValueKind.String
+                    && error.GetString() is { Length: > 0 } message)
+                {
+                    response.ReasonPhrase = message.ReplaceLineEndings(" ").Trim();
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+        return response;
+    }
+}
+
+internal static class BackendError
+{
+    private static readonly System.Text.RegularExpressions.Regex StatusMessage =
+        new(@"^Response status code does not indicate success: (\d+) \((.*)\)\.$");
+
+    // What to show for a failed call: the backend's sentence when it sent
+    // one, or the status ("Forbidden (403)") when it didn't.
+    internal static string Describe(Exception ex)
+    {
+        var match = StatusMessage.Match(ex.Message);
+        if (!match.Success)
+        {
+            return ex.Message;
+        }
+        var code = int.Parse(match.Groups[1].Value);
+        var reason = match.Groups[2].Value;
+        using var plain = new HttpResponseMessage((System.Net.HttpStatusCode)code);
+        return reason == plain.ReasonPhrase ? $"{reason} ({code})" : reason;
+    }
 }

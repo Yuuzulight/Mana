@@ -151,7 +151,7 @@ internal sealed class ProactivePanel : FlowLayoutPanel
         }
         catch (Exception ex)
         {
-            status.Text = $"Couldn't load proactive settings: {ex.Message}";
+            status.Text = $"Couldn't load proactive settings: {BackendError.Describe(ex)}";
         }
     }
 

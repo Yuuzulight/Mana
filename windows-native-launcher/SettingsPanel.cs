@@ -714,7 +714,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load plugins. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(pluginsList, ex.Message);
+                ShowLoadFailure(pluginsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1189,7 +1189,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load memory facts. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(factsList, ex.Message);
+                ShowLoadFailure(factsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1469,7 +1469,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load skills. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(skillsList, ex.Message);
+                ShowLoadFailure(skillsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1666,7 +1666,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load remembered approvals. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(rememberedList, ex.Message);
+                ShowLoadFailure(rememberedList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1872,7 +1872,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load pending approvals. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(approvalsList, ex.Message);
+                ShowLoadFailure(approvalsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -2005,6 +2005,8 @@ internal sealed class SettingsPanel : UserControl
         saveButton.Click += async (_, _) => await SaveVoiceProviderAsync();
 
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        // #1426: the dropdown said nothing about what it picks.
+        row.Controls.Add(new Label { Text = "Voice engine", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 3, 3) });
         row.Controls.Add(voiceProviderCombo);
         row.Controls.Add(saveButton);
 
@@ -3044,7 +3046,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load performance status. {ex.Message}");
             if (!IsDisposed)
             {
-                perfSummaryLabel.Text = $"Failed to load: {ex.Message}";
+                perfSummaryLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
             return;
         }
@@ -3247,7 +3249,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load presets. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(presetsList, ex.Message);
+                ShowLoadFailure(presetsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -3803,7 +3805,7 @@ internal sealed class SettingsPanel : UserControl
         {
             if (!IsDisposed)
             {
-                llamaBuildLabel.Text = $"Failed to load: {ex.Message}";
+                llamaBuildLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
             return null;
         }
@@ -3933,7 +3935,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load model status. {ex.Message}");
             if (!IsDisposed)
             {
-                selectedModelLabel.Text = $"Failed to load: {ex.Message}";
+                selectedModelLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
             return;
         }
@@ -4138,7 +4140,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load mobile devices. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(mobileDevicesList, ex.Message);
+                ShowLoadFailure(mobileDevicesList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4268,7 +4270,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load accounts. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(accountsList, ex.Message);
+                ShowLoadFailure(accountsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4399,7 +4401,7 @@ internal sealed class SettingsPanel : UserControl
         {
             if (!IsDisposed)
             {
-                mailStatusLabel.Text = calendarStatusLabel.Text = $"Failed to load: {ex.Message}";
+                mailStatusLabel.Text = calendarStatusLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
         }
     }
@@ -4535,7 +4537,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load MCP servers. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(mcpServersList, ex.Message);
+                ShowLoadFailure(mcpServersList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4666,7 +4668,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load hooks. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(hooksList, ex.Message);
+                ShowLoadFailure(hooksList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4709,6 +4711,7 @@ internal sealed class SettingsPanel : UserControl
         var titleLabel = new Label
         {
             Text = "Data & Privacy",
+            UseMnemonic = false,
             Font = new Font(Font.FontFamily, 12, FontStyle.Bold),
             ForeColor = DarkTheme.Text,
             AutoSize = true,
@@ -4941,6 +4944,7 @@ internal sealed class SettingsPanel : UserControl
             AccessibleName = $"Delete {categoryTitle}",
             AutoSize = true,
             Padding = new Padding(6, 2, 6, 2),
+            UseMnemonic = false, // "Caches & Logs" keeps its "&"
         };
         DarkTheme.ApplyButton(btn);
 

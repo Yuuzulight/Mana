@@ -87,7 +87,7 @@ internal sealed class HeartbeatPanel : FlowLayoutPanel
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            status.Text = $"Couldn't load: {ex.Message}";
+            status.Text = $"Couldn't load: {BackendError.Describe(ex)}";
         }
     }
 

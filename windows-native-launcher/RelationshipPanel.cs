@@ -91,7 +91,7 @@ internal sealed class RelationshipPanel : FlowLayoutPanel
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            status.Text = $"Couldn't load: {ex.Message}";
+            status.Text = $"Couldn't load: {BackendError.Describe(ex)}";
             return;
         }
         Characters.Items.Clear();

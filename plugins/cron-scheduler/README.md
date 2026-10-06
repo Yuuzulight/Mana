@@ -1,8 +1,9 @@
 # cron-scheduler
 
 Run something on a fixed schedule -- a daily summary, a periodic health
-check -- independent of chat activity or idle detection. Disabled by
-default (Settings > Plugins); enable it before adding jobs.
+check -- independent of chat activity or idle detection. On by default;
+it can be switched off in Settings > Connections > Plugins, which also
+turns off the heartbeat checks.
 
 Two job types:
 
