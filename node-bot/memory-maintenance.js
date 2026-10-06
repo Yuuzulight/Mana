@@ -199,7 +199,14 @@ function createMemoryMaintenance({ store, searchIndex, memoryGraph, dataDir, now
         for (const f of archiveLogFiles()) copy(path.join(archiveDir, f), path.join(to, "archive", f));
       },
       restore(from) {
-        copy(path.join(from, "facts-log.jsonl"), logPath);
+        // Lines written after the backup (say, after a crash and before this
+        // resume) are in neither the backup nor the archive: keep them.
+        const rawLines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter((l) => l.trim()) : []);
+        const backedUp = path.join(from, "facts-log.jsonl");
+        const known = new Set([...rawLines(backedUp), ...archiveLogFiles().flatMap((f) => rawLines(path.join(archiveDir, f)))]);
+        const later = rawLines(logPath).filter((l) => !known.has(l));
+        copy(backedUp, logPath);
+        if (later.length) fs.appendFileSync(logPath, `${later.join("\n")}\n`, "utf8");
         for (const f of archiveLogFiles()) fs.rmSync(path.join(archiveDir, f), { force: true });
         const saved = path.join(from, "archive");
         if (fs.existsSync(saved)) for (const f of fs.readdirSync(saved)) copy(path.join(saved, f), path.join(archiveDir, f));

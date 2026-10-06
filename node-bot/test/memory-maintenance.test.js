@@ -262,6 +262,34 @@ test("an interrupted step (process died mid-way) is restored and redone on the n
   }
 });
 
+test("resuming an interrupted facts-log archive keeps lines written after the crash", async () => {
+  const w = setup();
+  try {
+    w.session("alive", RECENT);
+    const old = JSON.stringify({ at: OLD, op: "add", key: "a" });
+    const recent = JSON.stringify({ at: RECENT, op: "add", key: "b" });
+    const later = JSON.stringify({ at: RECENT, op: "patch", key: "c" });
+    const backup = path.join(w.dir, "maintenance", "backup", "p1");
+    fs.mkdirSync(backup, { recursive: true });
+    fs.writeFileSync(path.join(backup, "facts-log.jsonl"), `${old}\n${recent}\n`);
+    // Died after appending to the archive, before rewriting the live log;
+    // then Mana ran again and wrote `later`.
+    fs.mkdirSync(path.join(w.dir, "archive"), { recursive: true });
+    fs.writeFileSync(path.join(w.dir, "archive", "facts-log-2024.jsonl"), `${old}\n`);
+    fs.writeFileSync(path.join(w.dir, "facts-log.jsonl"), `${old}\n${recent}\n${later}\n`);
+    fs.writeFileSync(
+      path.join(w.dir, "maintenance", "checkpoint.json"),
+      JSON.stringify({ planId: "p1", steps: [{ id: "archive-facts-log", state: "started", backup: true }] }),
+    );
+    const report = await w.maint().run({ mode: "auto" });
+    assert.deepEqual(report.done, ["archive-facts-log"]);
+    assert.deepEqual(fs.readFileSync(path.join(w.dir, "facts-log.jsonl"), "utf8").trim().split("\n"), [recent, later]);
+    assert.deepEqual(fs.readFileSync(path.join(w.dir, "archive", "facts-log-2024.jsonl"), "utf8").trim().split("\n"), [old]);
+  } finally {
+    w.cleanup();
+  }
+});
+
 test("graph history prune needs approval and backs the db up first", async () => {
   const w = setup();
   try {
