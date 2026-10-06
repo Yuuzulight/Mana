@@ -185,6 +185,31 @@ public sealed class ApiSpendingPanelTests
         return Math.Sqrt((l1 - l2) * (l1 - l2) + (a1 - a2) * (a1 - a2) + (b1 - b2) * (b1 - b2));
     }
 
+    // At 90 days the last bar is narrow; "Today" must still end at the plot's
+    // edge, not spill toward the card's border. The strip right of the plot,
+    // in the label row, is only the card's fill.
+    [Theory]
+    [InlineData(7)]
+    [InlineData(30)]
+    [InlineData(90)]
+    public void TodayStaysInsideThePlot(int range)
+    {
+        RunSta(() =>
+        {
+            using var chart = new DailySpendChart { Width = 760, Height = 240 };
+            var days = Enumerable.Range(0, 90).Select(i => new ManaSpendingDay(new DateTime(2026, 7, 10).AddDays(i).ToString("yyyy-MM-dd"), 0.1,
+                new Dictionary<string, double> { ["deepseek-flash"] = 0.1 })).ToList();
+            chart.SetDays(days);
+            chart.RangeDays = range;
+            using var bitmap = new System.Drawing.Bitmap(760, 240);
+            chart.DrawToBitmap(bitmap, new System.Drawing.Rectangle(0, 0, 760, 240));
+            var fill = bitmap.GetPixel(380, 50).ToArgb();
+            for (var x = 760 - 14 + 1; x <= 760 - 8; x++)
+                for (var y = 240 - 20; y <= 240 - 8; y++)
+                    Assert.True(bitmap.GetPixel(x, y).ToArgb() == fill, $"text at ({x},{y}) for {range} days");
+        });
+    }
+
     [Fact]
     public void Formats()
     {

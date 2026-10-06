@@ -428,8 +428,11 @@ internal sealed class DailySpendChart : SpendingChartBase
             }
             if (i == peak && days[i].Usd > 0)
                 DrawLabel(g, ChartPalette.Dollars(days[i].Usd), bold, DarkTheme.Text, new Rectangle((int)(bx + barW / 2) - 40, (int)y - 20, 80, 16), TextFormatFlags.HorizontalCenter);
-            if ((days.Count - 1 - i) % labelEvery == 0)
-                DrawLabel(g, i == days.Count - 1 ? "Today" : DayLabel(days[i].Day, rangeDays <= 7), small, DarkTheme.Muted, new Rectangle((int)(bx + barW / 2) - 40, plot.Bottom + 8, 80, 16), TextFormatFlags.HorizontalCenter);
+            // The last label sits flush with the plot's right edge, so it never spills past the card.
+            if (i == days.Count - 1)
+                DrawLabel(g, "Today", small, DarkTheme.Muted, new Rectangle(plot.Right - 80, plot.Bottom + 8, 80, 16), TextFormatFlags.Right);
+            else if ((days.Count - 1 - i) % labelEvery == 0)
+                DrawLabel(g, DayLabel(days[i].Day, rangeDays <= 7), small, DarkTheme.Muted, new Rectangle((int)(bx + barW / 2) - 40, plot.Bottom + 8, 80, 16), TextFormatFlags.HorizontalCenter);
         }
 
         if (HoverIndex >= 0)
