@@ -111,8 +111,8 @@ function createLessons({ file, now = () => new Date().toISOString(), approvalGat
     const lines = [];
     let used = 0;
     for (const l of hits) {
-      const line = `- #${l.issue}: earlier runs on this: observed - ${l.observed.join("; ")}${l.hypothesis ? `; my guess then (unverified) - ${l.hypothesis}` : ""}`.slice(0, MAX_PROMPT_CHARS - used - 1);
-      if (line.length < 40) break;
+      if (MAX_PROMPT_CHARS - used < 40) break;
+      const line =`- #${l.issue}: earlier runs on this: observed - ${l.observed.join("; ")}${l.hypothesis ? `; my guess then (unverified) - ${l.hypothesis}` : ""}`.slice(0, MAX_PROMPT_CHARS - used - 1);
       lines.push(line);
       used += line.length + 1;
     }
