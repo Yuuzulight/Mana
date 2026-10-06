@@ -358,6 +358,8 @@ function createSelfWork(options = {}) {
     options.gemini === true ? createGeminiFallback({ env, ledgerFile: path.join(worktreesDir, "self-work-gemini.json") }) : options.gemini || null;
   // #1287: her training records (self-work-traces.js); none by default.
   const traces = options.traces || null;
+  // #1386: her improvement lifecycle; issues waiting on me aren't picked again.
+  const lifecycle = options.lifecycle || null;
   // #1385: what her runs that didn't end well taught her (self-work-lessons.js); none by default.
   const lessons = options.lessons || null;
   let current = null;
@@ -508,6 +510,7 @@ function createSelfWork(options = {}) {
       )
         .map((i) => i.number)
         .filter((n) => !open.some((p) => p.headRefName.startsWith(`mana/${n}-`)))
+        .filter((n) => !lifecycle?.skip(n))
         .sort((a, b) => a - b);
     } catch (e) {
       return { ok: false, error: e.message };
@@ -621,6 +624,7 @@ function createSelfWork(options = {}) {
     for (const p of merged) {
       try {
         traces?.mark(p.number, { merged: true });
+        lifecycle?.onMerged(p);
       } catch {}
     }
     const fresh = merged.filter((p) => p.headRefName.startsWith("mana/") && p.mergeCommit?.oid && !offered.has(p.number));
