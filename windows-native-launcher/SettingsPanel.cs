@@ -54,7 +54,7 @@ internal sealed class SettingsPanel : UserControl
     // #1265: Mana's daily Folio update PRs, through "GitHub writes".
     private readonly CheckBox keepFolioCheck = new() { Text = "Keep Folio up to date (a PR when Folio main moves on, merged once every check passes)", AutoSize = true, ForeColor = DarkTheme.Text, AccessibleName = "Keep Folio up to date" };
     private readonly Label folioStatusLabel = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 8, 3, 3), AccessibleName = "Folio check result" };
-    private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Voice provider" };
+    private readonly ComboBox voiceProviderCombo = new();
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
@@ -119,16 +119,15 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (General so far).
+        // stage 2 redraws each group as one page of rows (General and Voice so far).
         var backendPage = BuildConnectionTab(out var localOnlyPage);
         var timingsPage = BuildPerfTab();
-        var voiceTab = BuildVoiceTab();
         var privacyPage = BuildPrivacyTab();
         privacyPage.Text = "Your data";
         var factsPage = BuildMemoryFactsTab();
         factsPage.Text = "Facts";
         AddGroup("general", "General", BuildGeneralPage());
-        AddGroup("voice", "Voice", voiceTab, BuildDictationTab());
+        AddGroup("voice", "Voice", BuildVoicePage());
         AddGroup("checkins", "Check-ins",
             new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }, // #697
             BuildBriefingTab(),
@@ -232,7 +231,6 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Voice"] = "mic microphone speech wake word voiceprint camera",
         ["Facts"] = "memory remember knowledge obsidian vault",
         ["Characters"] = "persona relationship milestones evil mana",
         ["Model"] = "llm gguf brain remote cloud fallback provider",
@@ -246,7 +244,6 @@ internal sealed class SettingsPanel : UserControl
         ["Backend"] = "url port server admin token",
         ["Timings"] = "performance perf speed",
         ["Coding mode"] = "14b engineering code programming",
-        ["Dictation"] = "dictate type right ctrl",
         ["Group mode"] = "partner sister evil mana second character duo",
         ["Memory tools"] = "graph snapshots undo rollback",
         ["Model tools"] = "compare web ui llama",
@@ -814,24 +811,6 @@ internal sealed class SettingsPanel : UserControl
     // through DictateAnywhereChanged.
     public Action<bool>? DictateAnywhereChanged { get; set; }
 
-    private TabPage BuildDictationTab()
-    {
-        var check = new CheckBox
-        {
-            Text = "Dictate anywhere: hold Right Ctrl and speak to type into any app",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-            Checked = ManaSettingsStore.Load().DictateAnywhere,
-        };
-        check.CheckedChanged += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.DictateAnywhere = check.Checked;
-            latest.Save();
-            DictateAnywhereChanged?.Invoke(check.Checked);
-        };
-        return OneRowPage("Dictation", check);
-    }
 
     // #1426: group mode (#914) moved here from the tray: a second character
     // replies alongside the active one, and her avatar stands beside Mana's.
@@ -1052,19 +1031,247 @@ internal sealed class SettingsPanel : UserControl
     }
 
     // A row with a dropdown that saves on each pick; Undo picks the one before.
-    private SettingsRow ChoiceRow(string name, string explanation, string keywords, string[] options, int index, Action<int> save)
+    // combo: one the page keeps to show a fresh load in (inside loadingRows).
+    private SettingsRow ChoiceRow(string name, string explanation, string keywords, string[] options, int index, Action<int> save, ComboBox? combo = null, Control? status = null)
     {
-        var combo = SettingsRows.Choice(name, options, index);
-        var previous = combo.SelectedIndex;
-        combo.SelectedIndexChanged += (_, _) =>
+        var box = SettingsRows.Choice(name, options, index, combo);
+        var previous = box.SelectedIndex;
+        box.SelectedIndexChanged += (_, _) =>
         {
             var before = previous;
-            previous = combo.SelectedIndex;
-            save(combo.SelectedIndex);
-            Changed($"{name} {combo.Text}", () => combo.SelectedIndex = before);
+            previous = box.SelectedIndex;
+            if (loadingRows || before == box.SelectedIndex)
+            {
+                return;
+            }
+            save(box.SelectedIndex);
+            Changed($"{name} {box.Text}", () => box.SelectedIndex = before);
         };
-        return new SettingsRow(name, explanation, keywords, combo);
+        return status is null ? new SettingsRow(name, explanation, keywords, box) : new SettingsRow(name, explanation, keywords, status, box);
     }
+
+    private bool loadingRows; // showing what the backend has, not a change
+
+    // #1426 stage 2: Voice as one page of rows. The microphone's settings
+    // are read each time listening starts; the vocabulary applies to the
+    // next thing you say. Camera and voice clips sit here until the
+    // Permissions and Privacy groups are redrawn.
+    private TabPage BuildVoicePage()
+    {
+        var saved = ManaSettingsStore.Load();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        void Save(Action<ManaSettingsStore> change)
+        {
+            var latest = ManaSettingsStore.Load();
+            change(latest);
+            latest.Save();
+        }
+
+        var parts = new List<Control>
+        {
+            SettingsRows.Note("Changes here apply the next time listening starts."),
+            SettingsRows.Section("Microphone"),
+            SwitchRow("Echo cancellation", "Stops her hearing herself through your speakers", "aec feedback speakers",
+                saved.EchoCancellation ?? true, on => Save(s => s.EchoCancellation = on), EnvironmentWins("MANA_VOICE_AEC")),
+            SettingsRows.Section("Listening"),
+            ChoiceRow("Wake-word filter", "Ignores speech that doesn't sound like her name. Applies next launch", "wake word hotword prefilter",
+                new[] { "Off", "Loose", "Normal" }, Math.Max(0, Array.IndexOf(WakePrefilterModes, saved.WakePrefilter)),
+                i => Save(s => s.WakePrefilter = i == 0 ? null : WakePrefilterModes[i]), status: EnvironmentWins("MANA_WAKE_PREFILTER")),
+            SliderRow("Speech detection", "What counts as you talking", "threshold vad sensitivity noise",
+                0.05, 0.95, 0.05, SileroVadRunner.ResolveThreshold(null, saved.VadThreshold), SileroVadRunner.ResolveThreshold(null, null),
+                "Hears whispers", "Ignores noise", v => v.ToString("0.00", inv), v => Save(s => s.VadThreshold = (float)v), EnvironmentWins("MANA_VAD_THRESHOLD")),
+            SwitchRow("Dictate anywhere", "Hold Right Ctrl and speak to type into any app", "dictation dictate type right ctrl",
+                saved.DictateAnywhere, on =>
+                {
+                    Save(s => s.DictateAnywhere = on);
+                    DictateAnywhereChanged?.Invoke(on);
+                }),
+            SettingsRows.Section("Answering"),
+            SliderRow("Pause before answering", "How long she waits after you stop talking", "silence delay timeout end of turn",
+                0.3, 10, 0.1, RecordingSegmenter.ResolveSilenceBufferMs(null, saved.SilenceBufferMs) / 1000.0, RecordingSegmenter.ResolveSilenceBufferMs(null, null) / 1000.0,
+                "Answers quickly", "Waits for you", v => v.ToString("0.0 s", inv), v => Save(s => s.SilenceBufferMs = (long)Math.Round(v * 1000)), EnvironmentWins("MANA_SILENCE_BUFFER_MS")),
+            ChoiceRow("Talking over Mana", "Whether she stops when you start speaking", "interrupt barge in",
+                new[] { "After two words", "Straight away", "Never, she finishes first" }, (int)BargeInPolicy.Resolve(null, saved.BargeInMode),
+                i => Save(s => s.BargeInMode = i == 0 ? null : BargeInModes[i]), status: EnvironmentWins("MANA_BARGE_IN_MODE")),
+            ChoiceRow("Voice engine", "Which voice she speaks with", "tts text to speech fish kokoro sovits",
+                TtsProviderLabels, 0, i => _ = SaveVoiceProviderAsync(i), voiceProviderCombo),
+            SettingsRows.Section("Your voice"),
+            ChoiceRow("Only your voice can", "Other people's speech is ignored for these", "voiceprint speaker gate only me",
+                new[] { "Nothing, anyone can", "Wake her", "Wake her or talk over her", "Wake her, talk over her or give commands" },
+                (int)SpeakerGate.ResolveMode(null, saved.VoiceprintGate),
+                i => Save(s => s.VoiceprintGate = i == 0 ? null : SpeakerGate.ModeNames[i]), status: EnvironmentWins("MANA_SPEAKER_GATE")),
+            BuildVoiceprintRow(),
+            BuildVoiceMatchRow(saved),
+            SettingsRows.Section("Vocabulary"),
+        };
+        parts.AddRange(BuildSpeechWordsRows());
+        parts.Add(SettingsRows.Section("Camera"));
+        parts.Add(SwitchRow("Camera snapshots", "She can take a photo when you ask her to look at something", "camera webcam photo look",
+            saved.CameraSnapshots, on => Save(s => s.CameraSnapshots = on)));
+        parts.Add(BuildSnapshotFolderRow());
+        parts.Add(SettingsRows.Section("Voice clips"));
+        parts.AddRange(BuildVoiceClipsRows());
+        parts.Add(SettingsRows.Section("Troubleshooting"));
+        parts.Add(BuildSpeechLogRow());
+        return SettingsRows.Page("Voice", parts.ToArray());
+    }
+
+    // What a row says when Mana's environment sets the value instead.
+    private static Label? EnvironmentWins(string name)
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)))
+        {
+            return null;
+        }
+        var status = SettingsRows.Status();
+        status.Text = "Set in Mana's environment, which wins";
+        return status;
+    }
+
+    // #965: how close to my voiceprint speech has to be (SpeakerGate), with
+    // the recent match scores beside it to pick it by, re-read each second
+    // while the page shows.
+    private SettingsRow BuildVoiceMatchRow(ManaSettingsStore saved)
+    {
+        var recent = SettingsRows.Status();
+        recent.Text = SpeakerScoresText();
+        logRefreshTimer.Tick += (_, _) =>
+        {
+            if (recent.Visible)
+            {
+                recent.Text = SpeakerScoresText();
+            }
+        };
+        return SliderRow("Voice match", "How close to your voice speech has to be", "speaker threshold voiceprint",
+            0.10, 0.90, 0.01, SpeakerGate.ResolveThreshold(null, saved.SpeakerThreshold), SpeakerGate.ResolveThreshold(null),
+            "Anyone close", "Only you", v => v.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture),
+            v =>
+            {
+                var latest = ManaSettingsStore.Load();
+                latest.SpeakerThreshold = (float)v;
+                latest.Save();
+            }, EnvironmentWins("MANA_SPEAKER_THRESHOLD") ?? recent);
+    }
+
+    internal static string SpeakerScoresText(string? logPath = null)
+    {
+        var scores = VoiceDebugLog.RecentSpeakerScores(path: logPath);
+        return scores.Count == 0 ? "" : $"Recent: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
+    }
+
+    // #962: where "save that" puts a snapshot; blank = Pictures\Mana.
+    private static SettingsRow BuildSnapshotFolderRow()
+    {
+        var folder = new TextBox
+        {
+            Width = 200,
+            PlaceholderText = @"Pictures\Mana",
+            Text = ManaSettingsStore.Load().CameraSnapshotFolder ?? "",
+            BackColor = DarkTheme.Panel,
+            ForeColor = DarkTheme.Text,
+            AccessibleName = "Snapshot folder",
+        };
+        folder.TextChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.CameraSnapshotFolder = string.IsNullOrWhiteSpace(folder.Text) ? null : folder.Text.Trim();
+            latest.Save();
+        };
+        var browse = SettingsRows.Action("Browse…", () =>
+        {
+            using var dialog = new FolderBrowserDialog { Description = "Where Mana saves snapshots you ask her to keep", UseDescriptionForTitle = true };
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                folder.Text = dialog.SelectedPath;
+            }
+        });
+        return new SettingsRow("Snapshot folder", "Where photos you ask her to keep are saved", "camera folder save pictures", folder, browse);
+    }
+
+    // #682: what the wake-word filter and voice match decided, for fixing problems.
+    private static SettingsRow BuildSpeechLogRow()
+    {
+        var status = SettingsRows.Status();
+        var open = SettingsRows.Action("Open", () =>
+        {
+            if (!File.Exists(VoiceDebugLog.DefaultPath))
+            {
+                status.Text = "No speech log yet. It's only written while speech debugging is on.";
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(VoiceDebugLog.DefaultPath) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                status.Text = $"Couldn't open it: {ex.Message}";
+            }
+        });
+        return new SettingsRow("Speech log", "What she heard and decided, for fixing problems", "debug log speech", status, open);
+    }
+
+    // A row with a slider: plain words at each end, the value in real units,
+    // and Default. Saves as it moves; one drag or key press is one Undo.
+    internal SettingsRow SliderRow(string name, string explanation, string keywords, double min, double max, double step, double value, double fallback,
+        string low, string high, Func<double, string> format, Action<double> save, Control? status = null)
+    {
+        int Ticks(double v) => (int)Math.Round((Math.Clamp(v, min, max) - min) / step);
+        double ValueAt(int ticks) => Math.Round(min + (ticks * step), 6);
+        var slider = new TrackBar
+        {
+            Minimum = 0,
+            Maximum = Ticks(max),
+            Value = Ticks(value),
+            TickStyle = TickStyle.None,
+            AutoSize = false,
+            Size = new Size(150, 26),
+            SmallChange = 1,
+            LargeChange = Math.Max(1, Ticks(max) / 10),
+            BackColor = DarkTheme.Panel2,
+            AccessibleName = name,
+        };
+        Label Words(string text, Color color) => new() { Text = text, AutoSize = true, ForeColor = color, BackColor = Color.Transparent, Anchor = AnchorStyles.Left, UseMnemonic = false };
+        var shown = Words(format(ValueAt(slider.Value)), DarkTheme.Text);
+        shown.MinimumSize = new Size(44, 0);
+        var committed = slider.Value;
+        slider.ValueChanged += (_, _) =>
+        {
+            shown.Text = format(ValueAt(slider.Value));
+            save(ValueAt(slider.Value));
+        };
+        void Commit()
+        {
+            if (slider.Value == committed)
+            {
+                return;
+            }
+            var before = committed;
+            committed = slider.Value;
+            Changed($"{name} {shown.Text}", () =>
+            {
+                slider.Value = before;
+                committed = before;
+            });
+        }
+        slider.MouseUp += (_, _) => Commit();
+        slider.KeyUp += (_, _) => Commit();
+        // The wheel scrolls the page, not the slider under the pointer.
+        slider.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
+        var reset = SettingsRows.Action("Default", () =>
+        {
+            slider.Value = Ticks(fallback);
+            Commit();
+        });
+        var controls = new List<Control>();
+        if (status is not null)
+        {
+            controls.Add(status);
+        }
+        controls.AddRange(new Control[] { Words(low, DarkTheme.Muted), slider, Words(high, DarkTheme.Muted), shown, reset });
+        return new SettingsRow(name, explanation, keywords, controls.ToArray());
+    }
+
 
     // #1426: changes save as they're made. The bar under the page says what
     // was saved and offers Undo until the next change; Ctrl+Z steps back
@@ -2527,6 +2734,7 @@ internal sealed class SettingsPanel : UserControl
     // override rather than sending an invalid 5th value.
     private const string AutoProviderLabel = "Auto (gaming-based)";
     private static readonly string[] TtsProviders = { AutoProviderLabel, "fish", "kokoro", "gpt_sovits", "cli" };
+    private static readonly string[] TtsProviderLabels = { "Automatic", "Fish Speech", "Kokoro", "GPT-SoVITS", "Command line" };
 
     private readonly Func<HotkeyAction, Keys?, string?>? bindHotkey;
 
@@ -2591,37 +2799,6 @@ internal sealed class SettingsPanel : UserControl
         return new SettingsRow(action.Label, null, "hotkey shortcut keyboard keys", status, box, SettingsRows.Action("Default", () => Apply(action.Default)));
     }
 
-    private TabPage BuildVoiceTab()
-    {
-        voiceProviderCombo.BackColor = DarkTheme.Panel2;
-        voiceProviderCombo.ForeColor = DarkTheme.Text;
-        voiceProviderCombo.Items.AddRange(TtsProviders);
-
-        var saveButton = new Button { Text = "Save" };
-        DarkTheme.ApplyButton(saveButton);
-        saveButton.Click += async (_, _) => await SaveVoiceProviderAsync();
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        // #1426: the dropdown said nothing about what it picks.
-        row.Controls.Add(new Label { Text = "Voice engine", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 3, 3) });
-        row.Controls.Add(voiceProviderCombo);
-        row.Controls.Add(saveButton);
-
-        // Scrolls rather than wrapping into a second column once the rows
-        // outgrow the dialog.
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
-        layout.Controls.Add(row);
-        layout.Controls.Add(BuildWakePrefilterRow());
-        layout.Controls.Add(BuildEchoCancellationRow());
-        layout.Controls.Add(BuildVoiceTuningRow());
-        layout.Controls.Add(BuildBargeInRow());
-        layout.Controls.Add(BuildVoiceprintRow());
-        layout.Controls.Add(BuildSpeakerThresholdRow());
-        layout.Controls.Add(BuildVoiceClipsRow());
-        layout.Controls.Add(BuildCameraRow());
-        layout.Controls.Add(BuildSpeechWordsSection());
-        return new TabPage("Voice") { Controls = { layout } };
-    }
 
     // #907: node-bot's daily briefing (GET/POST /briefing). "Brief me" in
     // chat gives it on demand whatever's set here.
@@ -2748,37 +2925,33 @@ internal sealed class SettingsPanel : UserControl
     // the next thing I say.
     private Func<Task>? refreshSpeechWords;
 
-    private FlowLayoutPanel BuildSpeechWordsSection()
+    private Control[] BuildSpeechWordsRows()
     {
-        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-        TextBox Box(string placeholder) => new() { Width = 160, PlaceholderText = placeholder, AccessibleName = placeholder, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-        ListBox NewList(string name) => new() { Width = 300, Height = 80, AccessibleName = name, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-        Button NewButton(string text)
+        TextBox Box(string placeholder, int width) => new() { Width = width, PlaceholderText = placeholder, AccessibleName = placeholder, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        ListBox NewList(string name) => new() { Width = 300, Height = 80, AccessibleName = name, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
+        // A list over its box and buttons, at the row's right.
+        static Control Editor(ListBox list, params Control[] line)
         {
-            var button = new Button { Text = text, AutoSize = true };
-            DarkTheme.ApplyButton(button);
-            return button;
-        }
-        FlowLayoutPanel Row(params Control[] controls)
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-            row.Controls.AddRange(controls);
-            return row;
+            var below = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0) };
+            below.Controls.AddRange(line);
+            var stack = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+            stack.Controls.Add(list);
+            stack.Controls.Add(below);
+            return stack;
         }
 
         var words = NewList("Speech words");
-        var word = Box("Word or name");
-        var addWord = NewButton("Add word");
-        var removeWord = NewButton("Remove");
+        var word = Box("Word or name", 160);
+        var addWord = SettingsRows.Action("Add", () => { });
+        var removeWord = SettingsRows.Action("Remove", () => { });
         var fixes = NewList("Mishearing fixes");
         var fixKeys = new List<string>();
-        var heard = Box("Mana heard");
-        var meant = Box("I said");
-        var addFix = NewButton("Add fix");
-        var removeFix = NewButton("Remove");
-        var language = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Speech language", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-        language.Items.AddRange(new object[] { "English only (default)", "Auto-detect" });
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+        var heard = Box("She heard", 100);
+        var meant = Box("You said", 100);
+        var addFix = SettingsRows.Action("Add", () => { });
+        var removeFix = SettingsRows.Action("Remove", () => { });
+        var language = new ComboBox();
+        var status = SettingsRows.Status();
 
         void Render(ManaSpeechVocabulary speech)
         {
@@ -2792,12 +2965,14 @@ internal sealed class SettingsPanel : UserControl
             fixKeys.Clear();
             foreach (var (from, to) in speech.Corrections)
             {
-                fixes.Items.Add($"{from} -> {to}");
+                fixes.Items.Add($"{from} → {to}");
                 fixKeys.Add(from);
             }
+            loadingRows = true;
             language.SelectedIndex = speech.Language == "auto" ? 1 : 0;
+            loadingRows = false;
             language.Enabled = speech.EnvLanguage is null;
-            status.Text = speech.EnvLanguage is null ? "" : $"WHISPER_LANGUAGE={speech.EnvLanguage} is set, and wins over this.";
+            status.Text = speech.EnvLanguage is null ? "" : "Set in Mana's environment, which wins";
         }
 
         // confirmed: the same change with confirm = true, offered when
@@ -2807,10 +2982,6 @@ internal sealed class SettingsPanel : UserControl
             try
             {
                 Render(await backendClient.UpdateSpeechAsync(change));
-                if (!status.IsDisposed && language.Enabled)
-                {
-                    status.Text = "Saved -- applies to the next thing you say.";
-                }
                 return true;
             }
             catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict && confirmed is not null)
@@ -2823,7 +2994,7 @@ internal sealed class SettingsPanel : UserControl
             {
                 if (!status.IsDisposed)
                 {
-                    status.Text = $"Couldn't save: {ex.Message}";
+                    status.Text = $"Couldn't save: {BackendError.Describe(ex)}";
                 }
                 return false;
             }
@@ -2858,7 +3029,6 @@ internal sealed class SettingsPanel : UserControl
                 await Save(new { removeCorrection = fixKeys[fixes.SelectedIndex] });
             }
         };
-        language.SelectionChangeCommitted += async (_, _) => await Save(new { language = language.SelectedIndex == 1 ? "auto" : "en" });
         refreshSpeechWords = async () =>
         {
             try
@@ -2871,13 +3041,90 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
-        var section = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = DarkTheme.Background };
-        section.Controls.Add(Caption("Words Mana should know (for names she mishears):"));
-        section.Controls.Add(Row(words, word, addWord, removeWord));
-        section.Controls.Add(Caption("Mishearing fixes (what she keeps hearing -> what I said):"));
-        section.Controls.Add(Row(fixes, heard, meant, addFix, removeFix));
-        section.Controls.Add(Row(Caption("Speech language"), language, status));
-        return section;
+        return new Control[]
+        {
+            ChoiceRow("Speech language", "The language she listens for", "whisper language english auto detect",
+                new[] { "English only", "Detect it" }, 0, i => _ = Save(new { language = i == 1 ? "auto" : "en" }), language, status),
+            new SettingsRow("Words she should know", "Names and terms she mishears", "vocabulary names words",
+                Editor(words, word, addWord, removeWord)),
+            new SettingsRow("Mishearing fixes", "What she keeps hearing, and what you said", "corrections mishear",
+                Editor(fixes, heard, meant, addFix, removeFix)),
+        };
+    }
+
+    // #1107: keep my real spoken turns (VoiceData) for a Whisper fine-tune
+    // later; off by default, read at each turn. The count and delete cover
+    // #1112's training lines too, which "Record lines" records with
+    // listening paused, like the enrolment.
+    private Control[] BuildVoiceClipsRows()
+    {
+        var totals = SettingsRows.Status();
+        (int Clips, double Minutes) Totals()
+        {
+            var all = VoiceData.AllFolders.Select(VoiceData.Totals).ToList();
+            return (all.Sum(t => t.Clips), all.Sum(t => t.Minutes));
+        }
+        void ShowTotals()
+        {
+            var (clips, minutes) = Totals();
+            totals.Text = $"{clips} clips, {minutes:F1} min";
+        }
+        ShowTotals();
+
+        var record = SettingsRows.Action("Record lines…", () =>
+        {
+            listeningPause?.Pause();
+            try
+            {
+                using var form = new TrainingLinesForm(backendClient);
+                form.ShowDialog(FindForm());
+            }
+            finally
+            {
+                listeningPause?.Resume();
+            }
+            ShowTotals();
+        });
+        var delete = SettingsRows.Action("Delete…", () =>
+        {
+            var (clips, _) = Totals();
+            if (clips == 0
+                || MessageBox.Show(this, $"Delete all {clips} of your voice clips? This can't be undone.", "Voice clips", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+            try
+            {
+                foreach (var folder in VoiceData.AllFolders)
+                {
+                    VoiceData.Delete(folder);
+                }
+                ShowTotals();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                totals.Text = $"Couldn't delete them all: {ex.Message}";
+            }
+        });
+        var clipsRow = new SettingsRow("Your voice clips", "Kept on this PC only, never uploaded", "voice data training whisper fine-tune", totals, record, delete);
+        clipsRow.VisibleChanged += (_, _) =>
+        {
+            if (clipsRow.Visible)
+            {
+                ShowTotals();
+            }
+        };
+        return new Control[]
+        {
+            SwitchRow("Keep voice clips", "Saves what you say, to train her hearing later", "voice data training record keep",
+                ManaSettingsStore.Load().KeepVoiceClips, on =>
+                {
+                    var latest = ManaSettingsStore.Load();
+                    latest.KeepVoiceClips = on;
+                    latest.Save();
+                }),
+            clipsRow,
+        };
     }
 
     // #678: which speech has to be my voice (SpeakerGate), and teaching Mana
@@ -2896,57 +3143,30 @@ internal sealed class SettingsPanel : UserControl
     };
     private const int EnrollClipMs = 5000;
 
-    private FlowLayoutPanel BuildVoiceprintRow()
+    private SettingsRow BuildVoiceprintRow()
     {
-        var label = new Label { Text = "Only my voice can", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-        combo.Items.AddRange(new object[] { "Off (anyone, default)", "Wake her", "Wake her or talk over her", "Wake her, talk over her or give commands" });
-        combo.SelectedIndex = (int)SpeakerGate.ResolveMode(null, ManaSettingsStore.Load().VoiceprintGate);
-        var teach = new Button { Text = "Teach Mana your voice", AutoSize = true };
-        var forget = new Button { Text = "Delete my voiceprint", AutoSize = true };
-        // #1112: a reading session for my Whisper fine-tune (TrainingLinesForm),
-        // listening paused while it's open like the enrolment.
-        var trainingLines = new Button { Text = "Record training lines", AutoSize = true };
-        DarkTheme.ApplyButton(teach);
-        DarkTheme.ApplyButton(forget);
-        DarkTheme.ApplyButton(trainingLines);
-        trainingLines.Click += (_, _) =>
-        {
-            listeningPause?.Pause();
-            try
-            {
-                using var form = new TrainingLinesForm(backendClient);
-                form.ShowDialog(FindForm());
-            }
-            finally
-            {
-                listeningPause?.Resume();
-            }
-        };
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        void ShowEnrolled() => status.Text = ManaSettingsStore.Load().Voiceprint is null ? "Not taught yet -- the setting does nothing until you do." : "Your voice is saved on this PC.";
+        var teach = SettingsRows.Action("Teach her", () => { });
+        var forget = SettingsRows.Action("Delete", () => { });
+        var row = new SettingsRow("Your voice", "", "voiceprint enrol teach speaker", teach, forget);
+        var status = row.Explanation!;
+        void ShowEnrolled() => status.Text = ManaSettingsStore.Load().Voiceprint is null
+            ? "Not taught yet, so \"Only your voice can\" does nothing"
+            : "Saved on this PC";
         ShowEnrolled();
 
-        combo.SelectionChangeCommitted += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.VoiceprintGate = combo.SelectedIndex == 0 ? null : SpeakerGate.ModeNames[combo.SelectedIndex];
-            latest.Save();
-            status.Text = "Saved -- applies next time listening starts.";
-        };
         forget.Click += (_, _) =>
         {
             var latest = ManaSettingsStore.Load();
             latest.Voiceprint = null;
             latest.Save();
-            status.Text = "Deleted -- applies next time listening starts.";
+            status.Text = "Deleted";
         };
         teach.Click += async (_, _) =>
         {
             var modelPath = SpeakerEmbedder.ResolveModelPath(ManaApplicationContext.FindRootDirectory());
             if (!File.Exists(modelPath))
             {
-                status.Text = $"Speaker model not found: {modelPath}";
+                status.Text = "The speaker model isn't installed";
                 return;
             }
             using var cancel = new CancellationTokenSource();
@@ -2959,11 +3179,11 @@ internal sealed class SettingsPanel : UserControl
                 }
                 if (cancel.IsCancellationRequested)
                 {
-                    status.Text = "Stopped when you left the Voice tab -- nothing saved.";
+                    status.Text = "Stopped when you left Voice, nothing saved";
                 }
                 return cancel.IsCancellationRequested;
             }
-            teach.Enabled = forget.Enabled = trainingLines.Enabled = false;
+            teach.Enabled = forget.Enabled = false;
             try
             {
                 listeningPause?.Pause();
@@ -2971,7 +3191,7 @@ internal sealed class SettingsPanel : UserControl
                 var embeddings = new List<float[]>();
                 for (var i = 0; i < EnrollPrompts.Length; i++)
                 {
-                    status.Text = $"{i + 1}/{EnrollPrompts.Length} -- read aloud now: \"{EnrollPrompts[i]}\"";
+                    status.Text = $"{i + 1}/{EnrollPrompts.Length}: read aloud now, \"{EnrollPrompts[i]}\"";
                     var clip = await RecordAsync(EnrollClipMs, cancel.Token);
                     if (Stopped())
                     {
@@ -2992,7 +3212,7 @@ internal sealed class SettingsPanel : UserControl
                 var latest = ManaSettingsStore.Load();
                 latest.Voiceprint = SpeakerGate.Voiceprint(embeddings);
                 latest.Save();
-                status.Text = "Learned your voice -- applies next time listening starts.";
+                status.Text = "Learned your voice";
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
@@ -3004,18 +3224,10 @@ internal sealed class SettingsPanel : UserControl
                 listeningPause?.Resume();
                 if (!teach.IsDisposed)
                 {
-                    teach.Enabled = forget.Enabled = trainingLines.Enabled = true;
+                    teach.Enabled = forget.Enabled = true;
                 }
             }
         };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(label);
-        row.Controls.Add(combo);
-        row.Controls.Add(teach);
-        row.Controls.Add(forget);
-        row.Controls.Add(trainingLines);
-        row.Controls.Add(status);
         row.Disposed += (_, _) =>
         {
             enrolmentCancel?.Cancel();
@@ -3068,367 +3280,32 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    // #858: the end-of-turn silence and Silero's speech threshold, read each
-    // time listening starts. MANA_SILENCE_BUFFER_MS / MANA_VAD_THRESHOLD
-    // still win, so the row says when one is set.
-    private static FlowLayoutPanel BuildVoiceTuningRow()
-    {
-        var settings = ManaSettingsStore.Load();
-        var silence = new NumericUpDown
-        {
-            Minimum = 300,
-            Maximum = 10000,
-            Increment = 100,
-            Width = 80,
-            Value = RecordingSegmenter.ResolveSilenceBufferMs(null, settings.SilenceBufferMs),
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Text,
-        };
-        var threshold = new NumericUpDown
-        {
-            Minimum = 0.05M,
-            Maximum = 0.95M,
-            Increment = 0.05M,
-            DecimalPlaces = 2,
-            Width = 70,
-            Value = Math.Clamp(Math.Round((decimal)SileroVadRunner.ResolveThreshold(null, settings.VadThreshold), 2), 0.05M, 0.95M),
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Text,
-        };
-        var overridden = new[] { "MANA_SILENCE_BUFFER_MS", "MANA_VAD_THRESHOLD" }
-            .Where(name => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)))
-            .ToList();
-        var status = new Label
-        {
-            AutoSize = true,
-            ForeColor = DarkTheme.Muted,
-            Anchor = AnchorStyles.Left,
-            Text = overridden.Count > 0 ? $"Set in the environment, which wins: {string.Join(", ", overridden)}" : "",
-        };
-        void Save(Action<ManaSettingsStore> change)
-        {
-            var latest = ManaSettingsStore.Load();
-            change(latest);
-            latest.Save();
-            status.Text = "Saved -- applies next time listening starts.";
-        }
-        silence.ValueChanged += (_, _) => Save(s => s.SilenceBufferMs = (long)silence.Value);
-        threshold.ValueChanged += (_, _) => Save(s => s.VadThreshold = (float)threshold.Value);
-
-        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(Caption("Pause before Mana answers (ms)"));
-        row.Controls.Add(silence);
-        row.Controls.Add(Caption("Speech detection threshold (higher = stricter)"));
-        row.Controls.Add(threshold);
-        row.Controls.Add(status);
-        return row;
-    }
 
     // #665: what talking over Mana does (BargeInPolicy), read each time
     // listening starts; MANA_BARGE_IN_MODE overrides it.
     private static readonly string[] BargeInModes = { "minWords", "always", "notWhileSpeaking" };
 
-    private static FlowLayoutPanel BuildBargeInRow()
-    {
-        var label = new Label { Text = "When I talk over Mana", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-        combo.Items.AddRange(new object[] { "Stop her for two words or more (default)", "Stop her for any speech", "Never stop her; answer when she's done" });
-        combo.SelectedIndex = (int)BargeInPolicy.Resolve(null, ManaSettingsStore.Load().BargeInMode);
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        combo.SelectionChangeCommitted += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.BargeInMode = combo.SelectedIndex == 0 ? null : BargeInModes[combo.SelectedIndex];
-            latest.Save();
-            status.Text = "Saved -- applies next time listening starts.";
-        };
 
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(label);
-        row.Controls.Add(combo);
-        row.Controls.Add(status);
-        return row;
-    }
 
-    // #965: how close to my voiceprint speech has to be (SpeakerGate), read
-    // each time listening starts; MANA_SPEAKER_THRESHOLD still wins. The
-    // recent speaker= scores from speech-debug.log are there to pick it by,
-    // re-read each second while the Voice tab is showing.
-    private FlowLayoutPanel BuildSpeakerThresholdRow()
-    {
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-        var threshold = SpeakerGate.ResolveThreshold(null, ManaSettingsStore.Load().SpeakerThreshold);
-        var slider = new TrackBar
-        {
-            Minimum = 10,
-            Maximum = 90,
-            TickFrequency = 10,
-            LargeChange = 5,
-            Width = 200,
-            Value = Math.Clamp((int)Math.Round(threshold * 100), 10, 90),
-            BackColor = DarkTheme.Background,
-        };
-        var value = new Label { AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Text = (slider.Value / 100f).ToString("F2", inv) };
-        var status = new Label
-        {
-            AutoSize = true,
-            ForeColor = DarkTheme.Muted,
-            Anchor = AnchorStyles.Left,
-            Text = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD")) ? "" : "Set in the environment, which wins: MANA_SPEAKER_THRESHOLD",
-        };
-        var recent = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left, Text = SpeakerScoresText() };
-        logRefreshTimer.Tick += (_, _) =>
-        {
-            if (recent.Visible)
-            {
-                recent.Text = SpeakerScoresText();
-            }
-        };
-        slider.ValueChanged += (_, _) =>
-        {
-            value.Text = (slider.Value / 100f).ToString("F2", inv);
-            var latest = ManaSettingsStore.Load();
-            latest.SpeakerThreshold = slider.Value / 100f;
-            latest.Save();
-            status.Text = "Saved -- applies next time listening starts.";
-        };
 
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(new Label { Text = "Voice match needed (higher = stricter)", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
-        row.Controls.Add(slider);
-        row.Controls.Add(value);
-        row.Controls.Add(recent);
-        row.Controls.Add(status);
-        return row;
-    }
 
-    internal static string SpeakerScoresText(string? logPath = null)
-    {
-        var scores = VoiceDebugLog.RecentSpeakerScores(path: logPath);
-        return scores.Count == 0
-            ? "No voice match scores yet (speech-debug.log has them when MANA_SPEECH_DEBUG=1 and the setting above is on)."
-            : $"Recent match scores: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
-    }
 
-    // #1107: keep my real spoken turns (VoiceData) for a Whisper fine-tune
-    // later; off by default, read at each turn. The count and delete cover
-    // #1112's training lines too, which "Record training lines" records.
-    private FlowLayoutPanel BuildVoiceClipsRow()
-    {
-        var check = new CheckBox
-        {
-            Text = "Keep my voice clips for training",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-            Checked = ManaSettingsStore.Load().KeepVoiceClips,
-        };
-        var delete = new Button { Text = "Delete my voice clips", AutoSize = true };
-        DarkTheme.ApplyButton(delete);
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        (int Clips, double Minutes) Totals()
-        {
-            var all = VoiceData.AllFolders.Select(VoiceData.Totals).ToList();
-            return (all.Sum(t => t.Clips), all.Sum(t => t.Minutes));
-        }
-        void ShowTotals()
-        {
-            var (clips, minutes) = Totals();
-            status.Text = $"{clips} clips, {minutes:F1} min in {VoiceData.Folder("")} (this PC only, never uploaded)";
-        }
-        ShowTotals();
-
-        check.CheckedChanged += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.KeepVoiceClips = check.Checked;
-            latest.Save();
-            ShowTotals();
-        };
-        delete.Click += (_, _) =>
-        {
-            var (clips, _) = Totals();
-            if (clips == 0
-                || MessageBox.Show(this, $"Delete all {clips} of your voice clips? This can't be undone.", "Voice clips", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-            {
-                return;
-            }
-            try
-            {
-                foreach (var folder in VoiceData.AllFolders)
-                {
-                    VoiceData.Delete(folder);
-                }
-                ShowTotals();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                status.Text = $"Couldn't delete them all: {ex.Message}";
-            }
-        };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(check);
-        row.Controls.Add(delete);
-        row.Controls.Add(status);
-        row.VisibleChanged += (_, _) =>
-        {
-            if (row.Visible)
-            {
-                ShowTotals();
-            }
-        };
-        return row;
-    }
-
-    // #912: off by default; read at each snapshot (the camera hotkey, or
-    // Mana's vision__camera when I ask her to look at something).
-    private static FlowLayoutPanel BuildCameraRow()
-    {
-        var check = new CheckBox
-        {
-            Text = "Let Mana take camera snapshots when I ask (\"look at this\", or the camera hotkey)",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-            Checked = ManaSettingsStore.Load().CameraSnapshots,
-        };
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        check.CheckedChanged += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.CameraSnapshots = check.Checked;
-            latest.Save();
-            status.Text = "Saved.";
-        };
-
-        // #962: where "save that" puts a snapshot; blank = Pictures\Mana.
-        var folder = new TextBox
-        {
-            Width = 260,
-            PlaceholderText = @"Pictures\Mana",
-            Text = ManaSettingsStore.Load().CameraSnapshotFolder ?? "",
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Text,
-        };
-        void SaveFolder()
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.CameraSnapshotFolder = string.IsNullOrWhiteSpace(folder.Text) ? null : folder.Text.Trim();
-            latest.Save();
-            status.Text = "Saved.";
-        }
-        folder.TextChanged += (_, _) => SaveFolder();
-        var browse = new Button { Text = "Browse...", AutoSize = true };
-        DarkTheme.ApplyButton(browse);
-        browse.Click += (_, _) =>
-        {
-            using var dialog = new FolderBrowserDialog { Description = "Where Mana saves snapshots you ask her to keep", UseDescriptionForTitle = true };
-            if (dialog.ShowDialog() == DialogResult.OK)
-            {
-                folder.Text = dialog.SelectedPath;
-            }
-        };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(check);
-        row.Controls.Add(new Label { Text = "Save snapshots I ask to keep in", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
-        row.Controls.Add(folder);
-        row.Controls.Add(browse);
-        row.Controls.Add(status);
-        return row;
-    }
-
-    // #619: EchoCancellation on the mic, read each time listening starts;
-    // MANA_VOICE_AEC overrides it. speech-debug.log says what Windows applied.
-    private static FlowLayoutPanel BuildEchoCancellationRow()
-    {
-        var check = new CheckBox
-        {
-            Text = "Echo cancellation (stops Mana hearing herself through speakers)",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-            Checked = ManaSettingsStore.Load().EchoCancellation ?? true,
-        };
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        check.CheckedChanged += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.EchoCancellation = check.Checked;
-            latest.Save();
-            status.Text = "Saved -- applies next time listening starts.";
-        };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(check);
-        row.Controls.Add(status);
-        return row;
-    }
 
     // #682: the #342 acoustic wake-word pre-filter (read once at startup,
     // so it applies on next launch; MANA_WAKE_PREFILTER overrides it) and
     // a shortcut to speech-debug.log, which shows what it decided.
     private static readonly string[] WakePrefilterModes = { "off", "loose", "normal" };
 
-    private static FlowLayoutPanel BuildWakePrefilterRow()
+
+    private async Task SaveVoiceProviderAsync(int index)
     {
-        var label = new Label { Text = "Wake-word pre-filter", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-        combo.Items.AddRange(new object[] { "Off (default)", "Loose", "Normal" });
-        combo.SelectedIndex = Math.Max(0, Array.IndexOf(WakePrefilterModes, ManaSettingsStore.Load().WakePrefilter));
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        combo.SelectionChangeCommitted += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.WakePrefilter = combo.SelectedIndex == 0 ? null : WakePrefilterModes[combo.SelectedIndex];
-            latest.Save();
-            status.Text = "Saved -- applies next launch.";
-        };
-
-        var openLog = new Button { Text = "Open speech log", AutoSize = true };
-        DarkTheme.ApplyButton(openLog);
-        openLog.Click += (_, _) =>
-        {
-            if (!File.Exists(VoiceDebugLog.DefaultPath))
-            {
-                status.Text = $"No speech log yet ({VoiceDebugLog.DefaultPath}). It's off unless MANA_SPEECH_DEBUG=1.";
-                return;
-            }
-            try
-            {
-                Process.Start(new ProcessStartInfo(VoiceDebugLog.DefaultPath) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                status.Text = $"Couldn't open {VoiceDebugLog.DefaultPath}: {ex.Message}";
-            }
-        };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(label);
-        row.Controls.Add(combo);
-        row.Controls.Add(openLog);
-        row.Controls.Add(status);
-        return row;
-    }
-
-    private async Task SaveVoiceProviderAsync()
-    {
-        // A null SelectedItem means nothing is selected (e.g. the initial
-        // GetTtsOverrideAsync load failed) -- not the same as the user
-        // actually choosing "Auto", so this must not fall through to
-        // treating it as "clear the override" below.
-        if (voiceProviderCombo.SelectedItem is not string selected)
-        {
-            return;
-        }
-        var provider = selected == AutoProviderLabel ? null : selected;
         try
         {
-            await backendClient.SetTtsOverrideAsync(provider);
+            await backendClient.SetTtsOverrideAsync(index == 0 ? null : TtsProviders[index]);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to save voice provider: {ex.Message}", "Voice", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"Couldn't change her voice: {BackendError.Describe(ex)}", "Voice", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -3448,7 +3325,9 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
-        voiceProviderCombo.SelectedItem = overrideProvider ?? AutoProviderLabel;
+        loadingRows = true;
+        voiceProviderCombo.SelectedIndex = Math.Max(0, Array.IndexOf(TtsProviders, overrideProvider ?? AutoProviderLabel));
+        loadingRows = false;
     }
 
     // #582: "live" -- a self-driving 1s timer, not just a refresh-on-open

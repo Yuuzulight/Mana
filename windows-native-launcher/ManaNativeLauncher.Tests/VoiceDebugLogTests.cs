@@ -244,13 +244,13 @@ public class VoiceDebugLogTests
         Directory.CreateDirectory(dir);
         try
         {
-            Assert.StartsWith("No voice match scores yet", SettingsPanel.SpeakerScoresText(path));
+            Assert.Equal("", SettingsPanel.SpeakerScoresText(path));
 
             File.AppendAllLines(path, new[] { "2026-09-29T14:03:12.345 len=1000ms whisper=ok speaker=0.812/31ms" });
-            Assert.Equal("Recent match scores: 0.81", SettingsPanel.SpeakerScoresText(path));
+            Assert.Equal("Recent: 0.81", SettingsPanel.SpeakerScoresText(path));
 
             File.AppendAllLines(path, new[] { "2026-09-29T14:03:14.345 len=900ms whisper=ok speaker=0.401/30ms" });
-            Assert.Equal("Recent match scores: 0.81, 0.40", SettingsPanel.SpeakerScoresText(path));
+            Assert.Equal("Recent: 0.81, 0.40", SettingsPanel.SpeakerScoresText(path));
         }
         finally
         {
