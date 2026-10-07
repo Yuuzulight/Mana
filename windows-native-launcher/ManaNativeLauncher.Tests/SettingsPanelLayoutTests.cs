@@ -35,15 +35,15 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Startup, Theme, Hotkeys, Gaming", Pages("general"));
             Assert.Equal("Voice, Dictation", Pages("voice"));
             Assert.Equal("Proactive, Briefing, Heartbeat", Pages("checkins"));
-            Assert.Equal("Facts, Characters, Skills, Presets", Pages("memory"));
+            Assert.Equal("Facts, Characters, Group mode, Skills, Presets", Pages("memory"));
             Assert.Equal("Model, API Spending, Coding mode", Pages("models"));
             Assert.Equal("Approvals, Desktop folders", Pages("permissions"));
             Assert.Equal("Local-only, Your data", Pages("privacy"));
             Assert.Equal("Calendar & Email, Mobile Devices, Accounts, Plugins, MCP Clients", Pages("connections"));
             Assert.Equal("Backend, Hooks, Logs, Timings", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
-            // plus Coding mode and Dictation from the tray.
-            Assert.Equal(29, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // plus Coding mode, Dictation and Group mode from the tray.
+            Assert.Equal(30, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -136,6 +136,47 @@ public class SettingsPanelLayoutTests
             {
                 File.Delete(path);
             }
+        });
+    }
+
+    // #1426: group mode lives in Settings > Memory > Group mode now.
+    [Fact]
+    public void GroupMode_ShowsThePartner_AndSwitchesFromSettings()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var posts = new System.Collections.Generic.List<string>();
+            var groupOn = true;
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/characters/group")
+                {
+                    var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                    posts.Add(body);
+                    groupOn = body.Contains("\"on\":true");
+                }
+                if (request.RequestUri!.AbsolutePath == "/characters")
+                {
+                    var json = "{\"active\":\"mana\",\"characters\":[{\"id\":\"mana\",\"name\":\"Mana\"},{\"id\":\"evil-mana\",\"name\":\"Evil Mana\"}]," +
+                        $"\"group\":{{\"on\":{(groupOn ? "true" : "false")},\"partner\":\"evil-mana\",\"paused\":false}}}}";
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+                }
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json") };
+            }));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Width = 900 };
+            panel.RefreshGroupModeAsync().GetAwaiter().GetResult();
+            Assert.True(panel.GroupModeCheck.Checked);
+            Assert.Equal("Evil Mana", panel.GroupPartnerCombo.Text);
+            Assert.Equal("On: Evil Mana replies too.", panel.GroupModeStatus.Text);
+
+            panel.GroupModeCheck.Checked = false;
+            for (var i = 0; i < 50 && panel.GroupModeStatus.Text != "Off."; i++)
+            {
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(20);
+            }
+            Assert.Equal("{\"on\":false,\"partner\":\"evil-mana\"}", posts.Single());
+            Assert.Equal("Off.", panel.GroupModeStatus.Text);
         });
     }
 

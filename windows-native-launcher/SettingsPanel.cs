@@ -137,7 +137,7 @@ internal sealed class SettingsPanel : UserControl
             new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
         AddGroup("memory", "Memory", factsPage,
             new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }, // #914
-            BuildSkillsTab(), BuildPresetsTab());
+            BuildGroupModeTab(), BuildSkillsTab(), BuildPresetsTab());
         AddGroup("models", "Models", BuildModelTab(),
             new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }, // #1406
             BuildCodingModeTab());
@@ -249,6 +249,7 @@ internal sealed class SettingsPanel : UserControl
         ["Timings"] = "performance perf speed",
         ["Coding mode"] = "14b engineering code programming",
         ["Dictation"] = "dictate type right ctrl",
+        ["Group mode"] = "partner sister evil mana second character duo",
     };
 
     // What each group is for, under its name in the sidebar and the header.
@@ -627,6 +628,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
         await RefreshCodingModeAsync();
+        await RefreshGroupModeAsync();
         await RefreshLlamaBuildAsync();
         await RefreshMobileDevicesAsync();
         await RefreshAccountsAsync();
@@ -810,6 +812,101 @@ internal sealed class SettingsPanel : UserControl
             DictateAnywhereChanged?.Invoke(check.Checked);
         };
         return OneRowPage("Dictation", check);
+    }
+
+    // #1426: group mode (#914) moved here from the tray: a second character
+    // replies alongside the active one, and her avatar stands beside Mana's.
+    private readonly CheckBox groupModeCheck = new() { Text = "Group mode: a second character replies alongside the active one", AutoSize = true };
+    private readonly ComboBox groupPartnerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Group mode partner" };
+    private readonly Label groupModeStatus = new() { AutoSize = true };
+    private bool loadingGroupMode;
+
+    internal CheckBox GroupModeCheck => groupModeCheck; // tests
+    internal ComboBox GroupPartnerCombo => groupPartnerCombo; // tests
+    internal Label GroupModeStatus => groupModeStatus; // tests
+
+    private TabPage BuildGroupModeTab()
+    {
+        groupModeCheck.ForeColor = DarkTheme.Text;
+        groupModeStatus.ForeColor = DarkTheme.Muted;
+        groupPartnerCombo.BackColor = DarkTheme.Panel2;
+        groupPartnerCombo.ForeColor = DarkTheme.Text;
+        groupPartnerCombo.DisplayMember = nameof(GroupPartner.Name);
+        groupModeCheck.CheckedChanged += async (_, _) => await SaveGroupModeAsync();
+        groupPartnerCombo.SelectedIndexChanged += async (_, _) =>
+        {
+            if (groupModeCheck.Checked)
+            {
+                await SaveGroupModeAsync();
+            }
+        };
+        var hint = new Label
+        {
+            Text = "On casual chat she adds a short reply of her own, in her voice. It pauses while a game runs, unless you turn it on during that game.",
+            AutoSize = true,
+            MaximumSize = new Size(460, 0),
+            ForeColor = DarkTheme.Muted,
+        };
+        var partnerRow = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(0, 6, 0, 0) };
+        partnerRow.Controls.Add(new Label { Text = "Partner", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 6, 3) });
+        partnerRow.Controls.Add(groupPartnerCombo);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(groupModeCheck);
+        layout.Controls.Add(hint);
+        layout.Controls.Add(partnerRow);
+        layout.Controls.Add(groupModeStatus);
+        return new TabPage("Group mode") { Controls = { layout } };
+    }
+
+    private sealed record GroupPartner(string Id, string Name);
+
+    internal async Task RefreshGroupModeAsync()
+    {
+        try
+        {
+            var (active, characters, group) = await backendClient.GetCharactersAsync();
+            loadingGroupMode = true;
+            groupPartnerCombo.Items.Clear();
+            foreach (var (id, name) in characters.Where(c => c.Id != active))
+            {
+                groupPartnerCombo.Items.Add(new GroupPartner(id, name));
+            }
+            var partners = groupPartnerCombo.Items.Cast<GroupPartner>().ToList();
+            groupPartnerCombo.SelectedItem = partners.FirstOrDefault(p => p.Id == group.Partner) ?? partners.FirstOrDefault();
+            groupModeCheck.Checked = group.On;
+            groupModeCheck.Enabled = groupPartnerCombo.Enabled = partners.Count > 0;
+            var partnerName = (groupPartnerCombo.SelectedItem as GroupPartner)?.Name ?? "her partner";
+            groupModeStatus.Text = partners.Count == 0 ? "Add another character in Characters to use group mode."
+                : !group.On ? "Off."
+                : group.Paused ? $"Paused while a game runs; {partnerName} is back when it ends."
+                : $"On: {partnerName} replies too.";
+        }
+        catch (Exception ex)
+        {
+            groupModeStatus.Text = $"Couldn't load: {BackendError.Describe(ex)}";
+        }
+        finally
+        {
+            loadingGroupMode = false;
+        }
+    }
+
+    private async Task SaveGroupModeAsync()
+    {
+        if (loadingGroupMode)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetGroupAsync(groupModeCheck.Checked, (groupPartnerCombo.SelectedItem as GroupPartner)?.Id);
+        }
+        catch (Exception ex)
+        {
+            groupModeStatus.Text = $"Couldn't switch it: {BackendError.Describe(ex)}";
+            return;
+        }
+        await RefreshGroupModeAsync();
     }
 
     // Saved at once, straight to the Run key (StartWithWindows).

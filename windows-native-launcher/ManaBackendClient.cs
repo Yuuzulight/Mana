@@ -1534,7 +1534,7 @@ internal sealed class ManaBackendClient
 
     // #914: node-bot's characters (id, name), the active one's id, and
     // whether group mode is on.
-    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, bool GroupOn)> GetCharactersAsync()
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, ManaGroupState Group)> GetCharactersAsync()
     {
         using var response = await http.GetAsync("/characters");
         response.EnsureSuccessStatusCode();
@@ -1544,9 +1544,10 @@ internal sealed class ManaBackendClient
         var characters = root.GetProperty("characters").EnumerateArray()
             .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
             .ToList();
-        var groupOn = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object
-            && group.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True;
-        return (root.GetProperty("active").GetString() ?? "", characters, groupOn);
+        var hasGroup = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object;
+        bool Flag(string name) => hasGroup && group.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+        var partner = hasGroup && group.TryGetProperty("partner", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        return (root.GetProperty("active").GetString() ?? "", characters, new ManaGroupState(Flag("on"), partner, Flag("paused")));
     }
 
     // #914: each character's relationship notes and milestones, for
@@ -1593,11 +1594,11 @@ internal sealed class ManaBackendClient
     private static string RelationshipItemPath(string characterId, string kind, string itemId) =>
         $"/characters/{Uri.EscapeDataString(characterId)}/relationship/{(kind == "milestones" ? "milestones" : "notes")}/{Uri.EscapeDataString(itemId)}";
 
-    // #914: group mode on (with the last partner, else the first other
-    // character) or off.
-    public async Task SetGroupAsync(bool on)
+    // #914: group mode on (with partner, else the last one, else the first
+    // other character) or off.
+    public async Task SetGroupAsync(bool on, string? partner = null)
     {
-        var payload = JsonSerializer.Serialize(new { on });
+        var payload = partner is null ? JsonSerializer.Serialize(new { on }) : JsonSerializer.Serialize(new { on, partner });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/characters/group", content);
         response.EnsureSuccessStatusCode();
@@ -4294,3 +4295,6 @@ internal static class BackendError
         return reason == plain.ReasonPhrase ? $"{reason} ({code})" : reason;
     }
 }
+
+// #914: group mode -- on, with whom (her id), and paused by a game.
+internal sealed record ManaGroupState(bool On, string? Partner, bool Paused);

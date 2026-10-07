@@ -985,17 +985,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         avatarOverlay.LipSyncDriver.OnSamplesPlayed(samples, sampleRate);
     }
 
-    // #914: the tray's Character submenu, the active one checked, and the
-    // group mode toggle (a partner replying too).
+    // #914: the tray's Character submenu, the active one checked.
     private async Task FillCharacterMenuAsync(ToolStripMenuItem characterMenu)
     {
         IEnumerable<ToolStripItem> items;
         try
         {
-            var (active, characters, groupOn) = await backendClient.GetCharactersAsync();
-            items = characters.Select(c => (ToolStripItem)new ToolStripMenuItem(c.Name, null, async (_, _) => await SwitchCharacterAsync(c.Id)) { Checked = c.Id == active })
-                .Append(new ToolStripSeparator())
-                .Append(new ToolStripMenuItem("Group mode", null, async (_, _) => await SetGroupModeAsync(!groupOn)) { Checked = groupOn });
+            var (active, characters, _) = await backendClient.GetCharactersAsync();
+            // #1426: group mode moved to Settings > Memory > Group mode.
+            items = characters.Select(c => (ToolStripItem)new ToolStripMenuItem(c.Name, null, async (_, _) => await SwitchCharacterAsync(c.Id)) { Checked = c.Id == active });
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
@@ -1017,18 +1015,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
             Console.WriteLine($"Couldn't switch character to {id}. {ex.Message}");
-        }
-    }
-
-    private async Task SetGroupModeAsync(bool on)
-    {
-        try
-        {
-            await backendClient.SetGroupAsync(on);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        {
-            Console.WriteLine($"Couldn't turn group mode {(on ? "on" : "off")}. {ex.Message}");
         }
     }
 
