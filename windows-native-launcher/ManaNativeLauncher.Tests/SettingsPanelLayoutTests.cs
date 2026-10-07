@@ -32,7 +32,7 @@ public class SettingsPanelLayoutTests
             Assert.Equal(new[] { "General", "Voice", "Check-ins", "Memory", "Models", "Permissions", "Privacy", "Connections", "Advanced" },
                 panel.Groups.Select(g => g.Label));
             string Pages(string id) => string.Join(", ", panel.Groups.Single(g => g.Id == id).Tabs.TabPages.Cast<TabPage>().Select(p => p.Text));
-            Assert.Equal("Startup, Theme, Avatar, Hotkeys, Gaming", Pages("general"));
+            Assert.Equal("General", Pages("general")); // stage 2: one page of rows
             Assert.Equal("Voice, Dictation", Pages("voice"));
             Assert.Equal("Proactive, Briefing, Heartbeat", Pages("checkins"));
             Assert.Equal("Facts, Characters, Group mode, Skills, Presets, Memory tools", Pages("memory"));
@@ -42,8 +42,9 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Calendar & Email, Mobile Devices, Accounts, Plugins, MCP Clients", Pages("connections"));
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
-            // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages.
-            Assert.Equal(35, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
+            // less General's five, now one page.
+            Assert.Equal(31, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -97,6 +98,44 @@ public class SettingsPanelLayoutTests
 
             panel.SearchBox.Text = "zzzz";
             Assert.StartsWith("Nothing matches", panel.SearchResults.Items[0].Text);
+        });
+    }
+
+    // #1426 stage 2: a row is one result, named for its setting, found by its explanation and keywords too.
+    [Fact]
+    public void Search_FindsARowByItsWords_AndFlashesIt()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            using var panel = NewPanel();
+            panel.SearchBox.Text = "tray";
+            var hit = panel.SearchResults.Items.Cast<ListViewItem>().Single(i => i.Text == "Start with Windows");
+            Assert.Equal("General", hit.SubItems[1].Text);
+            panel.SearchBox.Text = "subtitles";
+            var captions = panel.SearchResults.Items.Cast<ListViewItem>().Single();
+            Assert.Equal("Captions", captions.Text);
+            panel.OpenResult(captions);
+            Assert.True(((SettingsRow)((System.ValueTuple<string, TabPage, Control>)captions.Tag!).Item3).Highlighted);
+        });
+    }
+
+    // #1426 stage 2: each change says it saved; Undo and Ctrl+Z step back through them all.
+    [Fact]
+    public void Changes_CanBeUndoneOneByOne()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            using var panel = NewPanel();
+            var undone = new System.Collections.Generic.List<string>();
+            panel.Changed("First", () => undone.Add("First"));
+            panel.Changed("Second", () => undone.Add("Second"));
+            Assert.Equal("Saved · Second", panel.UndoText.Text);
+            panel.Undo();
+            Assert.Equal("Undone: Second", panel.UndoText.Text);
+            panel.Undo();
+            Assert.Equal("Undone: First. Nothing else to undo.", panel.UndoText.Text);
+            panel.Undo(); // nothing left
+            Assert.Equal(new[] { "Second", "First" }, undone);
         });
     }
 

@@ -57,11 +57,9 @@ internal sealed class SettingsPanel : UserControl
     private readonly ComboBox voiceProviderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Voice provider" };
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
-    private readonly ComboBox themePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
-    private readonly TextBox themeAccentBox = new() { Width = 100 };
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
-    private readonly Label gamingStatusLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
-    private readonly CheckBox gamingModeCheck = new() { Text = "Gaming mode detection", AutoSize = true };
+    private readonly Label gamingStatusLabel = SettingsRows.Status();
+    private readonly SettingsSwitch gamingModeCheck = new() { AccessibleName = "Gaming mode" };
     private readonly ListView perfOperationsList = new();
     private readonly ListView presetsList = new();
     // #681: which preset replies actually use ("None" = index 0).
@@ -121,15 +119,15 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // later stages redraw each group as one page of rows.
-        var backendPage = BuildConnectionTab(out var startupPage, out var localOnlyPage);
-        var timingsPage = BuildPerfTab(out var gamingPage);
+        // stage 2 redraws each group as one page of rows (General so far).
+        var backendPage = BuildConnectionTab(out var localOnlyPage);
+        var timingsPage = BuildPerfTab();
         var voiceTab = BuildVoiceTab();
         var privacyPage = BuildPrivacyTab();
         privacyPage.Text = "Your data";
         var factsPage = BuildMemoryFactsTab();
         factsPage.Text = "Facts";
-        AddGroup("general", "General", startupPage, BuildThemeTab(), BuildAvatarTab(), BuildHotkeysTab(), gamingPage);
+        AddGroup("general", "General", BuildGeneralPage());
         AddGroup("voice", "Voice", voiceTab, BuildDictationTab());
         AddGroup("checkins", "Check-ins",
             new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }, // #697
@@ -166,6 +164,7 @@ internal sealed class SettingsPanel : UserControl
         searchResults.ItemActivate += (_, _) => OpenResult(searchResults.FocusedItem);
         searchResults.MouseClick += (_, e) => OpenResult(searchResults.GetItemAt(e.X, e.Y));
         content.Controls.Add(searchResults);
+        content.Controls.Add(BuildUndoBar());
         // Last added docks first: the header and its page pills sit above the page.
         content.Controls.Add(pagePills);
         content.Controls.Add(BuildHeader());
@@ -186,6 +185,8 @@ internal sealed class SettingsPanel : UserControl
             if (!Visible)
             {
                 enrolmentCancel?.Cancel();
+                changes.Clear(); // Ctrl+Z reaches back to when Settings opened
+                undoBar.Visible = false;
             }
         };
         DarkTheme.Changed += UpdateNav;
@@ -231,10 +232,6 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Startup"] = "login boot sign in windows",
-        ["Theme"] = "dark light colour color accent",
-        ["Hotkeys"] = "shortcut keyboard keys",
-        ["Gaming"] = "game fullscreen",
         ["Voice"] = "mic microphone speech wake word voiceprint camera",
         ["Facts"] = "memory remember knowledge obsidian vault",
         ["Characters"] = "persona relationship milestones evil mana",
@@ -251,7 +248,6 @@ internal sealed class SettingsPanel : UserControl
         ["Coding mode"] = "14b engineering code programming",
         ["Dictation"] = "dictate type right ctrl",
         ["Group mode"] = "partner sister evil mana second character duo",
-        ["Avatar"] = "live2d framing size captions bubbles vtube click-through overlay",
         ["Memory tools"] = "graph snapshots undo rollback",
         ["Model tools"] = "compare web ui llama",
         ["Pending edits"] = "proposals approve changes",
@@ -475,10 +471,14 @@ internal sealed class SettingsPanel : UserControl
         }
         var previous = CurrentGroup;
         CurrentGroup = group.Id;
+        // Showing a group can create the sidebar's handle, which replays its
+        // old selection; that isn't a click.
+        showingNav = true;
         foreach (var g in groups)
         {
             g.Tabs.Visible = g == group;
         }
+        showingNav = false;
         searchResults.Visible = false;
         UpdateNav();
         if (previous != group.Id && previous.Length > 0)
@@ -548,6 +548,11 @@ internal sealed class SettingsPanel : UserControl
         yield return (page.Text, page.Text + " " + PageKeywords.GetValueOrDefault(page.Text, ""), page);
         foreach (var control in Descendants(page))
         {
+            if (control is SettingsRow row)
+            {
+                yield return (row.Title, row.SearchText, row);
+                continue;
+            }
             var text = control switch
             {
                 Label or CheckBox or RadioButton or Button or GroupBox => control.Text,
@@ -573,6 +578,10 @@ internal sealed class SettingsPanel : UserControl
         foreach (Control child in parent.Controls)
         {
             yield return child;
+            if (child is SettingsRow)
+            {
+                continue; // matched as a whole
+            }
             foreach (var grandchild in Descendants(child))
             {
                 yield return grandchild;
@@ -596,6 +605,11 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
         page.ScrollControlIntoView(control);
+        if (control is SettingsRow row)
+        {
+            row.Flash();
+            return;
+        }
         if (control.CanFocus)
         {
             control.Focus();
@@ -663,7 +677,7 @@ internal sealed class SettingsPanel : UserControl
     // the same small file directly here is simpler than plumbing a store
     // reference through two more constructors for a value nothing else
     // needs mid-session.
-    private TabPage BuildConnectionTab(out TabPage startupPage, out TabPage localOnlyPage)
+    private TabPage BuildConnectionTab(out TabPage localOnlyPage)
     {
         var settings = ManaSettingsStore.Load();
 
@@ -715,7 +729,6 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(tokenBox);
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
-        startupPage = OneRowPage("Startup", BuildStartWithWindowsRow());
         localOnlyPage = OneRowPage("Local-only", BuildLocalOnlyRow(settings.LocalOnly));
         return new TabPage("Backend") { Controls = { layout } };
     }
@@ -922,60 +935,216 @@ internal sealed class SettingsPanel : UserControl
 
     private static readonly (string Id, string Label)[] Framings = [("full", "Full body"), ("upperHalf", "Upper half"), ("bust", "Bust")];
 
-    // #1426: the avatar's settings, moved here from the tray. Each saves at
-    // once and the launcher applies it live.
-    private TabPage BuildAvatarTab()
+    // #1426 stage 2: General as one page of rows -- startup, appearance, the
+    // avatar (moved here from the tray), games and hotkeys. Each saves as
+    // it's changed, the launcher applies it live, and Undo puts it back.
+    private TabPage BuildGeneralPage()
     {
         var saved = ManaSettingsStore.Load();
-        void Saved(Action<ManaSettingsStore> change)
+        void SaveAvatar(Action<ManaSettingsStore> change)
         {
             var latest = ManaSettingsStore.Load();
             change(latest);
             latest.Save();
             AvatarSettingsChanged?.Invoke();
         }
-        CheckBox Check(string text, bool value, Action<ManaSettingsStore, bool> save)
+
+        var presets = DarkTheme.Presets.ToArray();
+        void ApplyTheme(string preset, string? accentHex)
         {
-            var check = new CheckBox { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Checked = value };
-            check.CheckedChanged += (_, _) => Saved(s => save(s, check.Checked));
-            return check;
+            var theme = ManaThemeSettings.Load();
+            theme.Preset = preset;
+            theme.AccentHex = accentHex;
+            theme.Save();
+            DarkTheme.ApplyPresetLive(preset, accentHex); // every open window, no restart (#688)
         }
-        var hides = Check("Hide her while the chat window is open", saved.AvatarHidesWithChat, (s, on) => s.AvatarHidesWithChat = on);
-        var clickThrough = Check("Click-through: the mouse passes through her", saved.AvatarClickThrough, (s, on) => s.AvatarClickThrough = on);
-        var captions = Check("Captions under Mana", saved.CaptionsShown(), (s, on) => s.Captions = on);
-        var bubbles = Check("Chat bubbles beside Mana", saved.ChatBubbles, (s, on) =>
+        var themeRow = ChoiceRow("Theme", "Colours for every Mana window", "dark light color colour preset",
+            Array.ConvertAll(presets, p => p.Label), Math.Max(0, Array.FindIndex(presets, p => p.Id == ManaThemeSettings.Load().Preset)),
+            i => ApplyTheme(presets[i].Id, ManaThemeSettings.Load().AccentHex));
+
+        var accentNow = SettingsRows.Status();
+        void ShowAccent() => accentNow.Text = ManaThemeSettings.Load().AccentHex ?? "Theme's own";
+        void SetAccent(string? hex)
         {
-            s.ChatBubbles = on;
-            s.Captions ??= captions.Checked; // pin what's showing now
-        });
+            var theme = ManaThemeSettings.Load();
+            var before = theme.AccentHex;
+            if (before == hex)
+            {
+                return;
+            }
+            ApplyTheme(theme.Preset, hex);
+            ShowAccent();
+            Changed(hex is null ? "Accent colour back to the theme's" : $"Accent colour {hex}", () => SetAccent(before));
+        }
+        ShowAccent();
+        var accentRow = new SettingsRow("Accent colour", "Your own highlight colour instead of the theme's", "color accent highlight", accentNow,
+            SettingsRows.Action("Pick…", () =>
+            {
+                using var picker = new ColorDialog { FullOpen = true, Color = DarkTheme.Accent };
+                if (picker.ShowDialog(this) == DialogResult.OK)
+                {
+                    SetAccent($"#{picker.Color.R:x2}{picker.Color.G:x2}{picker.Color.B:x2}");
+                }
+            }),
+            SettingsRows.Action("Default", () => SetAccent(null)));
 
-        var framing = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = "Framing" };
-        framing.Items.AddRange(Framings.Select(f => (object)f.Label).ToArray());
-        framing.SelectedIndex = Math.Max(0, Array.FindIndex(Framings, f => f.Id == (saved.OverlayFraming ?? "upperHalf")));
-        framing.SelectedIndexChanged += (_, _) => Saved(s => s.OverlayFraming = Framings[framing.SelectedIndex].Id);
-        var size = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = "Size" };
-        size.Items.AddRange(AvatarOverlayForm.OverlayScales.Select(scale => (object)$"{scale * 100:0}%").ToArray());
-        size.SelectedIndex = Math.Max(0, Array.IndexOf(AvatarOverlayForm.OverlayScales, saved.OverlayScale ?? 1.5f));
-        size.SelectedIndexChanged += (_, _) => Saved(s => s.OverlayScale = AvatarOverlayForm.OverlayScales[size.SelectedIndex]);
+        gamingModeCheck.Checked = saved.GamingModeDetection;
+        var gamingRow = SwitchRow("Gaming mode", "Goes quiet and frees memory while a game is running", "game fullscreen detection", saved.GamingModeDetection, on =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.GamingModeDetection = on;
+            latest.Save(); // the launcher's 5s poll picks it up
+            _ = RefreshPerfTabAsync();
+        }, gamingStatusLabel, gamingModeCheck);
 
-        var shape = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(0, 6, 0, 6) };
-        shape.Controls.Add(new Label { Text = "Framing", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 6, 3) });
-        shape.Controls.Add(framing);
-        shape.Controls.Add(new Label { Text = "Size", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(18, 7, 6, 3) });
-        shape.Controls.Add(size);
+        var parts = new List<Control>
+        {
+            SettingsRows.Section("Startup"),
+            BuildStartWithWindowsRow(changed: Changed),
+            SettingsRows.Section("Appearance"),
+            themeRow,
+            accentRow,
+            SettingsRows.Section("Avatar"),
+            SwitchRow("Hide with the chat window", "She leaves the desktop while the chat window is open", "overlay hide",
+                saved.AvatarHidesWithChat, on => SaveAvatar(s => s.AvatarHidesWithChat = on)),
+            SwitchRow("Click-through", "The mouse passes through her", "click through overlay mouse",
+                saved.AvatarClickThrough, on => SaveAvatar(s => s.AvatarClickThrough = on)),
+            ChoiceRow("Framing", "How much of her shows", "body bust upper half crop",
+                Array.ConvertAll(Framings, f => f.Label), Array.FindIndex(Framings, f => f.Id == (saved.OverlayFraming ?? "upperHalf")),
+                i => SaveAvatar(s => s.OverlayFraming = Framings[i].Id)),
+            ChoiceRow("Size", "How big she is on the desktop", "scale zoom bigger smaller",
+                Array.ConvertAll(AvatarOverlayForm.OverlayScales, scale => $"{scale * 100:0}%"), Array.IndexOf(AvatarOverlayForm.OverlayScales, saved.OverlayScale ?? 1.5f),
+                i => SaveAvatar(s => s.OverlayScale = AvatarOverlayForm.OverlayScales[i])),
+            SwitchRow("Captions", "What she says, written under her", "subtitles text",
+                saved.CaptionsShown(), on => SaveAvatar(s => s.Captions = on)),
+            SwitchRow("Chat bubbles", "Her replies in bubbles beside her", "speech bubble",
+                saved.ChatBubbles, on => SaveAvatar(s =>
+                {
+                    s.Captions ??= s.CaptionsShown(); // keep captions as they're showing now
+                    s.ChatBubbles = on;
+                })),
+            new SettingsRow("VTube Studio", "Drive her model in VTube Studio", "vtube vts live2d model",
+                SettingsRows.Action("Open…", () => new VTubeStudioForm(backendClient).Show())),
+            SettingsRows.Section("Games"),
+            gamingRow,
+            SettingsRows.Section("Hotkeys"),
+        };
+        foreach (var action in HotkeyBindings.Actions)
+        {
+            parts.Add(BuildHotkeyRow(action));
+        }
+        parts.Add(SettingsRows.Note("Click a box and press the new keys (Ctrl or Alt plus a key). Backspace turns a hotkey off."));
+        return SettingsRows.Page("General", parts.ToArray());
+    }
 
-        var vtube = new Button { Text = "VTube Studio…", AutoSize = true, Margin = new Padding(3, 10, 3, 3) };
-        DarkTheme.ApplyButton(vtube);
-        vtube.Click += (_, _) => new VTubeStudioForm(backendClient).Show();
+    // A row with a switch that saves on each flip; Undo flips it back.
+    private SettingsRow SwitchRow(string name, string explanation, string keywords, bool value, Action<bool> save, Control? status = null, SettingsSwitch? flip = null)
+    {
+        flip ??= new SettingsSwitch { AccessibleName = name };
+        flip.Checked = value;
+        var control = flip;
+        control.CheckedChanged += (_, _) =>
+        {
+            save(control.Checked);
+            Changed($"{name} {(control.Checked ? "on" : "off")}", () => control.Checked = !control.Checked);
+        };
+        return status is null ? new SettingsRow(name, explanation, keywords, control) : new SettingsRow(name, explanation, keywords, status, control);
+    }
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
-        layout.Controls.Add(hides);
-        layout.Controls.Add(clickThrough);
-        layout.Controls.Add(shape);
-        layout.Controls.Add(captions);
-        layout.Controls.Add(bubbles);
-        layout.Controls.Add(vtube);
-        return new TabPage("Avatar") { Controls = { layout } };
+    // A row with a dropdown that saves on each pick; Undo picks the one before.
+    private SettingsRow ChoiceRow(string name, string explanation, string keywords, string[] options, int index, Action<int> save)
+    {
+        var combo = SettingsRows.Choice(name, options, index);
+        var previous = combo.SelectedIndex;
+        combo.SelectedIndexChanged += (_, _) =>
+        {
+            var before = previous;
+            previous = combo.SelectedIndex;
+            save(combo.SelectedIndex);
+            Changed($"{name} {combo.Text}", () => combo.SelectedIndex = before);
+        };
+        return new SettingsRow(name, explanation, keywords, combo);
+    }
+
+    // #1426: changes save as they're made. The bar under the page says what
+    // was saved and offers Undo until the next change; Ctrl+Z steps back
+    // through every change since Settings opened.
+    private readonly List<(string What, Action Undo)> changes = new();
+    private bool undoing;
+    private readonly Panel undoBar = new() { Dock = DockStyle.Bottom, Height = 30, Visible = false, Padding = new Padding(14, 0, 14, 0) };
+    private readonly Label undoText = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false };
+    private readonly LinkLabel undoLink = new() { Text = "Undo", Dock = DockStyle.Right, AutoSize = true, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 7, 6, 0) };
+    private readonly Label undoHint = new() { Text = "Ctrl+Z", Dock = DockStyle.Right, AutoSize = true, Padding = new Padding(0, 8, 0, 0) };
+
+    internal Label UndoText => undoText; // tests
+
+    private Control BuildUndoBar()
+    {
+        undoBar.BackColor = DarkTheme.Panel;
+        undoText.ForeColor = DarkTheme.Text;
+        undoHint.ForeColor = DarkTheme.Muted;
+        undoLink.LinkColor = undoLink.ActiveLinkColor = DarkTheme.Accent;
+        undoLink.LinkBehavior = LinkBehavior.HoverUnderline;
+        undoLink.AccessibleName = "Undo the last change";
+        undoLink.LinkClicked += (_, _) => Undo();
+        undoBar.Paint += (_, e) =>
+        {
+            using var line = new Pen(DarkTheme.Border);
+            e.Graphics.DrawLine(line, 0, 0, undoBar.Width, 0);
+        };
+        undoBar.Controls.Add(undoText);
+        undoBar.Controls.Add(undoLink);
+        undoBar.Controls.Add(undoHint);
+        return undoBar;
+    }
+
+    internal void Changed(string what, Action undo)
+    {
+        if (undoing)
+        {
+            return;
+        }
+        changes.Add((what, undo));
+        ShowUndo($"Saved · {what}");
+    }
+
+    internal void Undo()
+    {
+        if (changes.Count == 0)
+        {
+            return;
+        }
+        var (what, undo) = changes[^1];
+        changes.RemoveAt(changes.Count - 1);
+        undoing = true;
+        try
+        {
+            undo();
+        }
+        finally
+        {
+            undoing = false;
+        }
+        ShowUndo(changes.Count > 0 ? $"Undone: {what}" : $"Undone: {what}. Nothing else to undo.");
+    }
+
+    private void ShowUndo(string text)
+    {
+        undoText.Text = text;
+        undoLink.Visible = undoHint.Visible = changes.Count > 0;
+        undoBar.Visible = true;
+    }
+
+    // Ctrl+Z anywhere in Settings but a text box, which keeps its own undo
+    // (and the hotkey boxes, where it's a combination to bind).
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == (Keys.Control | Keys.Z) && ActiveControl is not TextBoxBase && changes.Count > 0)
+        {
+            Undo();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     // #1426: a page of buttons that open a window -- what the tray's Tools
@@ -1016,33 +1185,24 @@ internal sealed class SettingsPanel : UserControl
         ("Revert a merged PR…", () => RevertMergedPr?.Invoke()));
 
     // Saved at once, straight to the Run key (StartWithWindows).
-    internal static FlowLayoutPanel BuildStartWithWindowsRow(string runKeyPath = StartWithWindows.RunKeyPath)
+    internal static SettingsRow BuildStartWithWindowsRow(string runKeyPath = StartWithWindows.RunKeyPath, Action<string, Action>? changed = null)
     {
-        var check = new CheckBox
-        {
-            Text = "Start Mana when I sign in to Windows",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-            Checked = StartWithWindows.IsOn(runKeyPath),
-        };
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        check.CheckedChanged += (_, _) =>
+        var flip = new SettingsSwitch { Checked = StartWithWindows.IsOn(runKeyPath), AccessibleName = "Start with Windows" };
+        var status = SettingsRows.Status();
+        flip.CheckedChanged += (_, _) =>
         {
             try
             {
-                StartWithWindows.Set(check.Checked, StartWithWindows.LauncherExe, runKeyPath);
-                status.Text = "Saved.";
+                StartWithWindows.Set(flip.Checked, StartWithWindows.LauncherExe, runKeyPath);
+                status.Text = "";
+                changed?.Invoke($"Start with Windows {(flip.Checked ? "on" : "off")}", () => flip.Checked = !flip.Checked);
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
             {
                 status.Text = $"Couldn't change it: {ex.Message}";
             }
         };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(check);
-        row.Controls.Add(status);
-        return row;
+        return new SettingsRow("Start with Windows", "Mana opens in the tray when you sign in", "login boot startup sign in", status, flip);
     }
 
     // #670: saved at once like the Voice tab's checkboxes; the backend
@@ -2374,32 +2534,24 @@ internal sealed class SettingsPanel : UserControl
     // new one (Backspace turns it off). A combination another Mana hotkey
     // or another app already uses is refused. Rebinds live when the
     // launcher wired bindHotkey; saved either way.
-    private TabPage BuildHotkeysTab()
-    {
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, BackColor = DarkTheme.Background, AutoScroll = true };
-        layout.Controls.Add(new Label { Text = "Click a box and press the new keys (Ctrl or Alt plus a key). Backspace turns a hotkey off.", AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 6, 3, 6) });
-        foreach (var action in HotkeyBindings.Actions)
-        {
-            layout.Controls.Add(BuildHotkeyRow(action));
-        }
-        return new TabPage("Hotkeys") { Controls = { layout } };
-    }
 
-    private FlowLayoutPanel BuildHotkeyRow(HotkeyAction action)
+    private SettingsRow BuildHotkeyRow(HotkeyAction action)
     {
-        var label = new Label { Text = action.Label, Width = 200, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-        var box = new TextBox { ReadOnly = true, Width = 150, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = $"{action.Label} hotkey", ShortcutsEnabled = false };
-        var reset = new Button { Text = "Default", AutoSize = true };
-        DarkTheme.ApplyButton(reset);
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        box.Text = HotkeyBindings.Format(HotkeyBindings.Resolve(ManaSettingsStore.Load().Hotkeys, action));
+        var box = new TextBox { ReadOnly = true, Width = 140, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, AccessibleName = $"{action.Label} hotkey", ShortcutsEnabled = false };
+        var status = SettingsRows.Status();
+        var current = HotkeyBindings.Resolve(ManaSettingsStore.Load().Hotkeys, action);
+        box.Text = HotkeyBindings.Format(current);
 
         void Apply(Keys? keys)
         {
+            if (keys == current)
+            {
+                return;
+            }
             var settings = ManaSettingsStore.Load();
             if (keys is Keys k && HotkeyBindings.ConflictFor(settings.Hotkeys, action, k) is { } other)
             {
-                status.Text = $"Already used for \"{other.Label}\".";
+                status.Text = $"Already used for \"{other.Label}\"";
                 return;
             }
             if (bindHotkey?.Invoke(action, keys) is { } error)
@@ -2412,8 +2564,11 @@ internal sealed class SettingsPanel : UserControl
             settings.Hotkeys ??= new();
             settings.Hotkeys[action.Key] = keys is Keys set ? HotkeyBindings.Format(set) : "";
             settings.Save();
+            var before = current;
+            current = keys;
             box.Text = HotkeyBindings.Format(keys);
-            status.Text = bindHotkey is null ? "Saved -- applies next launch." : "Saved.";
+            status.Text = bindHotkey is null ? "Applies next launch" : "";
+            Changed($"{action.Label} {(keys is null ? "off" : HotkeyBindings.Format(keys))}", () => Apply(before));
         }
 
         box.KeyDown += (_, e) =>
@@ -2430,17 +2585,10 @@ internal sealed class SettingsPanel : UserControl
             }
             else if ((e.KeyCode & Keys.KeyCode) is not (Keys.ControlKey or Keys.ShiftKey or Keys.Menu))
             {
-                status.Text = "Use Ctrl or Alt plus a key.";
+                status.Text = "Use Ctrl or Alt plus a key";
             }
         };
-        reset.Click += (_, _) => Apply(action.Default);
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(label);
-        row.Controls.Add(box);
-        row.Controls.Add(reset);
-        row.Controls.Add(status);
-        return row;
+        return new SettingsRow(action.Label, null, "hotkey shortcut keyboard keys", status, box, SettingsRows.Action("Default", () => Apply(action.Default)));
     }
 
     private TabPage BuildVoiceTab()
@@ -3353,95 +3501,12 @@ internal sealed class SettingsPanel : UserControl
         base.Dispose(disposing);
     }
 
-    // #576: reads/writes ManaThemeSettings' own file directly, same
-    // reasoning as #565's Connection tab. #688: Save also applies it live
-    // (DarkTheme.ApplyPresetLive).
-    private TabPage BuildThemeTab()
-    {
-        var settings = ManaThemeSettings.Load();
-
-        ThemePresetInfo? current = null;
-        foreach (var preset in DarkTheme.Presets)
-        {
-            themePresetCombo.Items.Add(preset);
-            if (preset.Id == settings.Preset)
-            {
-                current = preset;
-            }
-        }
-        themePresetCombo.SelectedItem = current ?? DarkTheme.Presets[0];
-        themePresetCombo.BackColor = DarkTheme.Panel2;
-        themePresetCombo.ForeColor = DarkTheme.Text;
-
-        themeAccentBox.Text = settings.AccentHex ?? "";
-        themeAccentBox.BackColor = DarkTheme.Panel2;
-        themeAccentBox.ForeColor = DarkTheme.Text;
-
-        var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
-        var saveButton = new Button { Text = "Save" };
-        DarkTheme.ApplyButton(saveButton);
-
-        // #688: Electron's colour picker and reset, beside the hex box.
-        var pickButton = new Button { Text = "Pick...", AutoSize = true };
-        DarkTheme.ApplyButton(pickButton);
-        pickButton.Click += (_, _) =>
-        {
-            using var picker = new ColorDialog { FullOpen = true, Color = DarkTheme.Accent };
-            if (picker.ShowDialog(this) == DialogResult.OK)
-            {
-                themeAccentBox.Text = $"#{picker.Color.R:x2}{picker.Color.G:x2}{picker.Color.B:x2}";
-            }
-        };
-        var resetButton = new Button { Text = "Reset", AutoSize = true };
-        DarkTheme.ApplyButton(resetButton);
-        resetButton.Click += (_, _) =>
-        {
-            themePresetCombo.SelectedItem = DarkTheme.Presets.First(p => p.Id == new ManaThemeSettings().Preset);
-            themeAccentBox.Text = "";
-            saveButton.PerformClick();
-        };
-
-        saveButton.Click += (_, _) =>
-        {
-            var accentText = themeAccentBox.Text.Trim();
-            if (accentText.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(accentText, "^#[0-9a-fA-F]{6}$"))
-            {
-                statusLabel.ForeColor = Color.Firebrick;
-                statusLabel.Text = "Accent must be a #rrggbb hex color, or blank to use the preset's own accent.";
-                return;
-            }
-
-            settings.Preset = themePresetCombo.SelectedItem is ThemePresetInfo preset ? preset.Id : "mana";
-            settings.AccentHex = accentText.Length == 0 ? null : accentText;
-            settings.Save();
-            // #688: every open window restyles now, no restart.
-            DarkTheme.ApplyPresetLive(settings.Preset, settings.AccentHex);
-            statusLabel.ForeColor = DarkTheme.Muted;
-            statusLabel.Text = "Saved and applied.";
-        };
-
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12), BackColor = DarkTheme.Background };
-        layout.Controls.Add(new Label { Text = "Theme", AutoSize = true, ForeColor = DarkTheme.Text });
-        layout.Controls.Add(themePresetCombo);
-        layout.Controls.Add(new Label { Text = "Accent color override (optional, #rrggbb)", AutoSize = true, ForeColor = DarkTheme.Text });
-        var accentRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background, Margin = Padding.Empty };
-        accentRow.Controls.Add(themeAccentBox);
-        accentRow.Controls.Add(pickButton);
-        layout.Controls.Add(accentRow);
-        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background, Margin = Padding.Empty };
-        buttonRow.Controls.Add(saveButton);
-        buttonRow.Controls.Add(resetButton);
-        layout.Controls.Add(buttonRow);
-        layout.Controls.Add(statusLabel);
-
-        return new TabPage("Theme") { Controls = { layout } };
-    }
 
     // #575: Operations is free-form per node-bot's own perfMetrics.operations
     // (see GetPerformanceStatusAsync's own comment) -- shown as raw JSON per
     // row rather than parsed into specific fields, since this tab only
     // needs to display it, not act on it.
-    private TabPage BuildPerfTab(out TabPage gamingPage)
+    private TabPage BuildPerfTab()
     {
         perfSummaryLabel.Dock = DockStyle.Top;
         perfSummaryLabel.Padding = new Padding(8);
@@ -3454,23 +3519,6 @@ internal sealed class SettingsPanel : UserControl
         perfOperationsList.Columns.Add("Details", 340);
         DarkTheme.ApplyListView(perfOperationsList);
 
-        // #688: Electron's gaming-mode setting and what triggered it. Saved
-        // straight away; the launcher's 5s poll picks it up.
-        gamingModeCheck.ForeColor = DarkTheme.Text;
-        gamingModeCheck.Checked = ManaSettingsStore.Load().GamingModeDetection;
-        gamingModeCheck.CheckedChanged += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.GamingModeDetection = gamingModeCheck.Checked;
-            latest.Save();
-            _ = RefreshPerfTabAsync();
-        };
-        gamingStatusLabel.ForeColor = DarkTheme.Muted;
-        var gamingRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(4, 4, 4, 0), BackColor = DarkTheme.Background };
-        gamingRow.Controls.Add(gamingModeCheck);
-        gamingRow.Controls.Add(gamingStatusLabel);
-
-        gamingPage = new TabPage("Gaming") { Controls = { gamingRow } };
         var page = new TabPage("Timings");
         page.Controls.Add(perfOperationsList);
         page.Controls.Add(perfSummaryLabel);
