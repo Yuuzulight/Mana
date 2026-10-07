@@ -130,7 +130,7 @@ internal sealed class SettingsPanel : UserControl
         var factsPage = BuildMemoryFactsTab();
         factsPage.Text = "Facts";
         AddGroup("general", "General", startupPage, BuildThemeTab(), BuildHotkeysTab(), gamingPage);
-        AddGroup("voice", "Voice", voiceTab);
+        AddGroup("voice", "Voice", voiceTab, BuildDictationTab());
         AddGroup("checkins", "Check-ins",
             new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }, // #697
             BuildBriefingTab(),
@@ -139,7 +139,8 @@ internal sealed class SettingsPanel : UserControl
             new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }, // #914
             BuildSkillsTab(), BuildPresetsTab());
         AddGroup("models", "Models", BuildModelTab(),
-            new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }); // #1406
+            new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }, // #1406
+            BuildCodingModeTab());
         AddGroup("permissions", "Permissions", BuildApprovalsTab(),
             new TabPage("Desktop folders") { Controls = { new DesktopFoldersPanel() } }); // #997
         AddGroup("privacy", "Privacy", localOnlyPage, privacyPage); // #1336
@@ -246,6 +247,8 @@ internal sealed class SettingsPanel : UserControl
         ["MCP Clients"] = "mcp servers tools",
         ["Backend"] = "url port server admin token",
         ["Timings"] = "performance perf speed",
+        ["Coding mode"] = "14b engineering code programming",
+        ["Dictation"] = "dictate type right ctrl",
     };
 
     // What each group is for, under its name in the sidebar and the header.
@@ -623,6 +626,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
+        await RefreshCodingModeAsync();
         await RefreshLlamaBuildAsync();
         await RefreshMobileDevicesAsync();
         await RefreshAccountsAsync();
@@ -714,6 +718,98 @@ internal sealed class SettingsPanel : UserControl
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
         layout.Controls.Add(row);
         return new TabPage(title) { Controls = { layout } };
+    }
+
+    // #1426: moved here from the tray. Starts or stops the 14B coding
+    // engine (#1343); it can't run while a game does.
+    private readonly CheckBox codingModeCheck = new() { Text = "Coding mode (14B engine)", AutoSize = true };
+    private readonly Label codingModeStatus = new() { AutoSize = true };
+    private bool loadingCodingMode;
+
+    private TabPage BuildCodingModeTab()
+    {
+        codingModeCheck.ForeColor = DarkTheme.Text;
+        codingModeStatus.ForeColor = DarkTheme.Muted;
+        codingModeCheck.CheckedChanged += async (_, _) =>
+        {
+            if (loadingCodingMode)
+            {
+                return;
+            }
+            try
+            {
+                if (codingModeCheck.Checked)
+                {
+                    await backendClient.StartCodingSessionAsync();
+                }
+                else
+                {
+                    await backendClient.StopCodingSessionAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                codingModeStatus.Text = $"Couldn't switch it: {BackendError.Describe(ex)}";
+                return;
+            }
+            await RefreshCodingModeAsync();
+        };
+        var hint = new Label
+        {
+            Text = "Loads the bigger engineering model for coding work, and unloads it when you switch this off.",
+            AutoSize = true,
+            MaximumSize = new Size(460, 0),
+            ForeColor = DarkTheme.Muted,
+        };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(codingModeCheck);
+        layout.Controls.Add(hint);
+        layout.Controls.Add(codingModeStatus);
+        return new TabPage("Coding mode") { Controls = { layout } };
+    }
+
+    private async Task RefreshCodingModeAsync()
+    {
+        try
+        {
+            var status = await backendClient.GetCodingSessionStatusAsync();
+            loadingCodingMode = true;
+            codingModeCheck.Checked = status.Active;
+            codingModeCheck.Enabled = !status.IsGaming;
+            codingModeStatus.Text = status.IsGaming ? $"Locked out while {status.Game ?? "a game"} is running."
+                : status.Active ? "On: the 14B engine is loaded." : "Off.";
+        }
+        catch (Exception ex)
+        {
+            codingModeStatus.Text = $"Couldn't load: {BackendError.Describe(ex)}";
+        }
+        finally
+        {
+            loadingCodingMode = false;
+        }
+    }
+
+    // #1426: moved here from the tray (#849). The launcher applies it live
+    // through DictateAnywhereChanged.
+    public Action<bool>? DictateAnywhereChanged { get; set; }
+
+    private TabPage BuildDictationTab()
+    {
+        var check = new CheckBox
+        {
+            Text = "Dictate anywhere: hold Right Ctrl and speak to type into any app",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = ManaSettingsStore.Load().DictateAnywhere,
+        };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.DictateAnywhere = check.Checked;
+            latest.Save();
+            DictateAnywhereChanged?.Invoke(check.Checked);
+        };
+        return OneRowPage("Dictation", check);
     }
 
     // Saved at once, straight to the Run key (StartWithWindows).

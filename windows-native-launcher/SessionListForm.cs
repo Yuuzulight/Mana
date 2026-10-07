@@ -1344,6 +1344,9 @@ internal sealed partial class SessionListForm : Form
     // couldn't, or null. Set by ManaApplicationContext, which owns the hotkeys.
     public Func<HotkeyAction, Keys?, string?>? BindHotkey { get; set; }
 
+    // #1426: Settings > Voice > Dictation, applied live. Set by ManaApplicationContext.
+    public Action<bool>? DictateAnywhereChanged { get; set; }
+
     // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
     // bringing this window up if it's hidden (Settings' own window).
     private DocsPanel? docsPanel;
@@ -1393,6 +1396,7 @@ internal sealed partial class SessionListForm : Form
         // #681: the active preset reaches the next reply as soon as it's chosen.
         panel.ActivePresetChanged = voiceLoop.SetPresetId;
         panel.OpenDoc = OpenDoc;
+        panel.DictateAnywhereChanged = on => DictateAnywhereChanged?.Invoke(on);
         return panel;
     }
 

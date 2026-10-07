@@ -33,16 +33,17 @@ public class SettingsPanelLayoutTests
                 panel.Groups.Select(g => g.Label));
             string Pages(string id) => string.Join(", ", panel.Groups.Single(g => g.Id == id).Tabs.TabPages.Cast<TabPage>().Select(p => p.Text));
             Assert.Equal("Startup, Theme, Hotkeys, Gaming", Pages("general"));
-            Assert.Equal("Voice", Pages("voice"));
+            Assert.Equal("Voice, Dictation", Pages("voice"));
             Assert.Equal("Proactive, Briefing, Heartbeat", Pages("checkins"));
             Assert.Equal("Facts, Characters, Skills, Presets", Pages("memory"));
-            Assert.Equal("Model, API Spending", Pages("models"));
+            Assert.Equal("Model, API Spending, Coding mode", Pages("models"));
             Assert.Equal("Approvals, Desktop folders", Pages("permissions"));
             Assert.Equal("Local-only, Your data", Pages("privacy"));
             Assert.Equal("Calendar & Email, Mobile Devices, Accounts, Plugins, MCP Clients", Pages("connections"));
             Assert.Equal("Backend, Hooks, Logs, Timings", Pages("advanced"));
-            // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five.
-            Assert.Equal(27, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
+            // plus Coding mode and Dictation from the tray.
+            Assert.Equal(29, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -60,8 +61,15 @@ public class SettingsPanelLayoutTests
             Assert.Equal("models", panel.CurrentGroup);
             Assert.Equal(new[] { "models" }, panel.Groups.Where(g => g.Tabs.Visible).Select(g => g.Id));
             Assert.Equal(new[] { "general", "voice" }, left);
-            // One page: no strip to pick from.
-            Assert.Equal(1, panel.Groups.Single(g => g.Id == "voice").Tabs.ItemSize.Height);
+            // Pills pick the page, so no group shows a tab strip; a one-page group shows no pills either.
+            Assert.All(panel.Groups, g => Assert.Equal(1, g.Tabs.ItemSize.Height));
+            Assert.Equal(new[] { "Model", "API Spending", "Coding mode" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
+            panel.ShowGroup("privacy");
+            panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Your data").PerformClick();
+            Assert.Equal("Your data", panel.Groups.Single(g => g.Id == "privacy").Tabs.SelectedTab!.Text);
+            panel.ShowGroup("advanced");
+            Assert.Equal("Backend", panel.Groups.Single(g => g.Id == "advanced").Tabs.SelectedTab!.Text);
+            Assert.Equal(new[] { "advanced" }, panel.Nav.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag!));
             panel.ShowGroup("nope");
             Assert.Equal("general", panel.CurrentGroup);
         });
