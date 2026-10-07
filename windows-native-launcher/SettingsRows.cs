@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
@@ -32,10 +33,16 @@ internal static class SettingsRows
     internal static Label Note(string text) =>
         new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(2, 2, 2, 4), UseMnemonic = false };
 
-    internal static ComboBox Choice(string name, string[] options, int index)
+    // As wide as its longest option. into: a combo the page keeps as a field.
+    internal static ComboBox Choice(string name, string[] options, int index, ComboBox? into = null)
     {
-        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, AccessibleName = name };
+        var combo = into ?? new ComboBox();
+        combo.DropDownStyle = ComboBoxStyle.DropDownList;
+        combo.BackColor = DarkTheme.Panel;
+        combo.ForeColor = DarkTheme.Text;
+        combo.AccessibleName = name;
         combo.Items.AddRange(options);
+        combo.Width = Math.Max(150, options.Max(o => TextRenderer.MeasureText(o, combo.Font).Width) + 30);
         combo.SelectedIndex = Math.Clamp(index, 0, options.Length - 1);
         return combo;
     }
@@ -48,7 +55,7 @@ internal static class SettingsRows
         return button;
     }
 
-    internal static Label Status() => new() { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left, BackColor = Color.Transparent, UseMnemonic = false };
+    internal static Label Status() => new() { AutoSize = true, MaximumSize = new Size(260, 0), ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left, BackColor = Color.Transparent, UseMnemonic = false };
 
     internal static GraphicsPath Rounded(RectangleF r, float radius)
     {
@@ -84,11 +91,16 @@ internal sealed class SettingsRow : TableLayoutPanel
         DoubleBuffered = true;
         ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        // The name and explanation keep to the top; a tall control's extra
+        // height goes to the empty row under them.
+        RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         Controls.Add(new Label { Text = name, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, ForeColor = DarkTheme.Text, BackColor = Color.Transparent, Margin = new Padding(0, 1, 8, 0), UseMnemonic = false }, 0, 0);
         if (explanation is not null)
         {
-            Controls.Add(new Label { Text = explanation, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 1, 8, 1), UseMnemonic = false }, 0, 1);
+            Controls.Add(Explanation = new Label { Text = explanation, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 1, 8, 1), UseMnemonic = false }, 0, 1);
         }
         var right = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, BackColor = Color.Transparent, Margin = Padding.Empty };
         foreach (var control in controls)
@@ -97,10 +109,13 @@ internal sealed class SettingsRow : TableLayoutPanel
             right.Controls.Add(control);
         }
         Controls.Add(right, 1, 0);
-        SetRowSpan(right, explanation is null ? 1 : 2);
+        SetRowSpan(right, 3);
     }
 
     internal string Title { get; }
+
+    // The line under the name, for a row that reports progress in it.
+    internal Label? Explanation { get; }
 
     internal string SearchText { get; }
 

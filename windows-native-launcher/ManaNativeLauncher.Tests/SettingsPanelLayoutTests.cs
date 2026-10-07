@@ -33,7 +33,7 @@ public class SettingsPanelLayoutTests
                 panel.Groups.Select(g => g.Label));
             string Pages(string id) => string.Join(", ", panel.Groups.Single(g => g.Id == id).Tabs.TabPages.Cast<TabPage>().Select(p => p.Text));
             Assert.Equal("General", Pages("general")); // stage 2: one page of rows
-            Assert.Equal("Voice, Dictation", Pages("voice"));
+            Assert.Equal("Voice", Pages("voice"));
             Assert.Equal("Proactive, Briefing, Heartbeat", Pages("checkins"));
             Assert.Equal("Facts, Characters, Group mode, Skills, Presets, Memory tools", Pages("memory"));
             Assert.Equal("Model, API Spending, Coding mode, Model tools", Pages("models"));
@@ -43,8 +43,8 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five, now one page.
-            Assert.Equal(31, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five and Voice's two, each now one page.
+            Assert.Equal(30, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -136,6 +136,27 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Undone: First. Nothing else to undo.", panel.UndoText.Text);
             panel.Undo(); // nothing left
             Assert.Equal(new[] { "Second", "First" }, undone);
+        });
+    }
+
+    // #1426 stage 2: a slider saves as it moves; Default is one change, and Undo puts back where it was.
+    [Fact]
+    public void SliderRow_SavesAsItMoves_AndDefaultCanBeUndone()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            using var panel = NewPanel();
+            var saved = new System.Collections.Generic.List<double>();
+            using var row = panel.SliderRow("Pause", "How long", "", 0, 1, 0.1, 0.5, 0.3, "Quick", "Slow", v => v.ToString("0.0 s", System.Globalization.CultureInfo.InvariantCulture), saved.Add);
+            var slider = GetAllDescendants(row).OfType<TrackBar>().Single();
+            Assert.Equal(5, slider.Value);
+            slider.Value = 8;
+            Assert.Contains(GetAllDescendants(row).OfType<Label>(), l => l.Text == "0.8 s");
+            GetAllDescendants(row).OfType<Button>().Single(b => b.Text == "Default").PerformClick();
+            Assert.Equal("Saved · Pause 0.3 s", panel.UndoText.Text);
+            panel.Undo();
+            Assert.Equal(5, slider.Value);
+            Assert.Equal(new[] { 0.8, 0.3, 0.5 }, saved);
         });
     }
 
