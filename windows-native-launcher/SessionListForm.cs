@@ -597,44 +597,28 @@ internal sealed partial class SessionListForm : Form
         var send = new Button
         {
             Text = "Send",
-            Dock = DockStyle.Right,
-            Width = 72,
+            Size = new Size(34, 34),
             FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Accent,
+            BackColor = box.BackColor,
             ForeColor = DarkTheme.OnAccent,
+            AccessibleName = "Send message",
+            Cursor = Cursors.Hand,
         };
         send.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(send, gloss: true);
+        send.FlatAppearance.MouseOverBackColor = box.BackColor;
+        send.FlatAppearance.MouseDownBackColor = box.BackColor;
+        send.Paint += (_, e) => DrawSendButton(e.Graphics, send, box.BackColor);
+        railToolTip.SetToolTip(send, MessageBoxHint);
 
         // The #652 mockup's push-to-talk button: counts as saying her name,
         // like clicking her on the overlay (listening comes on if it was off).
-        var mic = new Button
-        {
-            Dock = DockStyle.Right,
-            Width = 44,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Accent,
-            AccessibleName = "Push to talk",
-        };
-        mic.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(mic);
+        var mic = ToolbarIconButton("Push to talk");
         mic.Paint += (_, e) => DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor);
         mic.Click += (_, _) => voiceLoop.Wake();
         railToolTip.SetToolTip(mic, "Talk to Mana: the next thing you say is for her");
 
         // #1325: Attach button (paperclip) for documents and images
-        var attach = new Button
-        {
-            Dock = DockStyle.Right,
-            Width = 44,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Accent,
-            AccessibleName = "Attach files",
-        };
-        attach.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(attach);
+        var attach = ToolbarIconButton("Attach files");
         attach.Paint += (_, e) => DrawPaperclipIcon(e.Graphics, attach.ClientRectangle, attach.ForeColor);
         attach.Click += (_, _) =>
         {
@@ -659,21 +643,7 @@ internal sealed partial class SessionListForm : Form
         // (CheckBox drawn as a button) so its on/off state is also exposed to
         // screen readers; not saved -- off at each launch, like the tool
         // panel's pin, since a forgotten "on" makes every reply slow.
-        var think = new CheckBox
-        {
-            Appearance = Appearance.Button,
-            Text = "Think",
-            TextAlign = ContentAlignment.MiddleCenter,
-            Dock = DockStyle.Right,
-            Width = 72,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Muted,
-            AccessibleName = "Deep thinking",
-        };
-        think.FlatAppearance.BorderSize = 0;
-        think.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
-        GlassSurface.MakeGlassButton(think);
+        var think = ToolbarToggle("Think", "Deep thinking");
         railToolTip.SetToolTip(think, DeepThinkingOffTooltip);
         // Q12b: it also lights while Mana's own deep thinking is on (she
         // turned it on when asked); clicking it then turns hers off too.
@@ -711,6 +681,56 @@ internal sealed partial class SessionListForm : Form
             Apply();
         };
 
+        // #1426: Deep research, moved here from the tray. While it's on, a
+        // message starts a research job in this chat instead of a reply;
+        // its progress shows beside the toggle, the round button stops it,
+        // and the report arrives as her message. Not saved, like Think.
+        var research = ToolbarToggle("Deep research", "Deep research");
+        railToolTip.SetToolTip(research, "Deep research: your next message becomes a research job -- she reads the web and comes back with a cited report");
+        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 7, 0, 0), BackColor = Color.Transparent };
+        string? researchJobId = null;
+        async Task ResearchAsync(string question)
+        {
+            chatView.AppendUserMessage(question);
+            researchStatus.Text = "Starting research…";
+            try
+            {
+                researchJobId = await backendClient.StartResearchAsync(question, voiceLoop.EnsureSessionId());
+                while (true)
+                {
+                    var job = await backendClient.GetResearchJobAsync(researchJobId);
+                    if (IsDisposed)
+                    {
+                        return;
+                    }
+                    if (job.Status == "done" && job.Result is not null)
+                    {
+                        chatView.AppendManaMessage(ResearchFormatter.FormatReply(job.Result));
+                        break;
+                    }
+                    if (job.Status is "cancelled" or "error")
+                    {
+                        chatView.AppendManaMessage(job.Status == "cancelled" ? "Research stopped." : $"Research failed: {job.Error ?? "something went wrong"}.");
+                        break;
+                    }
+                    researchStatus.Text = string.IsNullOrEmpty(job.ProgressLabel) ? "Researching…" : job.ProgressLabel;
+                    await Task.Delay(600);
+                }
+            }
+            catch (Exception ex)
+            {
+                chatView.AppendManaMessage($"Research failed: {BackendError.Describe(ex)}");
+            }
+            finally
+            {
+                researchJobId = null;
+                if (!IsDisposed)
+                {
+                    researchStatus.Text = "";
+                }
+            }
+        }
+
         async Task SendAsync()
         {
             var text = box.Text;
@@ -723,6 +743,16 @@ internal sealed partial class SessionListForm : Form
                     await backendClient.TruncateSessionTurnsAsync(activeSessionId, editTurn);
                     await LoadHistoryAsync(activeSessionId);
                 }
+            }
+            if (research.Checked && attachments.Count == 0)
+            {
+                if (text.Trim().Length == 0 || researchJobId is not null)
+                {
+                    return;
+                }
+                box.Clear();
+                await ResearchAsync(text.Trim());
+                return;
             }
             if (attachments.Count > 0)
             {
@@ -824,7 +854,12 @@ internal sealed partial class SessionListForm : Form
         };
         send.Click += async (_, _) =>
         {
-            if (IsStopButton(send))
+            if (researchJobId is { } job)
+            {
+                researchStatus.Text = "Stopping…";
+                await backendClient.CancelResearchJobAsync(job);
+            }
+            else if (IsStopButton(send))
             {
                 voiceLoop.InterruptSpeech();
             }
@@ -835,7 +870,7 @@ internal sealed partial class SessionListForm : Form
         };
         sendButtonTimer.Tick += (_, _) =>
         {
-            ShowSendOrStop(send, replying: !voiceLoop.IsIdle);
+            ShowSendOrStop(send, replying: !voiceLoop.IsIdle || researchJobId is not null);
             // #687: the status line follows VoiceLoop between avatar state changes.
             var status = StatusLine(avatarOverlay.CurrentState);
             if (avatarStatusLabel.Text != status)
@@ -870,11 +905,39 @@ internal sealed partial class SessionListForm : Form
             await sending;
         };
 
-        // The #652 mockup's composer: a 44px field, then the buttons, 8px apart.
-        Panel Gap() => new() { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
-        var field = GlassSurface.Field(box, new Padding(12, 11, 12, 4));
-        field.Dock = DockStyle.Fill;
-        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(32, 12, 32, 18), BackColor = DarkTheme.Background };
+        // #1426: like Claude's composer -- a rounded field holding the text
+        // and the round send button, then a row of small controls under it.
+        box.BorderStyle = BorderStyle.None;
+        var sendHost = new Panel { Dock = DockStyle.Right, Width = 40, BackColor = Color.Transparent };
+        sendHost.Controls.Add(send);
+        sendHost.Resize += (_, _) => send.Location = new Point(sendHost.Width - send.Width, sendHost.Height - send.Height);
+        var field = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 8, 8), BackColor = Color.Transparent };
+        field.Paint += (_, e) =>
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var shape = RoundedRect(new RectangleF(0.5f, 0.5f, field.Width - 1.5f, field.Height - 1.5f), 14);
+            using var fill = new SolidBrush(box.BackColor);
+            e.Graphics.FillPath(fill, shape);
+            using var edge = new Pen(DarkTheme.IsGlass ? Color.FromArgb(70, 106, 95, 184) : DarkTheme.Border);
+            e.Graphics.DrawPath(edge, shape);
+        };
+        field.Resize += (_, _) => field.Invalidate();
+        field.MouseDown += (_, _) => box.Focus();
+        field.Controls.Add(box);
+        field.Controls.Add(sendHost);
+        box.BackColorChanged += (_, _) => field.Invalidate();
+
+        Panel Gap() => new() { Dock = DockStyle.Left, Width = 6, BackColor = Color.Transparent };
+        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 36, Padding = new Padding(4, 6, 4, 0), BackColor = Color.Transparent };
+        // Docked last-added first: attach on the left, then mic, Think, Deep research and its progress.
+        toolbar.Controls.Add(researchStatus);
+        toolbar.Controls.Add(research);
+        toolbar.Controls.Add(Gap());
+        toolbar.Controls.Add(think);
+        toolbar.Controls.Add(Gap());
+        toolbar.Controls.Add(mic);
+        toolbar.Controls.Add(attach);
+        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(32, 10, 32, 10), BackColor = DarkTheme.Background };
         // Grows with what's typed up to MaxComposerLines, then scrolls.
         // (Changing ScrollBars recreates the box's handle, so only on a change.)
         void FitComposer()
@@ -889,25 +952,87 @@ internal sealed partial class SessionListForm : Form
         }
         box.TextChanged += (_, _) => FitComposer();
         box.SizeChanged += (_, _) => FitComposer(); // wrapping follows the width
-        // Docked last-added first: Send at the far right, then Think, mic, attach, then the box.
         panel.Controls.Add(field);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(attach);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(mic);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(think);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(send);
+        panel.Controls.Add(toolbar);
         return panel;
+    }
+
+    // #1426: the round send button -- an up arrow on the accent, or a square
+    // while she's replying (Text says which, for the logic and screen readers).
+    private static void DrawSendButton(Graphics g, Button button, Color background)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var clear = new SolidBrush(background))
+        {
+            g.FillRectangle(clear, button.ClientRectangle);
+        }
+        var circle = new RectangleF(1, 1, button.Width - 3, button.Height - 3);
+        using (var fill = new SolidBrush(DarkTheme.Accent))
+        {
+            g.FillEllipse(fill, circle);
+        }
+        var cx = circle.X + circle.Width / 2;
+        var cy = circle.Y + circle.Height / 2;
+        if (IsStopButton(button))
+        {
+            using var square = new SolidBrush(DarkTheme.OnAccent);
+            g.FillRectangle(square, cx - 5, cy - 5, 10, 10);
+            return;
+        }
+        using var pen = new Pen(DarkTheme.OnAccent, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        g.DrawLine(pen, cx, cy + 6, cx, cy - 6);
+        g.DrawLines(pen, new[] { new PointF(cx - 5, cy - 1), new PointF(cx, cy - 6), new PointF(cx + 5, cy - 1) });
+    }
+
+    // #1426: the row under the field -- small icon buttons, muted until hovered.
+    private static Button ToolbarIconButton(string name)
+    {
+        var button = new Button
+        {
+            Dock = DockStyle.Left,
+            Width = 34,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Background,
+            ForeColor = DarkTheme.Muted,
+            AccessibleName = name,
+            Cursor = Cursors.Hand,
+        };
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
+        return button;
+    }
+
+    // ... and its toggles: an outlined pill, filled with the accent while on.
+    private static CheckBox ToolbarToggle(string text, string name)
+    {
+        var toggle = new CheckBox
+        {
+            Appearance = Appearance.Button,
+            Text = text,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Dock = DockStyle.Left,
+            AutoSize = true,
+            Padding = new Padding(8, 0, 8, 0),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Background,
+            ForeColor = DarkTheme.Muted,
+            AccessibleName = name,
+            Cursor = Cursors.Hand,
+        };
+        toggle.FlatAppearance.BorderSize = 1;
+        toggle.FlatAppearance.BorderColor = DarkTheme.Border;
+        toggle.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
+        toggle.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
+        toggle.CheckedChanged += (_, _) => toggle.ForeColor = toggle.Checked ? DarkTheme.OnAccent : DarkTheme.Muted;
+        return toggle;
     }
 
     private const int MaxComposerLines = 8;
 
-    // The #652 mockup's 74px composer for one line, a line taller per
-    // wrapped or typed line up to MaxComposerLines.
+    // #1426: 112px for one line (the field, the row under it and the
+    // margins), a line taller per wrapped or typed line up to MaxComposerLines.
     internal static int ComposerHeight(int lines, int lineHeight) =>
-        74 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
+        112 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
     private const string DeepThinkingOnTooltip = "Deep thinking: on -- slower, more careful replies. Click to turn off.";
     private const string DeepThinkingOffTooltip = "Deep thinking: off -- click for slower, more careful replies";
