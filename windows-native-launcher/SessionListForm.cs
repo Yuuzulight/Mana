@@ -1002,28 +1002,56 @@ internal sealed partial class SessionListForm : Form
         return button;
     }
 
-    // ... and its toggles: an outlined pill, filled with the accent while on.
+    // ... and its toggles: an outlined pill sized to its words, filled with
+    // the accent while on.
     private static CheckBox ToolbarToggle(string text, string name)
     {
         var toggle = new CheckBox
         {
             Appearance = Appearance.Button,
             Text = text,
-            TextAlign = ContentAlignment.MiddleCenter,
             Dock = DockStyle.Left,
-            AutoSize = true,
-            Padding = new Padding(8, 0, 8, 0),
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.Background,
             ForeColor = DarkTheme.Muted,
             AccessibleName = name,
             Cursor = Cursors.Hand,
         };
-        toggle.FlatAppearance.BorderSize = 1;
-        toggle.FlatAppearance.BorderColor = DarkTheme.Border;
-        toggle.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
-        toggle.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
-        toggle.CheckedChanged += (_, _) => toggle.ForeColor = toggle.Checked ? DarkTheme.OnAccent : DarkTheme.Muted;
+        toggle.FlatAppearance.BorderSize = 0;
+        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 26;
+        var hovered = false;
+        toggle.MouseEnter += (_, _) => { hovered = true; toggle.Invalidate(); };
+        toggle.MouseLeave += (_, _) => { hovered = false; toggle.Invalidate(); };
+        toggle.CheckedChanged += (_, _) => toggle.Invalidate();
+        toggle.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, toggle, toggle.ClientRectangle);
+            }
+            else
+            {
+                using var clear = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(clear, toggle.ClientRectangle);
+            }
+            var pill = new RectangleF(0.5f, 2.5f, toggle.Width - 1.5f, toggle.Height - 5.5f);
+            using var shape = RoundedRect(pill, pill.Height / 2);
+            if (toggle.Checked || hovered)
+            {
+                using var fill = new SolidBrush(toggle.Checked ? DarkTheme.Accent : DarkTheme.Panel2);
+                g.FillPath(fill, shape);
+            }
+            using var edge = new Pen(toggle.Checked ? DarkTheme.Accent : DarkTheme.Border);
+            g.DrawPath(edge, shape);
+            TextRenderer.DrawText(g, toggle.Text, toggle.Font, Rectangle.Round(pill), toggle.Checked ? DarkTheme.OnAccent : DarkTheme.Text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            if (toggle.Focused && GlassSurface.ShowsFocusCues(toggle))
+            {
+                ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
+            }
+        };
         return toggle;
     }
 
