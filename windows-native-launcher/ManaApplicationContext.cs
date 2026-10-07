@@ -299,6 +299,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             .ToArray());
         sessionListForm.BindHotkey = (action, keys) => globalHotkeys.Bind(action.Id, keys);
         sessionListForm.DictateAnywhereChanged = on => dictationService.IsEnabled = on; // #1426: from Settings > Voice
+        sessionListForm.AvatarSettingsChanged = () => RunOnUi(ApplyAvatarSettings); // #1426: from Settings > General > Avatar
+        sessionListForm.RevertMergedPr = PromptRevertPr; // #1426: from Settings > Advanced > Developer
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
@@ -450,9 +452,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         foregroundReporter = new ForegroundWindowReporter(backendClient.ReportForegroundAsync);
     }
 
-    // #1426: trimmed from 38 entries. The everyday actions stay on top; the
-    // avatar, the tool windows and upkeep each get a submenu; settings
-    // (coding mode, dictation, gaming mode) live in Settings.
+    // #1426: trimmed from 38 entries to 10. Things to do stay; settings (the
+    // avatar's, coding mode, dictation, gaming mode) live in Settings, and
+    // the tool windows beside the settings they belong with.
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
@@ -466,8 +468,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         listeningItem.Click += (_, _) => voiceLoop.ToggleListening();
         menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
         menu.Items.Add(listeningItem);
+        menu.Items.Add(BuildShowAvatarItem());
+        menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(BuildAvatarMenu(menu));
         // #914: who's talking, listed from node-bot each time it opens (its
         // data/characters.json can change). Picking one switches and she
         // says her handoff line; her model follows via onCharacter.
@@ -475,7 +478,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         characterMenu.DropDownItems.Add(new ToolStripMenuItem("Mana") { Enabled = false }); // shows the arrow
         characterMenu.DropDownOpening += async (_, _) => await FillCharacterMenuAsync(characterMenu);
         menu.Items.Add(characterMenu);
-        menu.Items.Add(BuildToolsMenu());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(BuildMaintenanceMenu(menu));
         // #1010: only while a PR runs as the live Mana.
@@ -491,9 +493,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
         return menu;
     }
 
-    private ToolStripMenuItem BuildAvatarMenu(ContextMenuStrip menu)
+    // Hiding her for a moment is something you do, so it stays in the tray.
+    private ToolStripMenuItem BuildShowAvatarItem()
     {
-        var avatar = new ToolStripMenuItem("Avatar");
         var showAvatarItem = new ToolStripMenuItem("Show avatar") { CheckOnClick = true, Checked = showAvatar };
         showAvatarItem.Click += (_, _) =>
         {
@@ -503,98 +505,24 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
             SyncAvatarWithChat();
         };
-        var hidesWithChatItem = new ToolStripMenuItem("Hide while the chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
-        hidesWithChatItem.Click += (_, _) =>
-        {
-            avatarHidesWithChat = hidesWithChatItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.AvatarHidesWithChat = avatarHidesWithChat;
-            latest.Save();
-            SyncAvatarWithChat();
-        };
-        // #662: back to an avatar that ignores the mouse entirely (she
-        // already does while a game runs -- Q3).
-        var clickThroughItem = new ToolStripMenuItem("Click-through") { CheckOnClick = true, Checked = avatarOverlay.ClickThrough };
-        clickThroughItem.Click += (_, _) =>
-        {
-            avatarOverlay.ClickThrough = clickThroughItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.AvatarClickThrough = clickThroughItem.Checked;
-            latest.Save();
-        };
-        // #899: the overlay's framing and size, applied live.
-        var framingMenu = new ToolStripMenuItem("Framing");
-        foreach (var (framing, label) in new[] { ("full", "Full body"), ("upperHalf", "Upper half"), ("bust", "Bust") })
-        {
-            framingMenu.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetOverlayFraming(framing, avatarOverlay.OverlayScale)) { Tag = framing });
-        }
-        var sizeMenu = new ToolStripMenuItem("Size");
-        foreach (var scale in AvatarOverlayForm.OverlayScales)
-        {
-            sizeMenu.DropDownItems.Add(new ToolStripMenuItem($"{scale * 100:0}%", null, (_, _) => SetOverlayFraming(avatarOverlay.OverlayFraming, scale)) { Tag = scale });
-        }
-        menu.Opening += (_, _) =>
-        {
-            foreach (ToolStripMenuItem item in framingMenu.DropDownItems)
-            {
-                item.Checked = Equals(item.Tag, avatarOverlay.OverlayFraming);
-            }
-            foreach (ToolStripMenuItem item in sizeMenu.DropDownItems)
-            {
-                item.Checked = Equals(item.Tag, avatarOverlay.OverlayScale);
-            }
-        };
-        var captionsItem = new ToolStripMenuItem("Captions under Mana") { CheckOnClick = true, Checked = !captionOverlay.Suppressed };
-        captionsItem.Click += (_, _) =>
-        {
-            captionOverlay.Suppressed = !captionsItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.Captions = captionsItem.Checked;
-            latest.Save();
-        };
-        // #701: off by default.
-        var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
-        bubblesItem.Click += (_, _) =>
-        {
-            chatBubbles.BubblesOn = bubblesItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.ChatBubbles = bubblesItem.Checked;
-            latest.Captions ??= !captionOverlay.Suppressed; // pin what's showing now
-            latest.Save();
-        };
-        avatar.DropDownItems.Add(showAvatarItem);
-        avatar.DropDownItems.Add(hidesWithChatItem);
-        avatar.DropDownItems.Add(clickThroughItem);
-        avatar.DropDownItems.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
-        avatar.DropDownItems.Add(new ToolStripSeparator());
-        avatar.DropDownItems.Add(framingMenu);
-        avatar.DropDownItems.Add(sizeMenu);
-        avatar.DropDownItems.Add(new ToolStripSeparator());
-        avatar.DropDownItems.Add(captionsItem);
-        avatar.DropDownItems.Add(bubblesItem);
-        return avatar;
+        return showAvatarItem;
     }
 
-    private ToolStripMenuItem BuildToolsMenu()
+    // #1426: Settings > General > Avatar saved something; apply it live.
+    private void ApplyAvatarSettings()
     {
-        var tools = new ToolStripMenuItem("Tools");
-        tools.DropDownItems.Add("Artifact Viewer", null, (_, _) => ShowArtifactViewer());
-        tools.DropDownItems.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
-        tools.DropDownItems.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
-        tools.DropDownItems.Add("What I'm working on", null, (_, _) => new SelfWorkForm(backendClient).Show()); // #1008
-        // #1122: her browser, for when the chat window (and its Browser tool) is closed.
-        var browserActivityItem = new ToolStripMenuItem("Browser activity") { CheckOnClick = true };
-        browserActivityItem.CheckedChanged += (_, _) => browserAutomationPanel.KeepOpen = browserActivityItem.Checked;
-        tools.DropDownItems.Add(browserActivityItem);
-        tools.DropDownItems.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
-        // Until #1426's "Waiting for you" holds them.
-        tools.DropDownItems.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
-        tools.DropDownItems.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
-        tools.DropDownItems.Add(new ToolStripSeparator());
-        tools.DropDownItems.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
-        tools.DropDownItems.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
-        tools.DropDownItems.Add("Open project folder", null, (_, _) => OpenProjectFolder());
-        return tools;
+        var saved = ManaSettingsStore.Load();
+        avatarHidesWithChat = saved.AvatarHidesWithChat;
+        avatarOverlay.ClickThrough = saved.AvatarClickThrough;
+        captionOverlay.Suppressed = !saved.CaptionsShown();
+        chatBubbles.BubblesOn = saved.ChatBubbles;
+        var framing = saved.OverlayFraming ?? avatarOverlay.OverlayFraming;
+        var scale = saved.OverlayScale ?? avatarOverlay.OverlayScale;
+        if (framing != avatarOverlay.OverlayFraming || scale != avatarOverlay.OverlayScale)
+        {
+            SetOverlayFraming(framing, scale);
+        }
+        SyncAvatarWithChat();
     }
 
     private ToolStripMenuItem BuildMaintenanceMenu(ContextMenuStrip menu)
@@ -624,7 +552,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         upkeep.DropDownItems.Add(new ToolStripSeparator());
         upkeep.DropDownItems.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
         upkeep.DropDownItems.Add("Try a PR...", null, (_, _) => PromptTryPr()); // #1010
-        upkeep.DropDownItems.Add("Revert a merged PR...", null, (_, _) => PromptRevertPr()); // #1011
         return upkeep;
     }
 
@@ -1096,7 +1023,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
     // Electron's "Open Model Web UI" quick button: the local model web UI
     // on port 7860.
-    private static void OpenModelWebUi()
+    internal static void OpenModelWebUi()
     {
         try
         {

@@ -129,7 +129,7 @@ internal sealed class SettingsPanel : UserControl
         privacyPage.Text = "Your data";
         var factsPage = BuildMemoryFactsTab();
         factsPage.Text = "Facts";
-        AddGroup("general", "General", startupPage, BuildThemeTab(), BuildHotkeysTab(), gamingPage);
+        AddGroup("general", "General", startupPage, BuildThemeTab(), BuildAvatarTab(), BuildHotkeysTab(), gamingPage);
         AddGroup("voice", "Voice", voiceTab, BuildDictationTab());
         AddGroup("checkins", "Check-ins",
             new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }, // #697
@@ -137,15 +137,16 @@ internal sealed class SettingsPanel : UserControl
             new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
         AddGroup("memory", "Memory", factsPage,
             new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }, // #914
-            BuildGroupModeTab(), BuildSkillsTab(), BuildPresetsTab());
+            BuildGroupModeTab(), BuildSkillsTab(), BuildPresetsTab(), BuildMemoryToolsTab());
         AddGroup("models", "Models", BuildModelTab(),
             new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }, // #1406
-            BuildCodingModeTab());
+            BuildCodingModeTab(), BuildModelToolsTab());
         AddGroup("permissions", "Permissions", BuildApprovalsTab(),
-            new TabPage("Desktop folders") { Controls = { new DesktopFoldersPanel() } }); // #997
+            new TabPage("Desktop folders") { Controls = { new DesktopFoldersPanel() } }, // #997
+            BuildPendingEditsTab());
         AddGroup("privacy", "Privacy", localOnlyPage, privacyPage); // #1336
         AddGroup("connections", "Connections", BuildMailCalendarTab(), BuildMobileDevicesTab(), BuildAccountsTab(), BuildPluginsTab(), BuildMcpServersTab());
-        AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage);
+        AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage, BuildDeveloperTab());
 
         content.Dock = DockStyle.Fill;
         content.BackColor = DarkTheme.Background;
@@ -250,6 +251,11 @@ internal sealed class SettingsPanel : UserControl
         ["Coding mode"] = "14b engineering code programming",
         ["Dictation"] = "dictate type right ctrl",
         ["Group mode"] = "partner sister evil mana second character duo",
+        ["Avatar"] = "live2d framing size captions bubbles vtube click-through overlay",
+        ["Memory tools"] = "graph snapshots undo rollback",
+        ["Model tools"] = "compare web ui llama",
+        ["Pending edits"] = "proposals approve changes",
+        ["Developer"] = "project folder revert pr",
     };
 
     // What each group is for, under its name in the sidebar and the header.
@@ -908,6 +914,106 @@ internal sealed class SettingsPanel : UserControl
         }
         await RefreshGroupModeAsync();
     }
+
+    // #1426: what Settings asks the launcher to do -- apply the avatar's
+    // settings live, revert a merged PR. Set through SessionListForm.
+    public Action? AvatarSettingsChanged { get; set; }
+    public Action? RevertMergedPr { get; set; }
+
+    private static readonly (string Id, string Label)[] Framings = [("full", "Full body"), ("upperHalf", "Upper half"), ("bust", "Bust")];
+
+    // #1426: the avatar's settings, moved here from the tray. Each saves at
+    // once and the launcher applies it live.
+    private TabPage BuildAvatarTab()
+    {
+        var saved = ManaSettingsStore.Load();
+        void Saved(Action<ManaSettingsStore> change)
+        {
+            var latest = ManaSettingsStore.Load();
+            change(latest);
+            latest.Save();
+            AvatarSettingsChanged?.Invoke();
+        }
+        CheckBox Check(string text, bool value, Action<ManaSettingsStore, bool> save)
+        {
+            var check = new CheckBox { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Checked = value };
+            check.CheckedChanged += (_, _) => Saved(s => save(s, check.Checked));
+            return check;
+        }
+        var hides = Check("Hide her while the chat window is open", saved.AvatarHidesWithChat, (s, on) => s.AvatarHidesWithChat = on);
+        var clickThrough = Check("Click-through: the mouse passes through her", saved.AvatarClickThrough, (s, on) => s.AvatarClickThrough = on);
+        var captions = Check("Captions under Mana", saved.CaptionsShown(), (s, on) => s.Captions = on);
+        var bubbles = Check("Chat bubbles beside Mana", saved.ChatBubbles, (s, on) =>
+        {
+            s.ChatBubbles = on;
+            s.Captions ??= captions.Checked; // pin what's showing now
+        });
+
+        var framing = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = "Framing" };
+        framing.Items.AddRange(Framings.Select(f => (object)f.Label).ToArray());
+        framing.SelectedIndex = Math.Max(0, Array.FindIndex(Framings, f => f.Id == (saved.OverlayFraming ?? "upperHalf")));
+        framing.SelectedIndexChanged += (_, _) => Saved(s => s.OverlayFraming = Framings[framing.SelectedIndex].Id);
+        var size = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = "Size" };
+        size.Items.AddRange(AvatarOverlayForm.OverlayScales.Select(scale => (object)$"{scale * 100:0}%").ToArray());
+        size.SelectedIndex = Math.Max(0, Array.IndexOf(AvatarOverlayForm.OverlayScales, saved.OverlayScale ?? 1.5f));
+        size.SelectedIndexChanged += (_, _) => Saved(s => s.OverlayScale = AvatarOverlayForm.OverlayScales[size.SelectedIndex]);
+
+        var shape = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(0, 6, 0, 6) };
+        shape.Controls.Add(new Label { Text = "Framing", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 6, 3) });
+        shape.Controls.Add(framing);
+        shape.Controls.Add(new Label { Text = "Size", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(18, 7, 6, 3) });
+        shape.Controls.Add(size);
+
+        var vtube = new Button { Text = "VTube Studio…", AutoSize = true, Margin = new Padding(3, 10, 3, 3) };
+        DarkTheme.ApplyButton(vtube);
+        vtube.Click += (_, _) => new VTubeStudioForm(backendClient).Show();
+
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(hides);
+        layout.Controls.Add(clickThrough);
+        layout.Controls.Add(shape);
+        layout.Controls.Add(captions);
+        layout.Controls.Add(bubbles);
+        layout.Controls.Add(vtube);
+        return new TabPage("Avatar") { Controls = { layout } };
+    }
+
+    // #1426: a page of buttons that open a window -- what the tray's Tools
+    // used to hold, each beside the settings it belongs with.
+    private static TabPage ButtonsPage(string title, string hint, params (string Text, Action Click)[] buttons)
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(new Label { Text = hint, AutoSize = true, MaximumSize = new Size(460, 0), ForeColor = DarkTheme.Muted, Margin = new Padding(3, 0, 3, 8) });
+        var row = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background };
+        foreach (var (text, click) in buttons)
+        {
+            var button = new Button { Text = text, AutoSize = true, UseMnemonic = false };
+            DarkTheme.ApplyButton(button);
+            button.Click += (_, _) => click();
+            row.Controls.Add(button);
+        }
+        layout.Controls.Add(row);
+        return new TabPage(title) { Controls = { layout } };
+    }
+
+    private TabPage BuildMemoryToolsTab() => ButtonsPage("Memory tools",
+        "The memory graph shows how what she knows connects. Snapshots keep her edits, so you can roll one back.",
+        ("Memory graph…", () => new MemoryGraphForm(backendClient).Show()),
+        ("Edit snapshots…", () => new SnapshotsForm(backendClient).Show()));
+
+    private TabPage BuildModelToolsTab() => ButtonsPage("Model tools",
+        "Put two models side by side on the same prompt, or open the local model's own web page.",
+        ("Compare models…", () => new CompareModeForm(backendClient).Show()),
+        ("Open model web UI", ManaApplicationContext.OpenModelWebUi));
+
+    private TabPage BuildPendingEditsTab() => ButtonsPage("Pending edits",
+        "Changes she has proposed, waiting for your OK. The chat window opens this when one arrives.",
+        ("Review pending edits…", () => new ProposalsForm(backendClient).Show()));
+
+    private TabPage BuildDeveloperTab() => ButtonsPage("Developer",
+        "For working on Mana herself.",
+        ("Open project folder", () => Process.Start(new ProcessStartInfo { FileName = ManaApplicationContext.FindRootDirectory(), UseShellExecute = true })),
+        ("Revert a merged PR…", () => RevertMergedPr?.Invoke()));
 
     // Saved at once, straight to the Run key (StartWithWindows).
     internal static FlowLayoutPanel BuildStartWithWindowsRow(string runKeyPath = StartWithWindows.RunKeyPath)

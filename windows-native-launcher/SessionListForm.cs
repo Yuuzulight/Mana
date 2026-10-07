@@ -1346,6 +1346,8 @@ internal sealed partial class SessionListForm : Form
 
     // #1426: Settings > Voice > Dictation, applied live. Set by ManaApplicationContext.
     public Action<bool>? DictateAnywhereChanged { get; set; }
+    public Action? AvatarSettingsChanged { get; set; }
+    public Action? RevertMergedPr { get; set; }
 
     // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
     // bringing this window up if it's hidden (Settings' own window).
@@ -1397,6 +1399,8 @@ internal sealed partial class SessionListForm : Form
         panel.ActivePresetChanged = voiceLoop.SetPresetId;
         panel.OpenDoc = OpenDoc;
         panel.DictateAnywhereChanged = on => DictateAnywhereChanged?.Invoke(on);
+        panel.AvatarSettingsChanged = () => AvatarSettingsChanged?.Invoke();
+        panel.RevertMergedPr = () => RevertMergedPr?.Invoke();
         return panel;
     }
 
