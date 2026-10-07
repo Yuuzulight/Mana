@@ -613,13 +613,13 @@ internal sealed partial class SessionListForm : Form
         // The #652 mockup's push-to-talk button: counts as saying her name,
         // like clicking her on the overlay (listening comes on if it was off).
         var mic = ToolbarIconButton("Push to talk");
-        mic.Paint += (_, e) => DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor);
+        mic.Paint += (_, e) => { ShrinkToolbarIcon(e.Graphics, mic); DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor); };
         mic.Click += (_, _) => voiceLoop.Wake();
         railToolTip.SetToolTip(mic, "Talk to Mana: the next thing you say is for her");
 
         // #1325: Attach button (paperclip) for documents and images
         var attach = ToolbarIconButton("Attach files");
-        attach.Paint += (_, e) => DrawPaperclipIcon(e.Graphics, attach.ClientRectangle, attach.ForeColor);
+        attach.Paint += (_, e) => { ShrinkToolbarIcon(e.Graphics, attach); DrawPaperclipIcon(e.Graphics, attach.ClientRectangle, attach.ForeColor); };
         attach.Click += (_, _) =>
         {
             using var dialog = new OpenFileDialog
@@ -651,7 +651,7 @@ internal sealed partial class SessionListForm : Form
         {
             var shown = manaThinkingOn && ThinkingLevelPicker.IndexOf(thinkingLevel) < ThinkingLevelPicker.IndexOf("high") ? "high" : thinkingLevel;
             think.Text = $"Thinking: {ThinkingLevelPicker.LabelOf(shown)}";
-            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 32;
+            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 28;
             railToolTip.SetToolTip(think, manaThinkingOn ? "Mana turned deep thinking on; pick a lower level to end it" : "How hard she thinks before answering");
         }
         ShowThinkingChip();
@@ -702,7 +702,7 @@ internal sealed partial class SessionListForm : Form
         // and the report arrives as her message. Not saved, like Think.
         var research = ToolbarToggle("Deep research", "Deep research");
         railToolTip.SetToolTip(research, "Deep research: your next message becomes a research job -- she reads the web and comes back with a cited report");
-        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 4, 0, 0), BackColor = Color.Transparent, Font = ToolbarFont };
+        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 3, 0, 0), BackColor = Color.Transparent, Font = ToolbarFont };
         string? researchJobId = null;
         async Task ResearchAsync(string question)
         {
@@ -943,7 +943,7 @@ internal sealed partial class SessionListForm : Form
         box.BackColorChanged += (_, _) => field.Invalidate();
 
         Panel Gap() => new() { Dock = DockStyle.Left, Width = 6, BackColor = Color.Transparent };
-        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(4, 4, 4, 0), BackColor = Color.Transparent };
+        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(4, 4, 4, 0), BackColor = Color.Transparent };
         // Docked last-added first: attach on the left, then mic, Think, Deep research and its progress.
         toolbar.Controls.Add(researchStatus);
         toolbar.Controls.Add(research);
@@ -1000,7 +1000,17 @@ internal sealed partial class SessionListForm : Form
     }
 
     // #1426: the row under the field, a size smaller than the message box.
-    private static readonly Font ToolbarFont = new("Segoe UI", 8.25f);
+    private static readonly Font ToolbarFont = new("Segoe UI", 7.5f);
+
+    // The mic and paperclip are drawn 18px; the row draws them 16px.
+    private static void ShrinkToolbarIcon(Graphics g, Control button)
+    {
+        var cx = button.Width / 2f;
+        var cy = button.Height / 2f;
+        g.TranslateTransform(cx, cy);
+        g.ScaleTransform(16f / 18, 16f / 18);
+        g.TranslateTransform(-cx, -cy);
+    }
 
     // ... small icon buttons, muted until hovered.
     private static Button ToolbarIconButton(string name)
@@ -1008,7 +1018,7 @@ internal sealed partial class SessionListForm : Form
         var button = new Button
         {
             Dock = DockStyle.Left,
-            Width = 28,
+            Width = 24,
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.Background,
             ForeColor = DarkTheme.Muted,
@@ -1095,7 +1105,7 @@ internal sealed partial class SessionListForm : Form
             Font = ToolbarFont,
         };
         toggle.FlatAppearance.BorderSize = 0;
-        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 20;
+        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 16;
         var hovered = false;
         toggle.MouseEnter += (_, _) => { hovered = true; toggle.Invalidate(); };
         toggle.MouseLeave += (_, _) => { hovered = false; toggle.Invalidate(); };
@@ -1134,10 +1144,10 @@ internal sealed partial class SessionListForm : Form
 
     private const int MaxComposerLines = 8;
 
-    // #1426: 104px for one line (the field, the row under it and the
+    // #1426: 100px for one line (the field, the row under it and the
     // margins), a line taller per wrapped or typed line up to MaxComposerLines.
     internal static int ComposerHeight(int lines, int lineHeight) =>
-        104 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
+        100 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during

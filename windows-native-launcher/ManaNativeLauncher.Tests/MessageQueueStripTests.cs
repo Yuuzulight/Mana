@@ -69,10 +69,10 @@ public class MessageQueueStripTests
 
     // The composer grows a line at a time up to 8 lines, then scrolls.
     [Theory]
-    [InlineData(1, 104)]
-    [InlineData(3, 144)]
-    [InlineData(8, 244)]
-    [InlineData(30, 244)]
+    [InlineData(1, 100)]
+    [InlineData(3, 140)]
+    [InlineData(8, 240)]
+    [InlineData(30, 240)]
     public void ComposerHeight_GrowsUpToEightLines(int lines, int expected) =>
         Assert.Equal(expected, SessionListForm.ComposerHeight(lines, 20));
 }
