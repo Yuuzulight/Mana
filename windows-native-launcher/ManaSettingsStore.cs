@@ -175,6 +175,11 @@ internal sealed class ManaSettingsStore
     public bool RailToolPinned { get; set; }
     public int? RailToolWidth { get; set; }
 
+    // #1426: the Settings window -- where it was ("x,y,width,height") and
+    // the group last open. See SettingsDialog.
+    public string? SettingsWindowBounds { get; set; }
+    public string? SettingsGroup { get; set; }
+
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise
     // load/save/corruption handling without touching LocalApplicationData.

@@ -95,7 +95,7 @@ async function runToolAwareReply(
         : { tool_choice: "none" };
       const think = typeof thinking === "function" ? thinking() : thinking;
       const { params } = context.buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env: context.env });
-      if (think === true) await context.fitThinkingToContext(params, { messages, ...toolFields });
+      if (think === true || think > 0) await context.fitThinkingToContext(params, { messages, ...toolFields });
       // #1406: a remote OpenAI-compatible endpoint (DeepSeek) runs this
       // same loop through chatUrl and requestHeaders; local is llama-server.
       const send = () => context.fetchImpl(

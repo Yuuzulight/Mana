@@ -30,9 +30,9 @@ internal sealed class ManaBackendClient
     // devices, llama.cpp builds, skill import) need it or ADMIN_TOKEN now.
     public ManaBackendClient(HttpMessageHandler? handler = null, string? baseUrl = null, string? adminToken = null, string? launcherKey = null)
     {
-        http = handler is null
-            ? new HttpClient()
-            : new HttpClient(handler);
+        // #1426: an error response's {"error": "..."} becomes its reason
+        // phrase, so a failure says what the backend said.
+        http = new HttpClient(new BackendErrorHandler { InnerHandler = handler ?? new HttpClientHandler() });
         http.BaseAddress = new System.Uri(baseUrl ?? "http://127.0.0.1:5005");
         if (!string.IsNullOrEmpty(adminToken))
         {
@@ -371,7 +371,9 @@ internal sealed class ManaBackendClient
     // actions mid-game) or "typed" (gets the longer mid-game wiki wait).
     // Null sends nothing.
     // #1325: documents is a list of local file paths for document attachments (PDF, DOCX, XLSX, PPTX, CSV, TXT, MD).
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, IReadOnlyList<string>? documents = null)
+    // #1426: thinkLevel is the composer's thinking level (off, low, medium,
+    // high, max); null sends nothing and the profile decides.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, IReadOnlyList<string>? documents = null, string? thinkLevel = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
@@ -385,6 +387,10 @@ internal sealed class ManaBackendClient
         if (thinkHarder is bool think)
         {
             fields["thinkHarder"] = think;
+        }
+        if (thinkLevel is not null)
+        {
+            fields["thinkLevel"] = thinkLevel;
         }
         if (source is not null)
         {
@@ -1534,7 +1540,7 @@ internal sealed class ManaBackendClient
 
     // #914: node-bot's characters (id, name), the active one's id, and
     // whether group mode is on.
-    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, bool GroupOn)> GetCharactersAsync()
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, ManaGroupState Group)> GetCharactersAsync()
     {
         using var response = await http.GetAsync("/characters");
         response.EnsureSuccessStatusCode();
@@ -1544,9 +1550,10 @@ internal sealed class ManaBackendClient
         var characters = root.GetProperty("characters").EnumerateArray()
             .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
             .ToList();
-        var groupOn = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object
-            && group.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True;
-        return (root.GetProperty("active").GetString() ?? "", characters, groupOn);
+        var hasGroup = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object;
+        bool Flag(string name) => hasGroup && group.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+        var partner = hasGroup && group.TryGetProperty("partner", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        return (root.GetProperty("active").GetString() ?? "", characters, new ManaGroupState(Flag("on"), partner, Flag("paused")));
     }
 
     // #914: each character's relationship notes and milestones, for
@@ -1593,11 +1600,11 @@ internal sealed class ManaBackendClient
     private static string RelationshipItemPath(string characterId, string kind, string itemId) =>
         $"/characters/{Uri.EscapeDataString(characterId)}/relationship/{(kind == "milestones" ? "milestones" : "notes")}/{Uri.EscapeDataString(itemId)}";
 
-    // #914: group mode on (with the last partner, else the first other
-    // character) or off.
-    public async Task SetGroupAsync(bool on)
+    // #914: group mode on (with partner, else the last one, else the first
+    // other character) or off.
+    public async Task SetGroupAsync(bool on, string? partner = null)
     {
-        var payload = JsonSerializer.Serialize(new { on });
+        var payload = partner is null ? JsonSerializer.Serialize(new { on }) : JsonSerializer.Serialize(new { on, partner });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/characters/group", content);
         response.EnsureSuccessStatusCode();
@@ -4244,3 +4251,56 @@ public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPerio
     public ManaBalance? Balance { get; init; }
     public ManaRunway? Runway { get; init; }
 }
+
+// #1426: puts the backend's own error message where EnsureSuccessStatusCode
+// reads it. The body is buffered, so callers can still read it themselves.
+internal sealed class BackendErrorHandler : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var response = await base.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == "application/json")
+        {
+            try
+            {
+                await response.Content.LoadIntoBufferAsync();
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("error", out var error)
+                    && error.ValueKind == JsonValueKind.String
+                    && error.GetString() is { Length: > 0 } message)
+                {
+                    response.ReasonPhrase = message.ReplaceLineEndings(" ").Trim();
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+        return response;
+    }
+}
+
+internal static class BackendError
+{
+    private static readonly System.Text.RegularExpressions.Regex StatusMessage =
+        new(@"^Response status code does not indicate success: (\d+) \((.*)\)\.$");
+
+    // What to show for a failed call: the backend's sentence when it sent
+    // one, or the status ("Forbidden (403)") when it didn't.
+    internal static string Describe(Exception ex)
+    {
+        var match = StatusMessage.Match(ex.Message);
+        if (!match.Success)
+        {
+            return ex.Message;
+        }
+        var code = int.Parse(match.Groups[1].Value);
+        var reason = match.Groups[2].Value;
+        using var plain = new HttpResponseMessage((System.Net.HttpStatusCode)code);
+        return reason == plain.ReasonPhrase ? $"{reason} ({code})" : reason;
+    }
+}
+
+// #914: group mode -- on, with whom (her id), and paused by a game.
+internal sealed record ManaGroupState(bool On, string? Partner, bool Paused);

@@ -164,7 +164,7 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
         }
         catch (Exception ex)
         {
-            if (!IsDisposed) SpendingStatus.Text = $"Couldn't load API spending: {ex.Message}";
+            if (!IsDisposed) SpendingStatus.Text = $"Couldn't load API spending: {BackendError.Describe(ex)}";
         }
     }
 

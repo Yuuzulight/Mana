@@ -353,3 +353,28 @@ test("a 'think harder' turn (words or the client's flag) thinks on every reply p
   await reply("why is the sky blue", null, { thinkHarder: true });
   assert.deepEqual([toolThinking, plainThinking], [[undefined, true, true], [true]]);
 });
+
+// #1426: the chat composer's thinking levels.
+test("thinking levels: off never thinks, each other level thinks with its own budget", () => {
+  const { thinkingForLevel } = require("../ai/sampler-presets");
+  assert.equal(thinkingForLevel("off"), false);
+  assert.equal(thinkingForLevel("low"), 256);
+  assert.equal(thinkingForLevel("medium"), 512);
+  assert.equal(thinkingForLevel("high"), true);
+  assert.equal(thinkingForLevel("max"), 2048);
+  assert.equal(thinkingForLevel("nonsense"), undefined);
+  assert.equal(thinkingForLevel(undefined), undefined);
+
+  const env = {};
+  const off = buildSamplingParams({ profile: "default", maxTokens: 300, thinking: false, env });
+  assert.equal(off.thinking, false);
+  assert.equal(off.params.thinking_budget_tokens, undefined);
+  const low = buildSamplingParams({ profile: "default", maxTokens: 300, thinking: 256, env });
+  assert.equal(low.thinking, true);
+  assert.equal(low.params.thinking_budget_tokens, 256);
+  assert.equal(low.params.max_tokens, 556);
+  const max = buildSamplingParams({ profile: "default", task: "tools", maxTokens: 300, thinking: 2048, env });
+  assert.equal(max.params.thinking_budget_tokens, 512, "a tool round is capped as for think harder");
+  const high = buildSamplingParams({ profile: "default", maxTokens: 300, thinking: true, env });
+  assert.equal(high.params.thinking_budget_tokens, 1024);
+});

@@ -238,6 +238,8 @@ context.app.post("/reply", async (req, res) => {
         analysisFiles,
         systemPatch: input.systemPatch,
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
+        // #1426: the composer thinking level (off, low, medium, high, max).
+        thinkLevel: typeof req.body?.thinkLevel === "string" ? req.body.thinkLevel : undefined,
         // #911: a spoken turn may run desktop actions mid-game.
         voice: req.body?.source === "voice",
       };
@@ -436,6 +438,8 @@ context.app.post("/reply/stream", async (req, res) => {
         // #675: the client's "think harder" (deep-thinking toggle): true
         // thinks this turn, false ends Mana's own deep thinking (Q12b).
         thinkHarder: typeof req.body?.thinkHarder === "boolean" ? req.body.thinkHarder : undefined,
+        // #1426: the composer thinking level (off, low, medium, high, max).
+        thinkLevel: typeof req.body?.thinkLevel === "string" ? req.body.thinkLevel : undefined,
         // #911: a spoken turn may run desktop actions mid-game.
         voice: req.body?.source === "voice",
       };

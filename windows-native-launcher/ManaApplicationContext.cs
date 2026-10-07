@@ -298,6 +298,9 @@ internal sealed class ManaApplicationContext : ApplicationContext
             .Select(a => (a.Id, HotkeyBindings.Resolve(settings.Hotkeys, a), a.DisableEnvVar, hotkeyHandlers[a.Key]))
             .ToArray());
         sessionListForm.BindHotkey = (action, keys) => globalHotkeys.Bind(action.Id, keys);
+        sessionListForm.DictateAnywhereChanged = on => dictationService.IsEnabled = on; // #1426: from Settings > Voice
+        sessionListForm.AvatarSettingsChanged = () => RunOnUi(ApplyAvatarSettings); // #1426: from Settings > General > Avatar
+        sessionListForm.RevertMergedPr = PromptRevertPr; // #1426: from Settings > Advanced > Developer
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
@@ -449,117 +452,50 @@ internal sealed class ManaApplicationContext : ApplicationContext
         foregroundReporter = new ForegroundWindowReporter(backendClient.ReportForegroundAsync);
     }
 
+    // #1426: trimmed from 38 entries to 10. Things to do stay; settings (the
+    // avatar's, coding mode, dictation, gaming mode) live in Settings, and
+    // the tool windows beside the settings they belong with.
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add(moodItem); // #700
-        // #689: Electron's tray entries, plus its two quick buttons.
         menu.Items.Add("Open Mana", null, (_, _) => ShowSessionList());
-        menu.Items.Add("Settings…", null, (_, _) =>
-        {
-            ShowSessionList(); // #1119: Settings opens in its tool panel
-            sessionListForm.OpenSettings();
-        });
-        menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
+        menu.Items.Add("Settings…", null, (_, _) => sessionListForm.OpenSettings()); // #1426: its own window
         menu.Items.Add("Look at my screen now", null, (_, _) => _ = voiceLoop.SubmitVisionHotkeyAsync());
-        menu.Items.Add("Open Model Web UI", null, (_, _) => OpenModelWebUi());
+        // #681: Stop listening turns the mic off and puts Mana back to
+        // sleep; Start listening needs the wake word again.
+        var listeningItem = new ToolStripMenuItem();
+        listeningItem.Click += (_, _) => voiceLoop.ToggleListening();
+        menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
+        menu.Items.Add(listeningItem);
+        menu.Items.Add(BuildShowAvatarItem());
+        menu.Items.Add("Minimize to overlay", null, (_, _) => sessionListForm.Hide());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Show status", null, (_, _) => ShowStatus());
-        menu.Items.Add("Artifact Viewer", null, (_, _) => ShowArtifactViewer());
-        menu.Items.Add("Compare Models", null, (_, _) => new CompareModeForm(backendClient).Show());
-        menu.Items.Add("Pending Edits", null, (_, _) => new ProposalsForm(backendClient).Show());
-        menu.Items.Add("Edit Snapshots", null, (_, _) => new SnapshotsForm(backendClient).Show());
-        menu.Items.Add("Memory Graph", null, (_, _) => new MemoryGraphForm(backendClient).Show());
-        menu.Items.Add("Deep Research", null, (_, _) => new ResearchForm(backendClient, voiceLoop.EnsureSessionId).Show());
-        menu.Items.Add("What I'm working on", null, (_, _) => new SelfWorkForm(backendClient).Show()); // #1008
-        // #1122: her browser, for when the chat window (and its Browser tool) is closed.
-        var browserActivityItem = new ToolStripMenuItem("Browser activity") { CheckOnClick = true };
-        browserActivityItem.CheckedChanged += (_, _) => browserAutomationPanel.KeepOpen = browserActivityItem.Checked;
-        menu.Items.Add(browserActivityItem);
-        menu.Items.Add("Doctor", null, (_, _) => ShowDoctorPanel());
-        menu.Items.Add("VTube Studio", null, (_, _) => new VTubeStudioForm(backendClient).Show());
-        menu.Items.Add("Open project folder", null, (_, _) => OpenProjectFolder());
+        // #914: who's talking, listed from node-bot each time it opens (its
+        // data/characters.json can change). Picking one switches and she
+        // says her handoff line; her model follows via onCharacter.
+        var characterMenu = new ToolStripMenuItem("Character");
+        characterMenu.DropDownItems.Add(new ToolStripMenuItem("Mana") { Enabled = false }); // shows the arrow
+        characterMenu.DropDownOpening += async (_, _) => await FillCharacterMenuAsync(characterMenu);
+        menu.Items.Add(characterMenu);
         menu.Items.Add(new ToolStripSeparator());
-        // #1343: Tri-mode dedicated engineering engine toggle
-        var codingModeItem = new ToolStripMenuItem("Coding mode (14B engine)") { CheckOnClick = true };
-        menu.Opening += async (_, _) =>
+        menu.Items.Add(BuildMaintenanceMenu(menu));
+        // #1010: only while a PR runs as the live Mana.
+        var backToMainItem = new ToolStripMenuItem("Back to main", null, (_, _) => _ = RunLauncherScriptAsync("try-pr.ps1", ["-Main"], "Going back to main", "Mana's switch back to main failed", "try-pr.log"));
+        menu.Items.Add(backToMainItem);
+        menu.Opening += (_, _) =>
         {
-            try
-            {
-                var status = await backendClient.GetCodingSessionStatusAsync();
-                codingModeItem.Checked = status.Active;
-                codingModeItem.Enabled = !status.IsGaming;
-                if (status.IsGaming)
-                {
-                    codingModeItem.Text = "Coding mode (locked out while gaming)";
-                }
-                else
-                {
-                    codingModeItem.Text = status.Active ? "Coding mode (14B engine active)" : "Coding mode (14B engine)";
-                }
-            }
-            catch
-            {
-                // Best effort tray menu update
-            }
+            var running = RunningOffMain(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
+            backToMainItem.Visible = running is not null;
+            backToMainItem.Text = $"Back to main (running {running})";
         };
-        codingModeItem.Click += async (_, _) =>
-        {
-            if (codingModeItem.Checked)
-            {
-                var started = await backendClient.StartCodingSessionAsync();
-                codingModeItem.Checked = started;
-            }
-            else
-            {
-                await backendClient.StopCodingSessionAsync();
-                codingModeItem.Checked = false;
-            }
-        };
-        menu.Items.Add(codingModeItem);
-        var gamingModeItem = new ToolStripMenuItem("Gaming mode detection") { CheckOnClick = true, Checked = gamingModeEnabled };
-        menu.Opening += (_, _) => gamingModeItem.Checked = gamingModeEnabled;
-        gamingModeItem.Click += (_, _) =>
-        {
-            gamingModeEnabled = gamingModeItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.GamingModeDetection = gamingModeEnabled;
-            latest.Save();
-            if (!gamingModeEnabled)
-            {
-                gamingModeActive = false;
-                SetTrayStatus("Mana");
-                avatarOverlay.GameRunning = false;
-                if (partnerOverlay is not null)
-                {
-                    partnerOverlay.GameRunning = false;
-                }
-            }
-        };
-        menu.Items.Add(gamingModeItem);
-        // #849: Dictate anywhere (Right Ctrl hold)
-        var dictateAnywhereItem = new ToolStripMenuItem("Dictate anywhere (Right Ctrl hold)") { CheckOnClick = true };
-        dictateAnywhereItem.Checked = dictationService.IsEnabled;
-        menu.Opening += (_, _) => dictateAnywhereItem.Checked = dictationService.IsEnabled;
-        dictateAnywhereItem.Click += (_, _) =>
-        {
-            dictationService.IsEnabled = dictateAnywhereItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.DictateAnywhere = dictationService.IsEnabled;
-            latest.Save();
-        };
-        menu.Items.Add(dictateAnywhereItem);
-        // #662: back to an avatar that ignores the mouse entirely (she
-        // already does while a game runs -- Q3).
-        var clickThroughItem = new ToolStripMenuItem("Click-through avatar") { CheckOnClick = true, Checked = avatarOverlay.ClickThrough };
-        clickThroughItem.Click += (_, _) =>
-        {
-            avatarOverlay.ClickThrough = clickThroughItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.AvatarClickThrough = clickThroughItem.Checked;
-            latest.Save();
-        };
-        menu.Items.Add(clickThroughItem);
+        menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
+        return menu;
+    }
+
+    // Hiding her for a moment is something you do, so it stays in the tray.
+    private ToolStripMenuItem BuildShowAvatarItem()
+    {
         var showAvatarItem = new ToolStripMenuItem("Show avatar") { CheckOnClick = true, Checked = showAvatar };
         showAvatarItem.Click += (_, _) =>
         {
@@ -569,78 +505,35 @@ internal sealed class ManaApplicationContext : ApplicationContext
             latest.Save();
             SyncAvatarWithChat();
         };
-        menu.Items.Add(showAvatarItem);
-        var hidesWithChatItem = new ToolStripMenuItem("Hide avatar while chat is open") { CheckOnClick = true, Checked = avatarHidesWithChat };
-        hidesWithChatItem.Click += (_, _) =>
+        return showAvatarItem;
+    }
+
+    // #1426: Settings > General > Avatar saved something; apply it live.
+    private void ApplyAvatarSettings()
+    {
+        var saved = ManaSettingsStore.Load();
+        avatarHidesWithChat = saved.AvatarHidesWithChat;
+        avatarOverlay.ClickThrough = saved.AvatarClickThrough;
+        captionOverlay.Suppressed = !saved.CaptionsShown();
+        chatBubbles.BubblesOn = saved.ChatBubbles;
+        var framing = saved.OverlayFraming ?? avatarOverlay.OverlayFraming;
+        var scale = saved.OverlayScale ?? avatarOverlay.OverlayScale;
+        if (framing != avatarOverlay.OverlayFraming || scale != avatarOverlay.OverlayScale)
         {
-            avatarHidesWithChat = hidesWithChatItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.AvatarHidesWithChat = avatarHidesWithChat;
-            latest.Save();
-            SyncAvatarWithChat();
-        };
-        menu.Items.Add(hidesWithChatItem);
-        // #899: the overlay's framing and size, applied live.
-        var framingMenu = new ToolStripMenuItem("Framing");
-        foreach (var (framing, label) in new[] { ("full", "Full body"), ("upperHalf", "Upper half"), ("bust", "Bust") })
-        {
-            framingMenu.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => SetOverlayFraming(framing, avatarOverlay.OverlayScale)) { Tag = framing });
+            SetOverlayFraming(framing, scale);
         }
-        var sizeMenu = new ToolStripMenuItem("Size");
-        foreach (var scale in AvatarOverlayForm.OverlayScales)
-        {
-            sizeMenu.DropDownItems.Add(new ToolStripMenuItem($"{scale * 100:0}%", null, (_, _) => SetOverlayFraming(avatarOverlay.OverlayFraming, scale)) { Tag = scale });
-        }
-        menu.Opening += (_, _) =>
-        {
-            foreach (ToolStripMenuItem item in framingMenu.DropDownItems)
-            {
-                item.Checked = Equals(item.Tag, avatarOverlay.OverlayFraming);
-            }
-            foreach (ToolStripMenuItem item in sizeMenu.DropDownItems)
-            {
-                item.Checked = Equals(item.Tag, avatarOverlay.OverlayScale);
-            }
-        };
-        menu.Items.Add(framingMenu);
-        menu.Items.Add(sizeMenu);
-        // #914: who's talking, listed from node-bot each time it opens (its
-        // data/characters.json can change). Picking one switches and she
-        // says her handoff line; her model follows via onCharacter.
-        var characterMenu = new ToolStripMenuItem("Character");
-        characterMenu.DropDownItems.Add(new ToolStripMenuItem("Mana") { Enabled = false }); // shows the arrow
-        characterMenu.DropDownOpening += async (_, _) => await FillCharacterMenuAsync(characterMenu);
-        menu.Items.Add(characterMenu);
-        // #701: off by default.
-        var bubblesItem = new ToolStripMenuItem("Chat bubbles beside Mana") { CheckOnClick = true, Checked = chatBubbles.BubblesOn };
-        bubblesItem.Click += (_, _) =>
-        {
-            chatBubbles.BubblesOn = bubblesItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.ChatBubbles = bubblesItem.Checked;
-            latest.Captions ??= !captionOverlay.Suppressed; // pin what's showing now
-            latest.Save();
-        };
-        menu.Items.Add(bubblesItem);
-        var captionsItem = new ToolStripMenuItem("Captions under Mana") { CheckOnClick = true, Checked = !captionOverlay.Suppressed };
-        captionsItem.Click += (_, _) =>
-        {
-            captionOverlay.Suppressed = !captionsItem.Checked;
-            var latest = ManaSettingsStore.Load();
-            latest.Captions = captionsItem.Checked;
-            latest.Save();
-        };
-        menu.Items.Add(captionsItem);
-        // #681: Stop listening turns the mic off and puts Mana back to
-        // sleep; Start listening needs the wake word again.
-        var listeningItem = new ToolStripMenuItem();
-        listeningItem.Click += (_, _) => voiceLoop.ToggleListening();
-        menu.Opening += (_, _) => listeningItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
-        menu.Items.Add(listeningItem);
-        menu.Items.Add(new ToolStripSeparator());
+        SyncAvatarWithChat();
+    }
+
+    private ToolStripMenuItem BuildMaintenanceMenu(ContextMenuStrip menu)
+    {
+        var upkeep = new ToolStripMenuItem("Maintenance");
+        upkeep.DropDownItems.Add("Show status", null, (_, _) => ShowStatus());
+        upkeep.DropDownItems.Add("Doctor", null, (_, _) => ShowDoctorPanel());
         if (processManager.IsBackendLocal)
         {
-            menu.Items.Add("Restart backend", null, (_, _) =>
+            upkeep.DropDownItems.Add(new ToolStripSeparator());
+            upkeep.DropDownItems.Add("Restart backend", null, (_, _) =>
             {
                 backendCrashes.Clear(); // asked for: try again even after giving up
                 _ = RestartBackendAsync(); // #991
@@ -654,23 +547,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
             // backend has picked.
             var restartFishItem = new ToolStripMenuItem("Restart Fish Speech", null, (_, _) => RestartFishSpeech());
             menu.Opening += (_, _) => restartFishItem.Visible = processManager.UsesFishSpeech;
-            menu.Items.Add(restartFishItem);
+            upkeep.DropDownItems.Add(restartFishItem);
         }
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
-        // #1010: run a PR as the live Mana, and back.
-        menu.Items.Add("Try a PR...", null, (_, _) => PromptTryPr());
-        var backToMainItem = new ToolStripMenuItem("Back to main", null, (_, _) => _ = RunLauncherScriptAsync("try-pr.ps1", ["-Main"], "Going back to main", "Mana's switch back to main failed", "try-pr.log"));
-        menu.Items.Add(backToMainItem);
-        menu.Items.Add("Revert a merged PR...", null, (_, _) => PromptRevertPr()); // #1011
-        menu.Opening += (_, _) =>
-        {
-            var running = RunningOffMain(Path.Combine(processManager.RootDirectory, "windows-native-launcher"));
-            backToMainItem.Visible = running is not null;
-            backToMainItem.Text = $"Back to main (running {running})";
-        };
-        menu.Items.Add("Exit Mana", null, (_, _) => _ = ShutdownAsync());
-        return menu;
+        upkeep.DropDownItems.Add(new ToolStripSeparator());
+        upkeep.DropDownItems.Add("Update now", null, (_, _) => _ = RunUpdateScriptAsync()); // #995
+        upkeep.DropDownItems.Add("Try a PR...", null, (_, _) => PromptTryPr()); // #1010
+        return upkeep;
     }
 
     private async Task StartServicesAsync()
@@ -1030,17 +912,15 @@ internal sealed class ManaApplicationContext : ApplicationContext
         avatarOverlay.LipSyncDriver.OnSamplesPlayed(samples, sampleRate);
     }
 
-    // #914: the tray's Character submenu, the active one checked, and the
-    // group mode toggle (a partner replying too).
+    // #914: the tray's Character submenu, the active one checked.
     private async Task FillCharacterMenuAsync(ToolStripMenuItem characterMenu)
     {
         IEnumerable<ToolStripItem> items;
         try
         {
-            var (active, characters, groupOn) = await backendClient.GetCharactersAsync();
-            items = characters.Select(c => (ToolStripItem)new ToolStripMenuItem(c.Name, null, async (_, _) => await SwitchCharacterAsync(c.Id)) { Checked = c.Id == active })
-                .Append(new ToolStripSeparator())
-                .Append(new ToolStripMenuItem("Group mode", null, async (_, _) => await SetGroupModeAsync(!groupOn)) { Checked = groupOn });
+            var (active, characters, _) = await backendClient.GetCharactersAsync();
+            // #1426: group mode moved to Settings > Memory > Group mode.
+            items = characters.Select(c => (ToolStripItem)new ToolStripMenuItem(c.Name, null, async (_, _) => await SwitchCharacterAsync(c.Id)) { Checked = c.Id == active });
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
@@ -1062,18 +942,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
             Console.WriteLine($"Couldn't switch character to {id}. {ex.Message}");
-        }
-    }
-
-    private async Task SetGroupModeAsync(bool on)
-    {
-        try
-        {
-            await backendClient.SetGroupAsync(on);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        {
-            Console.WriteLine($"Couldn't turn group mode {(on ? "on" : "off")}. {ex.Message}");
         }
     }
 
@@ -1155,7 +1023,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
 
     // Electron's "Open Model Web UI" quick button: the local model web UI
     // on port 7860.
-    private static void OpenModelWebUi()
+    internal static void OpenModelWebUi()
     {
         try
         {

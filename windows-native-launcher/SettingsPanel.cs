@@ -118,47 +118,69 @@ internal sealed class SettingsPanel : UserControl
         BackColor = DarkTheme.Background;
         ForeColor = DarkTheme.Text;
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        DarkTheme.ApplyTabControl(tabs);
-        tabs.TabPages.Add(BuildConnectionTab());
-        tabs.TabPages.Add(BuildPluginsTab());
-        tabs.TabPages.Add(BuildMemoryFactsTab());
-        tabs.TabPages.Add(BuildSkillsTab());
-        tabs.TabPages.Add(BuildApprovalsTab());
+        // #1426: nine groups in a sidebar, each holding the pages that used to
+        // be tabs of their own, and a search over every page's words. This is
+        // stage 1 of the redesign: the pages are regrouped as they are, and
+        // later stages redraw each group as one page of rows.
+        var backendPage = BuildConnectionTab(out var startupPage, out var localOnlyPage);
+        var timingsPage = BuildPerfTab(out var gamingPage);
         var voiceTab = BuildVoiceTab();
-        tabs.TabPages.Add(voiceTab);
-        tabs.TabPages.Add(BuildBriefingTab());
-        tabs.TabPages.Add(new TabPage("Desktop") { Controls = { new DesktopFoldersPanel() } }); // #997
-        tabs.TabPages.Add(new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }); // #914
-        tabs.TabPages.Add(BuildHotkeysTab());
-        tabs.TabPages.Add(BuildLogsTab());
-        tabs.TabPages.Add(BuildThemeTab());
-        tabs.TabPages.Add(BuildPerfTab());
-        tabs.TabPages.Add(BuildPresetsTab());
-        tabs.TabPages.Add(BuildModelTab());
-        tabs.TabPages.Add(new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }); // #1406
-        tabs.TabPages.Add(BuildMobileDevicesTab());
-        tabs.TabPages.Add(BuildAccountsTab());
-        tabs.TabPages.Add(BuildMailCalendarTab());
-        tabs.TabPages.Add(BuildMcpServersTab());
-        tabs.TabPages.Add(BuildHooksTab());
-        tabs.TabPages.Add(new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
-        tabs.TabPages.Add(new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }); // #697
-        tabs.TabPages.Add(BuildPrivacyTab()); // #1336
-        foreach (TabPage page in tabs.TabPages)
+        var privacyPage = BuildPrivacyTab();
+        privacyPage.Text = "Your data";
+        var factsPage = BuildMemoryFactsTab();
+        factsPage.Text = "Facts";
+        AddGroup("general", "General", startupPage, BuildThemeTab(), BuildAvatarTab(), BuildHotkeysTab(), gamingPage);
+        AddGroup("voice", "Voice", voiceTab, BuildDictationTab());
+        AddGroup("checkins", "Check-ins",
+            new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }, // #697
+            BuildBriefingTab(),
+            new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
+        AddGroup("memory", "Memory", factsPage,
+            new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }, // #914
+            BuildGroupModeTab(), BuildSkillsTab(), BuildPresetsTab(), BuildMemoryToolsTab());
+        AddGroup("models", "Models", BuildModelTab(),
+            new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }, // #1406
+            BuildCodingModeTab(), BuildModelToolsTab());
+        AddGroup("permissions", "Permissions", BuildApprovalsTab(),
+            new TabPage("Desktop folders") { Controls = { new DesktopFoldersPanel() } }, // #997
+            BuildPendingEditsTab());
+        AddGroup("privacy", "Privacy", localOnlyPage, privacyPage); // #1336
+        AddGroup("connections", "Connections", BuildMailCalendarTab(), BuildMobileDevicesTab(), BuildAccountsTab(), BuildPluginsTab(), BuildMcpServersTab());
+        AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage, BuildDeveloperTab());
+
+        content.Dock = DockStyle.Fill;
+        content.BackColor = DarkTheme.Background;
+        foreach (var group in groups)
         {
-            page.BackColor = DarkTheme.Background;
-            page.AutoScroll = true; // #1119: fixed-width rows scroll in the narrow tool panel
+            content.Controls.Add(group.Tabs);
         }
-        // #922: leaving the Voice tab mid-enrolment cancels it, like closing Settings.
-        tabs.Deselected += (_, e) =>
+        searchResults.Dock = DockStyle.Fill;
+        searchResults.View = View.Details;
+        searchResults.FullRowSelect = true;
+        searchResults.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+        searchResults.Columns.Add("Setting", 300);
+        searchResults.Columns.Add("Where", 220);
+        searchResults.AccessibleName = "Search results";
+        searchResults.Visible = false;
+        DarkTheme.ApplyListView(searchResults);
+        searchResults.ItemActivate += (_, _) => OpenResult(searchResults.FocusedItem);
+        searchResults.MouseClick += (_, e) => OpenResult(searchResults.GetItemAt(e.X, e.Y));
+        content.Controls.Add(searchResults);
+        // Last added docks first: the header and its page pills sit above the page.
+        content.Controls.Add(pagePills);
+        content.Controls.Add(BuildHeader());
+        Controls.Add(content);
+        Controls.Add(BuildSidebar());
+
+        // #922: leaving the Voice group mid-enrolment cancels it, like closing Settings.
+        GroupChanged += previous =>
         {
-            if (e.TabPage == voiceTab)
+            if (previous == "voice")
             {
                 enrolmentCancel?.Cancel();
             }
         };
-        // #1119: so does the tool panel hiding it (it isn't closed any more).
+        // #1119: so does Settings being hidden.
         VisibleChanged += (_, _) =>
         {
             if (!Visible)
@@ -166,38 +188,431 @@ internal sealed class SettingsPanel : UserControl
                 enrolmentCancel?.Cancel();
             }
         };
-        Controls.Add(tabs);
-
-        // #1119: in the chat window's tool panel the tab strip won't fit, so
-        // below NarrowWidth a dropdown picks the tab and the strip folds away.
-        pagePicker.Items.AddRange(tabs.TabPages.Cast<TabPage>().Select(p => p.Text).ToArray<object>());
-        pagePicker.SelectedIndex = 0;
-        pagePicker.SelectedIndexChanged += (_, _) => tabs.SelectedIndex = pagePicker.SelectedIndex;
-        tabs.SelectedIndexChanged += (_, _) => pagePicker.SelectedIndex = tabs.SelectedIndex;
-        var stripSize = Size.Empty;
-        bool? wasNarrow = null;
-        SizeChanged += (_, _) =>
+        DarkTheme.Changed += UpdateNav;
+        Disposed += (_, _) =>
         {
-            var narrow = Width < NarrowWidth;
-            if (wasNarrow == narrow)
-            {
-                return;
-            }
-            wasNarrow = narrow;
-            if (narrow)
-            {
-                stripSize = tabs.ItemSize; // measured once there's a handle
-            }
-            pagePicker.Visible = narrow;
-            tabs.SizeMode = narrow ? TabSizeMode.Fixed : TabSizeMode.Normal;
-            tabs.ItemSize = narrow ? new Size(0, 1) : stripSize;
+            DarkTheme.Changed -= UpdateNav;
+            groupFont.Dispose();
+            activeGroupFont.Dispose();
+            descriptionFont.Dispose();
+            titleFont.Dispose();
         };
-        Controls.Add(pagePicker);
+        ShowGroup("general");
     }
 
-    internal const int NarrowWidth = 560;
-    private readonly ComboBox pagePicker = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList, Visible = false, AccessibleName = "Settings section", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-    internal ComboBox PagePicker => pagePicker; // tests
+    internal sealed record SettingsGroup(string Id, string Label, string Description, TabControl Tabs);
+
+    private readonly List<SettingsGroup> groups = new();
+    private readonly Panel content = new();
+    private readonly ListView nav = new();
+    private readonly ImageList navRowHeight = new();
+    private readonly TextBox searchBox = new();
+    private readonly ListView searchResults = new();
+    private readonly Label titleLabel = new();
+    private readonly Label descriptionLabel = new();
+    private readonly FlowLayoutPanel pagePills = new();
+    // #1426: the chat window's sidebar fonts, so its rows read the same.
+    private readonly Font groupFont = new("Segoe UI", 9.75f);
+    private readonly Font activeGroupFont = new("Segoe UI Semibold", 9.75f);
+    private readonly Font descriptionFont = new("Segoe UI", 9f);
+    private readonly Font titleFont = new("Segoe UI Semibold", 10.5f);
+    private bool showingNav;
+
+    internal IReadOnlyList<SettingsGroup> Groups => groups; // tests
+    internal TextBox SearchBox => searchBox; // tests
+    internal ListView SearchResults => searchResults; // tests
+    internal ListView Nav => nav; // tests
+    internal FlowLayoutPanel PagePills => pagePills; // tests
+    internal string CurrentGroup { get; private set; } = "";
+
+    // The group that was showing, each time another one opens.
+    internal event Action<string>? GroupChanged;
+
+    // A few words people search for that no label on the page says.
+    private static readonly Dictionary<string, string> PageKeywords = new()
+    {
+        ["Startup"] = "login boot sign in windows",
+        ["Theme"] = "dark light colour color accent",
+        ["Hotkeys"] = "shortcut keyboard keys",
+        ["Gaming"] = "game fullscreen",
+        ["Voice"] = "mic microphone speech wake word voiceprint camera",
+        ["Facts"] = "memory remember knowledge obsidian vault",
+        ["Characters"] = "persona relationship milestones evil mana",
+        ["Model"] = "llm gguf brain remote cloud fallback provider",
+        ["API Spending"] = "deepseek key cost money balance tokens escalation",
+        ["Approvals"] = "permission ask allow deny git github",
+        ["Desktop folders"] = "files tidy move rename",
+        ["Local-only"] = "offline cloud privacy",
+        ["Your data"] = "export delete wipe backup",
+        ["Plugins"] = "addon add-on extension",
+        ["MCP Clients"] = "mcp servers tools",
+        ["Backend"] = "url port server admin token",
+        ["Timings"] = "performance perf speed",
+        ["Coding mode"] = "14b engineering code programming",
+        ["Dictation"] = "dictate type right ctrl",
+        ["Group mode"] = "partner sister evil mana second character duo",
+        ["Avatar"] = "live2d framing size captions bubbles vtube click-through overlay",
+        ["Memory tools"] = "graph snapshots undo rollback",
+        ["Model tools"] = "compare web ui llama",
+        ["Pending edits"] = "proposals approve changes",
+        ["Developer"] = "project folder revert pr",
+    };
+
+    // What each group is for, under its name in the sidebar and the header.
+    private static readonly Dictionary<string, string> GroupDescriptions = new()
+    {
+        ["general"] = "How Mana starts and looks",
+        ["voice"] = "How she listens and answers",
+        ["checkins"] = "When she speaks up on her own",
+        ["memory"] = "What she knows and how she replies",
+        ["models"] = "Which brain she uses, and the cost",
+        ["permissions"] = "What she may do without asking",
+        ["privacy"] = "What happens to your data",
+        ["connections"] = "Accounts, devices and services",
+        ["advanced"] = "Backend and diagnostics",
+    };
+
+    private void AddGroup(string id, string label, params TabPage[] pages)
+    {
+        var tabs = new TabControl { Dock = DockStyle.Fill, Visible = false, AccessibleName = label };
+        DarkTheme.ApplyTabControl(tabs);
+        foreach (var page in pages)
+        {
+            page.BackColor = DarkTheme.Background;
+            page.AutoScroll = true;
+            tabs.TabPages.Add(page);
+        }
+        // The pills under the header pick the page, so the strip folds away.
+        tabs.SizeMode = TabSizeMode.Fixed;
+        tabs.ItemSize = new Size(0, 1);
+        tabs.SelectedIndexChanged += (_, _) => UpdatePills();
+        groups.Add(new SettingsGroup(id, label, GroupDescriptions.GetValueOrDefault(id, ""), tabs));
+    }
+
+    // #1426: the chat window's sidebar: its glass search field, then the
+    // groups as its rows are drawn (a name over a muted line, the open one
+    // on a card), under "Settings" and "More" headers.
+    private Control BuildSidebar()
+    {
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 230, BackColor = DarkTheme.Background, Padding = new Padding(10) };
+        searchBox.Dock = DockStyle.Top;
+        searchBox.PlaceholderText = "Search settings";
+        searchBox.AccessibleName = "Search settings";
+        searchBox.BackColor = DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
+        searchBox.ForeColor = DarkTheme.Text;
+        searchBox.TextChanged += (_, _) => Search(searchBox.Text);
+        searchBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter && searchResults.Items.Count > 0)
+            {
+                OpenResult(searchResults.Items[0]);
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                searchBox.Clear();
+                e.SuppressKeyPress = true;
+            }
+        };
+        var searchField = GlassSurface.Field(searchBox, new Padding(10, 8, 10, 0));
+        searchField.Dock = DockStyle.Top;
+        searchField.Height = 32;
+
+        nav.Dock = DockStyle.Fill;
+        nav.View = View.Details;
+        nav.HeaderStyle = ColumnHeaderStyle.None;
+        nav.FullRowSelect = true;
+        nav.HideSelection = false;
+        nav.MultiSelect = false;
+        nav.BorderStyle = BorderStyle.None;
+        nav.BackColor = DarkTheme.Background;
+        nav.ForeColor = DarkTheme.Text;
+        nav.AccessibleName = "Settings groups";
+        nav.Columns.Add("Group", 200);
+        nav.OwnerDraw = true;
+        nav.DrawItem += OnDrawGroupItem;
+        nav.ClientSizeChanged += (_, _) => nav.Columns[0].Width = nav.ClientSize.Width;
+        navRowHeight.ImageSize = new Size(1, LogicalToDeviceUnits(48));
+        nav.SmallImageList = navRowHeight;
+        var main = new ListViewGroup("main", "Settings");
+        var more = new ListViewGroup("more", "More");
+        nav.Groups.Add(main);
+        nav.Groups.Add(more);
+        foreach (var group in groups)
+        {
+            nav.Items.Add(new ListViewItem(new[] { group.Label, group.Description }, group.Id == "advanced" ? more : main) { Tag = group.Id });
+        }
+        nav.SelectedIndexChanged += (_, _) =>
+        {
+            if (!showingNav && nav.SelectedItems.Count > 0 && nav.SelectedItems[0].Tag is string id)
+            {
+                ShowGroup(id);
+            }
+        };
+
+        sidebar.Controls.Add(nav);
+        sidebar.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 8, BackColor = Color.Transparent });
+        sidebar.Controls.Add(searchField);
+        return sidebar;
+    }
+
+    // As SessionListForm.OnDrawSessionItem draws a chat: glass card under the
+    // open group in the Mana preset, an accent tint elsewhere.
+    private void OnDrawGroupItem(object? sender, DrawListViewItemEventArgs e)
+    {
+        var g = e.Graphics;
+        var bounds = e.Bounds with { Width = nav.ClientSize.Width };
+        var card = Rectangle.Inflate(bounds, 0, -1);
+        var active = (string?)e.Item.Tag == CurrentGroup && !searchResults.Visible;
+        if (DarkTheme.IsGlass)
+        {
+            GlassSurface.PaintGlowBehind(g, nav, bounds);
+            if (active)
+            {
+                using var fill = new SolidBrush(Color.FromArgb(179, 255, 255, 255));
+                g.FillRectangle(fill, card);
+                GlassSurface.PaintGlassEdges(g, card, null);
+            }
+        }
+        else
+        {
+            using var back = new SolidBrush(nav.BackColor);
+            g.FillRectangle(back, bounds);
+            if (active)
+            {
+                using var tint = new SolidBrush(Color.FromArgb(56, DarkTheme.Accent));
+                g.FillRectangle(tint, card);
+            }
+        }
+        var pad = LogicalToDeviceUnits(10);
+        var font = active ? activeGroupFont : groupFont;
+        var gap = LogicalToDeviceUnits(2);
+        var top = card.Y + (card.Height - font.Height - gap - descriptionFont.Height) / 2;
+        const TextFormatFlags flags = TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        TextRenderer.DrawText(g, e.Item.Text, font, new Rectangle(card.X + pad, top, card.Width - pad * 2, font.Height), active && !DarkTheme.IsGlass ? DarkTheme.Accent : DarkTheme.Text, flags);
+        TextRenderer.DrawText(g, e.Item.SubItems[1].Text, descriptionFont, new Rectangle(card.X + pad, top + font.Height + gap, card.Width - pad * 2, descriptionFont.Height), DarkTheme.Muted, flags);
+        if (e.Item.Focused && nav.Focused && GlassSurface.ShowsFocusCues(nav))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -2, -1));
+        }
+    }
+
+    // #1426: the chat window's 36px header: the group's name in its title
+    // font, what it's for beside it, a hairline under.
+    private Control BuildHeader()
+    {
+        var header = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = DarkTheme.Background, Padding = new Padding(12, 4, 12, 4) };
+        header.Paint += (_, e) =>
+        {
+            using var line = new Pen(DarkTheme.IsGlass ? Color.FromArgb(36, 106, 95, 184) : DarkTheme.Border);
+            e.Graphics.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
+        };
+        titleLabel.Dock = DockStyle.Left;
+        titleLabel.AutoSize = true;
+        titleLabel.Font = titleFont;
+        titleLabel.ForeColor = DarkTheme.Text;
+        titleLabel.Padding = new Padding(0, 5, 8, 0);
+        descriptionLabel.Dock = DockStyle.Fill;
+        descriptionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        descriptionLabel.ForeColor = DarkTheme.Muted;
+        descriptionLabel.AutoEllipsis = true;
+        header.Controls.Add(descriptionLabel);
+        header.Controls.Add(titleLabel);
+
+        pagePills.Dock = DockStyle.Top;
+        pagePills.AutoSize = true;
+        pagePills.WrapContents = true;
+        pagePills.Padding = new Padding(10, 8, 10, 2);
+        pagePills.BackColor = DarkTheme.Background;
+        pagePills.AccessibleName = "Pages";
+        return header;
+    }
+
+    // One pill per page of the open group; none when it has one page.
+    private void UpdatePills()
+    {
+        var group = groups.Find(g => g.Id == CurrentGroup);
+        pagePills.SuspendLayout();
+        foreach (Control old in pagePills.Controls.Cast<Control>().ToList())
+        {
+            old.Dispose();
+        }
+        if (group is not null && group.Tabs.TabCount > 1 && !searchResults.Visible)
+        {
+            foreach (TabPage page in group.Tabs.TabPages)
+            {
+                var on = group.Tabs.SelectedTab == page;
+                var pill = new Button
+                {
+                    Text = page.Text,
+                    AutoSize = true,
+                    UseMnemonic = false,
+                    Margin = new Padding(0, 0, 6, 6),
+                    Padding = new Padding(8, 2, 8, 2),
+                    AccessibleDescription = on ? "Showing" : null,
+                };
+                DarkTheme.ApplyButton(pill);
+                if (on)
+                {
+                    pill.ForeColor = DarkTheme.Accent;
+                    pill.FlatAppearance.BorderColor = DarkTheme.Accent;
+                }
+                var target = page;
+                pill.Click += (_, _) => group.Tabs.SelectedTab = target;
+                pagePills.Controls.Add(pill);
+            }
+        }
+        pagePills.Visible = pagePills.Controls.Count > 0;
+        pagePills.ResumeLayout();
+    }
+
+    internal void ShowGroup(string id)
+    {
+        var group = groups.Find(g => g.Id == id) ?? groups[0];
+        if (searchBox.Text.Length > 0)
+        {
+            searchBox.Text = ""; // closes the results
+        }
+        var previous = CurrentGroup;
+        CurrentGroup = group.Id;
+        foreach (var g in groups)
+        {
+            g.Tabs.Visible = g == group;
+        }
+        searchResults.Visible = false;
+        UpdateNav();
+        if (previous != group.Id && previous.Length > 0)
+        {
+            GroupChanged?.Invoke(previous);
+        }
+    }
+
+    private void UpdateNav()
+    {
+        var group = groups.Find(g => g.Id == CurrentGroup);
+        titleLabel.Text = searchResults.Visible ? "Search" : group?.Label ?? "";
+        descriptionLabel.Text = searchResults.Visible ? "Settings whose words match" : group?.Description ?? "";
+        showingNav = true;
+        foreach (ListViewItem item in nav.Items)
+        {
+            item.Selected = (string?)item.Tag == CurrentGroup && !searchResults.Visible;
+        }
+        showingNav = false;
+        nav.Invalidate();
+        UpdatePills();
+    }
+
+    // Every word a page shows (labels, checkboxes, buttons, box titles,
+    // list columns) plus its keywords, matched as you type.
+    internal void Search(string query)
+    {
+        var q = query.Trim();
+        searchResults.BeginUpdate();
+        searchResults.Items.Clear();
+        if (q.Length > 0)
+        {
+            var seen = new HashSet<string>();
+            foreach (var group in groups)
+            {
+                foreach (TabPage page in group.Tabs.TabPages)
+                {
+                    var where = group.Tabs.TabCount > 1 ? $"{group.Label} › {page.Text}" : group.Label;
+                    foreach (var (text, matches, control) in SearchableTexts(page))
+                    {
+                        if (matches.Contains(q, StringComparison.OrdinalIgnoreCase) && seen.Add(where + "|" + text))
+                        {
+                            searchResults.Items.Add(new ListViewItem(new[] { text, where }) { Tag = (group.Id, page, control) });
+                        }
+                    }
+                }
+            }
+            if (searchResults.Items.Count == 0)
+            {
+                searchResults.Items.Add(new ListViewItem(new[] { $"Nothing matches \"{q}\". Try a shorter word.", "" }) { ForeColor = DarkTheme.Muted });
+            }
+        }
+        searchResults.EndUpdate();
+        // Results take the group's place while there's a search.
+        searchResults.Visible = q.Length > 0;
+        foreach (var g in groups)
+        {
+            g.Tabs.Visible = !searchResults.Visible && g.Id == CurrentGroup;
+        }
+        UpdateNav();
+    }
+
+    // What a result shows, what it's matched against, and where it points.
+    // A page's keywords match as the page itself.
+    private static IEnumerable<(string Text, string Matches, Control Control)> SearchableTexts(TabPage page)
+    {
+        yield return (page.Text, page.Text + " " + PageKeywords.GetValueOrDefault(page.Text, ""), page);
+        foreach (var control in Descendants(page))
+        {
+            var text = control switch
+            {
+                Label or CheckBox or RadioButton or Button or GroupBox => control.Text,
+                _ => control.AccessibleName,
+            };
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                var shown = text.Trim().ReplaceLineEndings(" ");
+                yield return (shown, shown, control);
+            }
+            if (control is ListView list)
+            {
+                foreach (ColumnHeader column in list.Columns)
+                {
+                    yield return (column.Text, column.Text, list);
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            yield return child;
+            foreach (var grandchild in Descendants(child))
+            {
+                yield return grandchild;
+            }
+        }
+    }
+
+    // A result opens its group and page and points at the control.
+    internal void OpenResult(ListViewItem? item)
+    {
+        if (item?.Tag is not ValueTuple<string, TabPage, Control> target)
+        {
+            return;
+        }
+        var (groupId, page, control) = target;
+        ShowGroup(groupId);
+        var tabs = groups.Find(g => g.Id == groupId)!.Tabs;
+        tabs.SelectedTab = page;
+        if (control == page)
+        {
+            return;
+        }
+        page.ScrollControlIntoView(control);
+        if (control.CanFocus)
+        {
+            control.Focus();
+        }
+        var fore = control.ForeColor;
+        control.ForeColor = DarkTheme.Accent;
+        var timer = new System.Windows.Forms.Timer { Interval = 1500 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Dispose();
+            if (!control.IsDisposed)
+            {
+                control.ForeColor = fore;
+            }
+        };
+        timer.Start();
+    }
 
     // #1119: Settings > Presets' active choice, as it's saved, so a
     // non-modal Settings applies it to the next reply.
@@ -218,6 +633,8 @@ internal sealed class SettingsPanel : UserControl
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
+        await RefreshCodingModeAsync();
+        await RefreshGroupModeAsync();
         await RefreshLlamaBuildAsync();
         await RefreshMobileDevicesAsync();
         await RefreshAccountsAsync();
@@ -246,13 +663,14 @@ internal sealed class SettingsPanel : UserControl
     // the same small file directly here is simpler than plumbing a store
     // reference through two more constructors for a value nothing else
     // needs mid-session.
-    private TabPage BuildConnectionTab()
+    private TabPage BuildConnectionTab(out TabPage startupPage, out TabPage localOnlyPage)
     {
         var settings = ManaSettingsStore.Load();
 
         var urlLabel = new Label { Text = "Backend URL", AutoSize = true, ForeColor = DarkTheme.Text };
         var urlBox = new TextBox { Text = settings.BackendBaseUrl, Width = 320, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-        var tokenLabel = new Label { Text = "Admin token (optional)", AutoSize = true, ForeColor = DarkTheme.Text };
+        var tokenLabel = new Label { Text = "Admin token", AutoSize = true, ForeColor = DarkTheme.Text };
+        var tokenHint = new Label { Text = "Only needed when Mana's backend runs separately from this launcher, like on another PC. It's the ADMIN_TOKEN in node-bot/.env.", AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = DarkTheme.Muted };
         var tokenBox = new TextBox { Text = settings.AdminToken ?? "", Width = 320, UseSystemPasswordChar = true, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
         var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
 
@@ -293,14 +711,309 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(urlLabel);
         layout.Controls.Add(urlBox);
         layout.Controls.Add(tokenLabel);
+        layout.Controls.Add(tokenHint);
         layout.Controls.Add(tokenBox);
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
-        layout.Controls.Add(BuildLocalOnlyRow(settings.LocalOnly));
-        layout.Controls.Add(BuildStartWithWindowsRow());
-
-        return new TabPage("Connection") { Controls = { layout } };
+        startupPage = OneRowPage("Startup", BuildStartWithWindowsRow());
+        localOnlyPage = OneRowPage("Local-only", BuildLocalOnlyRow(settings.LocalOnly));
+        return new TabPage("Backend") { Controls = { layout } };
     }
+
+    // #1426: a page holding one row that used to sit on another tab.
+    private static TabPage OneRowPage(string title, Control row)
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(row);
+        return new TabPage(title) { Controls = { layout } };
+    }
+
+    // #1426: moved here from the tray. Starts or stops the 14B coding
+    // engine (#1343); it can't run while a game does.
+    private readonly CheckBox codingModeCheck = new() { Text = "Coding mode (14B engine)", AutoSize = true };
+    private readonly Label codingModeStatus = new() { AutoSize = true };
+    private bool loadingCodingMode;
+
+    private TabPage BuildCodingModeTab()
+    {
+        codingModeCheck.ForeColor = DarkTheme.Text;
+        codingModeStatus.ForeColor = DarkTheme.Muted;
+        codingModeCheck.CheckedChanged += async (_, _) =>
+        {
+            if (loadingCodingMode)
+            {
+                return;
+            }
+            try
+            {
+                if (codingModeCheck.Checked)
+                {
+                    await backendClient.StartCodingSessionAsync();
+                }
+                else
+                {
+                    await backendClient.StopCodingSessionAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                codingModeStatus.Text = $"Couldn't switch it: {BackendError.Describe(ex)}";
+                return;
+            }
+            await RefreshCodingModeAsync();
+        };
+        var hint = new Label
+        {
+            Text = "Loads the bigger engineering model for coding work, and unloads it when you switch this off.",
+            AutoSize = true,
+            MaximumSize = new Size(460, 0),
+            ForeColor = DarkTheme.Muted,
+        };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(codingModeCheck);
+        layout.Controls.Add(hint);
+        layout.Controls.Add(codingModeStatus);
+        return new TabPage("Coding mode") { Controls = { layout } };
+    }
+
+    private async Task RefreshCodingModeAsync()
+    {
+        try
+        {
+            var status = await backendClient.GetCodingSessionStatusAsync();
+            loadingCodingMode = true;
+            codingModeCheck.Checked = status.Active;
+            codingModeCheck.Enabled = !status.IsGaming;
+            codingModeStatus.Text = status.IsGaming ? $"Locked out while {status.Game ?? "a game"} is running."
+                : status.Active ? "On: the 14B engine is loaded." : "Off.";
+        }
+        catch (Exception ex)
+        {
+            codingModeStatus.Text = $"Couldn't load: {BackendError.Describe(ex)}";
+        }
+        finally
+        {
+            loadingCodingMode = false;
+        }
+    }
+
+    // #1426: moved here from the tray (#849). The launcher applies it live
+    // through DictateAnywhereChanged.
+    public Action<bool>? DictateAnywhereChanged { get; set; }
+
+    private TabPage BuildDictationTab()
+    {
+        var check = new CheckBox
+        {
+            Text = "Dictate anywhere: hold Right Ctrl and speak to type into any app",
+            AutoSize = true,
+            ForeColor = DarkTheme.Text,
+            Checked = ManaSettingsStore.Load().DictateAnywhere,
+        };
+        check.CheckedChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.DictateAnywhere = check.Checked;
+            latest.Save();
+            DictateAnywhereChanged?.Invoke(check.Checked);
+        };
+        return OneRowPage("Dictation", check);
+    }
+
+    // #1426: group mode (#914) moved here from the tray: a second character
+    // replies alongside the active one, and her avatar stands beside Mana's.
+    private readonly CheckBox groupModeCheck = new() { Text = "Group mode: a second character replies alongside the active one", AutoSize = true };
+    private readonly ComboBox groupPartnerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Group mode partner" };
+    private readonly Label groupModeStatus = new() { AutoSize = true };
+    private bool loadingGroupMode;
+
+    internal CheckBox GroupModeCheck => groupModeCheck; // tests
+    internal ComboBox GroupPartnerCombo => groupPartnerCombo; // tests
+    internal Label GroupModeStatus => groupModeStatus; // tests
+
+    private TabPage BuildGroupModeTab()
+    {
+        groupModeCheck.ForeColor = DarkTheme.Text;
+        groupModeStatus.ForeColor = DarkTheme.Muted;
+        groupPartnerCombo.BackColor = DarkTheme.Panel2;
+        groupPartnerCombo.ForeColor = DarkTheme.Text;
+        groupPartnerCombo.DisplayMember = nameof(GroupPartner.Name);
+        groupModeCheck.CheckedChanged += async (_, _) => await SaveGroupModeAsync();
+        groupPartnerCombo.SelectedIndexChanged += async (_, _) =>
+        {
+            if (groupModeCheck.Checked)
+            {
+                await SaveGroupModeAsync();
+            }
+        };
+        var hint = new Label
+        {
+            Text = "On casual chat she adds a short reply of her own, in her voice. It pauses while a game runs, unless you turn it on during that game.",
+            AutoSize = true,
+            MaximumSize = new Size(460, 0),
+            ForeColor = DarkTheme.Muted,
+        };
+        var partnerRow = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(0, 6, 0, 0) };
+        partnerRow.Controls.Add(new Label { Text = "Partner", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 6, 3) });
+        partnerRow.Controls.Add(groupPartnerCombo);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(groupModeCheck);
+        layout.Controls.Add(hint);
+        layout.Controls.Add(partnerRow);
+        layout.Controls.Add(groupModeStatus);
+        return new TabPage("Group mode") { Controls = { layout } };
+    }
+
+    private sealed record GroupPartner(string Id, string Name);
+
+    internal async Task RefreshGroupModeAsync()
+    {
+        try
+        {
+            var (active, characters, group) = await backendClient.GetCharactersAsync();
+            loadingGroupMode = true;
+            groupPartnerCombo.Items.Clear();
+            foreach (var (id, name) in characters.Where(c => c.Id != active))
+            {
+                groupPartnerCombo.Items.Add(new GroupPartner(id, name));
+            }
+            var partners = groupPartnerCombo.Items.Cast<GroupPartner>().ToList();
+            groupPartnerCombo.SelectedItem = partners.FirstOrDefault(p => p.Id == group.Partner) ?? partners.FirstOrDefault();
+            groupModeCheck.Checked = group.On;
+            groupModeCheck.Enabled = groupPartnerCombo.Enabled = partners.Count > 0;
+            var partnerName = (groupPartnerCombo.SelectedItem as GroupPartner)?.Name ?? "her partner";
+            groupModeStatus.Text = partners.Count == 0 ? "Add another character in Characters to use group mode."
+                : !group.On ? "Off."
+                : group.Paused ? $"Paused while a game runs; {partnerName} is back when it ends."
+                : $"On: {partnerName} replies too.";
+        }
+        catch (Exception ex)
+        {
+            groupModeStatus.Text = $"Couldn't load: {BackendError.Describe(ex)}";
+        }
+        finally
+        {
+            loadingGroupMode = false;
+        }
+    }
+
+    private async Task SaveGroupModeAsync()
+    {
+        if (loadingGroupMode)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetGroupAsync(groupModeCheck.Checked, (groupPartnerCombo.SelectedItem as GroupPartner)?.Id);
+        }
+        catch (Exception ex)
+        {
+            groupModeStatus.Text = $"Couldn't switch it: {BackendError.Describe(ex)}";
+            return;
+        }
+        await RefreshGroupModeAsync();
+    }
+
+    // #1426: what Settings asks the launcher to do -- apply the avatar's
+    // settings live, revert a merged PR. Set through SessionListForm.
+    public Action? AvatarSettingsChanged { get; set; }
+    public Action? RevertMergedPr { get; set; }
+
+    private static readonly (string Id, string Label)[] Framings = [("full", "Full body"), ("upperHalf", "Upper half"), ("bust", "Bust")];
+
+    // #1426: the avatar's settings, moved here from the tray. Each saves at
+    // once and the launcher applies it live.
+    private TabPage BuildAvatarTab()
+    {
+        var saved = ManaSettingsStore.Load();
+        void Saved(Action<ManaSettingsStore> change)
+        {
+            var latest = ManaSettingsStore.Load();
+            change(latest);
+            latest.Save();
+            AvatarSettingsChanged?.Invoke();
+        }
+        CheckBox Check(string text, bool value, Action<ManaSettingsStore, bool> save)
+        {
+            var check = new CheckBox { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Checked = value };
+            check.CheckedChanged += (_, _) => Saved(s => save(s, check.Checked));
+            return check;
+        }
+        var hides = Check("Hide her while the chat window is open", saved.AvatarHidesWithChat, (s, on) => s.AvatarHidesWithChat = on);
+        var clickThrough = Check("Click-through: the mouse passes through her", saved.AvatarClickThrough, (s, on) => s.AvatarClickThrough = on);
+        var captions = Check("Captions under Mana", saved.CaptionsShown(), (s, on) => s.Captions = on);
+        var bubbles = Check("Chat bubbles beside Mana", saved.ChatBubbles, (s, on) =>
+        {
+            s.ChatBubbles = on;
+            s.Captions ??= captions.Checked; // pin what's showing now
+        });
+
+        var framing = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = "Framing" };
+        framing.Items.AddRange(Framings.Select(f => (object)f.Label).ToArray());
+        framing.SelectedIndex = Math.Max(0, Array.FindIndex(Framings, f => f.Id == (saved.OverlayFraming ?? "upperHalf")));
+        framing.SelectedIndexChanged += (_, _) => Saved(s => s.OverlayFraming = Framings[framing.SelectedIndex].Id);
+        var size = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, AccessibleName = "Size" };
+        size.Items.AddRange(AvatarOverlayForm.OverlayScales.Select(scale => (object)$"{scale * 100:0}%").ToArray());
+        size.SelectedIndex = Math.Max(0, Array.IndexOf(AvatarOverlayForm.OverlayScales, saved.OverlayScale ?? 1.5f));
+        size.SelectedIndexChanged += (_, _) => Saved(s => s.OverlayScale = AvatarOverlayForm.OverlayScales[size.SelectedIndex]);
+
+        var shape = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(0, 6, 0, 6) };
+        shape.Controls.Add(new Label { Text = "Framing", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 6, 3) });
+        shape.Controls.Add(framing);
+        shape.Controls.Add(new Label { Text = "Size", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(18, 7, 6, 3) });
+        shape.Controls.Add(size);
+
+        var vtube = new Button { Text = "VTube Studio…", AutoSize = true, Margin = new Padding(3, 10, 3, 3) };
+        DarkTheme.ApplyButton(vtube);
+        vtube.Click += (_, _) => new VTubeStudioForm(backendClient).Show();
+
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(hides);
+        layout.Controls.Add(clickThrough);
+        layout.Controls.Add(shape);
+        layout.Controls.Add(captions);
+        layout.Controls.Add(bubbles);
+        layout.Controls.Add(vtube);
+        return new TabPage("Avatar") { Controls = { layout } };
+    }
+
+    // #1426: a page of buttons that open a window -- what the tray's Tools
+    // used to hold, each beside the settings it belongs with.
+    private static TabPage ButtonsPage(string title, string hint, params (string Text, Action Click)[] buttons)
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
+        layout.Controls.Add(new Label { Text = hint, AutoSize = true, MaximumSize = new Size(460, 0), ForeColor = DarkTheme.Muted, Margin = new Padding(3, 0, 3, 8) });
+        var row = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background };
+        foreach (var (text, click) in buttons)
+        {
+            var button = new Button { Text = text, AutoSize = true, UseMnemonic = false };
+            DarkTheme.ApplyButton(button);
+            button.Click += (_, _) => click();
+            row.Controls.Add(button);
+        }
+        layout.Controls.Add(row);
+        return new TabPage(title) { Controls = { layout } };
+    }
+
+    private TabPage BuildMemoryToolsTab() => ButtonsPage("Memory tools",
+        "The memory graph shows how what she knows connects. Snapshots keep her edits, so you can roll one back.",
+        ("Memory graph…", () => new MemoryGraphForm(backendClient).Show()),
+        ("Edit snapshots…", () => new SnapshotsForm(backendClient).Show()));
+
+    private TabPage BuildModelToolsTab() => ButtonsPage("Model tools",
+        "Put two models side by side on the same prompt, or open the local model's own web page.",
+        ("Compare models…", () => new CompareModeForm(backendClient).Show()),
+        ("Open model web UI", ManaApplicationContext.OpenModelWebUi));
+
+    private TabPage BuildPendingEditsTab() => ButtonsPage("Pending edits",
+        "Changes she has proposed, waiting for your OK. The chat window opens this when one arrives.",
+        ("Review pending edits…", () => new ProposalsForm(backendClient).Show()));
+
+    private TabPage BuildDeveloperTab() => ButtonsPage("Developer",
+        "For working on Mana herself.",
+        ("Open project folder", () => Process.Start(new ProcessStartInfo { FileName = ManaApplicationContext.FindRootDirectory(), UseShellExecute = true })),
+        ("Revert a merged PR…", () => RevertMergedPr?.Invoke()));
 
     // Saved at once, straight to the Run key (StartWithWindows).
     internal static FlowLayoutPanel BuildStartWithWindowsRow(string runKeyPath = StartWithWindows.RunKeyPath)
@@ -450,7 +1163,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load plugins. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(pluginsList, ex.Message);
+                ShowLoadFailure(pluginsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -925,7 +1638,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load memory facts. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(factsList, ex.Message);
+                ShowLoadFailure(factsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1205,7 +1918,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load skills. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(skillsList, ex.Message);
+                ShowLoadFailure(skillsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1402,7 +2115,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load remembered approvals. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(rememberedList, ex.Message);
+                ShowLoadFailure(rememberedList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1608,7 +2321,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load pending approvals. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(approvalsList, ex.Message);
+                ShowLoadFailure(approvalsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -1741,6 +2454,8 @@ internal sealed class SettingsPanel : UserControl
         saveButton.Click += async (_, _) => await SaveVoiceProviderAsync();
 
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+        // #1426: the dropdown said nothing about what it picks.
+        row.Controls.Add(new Label { Text = "Voice engine", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 3, 3) });
         row.Controls.Add(voiceProviderCombo);
         row.Controls.Add(saveButton);
 
@@ -2726,7 +3441,7 @@ internal sealed class SettingsPanel : UserControl
     // (see GetPerformanceStatusAsync's own comment) -- shown as raw JSON per
     // row rather than parsed into specific fields, since this tab only
     // needs to display it, not act on it.
-    private TabPage BuildPerfTab()
+    private TabPage BuildPerfTab(out TabPage gamingPage)
     {
         perfSummaryLabel.Dock = DockStyle.Top;
         perfSummaryLabel.Padding = new Padding(8);
@@ -2755,10 +3470,10 @@ internal sealed class SettingsPanel : UserControl
         gamingRow.Controls.Add(gamingModeCheck);
         gamingRow.Controls.Add(gamingStatusLabel);
 
-        var page = new TabPage("Performance");
+        gamingPage = new TabPage("Gaming") { Controls = { gamingRow } };
+        var page = new TabPage("Timings");
         page.Controls.Add(perfOperationsList);
         page.Controls.Add(perfSummaryLabel);
-        page.Controls.Add(gamingRow);
         return page;
     }
 
@@ -2780,7 +3495,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load performance status. {ex.Message}");
             if (!IsDisposed)
             {
-                perfSummaryLabel.Text = $"Failed to load: {ex.Message}";
+                perfSummaryLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
             return;
         }
@@ -2983,7 +3698,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load presets. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(presetsList, ex.Message);
+                ShowLoadFailure(presetsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -3539,7 +4254,7 @@ internal sealed class SettingsPanel : UserControl
         {
             if (!IsDisposed)
             {
-                llamaBuildLabel.Text = $"Failed to load: {ex.Message}";
+                llamaBuildLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
             return null;
         }
@@ -3669,7 +4384,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load model status. {ex.Message}");
             if (!IsDisposed)
             {
-                selectedModelLabel.Text = $"Failed to load: {ex.Message}";
+                selectedModelLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
             return;
         }
@@ -3874,7 +4589,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load mobile devices. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(mobileDevicesList, ex.Message);
+                ShowLoadFailure(mobileDevicesList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4004,7 +4719,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load accounts. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(accountsList, ex.Message);
+                ShowLoadFailure(accountsList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4135,7 +4850,7 @@ internal sealed class SettingsPanel : UserControl
         {
             if (!IsDisposed)
             {
-                mailStatusLabel.Text = calendarStatusLabel.Text = $"Failed to load: {ex.Message}";
+                mailStatusLabel.Text = calendarStatusLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
             }
         }
     }
@@ -4271,7 +4986,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load MCP servers. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(mcpServersList, ex.Message);
+                ShowLoadFailure(mcpServersList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4402,7 +5117,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load hooks. {ex.Message}");
             if (!IsDisposed)
             {
-                ShowLoadFailure(hooksList, ex.Message);
+                ShowLoadFailure(hooksList, BackendError.Describe(ex));
             }
             return;
         }
@@ -4445,6 +5160,7 @@ internal sealed class SettingsPanel : UserControl
         var titleLabel = new Label
         {
             Text = "Data & Privacy",
+            UseMnemonic = false,
             Font = new Font(Font.FontFamily, 12, FontStyle.Bold),
             ForeColor = DarkTheme.Text,
             AutoSize = true,
@@ -4677,6 +5393,7 @@ internal sealed class SettingsPanel : UserControl
             AccessibleName = $"Delete {categoryTitle}",
             AutoSize = true,
             Padding = new Padding(6, 2, 6, 2),
+            UseMnemonic = false, // "Caches & Logs" keeps its "&"
         };
         DarkTheme.ApplyButton(btn);
 
