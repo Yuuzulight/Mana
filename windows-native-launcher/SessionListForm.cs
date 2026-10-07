@@ -651,7 +651,7 @@ internal sealed partial class SessionListForm : Form
         {
             var shown = manaThinkingOn && ThinkingLevelPicker.IndexOf(thinkingLevel) < ThinkingLevelPicker.IndexOf("high") ? "high" : thinkingLevel;
             think.Text = $"Thinking: {ThinkingLevelPicker.LabelOf(shown)}";
-            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 40;
+            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 32;
             railToolTip.SetToolTip(think, manaThinkingOn ? "Mana turned deep thinking on; pick a lower level to end it" : "How hard she thinks before answering");
         }
         ShowThinkingChip();
@@ -702,7 +702,7 @@ internal sealed partial class SessionListForm : Form
         // and the report arrives as her message. Not saved, like Think.
         var research = ToolbarToggle("Deep research", "Deep research");
         railToolTip.SetToolTip(research, "Deep research: your next message becomes a research job -- she reads the web and comes back with a cited report");
-        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 7, 0, 0), BackColor = Color.Transparent };
+        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 4, 0, 0), BackColor = Color.Transparent, Font = ToolbarFont };
         string? researchJobId = null;
         async Task ResearchAsync(string question)
         {
@@ -943,7 +943,7 @@ internal sealed partial class SessionListForm : Form
         box.BackColorChanged += (_, _) => field.Invalidate();
 
         Panel Gap() => new() { Dock = DockStyle.Left, Width = 6, BackColor = Color.Transparent };
-        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 36, Padding = new Padding(4, 6, 4, 0), BackColor = Color.Transparent };
+        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(4, 4, 4, 0), BackColor = Color.Transparent };
         // Docked last-added first: attach on the left, then mic, Think, Deep research and its progress.
         toolbar.Controls.Add(researchStatus);
         toolbar.Controls.Add(research);
@@ -999,13 +999,16 @@ internal sealed partial class SessionListForm : Form
         g.DrawLines(pen, new[] { new PointF(cx - 5, cy - 1), new PointF(cx, cy - 6), new PointF(cx + 5, cy - 1) });
     }
 
-    // #1426: the row under the field -- small icon buttons, muted until hovered.
+    // #1426: the row under the field, a size smaller than the message box.
+    private static readonly Font ToolbarFont = new("Segoe UI", 8.25f);
+
+    // ... small icon buttons, muted until hovered.
     private static Button ToolbarIconButton(string name)
     {
         var button = new Button
         {
             Dock = DockStyle.Left,
-            Width = 34,
+            Width = 28,
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.Background,
             ForeColor = DarkTheme.Muted,
@@ -1033,6 +1036,7 @@ internal sealed partial class SessionListForm : Form
             AccessibleName = name,
             Cursor = Cursors.Hand,
             UseMnemonic = false,
+            Font = ToolbarFont,
         };
         chip.FlatAppearance.BorderSize = 0;
         var hovered = false;
@@ -1088,9 +1092,10 @@ internal sealed partial class SessionListForm : Form
             ForeColor = DarkTheme.Muted,
             AccessibleName = name,
             Cursor = Cursors.Hand,
+            Font = ToolbarFont,
         };
         toggle.FlatAppearance.BorderSize = 0;
-        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 26;
+        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 20;
         var hovered = false;
         toggle.MouseEnter += (_, _) => { hovered = true; toggle.Invalidate(); };
         toggle.MouseLeave += (_, _) => { hovered = false; toggle.Invalidate(); };
@@ -1129,10 +1134,10 @@ internal sealed partial class SessionListForm : Form
 
     private const int MaxComposerLines = 8;
 
-    // #1426: 112px for one line (the field, the row under it and the
+    // #1426: 104px for one line (the field, the row under it and the
     // margins), a line taller per wrapped or typed line up to MaxComposerLines.
     internal static int ComposerHeight(int lines, int lineHeight) =>
-        112 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
+        104 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during
