@@ -6,70 +6,53 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #699: Settings > Heartbeat -- heartbeat.md's checks (GET/PUT
+// #699: Settings > Check-ins' background checks -- heartbeat.md's checks (GET/PUT
 // /heartbeat/items). Each change saves the whole list; node-bot checks it
 // and refuses a bad one (nothing is written then). A new or edited check
 // still does its dry run and waits in Approvals before it runs for real.
-internal sealed class HeartbeatPanel : FlowLayoutPanel
+internal sealed class HeartbeatPanel : System.ComponentModel.Component
 {
     private readonly ManaBackendClient backendClient;
     private List<ManaHeartbeatItem> items = [];
-    private readonly Label status = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+    private readonly Label status = SettingsRows.Status();
 
-    internal ListBox Checks { get; } = new() { Width = 560, Height = 200, AccessibleName = "Heartbeat checks", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-    internal TextBox EditText { get; } = new() { Width = 560, PlaceholderText = "warn me if D: drops below 50 GB", AccessibleName = "Check", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-    internal TextBox EditSchedule { get; } = new() { Width = 120, PlaceholderText = "every 30m", AccessibleName = "How often (every 30m, every 2h, daily 09:00)", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+    internal ListBox Checks { get; } = SettingsRows.List("Heartbeat checks", 120);
+    internal TextBox EditText { get; } = SettingsRows.Box("Check", 340, "warn me if D: drops below 50 GB");
+    internal TextBox EditSchedule { get; } = SettingsRows.Box("How often (every 30m, every 2h, daily 09:00)", 90, "every 30m");
     internal CheckBox Write { get; } = NewCheckBox("Write");
     internal CheckBox Network { get; } = NewCheckBox("Network");
     internal CheckBox Urgent { get; } = NewCheckBox("Urgent");
     internal CheckBox On { get; } = NewCheckBox("On");
     internal string StatusText => status.Text;
 
-    // loadNow: false in tests, which call ReloadAsync themselves.
+    // #1426: its row on the Check-ins page, and a line on what the boxes mean.
+    internal Control[] Rows { get; }
+
+    // loadNow: false in tests and Settings, which call ReloadAsync themselves.
     public HeartbeatPanel(ManaBackendClient backendClient, bool loadNow = true)
     {
         this.backendClient = backendClient;
-        Dock = DockStyle.Fill;
-        FlowDirection = FlowDirection.TopDown;
-        WrapContents = false;
-        AutoScroll = true;
-        BackColor = DarkTheme.Background;
         On.Checked = true;
-
-        Button NewButton(string text, Func<Task> click)
-        {
-            var button = new Button { Text = text, AutoSize = true };
-            DarkTheme.ApplyButton(button);
-            button.Click += async (_, _) => await click();
-            return button;
-        }
-        FlowLayoutPanel Row(params Control[] controls)
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-            row.Controls.AddRange(controls);
-            return row;
-        }
+        Button NewButton(string text, Func<Task> click) => SettingsRows.Action(text, () => _ = click());
 
         Checks.SelectedIndexChanged += (_, _) => ShowSelected();
-        Controls.Add(new Label
+        Rows = new Control[]
         {
-            Text = "Checks Mana runs quietly in the background; she only speaks up when one needs you. Read is always allowed; Write and Network only reach the folders and sites a check names. Urgent skips the daily budget.",
-            AutoSize = true,
-            MaximumSize = new System.Drawing.Size(560, 0),
-            ForeColor = DarkTheme.Text,
-        });
-        Controls.Add(Row(NewButton("Refresh", ReloadAsync)));
-        Controls.Add(Checks);
-        Controls.Add(EditText);
-        Controls.Add(Row(EditSchedule, Write, Network, Urgent, On));
-        Controls.Add(Row(NewButton("Add", AddAsync), NewButton("Save", SaveSelectedAsync), NewButton("Remove", RemoveSelectedAsync), status));
+            new SettingsRow("Background checks", "Things she keeps an eye on quietly, speaking up only when one needs you. A new or changed check does a dry run and waits for your OK first", "heartbeat background checks monitor watch",
+                SettingsRows.Stack(
+                    Checks,
+                    SettingsRows.Line(EditText),
+                    SettingsRows.Line(EditSchedule, Write, Network, Urgent, On),
+                    SettingsRows.Line(NewButton("Add", AddAsync), NewButton("Save", SaveSelectedAsync), NewButton("Remove", RemoveSelectedAsync), status))),
+            SettingsRows.Note("Write and Network let a check change only the folders and reach only the sites it names. Urgent ones skip the daily limit on remarks."),
+        };
         if (loadNow)
         {
             _ = ReloadAsync();
         }
     }
 
-    private static CheckBox NewCheckBox(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(6, 4, 3, 3) };
+    private static CheckBox NewCheckBox(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, BackColor = System.Drawing.Color.Transparent, Margin = new Padding(6, 4, 3, 3) };
 
     private int SelectedIndex => Checks.SelectedIndex >= 0 && Checks.SelectedIndex < items.Count ? Checks.SelectedIndex : -1;
 

@@ -55,6 +55,33 @@ internal static class SettingsRows
         return button;
     }
 
+    // Controls side by side, and parts stacked: for a row whose control is
+    // more than one line, like a list over its box and buttons.
+    internal static FlowLayoutPanel Line(params Control[] controls)
+    {
+        var line = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0) };
+        line.Controls.AddRange(controls);
+        return line;
+    }
+
+    internal static FlowLayoutPanel Stack(params Control[] parts)
+    {
+        var stack = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+        stack.Controls.AddRange(parts);
+        return stack;
+    }
+
+    internal static FlowLayoutPanel Editor(ListBox list, params Control[] line) => Stack(list, Line(line));
+
+    internal static ListBox List(string name, int height = 80) =>
+        new() { Width = 340, Height = height, AccessibleName = name, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+
+    internal static TextBox Box(string name, int width, string? placeholder = null) =>
+        new() { Width = width, AccessibleName = name, PlaceholderText = placeholder ?? "", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+
+    internal static Label Words(string text) =>
+        new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Anchor = AnchorStyles.Left, UseMnemonic = false };
+
     internal static Label Status() => new() { AutoSize = true, MaximumSize = new Size(260, 0), ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left, BackColor = Color.Transparent, UseMnemonic = false };
 
     internal static GraphicsPath Rounded(RectangleF r, float radius)
