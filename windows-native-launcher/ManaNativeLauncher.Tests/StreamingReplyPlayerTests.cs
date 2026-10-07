@@ -95,37 +95,6 @@ public class StreamingReplyPlayerTests
         Assert.Equal(("milestone", "m1", "Our first duet.", "2026-09-20", "mana"), (milestone.Kind, milestone.Id, milestone.Text, milestone.Date, milestone.Character));
     }
 
-    // #914: group mode -- each sentence in its character's voice and chat
-    // label; the sister's reaction plays too, and the first final is the reply.
-    [Fact]
-    public async Task StreamReplyAndPlayAsync_GroupReactionPlaysInHerVoiceAndTheFirstFinalIsTheReply()
-    {
-        const string ndjson =
-            "{\"type\":\"sentence\",\"text\":\"Me.\",\"character\":\"mana\",\"characterName\":\"Mana\"}\n" +
-            "{\"type\":\"final\",\"reply\":\"Me.\",\"changed\":false,\"character\":\"mana\",\"characterName\":\"Mana\"}\n" +
-            "{\"type\":\"sentence\",\"text\":\"She wishes.\",\"character\":\"evil-mana\",\"characterName\":\"Evil Mana\"}\n" +
-            "{\"type\":\"final\",\"reply\":\"She wishes.\",\"changed\":false,\"character\":\"evil-mana\",\"characterName\":\"Evil Mana\"}\n";
-        var synthLog = new List<string>();
-        var chat = new List<string>();
-        var speaking = new List<string?>();
-        StreamingReplyPlayer? player = null;
-        player = new StreamingReplyPlayer(BuildFakeClient(ndjson, synthLog), _ =>
-        {
-            speaking.Add(player!.PlayingCharacter); // whose avatar lip-syncs
-            return Task.FromResult(true);
-        }, _ => { });
-
-        var (reply, changed, _, interrupted, _) = await player.StreamReplyAndPlayAsync("who's smarter?", onSentence: (text, speaker) => chat.Add($"{speaker}: {text}"));
-
-        Assert.Equal("Me.", reply);
-        Assert.False(changed);
-        Assert.False(interrupted);
-        Assert.Equal(new[] { "synth:Me.@mana", "synth:She wishes.@evil-mana" }, synthLog);
-        Assert.Equal(new[] { "Mana: Me.", "Evil Mana: She wishes." }, chat);
-        Assert.Equal(new[] { "mana", "evil-mana" }, speaking);
-        Assert.Null(player.PlayingCharacter);
-    }
-
     [Fact]
     public async Task StreamReplyAndPlayAsync_SynthesizesNextSentenceWhileCurrentOneIsStillPlaying()
     {

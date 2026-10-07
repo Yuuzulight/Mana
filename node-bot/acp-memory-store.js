@@ -2194,7 +2194,7 @@ function createAcpMemoryStore(options = {}) {
     if (analysisOutputs.charts.length || analysisOutputs.files.length || analysisOutputs.tables.length) turn.analysisOutputs = analysisOutputs;
     // #1354: reasoning tokens / thought deliberation.
     if (input.thought) turn.thought = cleanText(input.thought, 10000);
-    // #914: which character said it (group mode, switching), for the
+    // #914: which character said it (after switching), for the
     // history's labels; turns from before carry none.
     const speaker = cleanText(input.speaker, 60);
     if (speaker) turn.speaker = speaker;

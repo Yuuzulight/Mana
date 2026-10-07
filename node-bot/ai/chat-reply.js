@@ -170,8 +170,6 @@ async function buildAssistantReply(
       mode === "coding" || mode === "developer"
         ? context.LLAMA_MAX_TOKENS_CODING
         : context.LLAMA_MAX_TOKENS;
-    // #914: group mode adds a second reply only to casual turns.
-    if (replyMeta) replyMeta.mode = mode;
 
     // Optional lightweight intent telemetry (enable with MANA_INTENT_TELEMETRY=1)
     try {
@@ -1788,22 +1786,7 @@ async function buildAssistantReply(
     } finally { fallbackAttempt.close(); }
   }
 
-async function buildGroupReaction({ sessionId, userText, sister, reply }) {
-    const me = context.characterStore.active();
-    const system = [
-      context.persona.buildPersonaPrompt(sessionId, context.personalityStore.get().traits, context.personaOf(me)),
-      context.moodPromptBlock(context.activeMoodStore.get(), "casual"),
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-    const prompt = `I said: "${userText}"\n\nYour sister ${sister.name} answered: "${reply}"\n\nAdd one short reaction to her, one or two short sentences, as yourself. Don't repeat what she said.`;
-    const raw = context.shouldUseRemoteAi()
-      ? await runOpenAIReply(prompt, context.GROUP_REACTION_MAX_TOKENS, system, sessionId)
-      : await context.runLocalAssistantReply(prompt, context.GROUP_REACTION_MAX_TOKENS, "default", system);
-    return context.cleanLlamaOutput(context.stripEmotionTags(String(raw || "")).text).trim();
-  }
-
-  return { buildScreenAwarePrompt, runOpenAIReply, pickAssistantMode, buildAssistantReply, buildGroupReaction };
+  return { buildScreenAwarePrompt, runOpenAIReply, pickAssistantMode, buildAssistantReply };
 }
 
 module.exports = { createChatReply };

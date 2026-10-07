@@ -9,8 +9,6 @@ namespace Mana.NativeLauncher;
 // #914: Model, on a "character" payload, is her Live2D model (null: the default).
 // #1008: Url, on a "self-work" payload, is her PR once it's ready.
 // #1024: Kind and Emotion pick how Speak is said (AnnouncementEmotion).
-// #914: Id, on a "group" payload, is the partner replying alongside the
-// active character (null: nobody, so her avatar goes away).
 // #1337: SessionId, TaskId and Status, on "background_task_done", say which
 // chat's task ended and how.
 internal sealed record TrayNotificationPayload(string? Type, string Title, string Text, string? Speak = null, string? Model = null, string? Url = null, string? Kind = null, string? Emotion = null, string? Id = null, string? SessionId = null, string? TaskId = null, string? Status = null)

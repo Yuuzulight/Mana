@@ -56,10 +56,6 @@ internal sealed class StreamingReplyPlayer
     // one-ahead lookahead means at most one synthesis is in flight.
     public int? SynthesizingSentence => synthesizing == 0 ? null : synthesizing;
 
-    // #914: the character whose sentence is playing now (null between
-    // sentences or from an older backend) -- group mode lip-syncs her avatar.
-    public string? PlayingCharacter => playingCharacter;
-    private volatile string? playingCharacter;
     private volatile int synthesizing;
     private int synthesized;
 
@@ -84,9 +80,7 @@ internal sealed class StreamingReplyPlayer
     // chat log should show text as it arrives, not lag behind audio.
     // #963: source ("voice" or "typed") goes to /reply/stream as is.
     // #914: onSentence also gets the speaking character's name (null from
-    // an older backend). In group mode a second final follows with her
-    // sister's reaction; its sentence streams and plays like the rest, and
-    // the first final stays the reply reported here.
+    // an older backend).
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
         string commandText, string? sessionId = null, Action<string, string?>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, Action<ReplyStreamEvent>? onNoted = null, IReadOnlyList<string>? documents = null, Action<string>? onThought = null)
     {
@@ -270,7 +264,6 @@ internal sealed class StreamingReplyPlayer
                 // kind of dangling in-flight synth call elsewhere in this file.
                 var nextTask = TakeAndSynthesizeNextAsync(sentences, TakeNext);
                 onSentencePlaying?.Invoke(sentence.Text, sentence.Emotion, AudioPlayer.Duration(sentence.Audio));
-                playingCharacter = sentence.Character;
                 var completedNaturally = await playAsync(sentence.Audio).ConfigureAwait(false);
                 if (!completedNaturally)
                 {
@@ -302,7 +295,6 @@ internal sealed class StreamingReplyPlayer
             // never fires and the caller (VoiceLoop, via avatarOverlay) is
             // left showing "talking" forever, on top of never handing mode
             // back to the caller either.
-            playingCharacter = null;
             if (talking)
             {
                 setTalking(false);

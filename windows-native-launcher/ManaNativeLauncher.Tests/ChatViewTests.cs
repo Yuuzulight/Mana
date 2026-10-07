@@ -31,7 +31,7 @@ public class ChatViewTests
         Assert.Equal("Three.", view.Messages[3].PlainText);
     }
 
-    // #914: group mode -- her sister's reaction is her own, labelled bubble.
+    // #914: each character's lines are her own, labelled bubbles.
     [Fact]
     public void EachCharacterGetsHerOwnLabelledBubble()
     {

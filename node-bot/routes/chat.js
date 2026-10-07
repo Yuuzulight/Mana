@@ -14,27 +14,6 @@ const IMAGE_DESCRIBE_PROMPT =
 function registerChatRoutes(context) {
 let messageNumber = 0;
 
-let lastSpeakerId = null;
-
-function pickGroupSpeakers(text) {
-    const partner = context.characters?.groupPartner?.();
-    if (!partner) return null;
-    const active = context.characters.active();
-    const named = context.characters.mentioned(text).filter((c) => c.id === active.id || c.id === partner.id);
-    const first = named.length === 1 ? named[0] : lastSpeakerId === active.id ? partner : active;
-    return { first, second: first.id === active.id ? partner : active };
-  }
-
-const GROUP_REACTION_MAX_FIRST_CHARS = 300;
-
-const wantsGroupReaction = (replyMeta, usedTools, reply) =>
-    (replyMeta.mode === "casual" || replyMeta.mode === "chat") &&
-    replyMeta.streamedMatchesFinal === true &&
-    !usedTools &&
-    typeof reply === "string" &&
-    reply.trim().length > 0 &&
-    reply.length <= GROUP_REACTION_MAX_FIRST_CHARS;
-
 let warnedSessionless = false;
 
 function warnIfSessionless(sessionId) {
@@ -445,22 +424,11 @@ context.app.post("/reply/stream", async (req, res) => {
       replyMeta.images = turn.images;
 
       // #914: every sentence/final event says which character is speaking,
-      // so the launcher lip-syncs her avatar, speaks in her voice and labels
-      // the chat. In group mode (not for image turns) she may not be the
-      // active one.
-      const group = images.length ? null : pickGroupSpeakers(input.text);
-      const speaker = group ? group.first : context.characters?.active?.();
+      // so the launcher speaks in her voice and labels the chat.
+      const speaker = context.characters?.active?.();
       const who = speaker ? { character: speaker.id, characterName: speaker.name } : {};
-      const speakAs = (character, fn) => (group ? context.characters.speakAs(character.id, fn) : fn());
-      let usedTools = false;
-      const onToolCall = replyMeta.onToolCall;
-      replyMeta.onToolCall = (call) => {
-        usedTools = true;
-        onToolCall(call);
-      };
 
-      const reply = await speakAs(speaker, () =>
-        context.buildAssistantReply(
+      const reply = await context.buildAssistantReply(
           turn.text,
           screenText,
           joinPromptParts(marketText, input.userPatch),
@@ -472,7 +440,6 @@ context.app.post("/reply/stream", async (req, res) => {
           // #623: emotion is the sentence's face tag, when the model gave one.
           (sentence, emotion) =>
             writeEvent({ type: "sentence", text: sentence, ...(emotion ? { emotion } : {}), ...who }),
-        ),
       );
 
       let finalReply = reply;
@@ -499,33 +466,6 @@ context.app.post("/reply/stream", async (req, res) => {
         ...who,
       });
 
-      // #914: her sister's short reaction, as more events on the same
-      // stream (a sentence and a second final). Skipped once I've typed
-      // again or the client has gone.
-      if (group) {
-        lastSpeakerId = group.first.id;
-        if (
-          typeof context.buildGroupReaction === "function" &&
-          wantsGroupReaction(replyMeta, usedTools, reply) &&
-          thisMessage === messageNumber &&
-          !res.destroyed
-        ) {
-          const reaction = await speakAs(group.second, () =>
-            context.buildGroupReaction({ sessionId, userText: input.text, sister: group.first, reply }),
-          ).catch((e) => {
-            console.warn("Group reaction failed:", e?.message || e);
-            return "";
-          });
-          if (reaction && thisMessage === messageNumber) {
-            lastSpeakerId = group.second.id;
-            // Her own turn in the history, with no user line.
-            speakAs(group.second, () => context.recordChatTurn(sessionId, "", reaction));
-            const theirs = { character: group.second.id, characterName: group.second.name };
-            writeEvent({ type: "sentence", text: reaction, ...theirs });
-            writeEvent({ type: "final", reply: reaction, ttsConfigured: context.TTS_PROVIDER !== "none", changed: false, ...theirs });
-          }
-        }
-      }
       return res.end();
     } catch (e) {
       if (e instanceof ValidationError) {

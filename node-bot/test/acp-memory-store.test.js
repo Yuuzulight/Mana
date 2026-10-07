@@ -68,7 +68,7 @@ test("ACP memory store builds a compact local memory prompt block", () => {
   assert.ok(promptBlock.length <= 1200);
 });
 
-// #914: group mode -- each character knows who said what.
+// #914: each character knows who said what.
 test("history lines are labelled with the character who said them", async () => {
   const store = createAcpMemoryStore({ dataDir: createTempDir(), now: () => "2026-09-30T00:00:00.000Z" });
   await store.appendTurn({ sessionId: "duo", user: "Which of you is smarter?", assistant: "Me, obviously.", speaker: "Mana" });

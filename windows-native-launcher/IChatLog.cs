@@ -15,7 +15,7 @@ internal interface IChatLog
     void AppendUserMessage(string text, IReadOnlyList<string> images, IReadOnlyList<string>? documents) => AppendUserMessage(text, images);
     void AppendReplySentence(string text);
 
-    // #914: speaker is the character saying it (group mode has two), or
+    // #914: speaker is the character saying it, or
     // null for the current reply's.
     void AppendReplySentence(string text, string? speaker) => AppendReplySentence(text);
 

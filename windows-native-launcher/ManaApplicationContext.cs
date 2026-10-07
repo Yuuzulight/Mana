@@ -12,10 +12,6 @@ namespace Mana.NativeLauncher;
 internal sealed class ManaApplicationContext : ApplicationContext
 {
     private readonly AvatarOverlayForm avatarOverlay;
-    // #914 group mode: the partner's overlay beside Mana's (made on first
-    // use), and her id while she's alongside (null otherwise).
-    private AvatarOverlayForm? partnerOverlay;
-    private volatile string? partnerId;
     private readonly string rootDir;
     private readonly BrowserAutomationPanel browserAutomationPanel;
     private readonly AgentActivityPanel agentActivityPanel;
@@ -158,8 +154,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         // avatarOverlay's lip-sync render loop -- a no-op when no Cubism
         // model is loaded (LipSyncDriver still runs, just nothing reads
         // its output).
-        // #914: to the partner's avatar while her sentence plays.
-        audioPlayer = new AudioPlayer(OnSamplesPlayed);
+        audioPlayer = new AudioPlayer((samples, rate) => avatarOverlay.LipSyncDriver.OnSamplesPlayed(samples, rate));
         artifactViewer = new ArtifactViewerForm();
         // #521: constructed before voiceLoop so it can be passed in as
         // VoiceLoop's IChatLog -- SessionListForm only needs the control
@@ -202,16 +197,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         {
             dictationService.StateMachine.ThresholdMs = thresh;
         }
-        // #914 group mode: her sister's mouth closes when the reply ends, and
-        // her avatar shows and hides with Mana's.
-        voiceLoop.TalkingEnded += () => RunOnUi(() => partnerOverlay?.LipSyncDriver.Reset());
-        avatarOverlay.VisibleChanged += (_, _) =>
-        {
-            if (partnerOverlay is not null && partnerId is not null)
-            {
-                partnerOverlay.Visible = avatarOverlay.Visible;
-            }
-        };
         avatarOverlay.IsListening = () => voiceLoop.IsListening;
         // windows-launcher only runs its own clip-buffer capture timer
         // when screen sensing is opted into (MANA_SCREEN_SENSING_ENABLED=1)
@@ -320,11 +305,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             // why not, when her own model can't be used).
             onCharacter: payload => RunOnUi(() =>
             {
-                if (payload.Type == "group")
-                {
-                    ShowPartner(payload.Id, payload.Model);
-                    return;
-                }
                 avatarOverlay.LoadModel(payload.Model);
                 if (payload.Model is not null)
                 {
@@ -530,10 +510,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 gamingModeActive = false;
                 SetTrayStatus("Mana");
                 avatarOverlay.GameRunning = false;
-                if (partnerOverlay is not null)
-                {
-                    partnerOverlay.GameRunning = false;
-                }
             }
         };
         menu.Items.Add(gamingModeItem);
@@ -814,10 +790,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
             gamingModeActive = gamingModeEnabled && status.GamingAppRunning;
             SetTrayStatus(gamingModeActive ? "Mana - game mode" : "Mana");
             avatarOverlay.GameRunning = gamingModeActive; // Q3: click-through while gaming
-            if (partnerOverlay is not null)
-            {
-                partnerOverlay.GameRunning = gamingModeActive; // #914: her sister too
-            }
             chatBubbles.GameRunning = gamingModeActive;
         }
         catch
@@ -1002,45 +974,14 @@ internal sealed class ManaApplicationContext : ApplicationContext
         latest.Save();
     }
 
-    // #914 group mode: her sister's avatar stands beside Mana's while she's
-    // alongside, wearing her own model; hidden when group mode ends or pauses.
-    private void ShowPartner(string? id, string? model)
-    {
-        partnerId = id;
-        if (id is null)
-        {
-            partnerOverlay?.Hide();
-            return;
-        }
-        partnerOverlay ??= new AvatarOverlayForm(rootDir, partner: true);
-        partnerOverlay.LoadModel(model);
-        partnerOverlay.Location = AvatarOverlayForm.BesideLocation(avatarOverlay.Bounds, partnerOverlay.Size, Screen.FromControl(avatarOverlay).WorkingArea);
-        partnerOverlay.Visible = avatarOverlay.Visible;
-    }
-
-    // Playback samples (audio thread) move the mouth of whoever is speaking.
-    private void OnSamplesPlayed(ReadOnlySpan<float> samples, int sampleRate)
-    {
-        var partner = partnerOverlay;
-        if (partner is not null && partnerId is { } id && voiceLoop.PlayingCharacter == id)
-        {
-            partner.LipSyncDriver.OnSamplesPlayed(samples, sampleRate);
-            return;
-        }
-        avatarOverlay.LipSyncDriver.OnSamplesPlayed(samples, sampleRate);
-    }
-
-    // #914: the tray's Character submenu, the active one checked, and the
-    // group mode toggle (a partner replying too).
+    // #914: the tray's Character submenu, the active one checked.
     private async Task FillCharacterMenuAsync(ToolStripMenuItem characterMenu)
     {
         IEnumerable<ToolStripItem> items;
         try
         {
-            var (active, characters, groupOn) = await backendClient.GetCharactersAsync();
-            items = characters.Select(c => (ToolStripItem)new ToolStripMenuItem(c.Name, null, async (_, _) => await SwitchCharacterAsync(c.Id)) { Checked = c.Id == active })
-                .Append(new ToolStripSeparator())
-                .Append(new ToolStripMenuItem("Group mode", null, async (_, _) => await SetGroupModeAsync(!groupOn)) { Checked = groupOn });
+            var (active, characters) = await backendClient.GetCharactersAsync();
+            items = characters.Select(c => (ToolStripItem)new ToolStripMenuItem(c.Name, null, async (_, _) => await SwitchCharacterAsync(c.Id)) { Checked = c.Id == active });
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
@@ -1062,18 +1003,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
             Console.WriteLine($"Couldn't switch character to {id}. {ex.Message}");
-        }
-    }
-
-    private async Task SetGroupModeAsync(bool on)
-    {
-        try
-        {
-            await backendClient.SetGroupAsync(on);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        {
-            Console.WriteLine($"Couldn't turn group mode {(on ? "on" : "off")}. {ex.Message}");
         }
     }
 
@@ -1567,7 +1496,6 @@ internal sealed class ManaApplicationContext : ApplicationContext
         trayIcon.Visible = false;
         trayIcon.Dispose();
         avatarOverlay.Close();
-        partnerOverlay?.Close();
         browserAutomationPanel.Close();
         agentActivityPanel.Close();
         // Dispose, not Close -- OnFormClosing overrides UserClosing to

@@ -41,8 +41,7 @@ internal sealed class TrayNotificationClient : IDisposable
     // #905: onSpeak gets a payload with a spoken line (a reminder), on a
     // thread-pool thread, whether or not proactive toasts are on.
     // #914: onCharacter gets each switch of character (from chat or the
-    // tray), and each change of group mode's partner ("group"), on a
-    // thread-pool thread.
+    // tray), on a thread-pool thread.
     // #1008: onSelfWork gets the starts and ends of Mana's work on her own
     // code, on a thread-pool thread.
     public TrayNotificationClient(Action openChat, string? backendBaseUrl = null, Action<TrayNotificationPayload>? onDoctor = null, Action<TrayNotificationPayload>? onSpeak = null, Action<TrayNotificationPayload>? onCharacter = null, Action<TrayNotificationPayload>? onSelfWork = null, ManaBackendClient? backendClient = null, Action<TrayNotificationPayload>? onBrowserDownload = null, Action<TrayNotificationPayload>? onBackgroundTaskDone = null)
@@ -145,7 +144,7 @@ internal sealed class TrayNotificationClient : IDisposable
             onDoctor?.Invoke(payload);
             return;
         }
-        if (payload?.Type is "character" or "group")
+        if (payload?.Type is "character")
         {
             onCharacter?.Invoke(payload);
             return;

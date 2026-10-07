@@ -37,10 +37,10 @@ function scheduleRestartAfterFinish(res, restartController) {
 function registerCoreRoutes(app, upload, deps) {
   const {
     restartController, currentGame = () => null, characters = null,
-    buildGroupReaction = null, moodStore = null, getScreenOcrWorker = null,
+    moodStore = null, getScreenOcrWorker = null,
   } = deps;
   const context = {
-    ...deps, app, upload, currentGame, characters, buildGroupReaction,
+    ...deps, app, upload, currentGame, characters,
     moodStore, getScreenOcrWorker, hasRestartController, scheduleRestartAfterFinish,
   };
   const chatRoutes = registerChatRoutes(context);

@@ -533,8 +533,6 @@ const LLAMA_MAX_TOKENS = Number(process.env.LLAMA_MAX_TOKENS || 180);
 // conversation, cutting code off mid-example. Casual/everyday replies stay
 // at LLAMA_MAX_TOKENS; only coding/developer mode gets the bigger budget.
 const LLAMA_MAX_TOKENS_CODING = Number(process.env.LLAMA_MAX_TOKENS_CODING || 768);
-// #914: a group-mode reaction is about 60 tokens.
-const GROUP_REACTION_MAX_TOKENS = 60;
 const VTUBE_STUDIO_URL = process.env.VTUBE_STUDIO_URL || "ws://127.0.0.1:8001";
 const VTUBE_STUDIO_ENABLED = process.env.VTUBE_STUDIO_ENABLED !== "0";
 const VTUBE_STUDIO_REACTIONS_JSON =
@@ -662,12 +660,9 @@ const gamingWatch = createGamingWatch({
     llamaServerRuntime.setGaming(true);
     // #1343: lock out heavy coding engine immediately
     codingSessionManager.stopAll("game_started");
-    // #914: group mode pauses; after this poll has recorded the game.
-    queueMicrotask(() => characterStore.gameChanged());
   },
   onGameEnd: () => {
     llamaServerRuntime.setGaming(false);
-    queueMicrotask(() => characterStore.gameChanged());
   },
 });
 // #1343 Phase 3: Tri-mode sticky coding session manager
@@ -836,15 +831,6 @@ const characterStore = createCharacterStore({
       ? null
       : path.join(__dirname, "data", "active-character.json"),
   onSwitch: (character) => notifyTray(characterEvent(character)),
-  // Group mode: the launcher shows (or hides, id null) the partner's avatar.
-  isGaming: () => gamingWatch.isGaming(),
-  onGroupChange: (partner) =>
-    notifyTray({
-      type: "group",
-      id: partner?.id ?? null,
-      title: partner?.name ?? null,
-      model: partner?.live2dModel ?? null,
-    }),
 });
 
 const ttsRuntime = createTtsRuntime({
@@ -4040,7 +4026,6 @@ function registerRoutes(app, upload, deps = {}) {
     get apiSpending() { return apiSpending; },
     get spendingReport() { return spendingReport; },
     get modelSettingsStore() { return modelSettingsStore; },
-    get GROUP_REACTION_MAX_TOKENS() { return GROUP_REACTION_MAX_TOKENS; },
     get http() { return http; },
     get https() { return https; },
     get isExpressionToolName() { return isExpressionToolName; },
@@ -4133,7 +4118,6 @@ function registerRoutes(app, upload, deps = {}) {
     restartController: deps.restartController || createRestartController(),
     buildAssistantReply: deps.buildAssistantReply || buildAssistantReply,
     characters: characterStore,
-    buildGroupReaction: deps.buildGroupReaction || buildGroupReaction,
     moodStore: activeMoodStore, // #700
     capabilities,
     pluginSettingsStore: activePluginSettingsStore,
@@ -4203,12 +4187,6 @@ function registerRoutes(app, upload, deps = {}) {
       deps.normalizeUploadedAudioAsync || normalizeUploadedAudioAsync,
     synthesizeReply: deps.synthesizeReply || synthesizeReply,
   });
-
-  // #914 group mode: the partner's short reaction to her sister's reply,
-  // run inside speakAs(partner) so the persona, personality and mood are
-  // hers. Same chat model, one short call; no tools and no emotion tags.
-  // The route saves it (only if it's still wanted).
-  function buildGroupReaction(...args) { return chatReply.buildGroupReaction(...args); }
 
   // Test-only hook (same pattern as app.locals.broadcastTrayNotification
   // below): exposes the real buildAssistantReply closure -- with its

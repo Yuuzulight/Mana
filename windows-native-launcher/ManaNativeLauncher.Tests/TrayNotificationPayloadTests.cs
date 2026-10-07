@@ -87,17 +87,6 @@ public class TrayNotificationPayloadTests
         Assert.Null(mana!.Model);
     }
 
-    // #914: group mode's partner, or nobody (her avatar goes away).
-    [Fact]
-    public void TryParse_ReadsTheGroupPartner()
-    {
-        var on = TrayNotificationPayload.TryParse(Json("""{"type":"group","id":"evil-mana","title":"Evil Mana","model":null}"""));
-        var off = TrayNotificationPayload.TryParse(Json("""{"type":"group","id":null,"title":null,"model":null}"""));
-
-        Assert.Equal("evil-mana", on!.Id);
-        Assert.Null(off!.Id);
-    }
-
     // #1337
     [Fact]
     public void TryParse_ReadsABackgroundTaskEnding()
