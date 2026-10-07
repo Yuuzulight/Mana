@@ -242,7 +242,7 @@ async function runLocalAssistantReply(
 
     const messages = buildMessages(overrideSystemPrompt || context.systemPromptOf(), prompt, extraMessages);
     const { params } = context.buildSamplingParams({ profile, task: "stream", maxTokens, thinking, env: context.env });
-    if (thinking === true) await fitThinkingToContext(params, { messages });
+    if (thinking === true || thinking > 0) await fitThinkingToContext(params, { messages });
     const resp = await context.fetchImpl(
       `http://127.0.0.1:${context.state.port}/v1/chat/completions`,
       {

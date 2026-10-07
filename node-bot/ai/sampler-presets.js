@@ -99,6 +99,7 @@ function resolveThinking(profile, task, env, override) {
   const global = String(env.MANA_LLAMA_REASONING || "").toLowerCase();
   if (global === "on" || global === "off") return null;
   if (typeof override === "boolean") return override;
+  if (typeof override === "number") return override > 0;
   const flag = (name) => {
     const value = envValue(env, "MANA_THINKING", name);
     return value === "on" ? true : value === "off" ? false : null;
@@ -147,7 +148,11 @@ function buildSamplingParams({ profile = "default", task = null, maxTokens, thin
     // (field names present, server not run): thinking_budget_tokens is read
     // per request while --reasoning-budget stays at its -1 default. Thinking
     // tokens count toward max_tokens, so the reply keeps its own budget.
-    const budget = resolveReasoningBudget(profile, env, thinking === true, String(task || "").toLowerCase());
+    // #1426: a number is a thinking level's own budget (tool rounds capped as for "think harder").
+    const taskName = String(task || "").toLowerCase();
+    const budget = typeof thinking === "number"
+      ? (taskName === "tools" ? Math.min(thinking, THINK_HARDER_TOOL_ROUND_BUDGET) : thinking)
+      : resolveReasoningBudget(profile, env, thinking === true, taskName);
     params.thinking_budget_tokens = budget;
     params.reasoning_budget_message = REASONING_BUDGET_MESSAGE;
     if (Number.isFinite(maxTokens)) params.max_tokens = maxTokens + budget;
@@ -155,4 +160,13 @@ function buildSamplingParams({ profile = "default", task = null, maxTokens, thin
   return { params, thinking: think };
 }
 
-module.exports = { SAMPLER_PRESETS, buildSamplingParams };
+// #1426: the chat composer's thinking levels. Off never thinks; Low,
+// Medium and Max think on every reply with their own budget; High is
+// "think harder" (THINK_HARDER_BUDGET, MANA_THINK_HARDER_BUDGET). Anything
+// else is undefined: the profile decides, as before levels.
+const THINKING_LEVELS = { off: false, low: 256, medium: DEFAULT_REASONING_BUDGET, high: true, max: 2048 };
+function thinkingForLevel(level) {
+  return Object.hasOwn(THINKING_LEVELS, String(level)) ? THINKING_LEVELS[level] : undefined;
+}
+
+module.exports = { SAMPLER_PRESETS, buildSamplingParams, thinkingForLevel };

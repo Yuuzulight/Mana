@@ -1,3 +1,6 @@
+const { thinkingForLevel } = require("./sampler-presets");
+// "Think harder" is High (1024); a level above it keeps its own budget.
+const THINK_HARDER_LEVEL_FLOOR = 1024;
 const backendDir = require('node:path').join(__dirname, '..');
 const { wrapUntrusted } = require('./untrusted-content');
 const { createAnalysisToolSource } = require('./analysis-tool-source');
@@ -153,7 +156,12 @@ async function buildAssistantReply(
       replyMeta.deepThinking = context.deepThinking.isOn(sessionId);
     }
     const askedThinkHarder = (replyMeta && replyMeta.thinkHarder === true) || context.wantsThinkHarder(transcript);
-    let thinkHarder = askedThinkHarder || manaThinking || undefined;
+    // #1426: the composer's thinking level (Off, Low, Medium, High, Max) is
+    // a budget for every reply, or off. Asking her to think harder, or her
+    // own deep thinking, still lifts it to at least High.
+    const levelThinking = userChat ? thinkingForLevel(replyMeta.thinkLevel) : undefined;
+    const harder = (on) => (on ? (typeof levelThinking === "number" && levelThinking > THINK_HARDER_LEVEL_FLOOR ? levelThinking : true) : levelThinking);
+    let thinkHarder = harder(askedThinkHarder || manaThinking) ?? (askedThinkHarder || manaThinking || undefined);
 
     // Determine assistant mode and system prompt
     const inferred = pickAssistantMode(transcript, normalizedModelProfile); // { mode, reason }
@@ -1136,7 +1144,7 @@ async function buildAssistantReply(
                       // restart the 10-reply cap.
                       if (!(on && manaThinking)) context.deepThinking.set(sessionId, on);
                       replyMeta.deepThinking = context.deepThinking.isOn(sessionId);
-                      thinkHarder = askedThinkHarder || on || undefined;
+                      thinkHarder = harder(askedThinkHarder || on) ?? (askedThinkHarder || on || undefined);
                     },
                   }),
                 ]

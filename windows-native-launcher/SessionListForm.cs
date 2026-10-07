@@ -638,34 +638,49 @@ internal sealed partial class SessionListForm : Form
         };
         railToolTip.SetToolTip(attach, "Attach documents or images (PDF, Word, Excel, PowerPoint, CSV, text, images)");
 
-        // #675: deep thinking, sticky until clicked off. While on, every
-        // turn (typed or spoken) asks node-bot to think harder. A toggle
-        // (CheckBox drawn as a button) so its on/off state is also exposed to
-        // screen readers; not saved -- off at each launch, like the tool
-        // panel's pin, since a forgotten "on" makes every reply slow.
-        var think = ToolbarToggle("Think", "Deep thinking");
-        railToolTip.SetToolTip(think, DeepThinkingOffTooltip);
-        // Q12b: it also lights while Mana's own deep thinking is on (she
-        // turned it on when asked); clicking it then turns hers off too.
-        var userThinking = false;
-        var syncing = false;
-        think.CheckedChanged += (_, _) =>
+        // #1426: the thinking level, like Claude's effort control: a chip
+        // saying the level, opening a card with a Faster <-> Smarter slider
+        // (Off, Low, Medium, High, Max; Medium recommended). Not saved --
+        // Medium at each launch, so a forgotten Max doesn't slow every reply.
+        // Q12b: while Mana's own deep thinking is on (she turned it on when
+        // asked) the chip says High; picking a level below that ends hers.
+        var thinkingLevel = ThinkingLevelPicker.Recommended;
+        var manaThinkingOn = false;
+        var think = ToolbarChip("Thinking level");
+        void ShowThinkingChip()
         {
-            if (!syncing)
+            var shown = manaThinkingOn && ThinkingLevelPicker.IndexOf(thinkingLevel) < ThinkingLevelPicker.IndexOf("high") ? "high" : thinkingLevel;
+            think.Text = $"Thinking: {ThinkingLevelPicker.LabelOf(shown)}";
+            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 40;
+            railToolTip.SetToolTip(think, manaThinkingOn ? "Mana turned deep thinking on; pick a lower level to end it" : "How hard she thinks before answering");
+        }
+        ShowThinkingChip();
+        think.Click += (_, _) =>
+        {
+            var picker = new ThinkingLevelPicker(thinkingLevel);
+            picker.LevelChanged += level =>
             {
-                userThinking = think.Checked;
-                voiceLoop.SetDeepThinking(think.Checked);
-            }
-            think.ForeColor = think.Checked ? DarkTheme.OnAccent : DarkTheme.Muted;
-            railToolTip.SetToolTip(think, think.Checked ? DeepThinkingOnTooltip : DeepThinkingOffTooltip);
+                thinkingLevel = level;
+                voiceLoop.SetThinkingLevel(level);
+                if (ThinkingLevelPicker.IndexOf(level) < ThinkingLevelPicker.IndexOf("high"))
+                {
+                    manaThinkingOn = false;
+                }
+                ShowThinkingChip();
+            };
+            var host = new ToolStripControlHost(picker) { Margin = Padding.Empty, Padding = Padding.Empty, AutoSize = false, Size = picker.Size };
+            var card = new ToolStripDropDown { Padding = new Padding(1), BackColor = DarkTheme.Border };
+            card.Items.Add(host);
+            card.Closed += (_, _) => card.Dispose();
+            card.Show(think, new Point(0, -picker.Height - 6));
+            picker.Focus();
         };
         voiceLoop.ManaDeepThinkingChanged += on =>
         {
             void Apply()
             {
-                syncing = true;
-                think.Checked = userThinking || on;
-                syncing = false;
+                manaThinkingOn = on;
+                ShowThinkingChip();
             }
             // The form's handle exists from construction (see the ctor), so
             // this also works while the window is hidden.
@@ -1002,6 +1017,59 @@ internal sealed partial class SessionListForm : Form
         return button;
     }
 
+    // ... a chip that opens something: the toggles' pill with a chevron.
+    private static Button ToolbarChip(string name)
+    {
+        var chip = new Button
+        {
+            Dock = DockStyle.Left,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Background,
+            ForeColor = DarkTheme.Text,
+            AccessibleName = name,
+            Cursor = Cursors.Hand,
+            UseMnemonic = false,
+        };
+        chip.FlatAppearance.BorderSize = 0;
+        var hovered = false;
+        chip.MouseEnter += (_, _) => { hovered = true; chip.Invalidate(); };
+        chip.MouseLeave += (_, _) => { hovered = false; chip.Invalidate(); };
+        chip.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, chip, chip.ClientRectangle);
+            }
+            else
+            {
+                using var clear = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(clear, chip.ClientRectangle);
+            }
+            var pill = new RectangleF(0.5f, 2.5f, chip.Width - 1.5f, chip.Height - 5.5f);
+            using var shape = RoundedRect(pill, pill.Height / 2);
+            if (hovered)
+            {
+                using var fill = new SolidBrush(DarkTheme.Panel2);
+                g.FillPath(fill, shape);
+            }
+            using var edge = new Pen(DarkTheme.Border);
+            g.DrawPath(edge, shape);
+            var text = Rectangle.Round(pill) with { Width = (int)pill.Width - 14 };
+            TextRenderer.DrawText(g, chip.Text, chip.Font, text, DarkTheme.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            using var pen = new Pen(DarkTheme.Muted, 1.4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            var cx = pill.Right - 14;
+            var cy = pill.Top + pill.Height / 2;
+            g.DrawLines(pen, new[] { new PointF(cx - 3, cy + 1.5f), new PointF(cx, cy - 1.5f), new PointF(cx + 3, cy + 1.5f) });
+            if (chip.Focused && GlassSurface.ShowsFocusCues(chip))
+            {
+                ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
+            }
+        };
+        return chip;
+    }
+
     // ... and its toggles: an outlined pill sized to its words, filled with
     // the accent while on.
     private static CheckBox ToolbarToggle(string text, string name)
@@ -1062,8 +1130,6 @@ internal sealed partial class SessionListForm : Form
     internal static int ComposerHeight(int lines, int lineHeight) =>
         112 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
-    private const string DeepThinkingOnTooltip = "Deep thinking: on -- slower, more careful replies. Click to turn off.";
-    private const string DeepThinkingOffTooltip = "Deep thinking: off -- click for slower, more careful replies";
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during
     // that turn get Approve / Review buttons on her message. "During that

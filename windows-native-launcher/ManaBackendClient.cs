@@ -371,7 +371,9 @@ internal sealed class ManaBackendClient
     // actions mid-game) or "typed" (gets the longer mid-game wiki wait).
     // Null sends nothing.
     // #1325: documents is a list of local file paths for document attachments (PDF, DOCX, XLSX, PPTX, CSV, TXT, MD).
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, IReadOnlyList<string>? documents = null)
+    // #1426: thinkLevel is the composer's thinking level (off, low, medium,
+    // high, max); null sends nothing and the profile decides.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, IReadOnlyList<string>? documents = null, string? thinkLevel = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
@@ -385,6 +387,10 @@ internal sealed class ManaBackendClient
         if (thinkHarder is bool think)
         {
             fields["thinkHarder"] = think;
+        }
+        if (thinkLevel is not null)
+        {
+            fields["thinkLevel"] = thinkLevel;
         }
         if (source is not null)
         {

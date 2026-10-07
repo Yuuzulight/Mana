@@ -88,12 +88,12 @@ internal sealed class StreamingReplyPlayer
     // sister's reaction; its sentence streams and plays like the rest, and
     // the first final stays the reply reported here.
     public async Task<(string? Reply, bool Changed, string? Expression, bool Interrupted, IReadOnlyList<string> Pending)> StreamReplyAndPlayAsync(
-        string commandText, string? sessionId = null, Action<string, string?>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, Action<ReplyStreamEvent>? onNoted = null, IReadOnlyList<string>? documents = null, Action<string>? onThought = null)
+        string commandText, string? sessionId = null, Action<string, string?>? onSentence = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, Action<ReplyStreamEvent>? onNoted = null, IReadOnlyList<string>? documents = null, Action<string>? onThought = null, string? thinkLevel = null)
     {
         var sentences = Channel.CreateUnbounded<(string Text, string? Emotion, string? Character)>();
         ReplyStreamEvent? finalEvent = null;
 
-        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, onSentence, sentences.Writer, e => finalEvent ??= e, onNoted, documents, onThought);
+        var readTask = ReadEventsAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, onSentence, sentences.Writer, e => finalEvent ??= e, onNoted, documents, onThought, thinkLevel);
         var (interrupted, pending) = await PlayStreamedSentencesAsync(sentences.Reader).ConfigureAwait(false);
 
         if (interrupted)
@@ -150,14 +150,14 @@ internal sealed class StreamingReplyPlayer
         return PlayStreamedSentencesAsync(channel.Reader);
     }
 
-    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string, string?>? onSentence, ChannelWriter<(string Text, string? Emotion, string? Character)> writer, Action<ReplyStreamEvent> onFinal, Action<ReplyStreamEvent>? onNoted, IReadOnlyList<string>? documents = null, Action<string>? onThought = null)
+    private async Task ReadEventsAsync(string commandText, string? sessionId, string screenText, string? image, IReadOnlyList<string>? images, string? presetId, bool? thinkHarder, string? source, Action<string, string?>? onSentence, ChannelWriter<(string Text, string? Emotion, string? Character)> writer, Action<ReplyStreamEvent> onFinal, Action<ReplyStreamEvent>? onNoted, IReadOnlyList<string>? documents = null, Action<string>? onThought = null, string? thinkLevel = null)
     {
         // #1337: steps with a textOffset; older ones are left to the poll.
         var runId = Guid.NewGuid().ToString("N");
         var steps = new List<AgentStep>();
         try
         {
-            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, documents))
+            await foreach (var evt in backendClient.ReplyStreamAsync(commandText, sessionId, screenText, image, images, presetId, thinkHarder, source, documents, thinkLevel))
             {
                 if (evt.Type == "sentence" && !string.IsNullOrWhiteSpace(evt.Text))
                 {
