@@ -1018,10 +1018,14 @@ internal sealed partial class SessionListForm : Form
     }
 
     // ... a chip that opens something: the toggles' pill with a chevron.
-    private static Button ToolbarChip(string name)
+    private static CheckBox ToolbarChip(string name)
     {
-        var chip = new Button
+        // A CheckBox that never checks: Button draws its own frame over this one.
+        var chip = new CheckBox
         {
+            Appearance = Appearance.Button,
+            AutoCheck = false,
+            AccessibleRole = AccessibleRole.PushButton,
             Dock = DockStyle.Left,
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.Background,
