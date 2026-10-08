@@ -94,6 +94,41 @@ internal static class SettingsRows
         return field;
     }
 
+    // #1426: a full-width rounded field with an icon at its start and a
+    // round accent send button at its end, like the chat window's composer.
+    // Enter sends too.
+    internal static Control AskField(TextBox box, string glyph, Action send)
+    {
+        box.BorderStyle = BorderStyle.None;
+        box.Dock = DockStyle.Fill;
+        var field = new RoundBox { Height = 36, Padding = new Padding(10, 9, 4, 4), Margin = Padding.Empty, Cursor = Cursors.IBeam, Fill = () => box.BackColor };
+        var icon = new Label { Text = glyph, Font = new Font("Segoe MDL2 Assets", 10f), ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Dock = DockStyle.Left, Width = 24, Padding = new Padding(0, 1, 0, 0) };
+        var go = new SendButton { Dock = DockStyle.Right, AccessibleName = "Ask" };
+        go.Click += (_, _) => send();
+        field.Controls.Add(box);
+        field.Controls.Add(icon);
+        field.Controls.Add(go);
+        field.MouseDown += (_, _) => box.Focus();
+        icon.MouseDown += (_, _) => box.Focus();
+        return field;
+    }
+
+    // #1426: a reply bubble: a small letter avatar beside a tinted rounded
+    // panel holding the content.
+    internal static Control Bubble(string letter, Control content)
+    {
+        var row = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 8, 0, 0) };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var avatar = new Avatar { Letter = letter, Margin = new Padding(0, 2, 8, 0) };
+        var bubble = new RoundBox { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(12, 10, 12, 10), Margin = Padding.Empty, Fill = () => Color.FromArgb(36, DarkTheme.Accent), Outline = false, Anchor = AnchorStyles.Left | AnchorStyles.Right };
+        content.Margin = Padding.Empty;
+        bubble.Controls.Add(content);
+        row.Controls.Add(avatar, 0, 0);
+        row.Controls.Add(bubble, 1, 0);
+        return row;
+    }
+
     // #1426: a list on a rounded panel a shade off the card, its edges kept clear.
     internal static Control RoundPanel(Control list)
     {
@@ -421,5 +456,80 @@ internal sealed class RoundBox : Panel
             using var edge = new Pen(DarkTheme.Border);
             g.DrawPath(edge, shape);
         }
+    }
+}
+
+// The send button inside an AskField: an up arrow on an accent circle.
+internal sealed class SendButton : Button
+{
+    public SendButton()
+    {
+        Width = 28;
+        FlatStyle = FlatStyle.Flat;
+        FlatAppearance.BorderSize = 0;
+        Cursor = Cursors.Hand;
+        SetStyle(ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        if (Parent is not null)
+        {
+            var state = g.Save();
+            g.TranslateTransform(-Left, -Top);
+            InvokePaintBackground(Parent, new PaintEventArgs(g, new Rectangle(Location, Size)));
+            g.Restore(state);
+        }
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var d = Math.Min(Width, Height) - 2;
+        var circle = new RectangleF((Width - d) / 2f, (Height - d) / 2f, d, d);
+        using (var fill = new SolidBrush(DarkTheme.Accent))
+        {
+            g.FillEllipse(fill, circle);
+        }
+        var cx = circle.X + (circle.Width / 2);
+        var cy = circle.Y + (circle.Height / 2);
+        using var pen = new Pen(DarkTheme.OnAccent, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        g.DrawLine(pen, cx, cy + 5, cx, cy - 5);
+        g.DrawLines(pen, new[] { new PointF(cx - 4, cy - 1), new PointF(cx, cy - 5), new PointF(cx + 4, cy - 1) });
+        if (Focused && ShowFocusCues)
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Round(circle));
+        }
+    }
+}
+
+// A small letter avatar on an accent circle.
+internal sealed class Avatar : Control
+{
+    private readonly Font letterFont = new("Segoe UI Semibold", 9.5f);
+
+    internal string Letter { get; init; } = "M";
+
+    public Avatar()
+    {
+        Size = new Size(26, 26);
+        SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        BackColor = Color.Transparent;
+        AccessibleRole = AccessibleRole.Graphic;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var fill = new SolidBrush(DarkTheme.Accent);
+        e.Graphics.FillEllipse(fill, 0, 0, Width - 1, Height - 1);
+        TextRenderer.DrawText(e.Graphics, Letter, letterFont, ClientRectangle, DarkTheme.OnAccent, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            letterFont.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }

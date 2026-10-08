@@ -222,6 +222,39 @@ public class SettingsPanelLayoutTests
         Assert.Equal("", SettingsPanel.UpdatedText(null, now));
     }
 
+    // #1426: "Tell Mana what to remember or change": her suggestion first, written only by Save it.
+    [Fact]
+    public void AskBox_ShowsHerSuggestion_AndSavesItOnlyWhenAsked()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var posts = new System.Collections.Generic.List<string>();
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
+            {
+                var path = request.RequestUri!.AbsolutePath;
+                if (request.Method == HttpMethod.Post)
+                {
+                    posts.Add($"{path} {request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()}");
+                }
+                var json = path == "/admin/memory/ask"
+                    ? "{\"ok\":true,\"reply\":\"I'll change editor from VS Code to Cursor. Okay?\",\"changes\":[{\"action\":\"change\",\"key\":\"editor\",\"text\":\"Uses Cursor\",\"was\":\"Uses VS Code\"}]}"
+                    : "{\"ok\":true,\"facts\":[]}";
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+            }));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Width = 900 };
+            panel.AskBox.Text = "I switched to Cursor";
+            panel.AskMemoryAsync().GetAwaiter().GetResult();
+            Assert.Equal("I'll change editor from VS Code to Cursor. Okay?", panel.AnswerReply.Text);
+            Assert.Equal(new[] { "Change", "editor", "Uses VS Code", "→", "Uses Cursor" },
+                panel.AnswerChanges.Controls[0].Controls.Cast<Control>().Select(c => c.Text)); // the old words struck through, the new after the arrow
+            Assert.Equal(new[] { "/admin/memory/ask {\"text\":\"I switched to Cursor\"}" }, posts); // nothing applied yet
+
+            panel.SaveAnswerAsync().GetAwaiter().GetResult();
+            Assert.StartsWith("/admin/memory/ask/apply {\"changes\":[{\"action\":\"change\"", posts[1]);
+            Assert.Equal("", panel.AskBox.Text);
+        });
+    }
+
     // #1426: the window comes back where it was, unless that's off every screen.
     [Fact]
     public void RestoredBounds_KeepsAWindowThatIsStillOnAScreen()

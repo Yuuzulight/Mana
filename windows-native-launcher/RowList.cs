@@ -36,6 +36,9 @@ internal sealed class RowList : ListView
     // The picked entry's actions; none when null.
     public Func<object, IReadOnlyList<RowAction>>? ActionsFor { get; set; }
 
+    // Grows to fit its rows up to this many, then scrolls; 0 keeps its height.
+    public int MaxVisibleRows { get; set; }
+
     // How wide the name column is, in logical pixels.
     public int NameWidth { get; set; } = 140;
 
@@ -63,6 +66,27 @@ internal sealed class RowList : ListView
         base.OnHandleCreated(e);
         rowHeight.ImageSize = new Size(1, LogicalToDeviceUnits(30));
         Fit();
+    }
+
+    // As tall as its rows (to MaxVisibleRows), so a short list leaves no
+    // empty panel; the rounded panel it sits on grows with it.
+    private void FitHeight()
+    {
+        if (MaxVisibleRows <= 0)
+        {
+            return;
+        }
+        // The real row height once there's a window (a little over the image's).
+        var row = IsHandleCreated && Items.Count > 0 ? Items[0].Bounds.Height : LogicalToDeviceUnits(32);
+        var height = (Math.Clamp(Items.Count, 1, MaxVisibleRows) * row) + 4;
+        if (Parent is RoundBox box)
+        {
+            box.Height = height + box.Padding.Vertical;
+        }
+        else
+        {
+            Height = height;
+        }
     }
 
     // One column as wide as the list (also once rows add the vertical scroll bar).
@@ -120,6 +144,7 @@ internal sealed class RowList : ListView
             Items.Add(new ListViewItem(empty) { ForeColor = DarkTheme.Muted });
         }
         EndUpdate();
+        FitHeight();
         Fit();
         OnSelectedIndexChanged(EventArgs.Empty);
     }

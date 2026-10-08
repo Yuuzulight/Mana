@@ -1093,7 +1093,7 @@ internal sealed class SettingsPanel : UserControl
 
     private SettingsRow BuildFactsRow()
     {
-        factsList.Height = 230; // about seven facts and their groups; the list scrolls, the page doesn't grow
+        factsList.MaxVisibleRows = 9; // about seven facts and their groups; then it scrolls, so the page doesn't grow
         factsList.ActionsFor = FactActionsFor;
         factsList.ItemActivate += async (_, _) =>
         {
@@ -1177,8 +1177,157 @@ internal sealed class SettingsPanel : UserControl
         vaultStatusLabel.MaximumSize = new Size(420, 0);
         vaultStatusLabel.Margin = new Padding(2, 1, 0, 0);
         var listPanel = SettingsRows.RoundPanel(factsList);
-        return new SettingsRow("Facts about you", "Shared by every character. Pinned ones go into every reply", "memory remember knowledge facts obsidian vault pin",
-            below: true, top, listPanel, SettingsRows.Line(vaultDot, vaultStatusLabel, openVaultLink, vaultSyncButton));
+        var askLine = BuildAskLine();
+        return new SettingsRow("Facts about you", "Shared by every character. Pinned ones go into every reply", "memory remember knowledge facts obsidian vault pin ask tell change",
+            below: true, top, listPanel, askLine, answer, SettingsRows.Line(vaultDot, vaultStatusLabel, openVaultLink, vaultSyncButton));
+    }
+
+    // #1426: "Tell Mana what to remember or change" under the facts: she
+    // answers with the change she'd make ("I'll change ... Okay?"), saved
+    // only by Save it.
+    private readonly TextBox askBox = new() { PlaceholderText = "Tell Mana what to remember or change", AccessibleName = "Tell Mana what to remember or change", Dock = DockStyle.Fill };
+    private readonly Label answerReply = new() { AutoSize = true, MaximumSize = new Size(620, 0), ForeColor = DarkTheme.Text, BackColor = Color.Transparent, UseMnemonic = false };
+    private readonly FlowLayoutPanel answerChanges = SettingsRows.Stack();
+    private readonly Button saveAnswer = SettingsRows.Action("Save it", () => { });
+    private readonly LinkLabel dropAnswer = new() { Text = "Not that", AutoSize = true };
+    private Control answer = SettingsRows.Stack();
+    private ManaMemoryAnswer? pendingAnswer;
+
+    internal TextBox AskBox => askBox; // tests
+    internal Label AnswerReply => answerReply; // tests
+    internal FlowLayoutPanel AnswerChanges => answerChanges; // tests
+    internal Button SaveAnswerButton => saveAnswer; // tests
+
+    private Control BuildAskLine()
+    {
+        askBox.BackColor = DarkTheme.Panel;
+        askBox.ForeColor = DarkTheme.Text;
+        askBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                _ = AskMemoryAsync();
+            }
+        };
+        SettingsRows.MakePrimary(saveAnswer);
+        saveAnswer.Click += async (_, _) => await SaveAnswerAsync();
+        dropAnswer.LinkColor = dropAnswer.ActiveLinkColor = DarkTheme.Muted;
+        dropAnswer.LinkBehavior = LinkBehavior.HoverUnderline;
+        dropAnswer.BackColor = Color.Transparent;
+        dropAnswer.Margin = new Padding(10, 7, 0, 0);
+        dropAnswer.LinkClicked += (_, _) =>
+        {
+            pendingAnswer = null;
+            answer.Visible = false;
+        };
+        // Her answer: a tinted bubble beside her letter, like a chat reply.
+        answerChanges.Margin = new Padding(0, 4, 0, 2);
+        var buttons = SettingsRows.Line(saveAnswer, dropAnswer);
+        buttons.Margin = new Padding(0, 6, 0, 0);
+        answer = SettingsRows.Bubble("M", SettingsRows.Stack(answerReply, answerChanges, buttons));
+        answer.Visible = false;
+        return SettingsRows.AskField(askBox, "\uE8BD", () => _ = AskMemoryAsync());
+    }
+
+    internal async Task AskMemoryAsync()
+    {
+        var text = askBox.Text.Trim();
+        if (text.Length == 0)
+        {
+            return;
+        }
+        pendingAnswer = null;
+        answerReply.Text = "Thinking…";
+        answerReply.ForeColor = DarkTheme.Muted;
+        ShowChanges([]);
+        saveAnswer.Visible = dropAnswer.Visible = false;
+        answer.Visible = true;
+        ManaMemoryAnswer reply;
+        try
+        {
+            reply = await backendClient.AskMemoryAsync(text);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (!IsDisposed)
+            {
+                answerReply.Text = BackendError.Describe(ex);
+            }
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        answerReply.Text = reply.Reply;
+        answerReply.ForeColor = DarkTheme.Text;
+        ShowChanges(reply.Changes);
+        pendingAnswer = reply.Changes.Count > 0 ? reply : null;
+        saveAnswer.Visible = pendingAnswer is not null;
+        dropAnswer.Visible = true;
+        dropAnswer.Text = pendingAnswer is null ? "Okay" : "Not that";
+    }
+
+    // Each change on its own line: what changes, the old words struck
+    // through, the new ones after an arrow.
+    private void ShowChanges(IReadOnlyList<ManaMemoryChange> changes)
+    {
+        foreach (var old in answerChanges.Controls.Cast<Control>().ToList())
+        {
+            old.Dispose();
+        }
+        foreach (var change in changes)
+        {
+            Label Part(string text, Color color, FontStyle style = FontStyle.Regular) =>
+                new() { Text = text, AutoSize = true, ForeColor = color, BackColor = Color.Transparent, UseMnemonic = false, Margin = new Padding(0, 0, 4, 0), Font = style == FontStyle.Regular ? Font : new Font(Font, style) };
+            var line = SettingsRows.Line();
+            line.Margin = new Padding(0, 2, 0, 0);
+            var (verb, color) = change.Action switch
+            {
+                "add" => ("Remember", DarkTheme.Green),
+                "change" => ("Change", DarkTheme.Accent),
+                "archive" => ("Archive", DarkTheme.Muted),
+                _ => ("Forget", Color.IndianRed),
+            };
+            line.Controls.Add(Part(verb, color, FontStyle.Bold));
+            line.Controls.Add(Part(change.Key, DarkTheme.Text));
+            if (change.Action == "change" && change.Was.Length > 0)
+            {
+                line.Controls.Add(Part(change.Was, DarkTheme.Muted, FontStyle.Strikeout));
+                line.Controls.Add(Part("→", DarkTheme.Muted));
+            }
+            if (change.Text.Length > 0)
+            {
+                line.Controls.Add(Part(change.Text, DarkTheme.Text));
+            }
+            answerChanges.Controls.Add(line);
+        }
+        answerChanges.Visible = changes.Count > 0;
+    }
+
+    internal async Task SaveAnswerAsync()
+    {
+        if (pendingAnswer is not { } saving)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.ApplyMemoryAnswerAsync(saving);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (!IsDisposed)
+            {
+                answerReply.Text = $"Couldn't save it: {BackendError.Describe(ex)}";
+            }
+            return;
+        }
+        pendingAnswer = null;
+        askBox.Clear();
+        answer.Visible = false;
+        await RefreshMemoryFactsAsync();
     }
 
     private ManaMemoryFact? SelectedFact => factsList.SelectedItems.Count > 0 ? factsList.SelectedItems[0].Tag as ManaMemoryFact : null;
@@ -1300,7 +1449,7 @@ internal sealed class SettingsPanel : UserControl
 
     private Control[] BuildSkillsRows()
     {
-        skillsList.Height = 170;
+        skillsList.MaxVisibleRows = 6;
         skillsList.ActionsFor = _ =>
         [
             new("\uE70F", "Edit", EditSelectedSkillAsync),
@@ -1338,7 +1487,7 @@ internal sealed class SettingsPanel : UserControl
     // every reply.
     private Control[] BuildPresetsRows()
     {
-        presetsList.Height = 110;
+        presetsList.MaxVisibleRows = 4;
         presetsList.ActionsFor = _ =>
         [
             new("\uE70F", "Edit", EditSelectedPresetAsync),
