@@ -302,6 +302,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         sessionListForm.AvatarSettingsChanged = () => RunOnUi(ApplyAvatarSettings); // #1426: from Settings > General > Avatar
         sessionListForm.SwitchCharacter = SwitchCharacterAsync; // #1426: from Settings > Memory > Characters
         sessionListForm.RevertMergedPr = PromptRevertPr; // #1426: from Settings > Advanced > Developer
+        sessionListForm.RefreshWaiting = RefreshWaitingAsync; // #1426: after an answer in the chat window
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now
         // does what the original comment here flagged as the real
@@ -742,6 +743,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             // Admin-only, like edit proposals.
         }
 
+        sessionListForm.ShowWaiting(new WaitingSnapshot(approvals, proposals, writes)); // #1426
         var items = WaitingForYou.Items(approvals, proposals, writes);
         avatarOverlay.SetActivity(AvatarState.Waiting, items.Count > 0);
         normalTrayIcon ??= trayIcon.Icon;

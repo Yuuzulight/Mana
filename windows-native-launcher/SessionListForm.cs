@@ -418,6 +418,15 @@ internal sealed partial class SessionListForm : Form
             () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
         // #1122: her browser automation, docked.
         RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient, () => voiceLoop.CurrentSessionId));
+        // #1426 stage 3: everything waiting on my OK, just above Settings,
+        // with how many on its icon.
+        waitingButton = RegisterRailTool("waiting", "waiting", "Waiting for you", () =>
+        {
+            waitingPanel = new WaitingPanel(AnswerAsync, edit => new ProposalsForm(backendClient, edit.Id).Show(this), () => OpenSettings("permissions"));
+            waitingPanel.Show(waiting, voiceLoop.CurrentSessionId);
+            return waitingPanel;
+        }, badge: () => waiting.Count);
+        waitingButton.Dock = DockStyle.Bottom;
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
@@ -434,6 +443,7 @@ internal sealed partial class SessionListForm : Form
         chatArea.Controls.Add(attachments);
         chatArea.Controls.Add(BuildMessageBox());
         chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
+        chatLog.ReplyEnded += () => _ = RefreshWaiting?.Invoke(); // #1426: this turn's requests as cards now, not on the next poll
         // Q62: VoiceLoop started a session on its own (launch, or 4 h idle);
         // its row exists once this first reply is saved, so list and bold it.
         chatLog.ReplyEnded += () =>
@@ -1301,12 +1311,98 @@ internal sealed partial class SessionListForm : Form
     // #1122: the floating browser window stays away while this is on screen.
     internal bool BrowserToolShowing => Visible && WindowState != FormWindowState.Minimized && toolPanel.IsOpen("browser");
 
+    // #1426 stage 3: what's waiting on my OK (ManaApplicationContext's 5s
+    // poll, and RefreshWaiting after each answer), shown in Waiting for you,
+    // on its icon, and as cards in the chat it was asked from.
+    private WaitingSnapshot waiting = WaitingSnapshot.Empty;
+    private readonly Button waitingButton;
+    private WaitingPanel? waitingPanel;
+    // What I answered each request, for its card when it ends.
+    private readonly Dictionary<string, string> answered = new();
+
+    internal Func<Task>? RefreshWaiting { get; set; }
+
+    internal int WaitingCount => waiting.Count; // tests
+
+    internal void ShowWaiting(WaitingSnapshot snapshot)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => ShowWaiting(snapshot));
+            return;
+        }
+        waiting = snapshot;
+        var label = snapshot.Count > 0 ? $"Waiting for you ({snapshot.Count})" : "Waiting for you";
+        railToolTip.SetToolTip(waitingButton, label);
+        waitingButton.AccessibleName = label;
+        waitingButton.Invalidate();
+        waitingPanel?.Show(snapshot, voiceLoop.CurrentSessionId);
+        SyncApprovalCards(voiceLoop.CurrentSessionId);
+    }
+
+    // A card for each of this chat's requests; one answered elsewhere (or
+    // gone) ends with what was said.
+    private void SyncApprovalCards(string? sessionId)
+    {
+        var open = waiting.Approvals.Select(a => a.Id).ToHashSet();
+        foreach (var gone in chatView.OpenApprovalCards.Where(id => !open.Contains(id)))
+        {
+            chatView.EndApprovalCard(gone, answered.GetValueOrDefault(gone) ?? "No longer waiting");
+        }
+        if (sessionId is null)
+        {
+            return;
+        }
+        foreach (var approval in waiting.Approvals.Where(a => a.SessionId == sessionId))
+        {
+            chatView.ShowApprovalCard(approval.Id, $"**Needs your OK** · {WaitingPanel.Words(approval.ActionType)}\n\n{approval.Summary}", CardActions(approval));
+        }
+    }
+
+    // Allow (its arrow: for this session, always) and Deny (its arrow: never).
+    private IReadOnlyList<ChatView.ChatAction> CardActions(ManaPendingApproval approval)
+    {
+        ChatView.ChatAction Answer(string label, bool primary, string decision, params string[] more) =>
+            new(label, primary, () => AnswerAsync(approval, decision),
+                Menu: more.Length == 0 ? null : more.Select(d => new ChatView.ChatMenuItem(
+                    WaitingPanel.ApprovalChoices.First(c => c.Decision == d).Name, true, () => AnswerAsync(approval, d))).ToList());
+        return [Answer("Allow", true, "allow-once", "allow-session", "always-allow"), Answer("Deny", false, "deny", "never")];
+    }
+
+    // Answers an approval or the coding agent's write, then fetches what's
+    // waiting again so both places clear. Gives back what happened.
+    internal async Task<string?> AnswerAsync(object request, string decision)
+    {
+        switch (request)
+        {
+            case ManaPendingApproval approval:
+                await backendClient.DecideApprovalAsync(approval.Id, decision);
+                answered[approval.Id] = WaitingPanel.Answered(decision);
+                break;
+            case ManaPendingWrite write:
+                await backendClient.DecidePendingWriteAsync(write.Id, decision == "allow-once");
+                break;
+            default:
+                return null;
+        }
+        if (RefreshWaiting is { } refresh)
+        {
+            await refresh();
+        }
+        return WaitingPanel.Answered(decision);
+    }
+
     // #1118: the host API every rail tool uses (see ToolPanelHost): adds its
     // icon below the ones before it and opens createContent's control in the
     // tool panel. Returns the icon, e.g. to dock it at the bottom.
-    internal Button RegisterRailTool(string id, string icon, string label, Func<Control> createContent)
+    // badge: a count on the icon while it's above 0.
+    internal Button RegisterRailTool(string id, string icon, string label, Func<Control> createContent, Func<int>? badge = null)
     {
-        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id), () => toolPanel.IsHighlighted(id));
+        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id), () => toolPanel.IsHighlighted(id), badge);
         toolRail.Controls.Add(button);
         button.BringToFront(); // docked last-added-first, so this keeps registration order
         toolPanel.Add(id, label, button, createContent);
@@ -1324,7 +1420,7 @@ internal sealed partial class SessionListForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null, Func<bool>? highlighted = null)
+    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null, Func<bool>? highlighted = null, Func<int>? badge = null)
     {
         var button = new Button
         {
@@ -1355,10 +1451,33 @@ internal sealed partial class SessionListForm : Form
                 using var dot = new SolidBrush(DarkTheme.Accent);
                 e.Graphics.FillEllipse(dot, (button.Width / 2f) + 6, (button.Height / 2f) - 11, 7, 7);
             }
+            if (badge?.Invoke() is > 0 and var count)
+            {
+                DrawRailBadge(e.Graphics, button.ClientRectangle, count);
+            }
         };
         railToolTip.SetToolTip(button, tooltip);
         button.AccessibleName = tooltip;
         return button;
+    }
+
+    // #1426: a count at the icon's top right, a pill in the accent.
+    private static void DrawRailBadge(Graphics g, Rectangle bounds, int count)
+    {
+        var text = count > 9 ? "9+" : count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        using var font = new Font("Segoe UI", 7f, FontStyle.Bold);
+        var width = Math.Max(14, TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.NoPadding).Width + 7);
+        var pill = new RectangleF(bounds.X + (bounds.Width / 2f) + 2, bounds.Y + (bounds.Height / 2f) - 15, width, 14);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var shape = SettingsRows.Rounded(pill, 7))
+        {
+            using var fill = new SolidBrush(DarkTheme.Accent);
+            using var ring = new Pen(DarkTheme.Panel, 2f);
+            g.DrawPath(ring, shape);
+            g.FillPath(fill, shape);
+        }
+        TextRenderer.DrawText(g, text, font, Rectangle.Round(pill), DarkTheme.OnAccent,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
     }
 
     // The #652 mockup's rail icons: 18px, 1.6px strokes, round caps,
@@ -1393,6 +1512,18 @@ internal sealed partial class SessionListForm : Form
             case "sidebar": // the mockup's toggle: a panel on the left
                 Frame();
                 g.DrawLine(pen, x + 6.5f, y + 2.5f, x + 6.5f, y + 15.5f);
+                break;
+
+            case "waiting": // a bell: a dome flaring to its rim, the clapper under it
+                using (var bell = new GraphicsPath())
+                {
+                    bell.AddArc(x + 4.5f, y + 2, 9, 9, 180, 180);
+                    bell.AddLine(x + 13.5f, y + 6.5f, x + 14.5f, y + 12.5f);
+                    bell.AddLine(x + 14.5f, y + 12.5f, x + 3.5f, y + 12.5f);
+                    bell.AddLine(x + 3.5f, y + 12.5f, x + 4.5f, y + 6.5f);
+                    g.DrawPath(pen, bell);
+                }
+                g.DrawArc(pen, x + 7, y + 13, 4, 3.5f, 0, 180);
                 break;
 
             case "tasks":
@@ -1718,6 +1849,7 @@ internal sealed partial class SessionListForm : Form
             return null; // switched again meanwhile
         }
         chatView.ShowHistory(detail?.RecentTurns ?? Array.Empty<ManaSessionTurn>());
+        SyncApprovalCards(sessionId); // #1426: this chat's requests, as cards again
         return detail;
     }
 

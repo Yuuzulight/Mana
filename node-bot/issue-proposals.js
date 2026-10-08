@@ -195,7 +195,7 @@ function createIssueProposals({ gh, repoRoot = path.join(__dirname, ".."), appro
         forceReview: true,
       });
       if (outcome.status === "pending") {
-        return { status: "pending-approval", requestId: outcome.requestId, decision, matches, limits, note: "It is filed once the user approves it in Approvals." };
+        return { status: "pending-approval", requestId: outcome.requestId, decision, matches, limits, note: "It is filed once the user approves it in Waiting for you." };
       }
       if (outcome.status === "approved") return { status: "filed", decision, matches, limits, url: String(outcome.result || "").replace(/^Opened /, "") };
       return { status: outcome.status, reason: outcome.reason || "", decision, matches, limits };
