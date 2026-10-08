@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -1311,6 +1312,28 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         e.Graphics.FillRectangle(brush, ClientRectangle);
     }
 
+    // #1449: the chat's rounded corners, like Settings': bubbles and cards
+    // 10px, buttons 6px, a pill never more than half its height.
+    private const float BubbleRadius = 10;
+    private const float ButtonRadius = 6;
+
+    // An empty path for a rectangle too small to round (a button not laid out yet).
+    private static GraphicsPath Round(Rectangle r, float radius) =>
+        r.Width < 3 || r.Height < 3 ? new GraphicsPath()
+        : SettingsRows.Rounded(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1f, r.Height - 1f), Math.Max(0.5f, Math.Min(radius, (r.Height - 1) / 2f)));
+
+    private static void FillRound(Graphics g, Brush brush, Rectangle r, float radius)
+    {
+        using var shape = Round(r, radius);
+        g.FillPath(brush, shape);
+    }
+
+    private static void DrawRound(Graphics g, Pen pen, Rectangle r, float radius)
+    {
+        using var shape = Round(r, radius);
+        g.DrawPath(pen, shape);
+    }
+
     // A new chat's card: how to start, and a few things she can do.
     internal const string EmptyStateText = "Say \"Mana\" or type below to start.\n\n"
         + "A few things she can do:\n"
@@ -1329,13 +1352,14 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         var text = TextRenderer.MeasureText(g, EmptyStateText, bodyFont, new Size(width - (PadX * 2), int.MaxValue), flags);
         var card = new Rectangle((ClientSize.Width - width) / 2, Math.Max(24, (ClientSize.Height - text.Height) / 3), width, text.Height + (PadY * 2));
+        g.SmoothingMode = SmoothingMode.AntiAlias;
         using (var fill = new SolidBrush(DarkTheme.ManaBubble))
         {
-            g.FillRectangle(fill, card);
+            FillRound(g, fill, card, BubbleRadius);
         }
         using (var border = new Pen(DarkTheme.Border))
         {
-            g.DrawRectangle(border, card.X, card.Y, card.Width - 1, card.Height - 1);
+            DrawRound(g, border, card, BubbleRadius);
         }
         TextRenderer.DrawText(g, EmptyStateText, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text, flags);
     }
@@ -1343,6 +1367,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias; // #1449: the rounded corners
         if (messages.Count == 0)
         {
             PaintEmptyState(g);
@@ -1376,8 +1401,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var nextEnabled = message.VersionIndex < message.Versions.Count - 1;
 
                 using var btnBrush = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 25 : 35, DarkTheme.Muted));
-                g.FillRectangle(btnBrush, prevR);
-                g.FillRectangle(btnBrush, nextR);
+                FillRound(g, btnBrush, prevR, ButtonRadius);
+                FillRound(g, btnBrush, nextR, ButtonRadius);
 
                 TextRenderer.DrawText(g, "<", labelFont, prevR, prevEnabled ? DarkTheme.Text : DarkTheme.Muted, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 TextRenderer.DrawText(g, $"{message.VersionIndex + 1}/{message.Versions.Count}", labelFont, lblR, DarkTheme.Muted, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
@@ -1394,23 +1419,23 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 if (message.FromUser && !message.EditBtnBounds.IsEmpty)
                 {
                     var editR = message.EditBtnBounds with { Y = message.EditBtnBounds.Y - scroll };
-                    g.FillRectangle(btnBrush, editR);
-                    g.DrawRectangle(borderPen, editR.X, editR.Y, editR.Width - 1, editR.Height - 1);
+                    FillRound(g, btnBrush, editR, ButtonRadius);
+                    DrawRound(g, borderPen, editR, ButtonRadius);
                     TextRenderer.DrawText(g, "Edit", labelFont, editR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
                 else if (!message.FromUser && !message.RegenerateBtnBounds.IsEmpty)
                 {
                     var regenR = message.RegenerateBtnBounds with { Y = message.RegenerateBtnBounds.Y - scroll };
-                    g.FillRectangle(btnBrush, regenR);
-                    g.DrawRectangle(borderPen, regenR.X, regenR.Y, regenR.Width - 1, regenR.Height - 1);
+                    FillRound(g, btnBrush, regenR, ButtonRadius);
+                    DrawRound(g, borderPen, regenR, ButtonRadius);
                     TextRenderer.DrawText(g, "Regenerate", labelFont, regenR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
 
                 if (!message.BranchBtnBounds.IsEmpty)
                 {
                     var branchR = message.BranchBtnBounds with { Y = message.BranchBtnBounds.Y - scroll };
-                    g.FillRectangle(btnBrush, branchR);
-                    g.DrawRectangle(borderPen, branchR.X, branchR.Y, branchR.Width - 1, branchR.Height - 1);
+                    FillRound(g, btnBrush, branchR, ButtonRadius);
+                    DrawRound(g, borderPen, branchR, ButtonRadius);
                     TextRenderer.DrawText(g, "Branch", labelFont, branchR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
             }
@@ -1419,15 +1444,15 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (DarkTheme.IsGlass)
             {
                 using var glass = new SolidBrush(Color.FromArgb(175, fill));
-                g.FillRectangle(glass, bubble);
-                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this)); // #652: her bubbles shimmer
+                FillRound(g, glass, bubble, BubbleRadius);
+                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this), BubbleRadius); // #652: her bubbles shimmer
             }
             else
             {
                 using var solid = new SolidBrush(fill);
-                g.FillRectangle(solid, bubble);
+                FillRound(g, solid, bubble, BubbleRadius);
                 using var border = new Pen(DarkTheme.Border);
-                g.DrawRectangle(border, bubble.X, bubble.Y, bubble.Width - 1, bubble.Height - 1);
+                DrawRound(g, border, bubble, BubbleRadius);
             }
             if (message.ApprovalId is not null)
             {
@@ -1435,11 +1460,16 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 // left while it waits, the plain edge once it's answered.
                 var waiting = message.Actions.Count > 0;
                 using var edge = new Pen(waiting ? DarkTheme.Accent : DarkTheme.Border);
-                g.DrawRectangle(edge, bubble.X, bubble.Y, bubble.Width - 1, bubble.Height - 1);
+                DrawRound(g, edge, bubble, BubbleRadius);
                 if (waiting)
                 {
+                    // The bar follows the card's rounded left edge.
+                    using var shape = Round(bubble, BubbleRadius);
+                    var clip = g.Clip;
+                    g.SetClip(shape, CombineMode.Intersect);
                     using var bar = new SolidBrush(DarkTheme.Accent);
-                    g.FillRectangle(bar, bubble.X, bubble.Y, 3, bubble.Height);
+                    g.FillRectangle(bar, bubble.X, bubble.Y, 4, bubble.Height);
+                    g.Clip = clip;
                 }
             }
 
@@ -1449,8 +1479,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var headerRect = message.ThoughtHeaderBounds with { X = message.ThoughtHeaderBounds.X + origin.X, Y = message.ThoughtHeaderBounds.Y + origin.Y };
                 using var pillBrush = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 30 : 40, DarkTheme.Muted));
                 using var pillPen = new Pen(Color.FromArgb(DarkTheme.IsLight ? 60 : 70, DarkTheme.Border));
-                g.FillRectangle(pillBrush, headerRect);
-                g.DrawRectangle(pillPen, headerRect.X, headerRect.Y, headerRect.Width - 1, headerRect.Height - 1);
+                FillRound(g, pillBrush, headerRect, headerRect.Height / 2f);
+                DrawRound(g, pillPen, headerRect, headerRect.Height / 2f);
                 var labelText = message.ThoughtOpen ? "▾ 💭 Thought Process" : "▸ 💭 Thought Process";
                 TextRenderer.DrawText(g, labelText, labelFont, new Point(headerRect.X + 8, headerRect.Y + 3), DarkTheme.Muted, TextFlags);
 
@@ -1525,7 +1555,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (i == selected)
             {
                 using var ring = new Pen(DarkTheme.Accent, 2);
-                g.DrawRectangle(ring, bubble.X + 1, bubble.Y + 1, bubble.Width - 3, bubble.Height - 3);
+                DrawRound(g, ring, Rectangle.Inflate(bubble, -1, -1), BubbleRadius - 1);
             }
         }
     }
@@ -1946,7 +1976,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (action.Primary)
             {
                 using var fill = new SolidBrush(faded ? Color.FromArgb(140, DarkTheme.Accent) : DarkTheme.Accent);
-                g.FillRectangle(fill, rect);
+                FillRound(g, fill, rect, ButtonRadius);
                 var labelRect = action.Menu is null ? rect : new Rectangle(rect.X, rect.Y, rect.Width - MenuArrowWidth, rect.Height);
                 TextRenderer.DrawText(g, action.Label, bodyFont, labelRect, DarkTheme.OnAccent,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
@@ -1963,9 +1993,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             else
             {
                 using var fill = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(190, 255, 255, 255) : DarkTheme.Panel2);
-                g.FillRectangle(fill, rect);
+                FillRound(g, fill, rect, ButtonRadius);
                 using var border = new Pen(DarkTheme.Border);
-                g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+                DrawRound(g, border, rect, ButtonRadius);
                 var labelRect = action.Menu is null ? rect : new Rectangle(rect.X, rect.Y, rect.Width - MenuArrowWidth, rect.Height);
                 TextRenderer.DrawText(g, action.Label, bodyFont, labelRect, faded ? DarkTheme.Muted : DarkTheme.Text,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
