@@ -426,3 +426,71 @@ test("a group reaction is short, in the partner's persona, and saved as her turn
     }
   });
 });
+
+test("Settings' editor adds, edits, resets and deletes characters in characters.json (#1426)", () => {
+  const filePath = tempFile();
+  const removed = [];
+  const store = createCharacterStore({ filePath, onRemoved: (id) => removed.push(id) });
+  const clip = path.join(path.dirname(filePath), "..", `aoi-${Date.now()}.wav`);
+  fs.writeFileSync(clip, "RIFF");
+
+  const aoi = store.saveCharacter(null, { name: "Aoi Hana", persona: "You are Aoi.", handoff: "Aoi here~", voice: { clip, refText: "hello there" } });
+  assert.equal(aoi.id, "aoi-hana");
+  assert.equal(store.saveCharacter(null, { name: "Aoi Hana", persona: "Another." }).id, "aoi-hana-2");
+  assert.equal(aoi.voice.refText, "hello there");
+  assert.ok(fs.existsSync(path.join(path.dirname(filePath), "voices", "aoi-hana.wav")), "the clip is copied beside the file");
+  assert.deepEqual(JSON.parse(fs.readFileSync(filePath, "utf8"))[0].voice, { refAudio: "voices/aoi-hana.wav", refText: "hello there" });
+
+  assert.throws(() => store.saveCharacter(null, { name: "", persona: "x" }), /name/);
+  assert.throws(() => store.saveCharacter(null, { name: "X", persona: "x".repeat(4001) }), /over 4000/);
+  assert.throws(() => store.saveCharacter("aoi-hana", { name: "Aoi", persona: "x", live2dModel: "model.png" }), /model3/);
+  assert.equal(store.saveCharacter("nobody", { name: "N", persona: "x" }), null);
+
+  // A built-in's edit only overrides; Reset prompt takes it out again.
+  const evil = store.saveCharacter("evil-mana", { name: "Evil Mana", persona: "Edited.", voice: "mana" });
+  assert.equal(evil.persona, "Edited.");
+  assert.equal(store.editable().find((c) => c.id === "evil-mana").promptEdited, true);
+  assert.notEqual(store.resetPrompt("evil-mana").persona, "Edited.");
+  assert.equal(store.editable().find((c) => c.id === "evil-mana").promptEdited, false);
+  assert.equal(store.resetPrompt("aoi-hana"), null);
+
+  // Deleting: only one you added, and the active one falls back to Mana.
+  store.setActive("aoi-hana");
+  assert.equal(store.removeCharacter("evil-mana"), false);
+  assert.equal(store.removeCharacter("aoi-hana"), true);
+  assert.equal(store.active().id, "mana");
+  assert.deepEqual(removed, ["aoi-hana"]);
+  assert.deepEqual(store.list().map((c) => c.id), ["mana", "evil-mana", "aoi-hana-2"]);
+});
+
+test("the editor's routes are admin-only and answer in words (#1426)", async () => {
+  const store = createCharacterStore({ filePath: tempFile() });
+  const app = express();
+  app.use(express.json());
+  let allowed = false;
+  createCharactersCapability(store).registerRoutes(app, {
+    checkAdminAuth: (req, res) => allowed || (res.status(401).json({ error: "admin" }), false),
+  });
+  await withServer(app, async (baseUrl) => {
+    const send = (method, url, body) =>
+      fetch(`${baseUrl}${url}`, { method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    assert.equal((await send("GET", "/admin/characters")).status, 401);
+    allowed = true;
+    const listed = await (await send("GET", "/admin/characters")).json();
+    assert.deepEqual(listed.characters.map((c) => [c.id, c.builtIn]), [["mana", true], ["evil-mana", true]]);
+    assert.ok(listed.characters[0].persona.length > 0);
+
+    const added = await send("POST", "/admin/characters", { name: "Rin", persona: "You are Rin." });
+    assert.equal((await added.json()).character.id, "rin");
+    const refused = await send("POST", "/admin/characters", { name: "Rin" });
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json()).error, /prompt is needed/);
+    assert.equal((await send("PUT", "/admin/characters/rin", { name: "Rin", persona: "You are Rin, kinder." })).status, 200);
+    assert.equal(store.get("rin").persona, "You are Rin, kinder.");
+    assert.equal((await send("PUT", "/admin/characters/nobody", { name: "N", persona: "x" })).status, 404);
+    assert.equal((await send("POST", "/admin/characters/rin/reset")).status, 400);
+    assert.equal((await send("DELETE", "/admin/characters/mana")).status, 400);
+    assert.equal((await send("DELETE", "/admin/characters/rin")).status, 200);
+    assert.equal((await send("DELETE", "/admin/characters/rin")).status, 404);
+  });
+});

@@ -1,5 +1,6 @@
 const rateLimit = require("express-rate-limit");
 const { factTrust } = require("../acp-memory-store");
+const { askMemory, applyMemoryChanges } = require("../memory-ask");
 
 const KEY = "memoryFacts";
 // ponytail: fixed bound so the native view's layout stays readable and
@@ -162,6 +163,29 @@ function registerMemoryFactsRoutes(app, context = {}) {
       const result = acpMemoryStore.restoreFact(fact, { kind: "user_stated" });
       if (!result.restored) return res.status(409).json({ ok: false, error: "another fact has that name now" });
       return res.json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // #1426: Settings' "Tell Mana what to remember or change". Ask: her
+  // suggested change, nothing written ({reply, changes}; 503 when her model
+  // isn't loaded). Apply: Save it, the same changes as my own words.
+  app.post("/admin/memory/ask", adminMemoryRateLimiter, async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const answer = await askMemory({ store: acpMemoryStore, runModel: context.runLocalReply, request: req.body?.text });
+      if (answer.error) return res.status(answer.status).json({ ok: false, error: answer.error });
+      return res.json({ ok: true, ...answer });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  app.post("/admin/memory/ask/apply", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      return res.json({ ok: true, ...applyMemoryChanges({ store: acpMemoryStore, changes: req.body?.changes }) });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }
