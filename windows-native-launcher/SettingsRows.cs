@@ -82,6 +82,36 @@ internal static class SettingsRows
     internal static Label Words(string text) =>
         new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Anchor = AnchorStyles.Left, UseMnemonic = false };
 
+    // #1426: a rounded search box, as wide as given.
+    internal static Control RoundField(TextBox box, int width)
+    {
+        box.BackColor = DarkTheme.Panel;
+        box.ForeColor = DarkTheme.Text;
+        var field = new RoundBox { Size = new Size(width, 26), Padding = new Padding(12, 5, 12, 0), Margin = Padding.Empty, Cursor = Cursors.IBeam, Fill = () => box.BackColor };
+        box.BorderStyle = BorderStyle.None;
+        field.Controls.Add(box);
+        field.MouseDown += (_, _) => box.Focus();
+        return field;
+    }
+
+    // #1426: a list on a rounded panel a shade off the card, its edges kept clear.
+    internal static Control RoundPanel(Control list)
+    {
+        var panel = new RoundBox { Height = list.Height + 8, Padding = new Padding(2, 4, 2, 4), Fill = () => DarkTheme.Panel, Outline = false };
+        list.Dock = DockStyle.Fill;
+        panel.Controls.Add(list);
+        return panel;
+    }
+
+    // The one filled button in a group: the accent behind its words.
+    internal static void MakePrimary(Button button)
+    {
+        button.BackColor = DarkTheme.Accent;
+        button.ForeColor = DarkTheme.OnAccent;
+        button.FlatAppearance.BorderColor = DarkTheme.Accent;
+        button.FlatAppearance.MouseOverBackColor = ControlPaint.Light(DarkTheme.Accent, 0.1f);
+    }
+
     internal static Label Status() => new() { AutoSize = true, MaximumSize = new Size(260, 0), ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left, BackColor = Color.Transparent, UseMnemonic = false };
 
     internal static GraphicsPath Rounded(RectangleF r, float radius)
@@ -268,5 +298,128 @@ internal sealed class SettingsSwitch : CheckBox
     {
         base.OnCheckedChanged(e);
         Invalidate();
+    }
+}
+
+// #1426: a filter pill (one of a group, like a radio button): outlined,
+// tinted with the accent while picked.
+internal sealed class SettingsPill : RadioButton
+{
+    public SettingsPill()
+    {
+        Appearance = Appearance.Button;
+        AutoSize = false;
+        Cursor = Cursors.Hand;
+        UseMnemonic = false;
+        SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        BackColor = Color.Transparent;
+        Height = 26;
+    }
+
+    protected override void OnTextChanged(EventArgs e)
+    {
+        base.OnTextChanged(e);
+        Width = TextRenderer.MeasureText(Text, Font).Width + 24;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        if (Parent is not null)
+        {
+            var state = g.Save();
+            g.TranslateTransform(-Left, -Top);
+            InvokePaintBackground(Parent, new PaintEventArgs(g, new Rectangle(Location, Size)));
+            g.Restore(state);
+        }
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var pill = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        using var shape = SettingsRows.Rounded(pill, pill.Height / 2);
+        if (Checked)
+        {
+            using var fill = new SolidBrush(Color.FromArgb(56, DarkTheme.Accent));
+            g.FillPath(fill, shape);
+        }
+        using (var edge = new Pen(Checked ? DarkTheme.Accent : DarkTheme.Border))
+        {
+            g.DrawPath(edge, shape);
+        }
+        TextRenderer.DrawText(g, Text, Font, Rectangle.Round(pill), Checked ? DarkTheme.Accent : DarkTheme.Text,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        if (Focused && ShowFocusCues)
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
+        }
+    }
+
+    protected override void OnCheckedChanged(EventArgs e)
+    {
+        base.OnCheckedChanged(e);
+        Invalidate();
+    }
+}
+
+// #1426: the vault line's dot: green while the sync works, red when it
+// failed, grey when it's off.
+internal sealed class VaultDot : Control
+{
+    private Color color = DarkTheme.Muted;
+
+    public VaultDot()
+    {
+        Size = new Size(14, 20);
+        Margin = new Padding(0, 1, 2, 0);
+        SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        BackColor = Color.Transparent;
+        AccessibleRole = AccessibleRole.Graphic;
+    }
+
+    internal Color Color
+    {
+        get => color;
+        set
+        {
+            color = value;
+            Invalidate();
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var fill = new SolidBrush(color);
+        e.Graphics.FillEllipse(fill, 3, (Height - 8) / 2f, 8, 8);
+    }
+}
+
+// A rounded panel: its fill, and an outline unless told not to.
+internal sealed class RoundBox : Panel
+{
+    internal Func<Color> Fill { get; init; } = () => DarkTheme.Panel;
+    internal bool Outline { get; init; } = true;
+
+    public RoundBox()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        base.OnPaintBackground(e);
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var bounds = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        using var shape = SettingsRows.Rounded(bounds, Math.Min(bounds.Height / 2, 10));
+        using (var fill = new SolidBrush(Fill()))
+        {
+            g.FillPath(fill, shape);
+        }
+        if (Outline)
+        {
+            using var edge = new Pen(DarkTheme.Border);
+            g.DrawPath(edge, shape);
+        }
     }
 }

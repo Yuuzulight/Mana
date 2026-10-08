@@ -26,7 +26,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ListeningPause? listeningPause; // #922
     private CancellationTokenSource? enrolmentCancel; // #922: set while teaching Mana my voice
     private readonly ListView pluginsList = new();
-    private readonly ListView factsList = new();
+    private readonly RowList factsList = new();
     // #688: search boxes over the last-loaded plugins/facts.
     private readonly TextBox pluginsSearch = new() { Dock = DockStyle.Fill, PlaceholderText = "Search plugins", AccessibleName = "Search plugins" };
     private readonly TextBox factsSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search memory", AccessibleName = "Search memory" };
@@ -34,8 +34,8 @@ internal sealed class SettingsPanel : UserControl
     private System.Collections.Generic.IReadOnlyList<ManaMemoryFact> facts = Array.Empty<ManaMemoryFact>();
     // #935: Memory Facts' vault row.
     private readonly Label vaultStatusLabel = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-    private readonly Button vaultSyncButton = new() { Text = "Sync now", AutoSize = true, Enabled = false };
-    private readonly ListView skillsList = new();
+    private readonly LinkLabel vaultSyncButton = new() { Text = "Sync now", AutoSize = true, Enabled = false };
+    private readonly RowList skillsList = new() { NameWidth = 160 };
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
     private readonly ComboBox importedSkillUseBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
@@ -61,7 +61,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly Label gamingStatusLabel = SettingsRows.Status();
     private readonly SettingsSwitch gamingModeCheck = new() { AccessibleName = "Gaming mode" };
     private readonly ListView perfOperationsList = new();
-    private readonly ListView presetsList = new();
+    private readonly RowList presetsList = new() { NameWidth = 160 };
     // #681: which preset replies actually use ("None" = index 0).
     private readonly ComboBox activePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private bool populatingPresets;
@@ -1022,19 +1022,19 @@ internal sealed class SettingsPanel : UserControl
     }
 
     // #1426: the facts she keeps about you, like Claude's memory tab: a
-    // search and a filter by state (with counts) over a one-line list, and
-    // what can be done with the fact picked. Facts sync both ways with the
-    // Obsidian vault (#935).
-    private static readonly (string State, string Label)[] FactFilters = [("active", "Active"), ("pending", "Waiting for you"), ("archived", "Archived")];
+    // rounded search and pills to filter by state (with counts) over the
+    // facts grouped by what they're about, one line each, the picked one's
+    // actions as icons at its end. Facts sync both ways with the Obsidian
+    // vault (#935), whose state is the quiet line under the list.
+    private static readonly (string State, string Label)[] FactFilters = [("active", "Active"), ("pending", "Waiting"), ("archived", "Archived")];
     private string factFilter = "active";
-    private readonly List<RadioButton> factChips = new();
-    private readonly FlowLayoutPanel factActions = SettingsRows.Line();
-    private readonly Button openVaultButton = SettingsRows.Action("Open in Obsidian", () => { });
+    private readonly List<SettingsPill> factChips = new();
+    private readonly LinkLabel openVaultLink = new() { Text = "Open vault", AutoSize = true };
+    private readonly VaultDot vaultDot = new();
     private ManaVaultStatus? vault;
 
-    internal ListView FactsList => factsList; // tests
-    internal IReadOnlyList<RadioButton> FactChips => factChips; // tests
-    internal FlowLayoutPanel FactActions => factActions; // tests
+    internal RowList FactsList => factsList; // tests
+    internal IReadOnlyList<SettingsPill> FactChips => factChips; // tests
 
     // #1426: node-bot's FACT_CATEGORIES, in the order the list shows them.
     internal static readonly (string Id, string Label)[] FactCategories =
@@ -1053,24 +1053,23 @@ internal sealed class SettingsPanel : UserControl
         return local.Date == now.Date ? "Today" : local.Year == now.Year ? local.ToString("d MMM", System.Globalization.CultureInfo.InvariantCulture) : local.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    // The vault line: whether the sync works and when it last ran.
+    internal static string VaultLine(ManaVaultStatus status, DateTimeOffset now) =>
+        status.VaultDir is null ? "Obsidian sync is off"
+        : status.Error is not null ? "Obsidian · sync failed"
+        : status.LastSyncAt is { } at ? $"Obsidian · synced {Ago(now - at)}"
+        : "Obsidian · not synced yet";
+
+    private static string Ago(TimeSpan span) =>
+        span.TotalMinutes < 1 ? "just now"
+        : span.TotalHours < 1 ? $"{(int)span.TotalMinutes} min ago"
+        : span.TotalDays < 1 ? $"{(int)span.TotalHours} h ago"
+        : $"{(int)span.TotalDays} d ago";
+
     private SettingsRow BuildFactsRow()
     {
-        factsList.View = View.Details;
-        factsList.FullRowSelect = true;
-        factsList.MultiSelect = false;
-        factsList.HideSelection = false;
-        factsList.Height = 220; // about seven facts and their groups; the list scrolls, the page doesn't grow
-        factsList.ShowGroups = true;
-        foreach (var (id, label) in FactCategories)
-        {
-            factsList.Groups.Add(new ListViewGroup(id, label));
-        }
-        factsList.Columns.Add("Name", 170);
-        factsList.Columns.Add("What she knows", 300);
-        factsList.Columns.Add("Updated", 100);
-        DarkTheme.ApplyListView(factsList);
-        factsList.ClientSizeChanged += (_, _) => factsList.Columns[1].Width = Math.Max(120, factsList.ClientSize.Width - 170 - 100);
-        factsList.SelectedIndexChanged += (_, _) => ShowFactActions();
+        factsList.Height = 230; // about seven facts and their groups; the list scrolls, the page doesn't grow
+        factsList.ActionsFor = FactActionsFor;
         factsList.ItemActivate += async (_, _) =>
         {
             if (SelectedFact is { } fact && FactState(fact) != "archived")
@@ -1080,32 +1079,17 @@ internal sealed class SettingsPanel : UserControl
         };
 
         StyleSearchBox(factsSearch);
-        factsSearch.Dock = DockStyle.None;
-        factsSearch.Width = 180;
+        factsSearch.Dock = DockStyle.Fill;
+        factsSearch.PlaceholderText = "Search facts";
         factsSearch.TextChanged += (_, _) => ShowFacts();
-        var top = SettingsRows.Line(factsSearch);
+        var search = SettingsRows.RoundField(factsSearch, 200);
+        var top = SettingsRows.Line(search);
         top.Margin = Padding.Empty;
         foreach (var (state, label) in FactFilters)
         {
-            var chip = new RadioButton
-            {
-                Appearance = Appearance.Button,
-                AutoSize = true,
-                FlatStyle = FlatStyle.Flat,
-                Text = label,
-                Tag = (state, label),
-                Checked = state == factFilter,
-                BackColor = DarkTheme.Panel,
-                ForeColor = state == factFilter ? DarkTheme.Accent : DarkTheme.Text,
-                Margin = new Padding(6, 0, 0, 0),
-                UseMnemonic = false,
-            };
-            chip.FlatAppearance.BorderColor = state == factFilter ? DarkTheme.Accent : DarkTheme.Border;
-            chip.FlatAppearance.CheckedBackColor = DarkTheme.Panel;
+            var chip = new SettingsPill { Text = label, Tag = (state, label), Checked = state == factFilter, Margin = new Padding(6, 0, 0, 0) };
             chip.CheckedChanged += (_, _) =>
             {
-                chip.ForeColor = chip.Checked ? DarkTheme.Accent : DarkTheme.Text;
-                chip.FlatAppearance.BorderColor = chip.Checked ? DarkTheme.Accent : DarkTheme.Border;
                 if (chip.Checked)
                 {
                     factFilter = state;
@@ -1115,11 +1099,23 @@ internal sealed class SettingsPanel : UserControl
             factChips.Add(chip);
             top.Controls.Add(chip);
         }
-        top.Controls.Add(SettingsRows.Action("+ Add", () => _ = AddFactAsync()));
+        var add = SettingsRows.Action("+ Add", () => _ = AddFactAsync());
+        SettingsRows.MakePrimary(add);
+        add.Margin = new Padding(10, 0, 0, 0);
+        top.Controls.Add(add);
 
         // #935: the vault's state, opening it, and a sync right now.
-        openVaultButton.Enabled = false;
-        openVaultButton.Click += (_, _) =>
+        LinkLabel Link(LinkLabel link)
+        {
+            link.LinkColor = link.ActiveLinkColor = DarkTheme.Accent;
+            link.DisabledLinkColor = DarkTheme.Muted;
+            link.LinkBehavior = LinkBehavior.HoverUnderline;
+            link.BackColor = Color.Transparent;
+            link.Margin = new Padding(6, 1, 0, 0);
+            link.Enabled = false;
+            return link;
+        }
+        Link(openVaultLink).LinkClicked += (_, _) =>
         {
             if (vault?.VaultDir is not { } dir)
             {
@@ -1134,8 +1130,7 @@ internal sealed class SettingsPanel : UserControl
                 vaultStatusLabel.Text = $"Couldn't open Obsidian: {ex.Message}";
             }
         };
-        DarkTheme.ApplyButton(vaultSyncButton);
-        vaultSyncButton.Click += async (_, _) =>
+        Link(vaultSyncButton).LinkClicked += async (_, _) =>
         {
             vaultSyncButton.Enabled = false;
             try
@@ -1148,77 +1143,84 @@ internal sealed class SettingsPanel : UserControl
                 Console.WriteLine($"SettingsPanel: vault sync failed. {ex.Message}");
                 if (!IsDisposed)
                 {
-                    vaultStatusLabel.Text = $"Vault sync failed: {BackendError.Describe(ex)}";
+                    vaultStatusLabel.Text = $"Obsidian · sync failed: {BackendError.Describe(ex)}";
                     vaultSyncButton.Enabled = true;
                 }
             }
         };
         vaultStatusLabel.BackColor = Color.Transparent;
-        ShowFactActions();
+        vaultStatusLabel.MaximumSize = new Size(420, 0);
+        vaultStatusLabel.Margin = new Padding(2, 1, 0, 0);
+        var listPanel = SettingsRows.RoundPanel(factsList);
         return new SettingsRow("Facts about you", "Shared by every character. Pinned ones go into every reply", "memory remember knowledge facts obsidian vault pin",
-            below: true, top, factsList, factActions, SettingsRows.Line(openVaultButton, vaultSyncButton, vaultStatusLabel));
+            below: true, top, listPanel, SettingsRows.Line(vaultDot, vaultStatusLabel, openVaultLink, vaultSyncButton));
     }
 
     private ManaMemoryFact? SelectedFact => factsList.SelectedItems.Count > 0 ? factsList.SelectedItems[0].Tag as ManaMemoryFact : null;
 
-    // What can be done with the fact picked, by its state.
-    private void ShowFactActions()
+    // What can be done with a fact, by its state: the icons on its row and
+    // its right-click menu.
+    private IReadOnlyList<RowList.RowAction> FactActionsFor(object value)
     {
-        factActions.SuspendLayout();
-        foreach (var old in factActions.Controls.Cast<Control>().ToList())
+        if (value is not ManaMemoryFact fact)
         {
-            old.Dispose();
+            return [];
         }
-        Button Act(string text, Func<Task> act) => SettingsRows.Action(text, () => _ = act());
-        var fact = SelectedFact;
-        var actions = fact is null ? new Control[] { SettingsRows.Words("Pick a fact for what you can do with it") }
-            : FactState(fact) switch
+        RowList.RowAction Act(string glyph, string name, Func<Task> run) => new(glyph, name, run);
+        var move = Act("", "Move to…", () => ShowMoveMenu(fact));
+        return FactState(fact) switch
+        {
+            "pending" => [Act("", "Confirm", ConfirmSelectedFactAsync), Act("", "Edit", EditSelectedFactAsync), move, Act("", "Not true", DeleteSelectedFactAsync)],
+            "archived" => [Act("", "Restore", RestoreSelectedFactAsync), Act("", "Delete", DeleteSelectedFactAsync)],
+            _ => new[]
             {
-                "pending" => new Control[] { Act("Confirm", ConfirmSelectedFactAsync), Act("Edit", EditSelectedFactAsync), Act("Not true", DeleteSelectedFactAsync) },
-                "archived" => new Control[] { Act("Restore", RestoreSelectedFactAsync), Act("Delete", DeleteSelectedFactAsync) },
-                _ => new[]
-                {
-                    Act("Edit", EditSelectedFactAsync),
-                    Act(fact.Pinned ? "Unpin" : "Pin", TogglePinSelectedFactAsync),
-                    fact.Trigger == "" ? null : Act(fact.Paused ? "Resume reminder" : "Pause reminder", TogglePauseSelectedFactAsync),
-                    Act("Archive", ArchiveSelectedFactAsync),
-                    Act("Delete", DeleteSelectedFactAsync),
-                }.OfType<Control>().ToArray(),
-            };
-        factActions.Controls.AddRange(actions);
-        if (fact is not null && FactState(fact) != "archived")
-        {
-            factActions.Controls.Add(SettingsRows.Words("Move to"));
-            factActions.Controls.Add(FactCategoryChoice(fact));
-        }
-        factActions.ResumeLayout();
+                Act("", "Edit", EditSelectedFactAsync),
+                Act(fact.Pinned ? "" : "", fact.Pinned ? "Unpin" : "Pin", TogglePinSelectedFactAsync),
+                fact.Trigger == "" ? null : Act(fact.Paused ? "" : "", fact.Paused ? "Resume reminder" : "Pause reminder", TogglePauseSelectedFactAsync),
+                move,
+                Act("", "Archive", ArchiveSelectedFactAsync),
+                Act("", "Delete", DeleteSelectedFactAsync),
+            }.OfType<RowList.RowAction>().ToArray(),
+        };
     }
 
-    // #1426: the picked fact's group, moved as soon as another is chosen.
-    private ComboBox FactCategoryChoice(ManaMemoryFact fact)
+    // #1426: moves the fact to another group, picked from a menu at the pointer.
+    private Task ShowMoveMenu(ManaMemoryFact fact)
     {
-        var index = Math.Max(0, Array.FindIndex(FactCategories, c => c.Id == fact.Category));
-        var combo = SettingsRows.Choice("Move to", Array.ConvertAll(FactCategories, c => c.Label), index);
-        combo.SelectionChangeCommitted += async (_, _) =>
+        var menu = new ContextMenuStrip();
+        foreach (var (id, label) in FactCategories)
         {
-            try
-            {
-                await backendClient.SetMemoryFactCategoryAsync(fact.Key, FactCategories[combo.SelectedIndex].Id);
-            }
-            catch (Exception ex)
-            {
-                if (!IsDisposed)
-                {
-                    vaultStatusLabel.Text = $"Couldn't move \"{fact.Key}\": {BackendError.Describe(ex)}";
-                }
-                return;
-            }
+            var item = new ToolStripMenuItem(label) { Checked = id == fact.Category };
+            item.Click += async (_, _) => await MoveFactAsync(fact, id);
+            menu.Items.Add(item);
+        }
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
+        menu.Show(Cursor.Position);
+        return Task.CompletedTask;
+    }
+
+    internal async Task MoveFactAsync(ManaMemoryFact fact, string category)
+    {
+        if (category == fact.Category)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetMemoryFactCategoryAsync(fact.Key, category);
+        }
+        catch (Exception ex)
+        {
             if (!IsDisposed)
             {
-                await RefreshMemoryFactsAsync();
+                vaultStatusLabel.Text = $"Couldn't move \"{fact.Key}\": {BackendError.Describe(ex)}";
             }
-        };
-        return combo;
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
     }
 
     private async Task RestoreSelectedFactAsync()
@@ -1273,23 +1275,18 @@ internal sealed class SettingsPanel : UserControl
 
     private Control[] BuildSkillsRows()
     {
-        skillsList.View = View.Details;
-        skillsList.FullRowSelect = true;
-        skillsList.MultiSelect = false;
-        skillsList.Height = 160;
-        skillsList.Columns.Add("Skill", 160);
-        skillsList.Columns.Add("What it's for", 300);
-        skillsList.Columns.Add("Status", 90);
-        DarkTheme.ApplyListView(skillsList);
-        skillsList.ClientSizeChanged += (_, _) => skillsList.Columns[1].Width = Math.Max(120, skillsList.ClientSize.Width - 160 - 90);
+        skillsList.Height = 170;
+        skillsList.ActionsFor = _ =>
+        [
+            new("\uE70F", "Edit", EditSelectedSkillAsync),
+            new("\uE74D", "Delete", DeleteSelectedSkillAsync),
+        ];
         skillsList.ItemActivate += async (_, _) => await EditSelectedSkillAsync();
         return new Control[]
         {
             new SettingsRow("Her skills", "Know-how every character shares. One you write is approved at once unless it looks risky", "skills know-how abilities",
-                below: true, skillsList, SettingsRows.Line(
+                below: true, SettingsRows.RoundPanel(skillsList), SettingsRows.Line(
                     SettingsRows.Action("New…", () => _ = CreateSkillAsync()),
-                    SettingsRows.Action("Edit…", () => _ = EditSelectedSkillAsync()),
-                    SettingsRows.Action("Delete", () => _ = DeleteSelectedSkillAsync()),
                     SettingsRows.Action("Import folder…", () => _ = ImportSkillFolderAsync()),
                     SettingsRows.Action("Import zip…", () => _ = ImportSkillZipAsync()),
                     SettingsRows.Action("Import link…", () => _ = ImportSkillLinkAsync()))),
@@ -1316,14 +1313,12 @@ internal sealed class SettingsPanel : UserControl
     // every reply.
     private Control[] BuildPresetsRows()
     {
-        presetsList.View = View.Details;
-        presetsList.FullRowSelect = true;
-        presetsList.MultiSelect = false;
-        presetsList.HeaderStyle = ColumnHeaderStyle.None;
-        presetsList.Height = 100;
-        presetsList.Columns.Add("Name", 300);
-        DarkTheme.ApplyListView(presetsList);
-        presetsList.ClientSizeChanged += (_, _) => presetsList.Columns[0].Width = presetsList.ClientSize.Width;
+        presetsList.Height = 110;
+        presetsList.ActionsFor = _ =>
+        [
+            new("\uE70F", "Edit", EditSelectedPresetAsync),
+            new("\uE74D", "Delete", DeleteSelectedPresetAsync),
+        ];
         presetsList.ItemActivate += async (_, _) => await EditSelectedPresetAsync();
 
         activePresetCombo.BackColor = DarkTheme.Panel;
@@ -1340,10 +1335,8 @@ internal sealed class SettingsPanel : UserControl
         {
             new SettingsRow("Active preset", "Extra instructions added to every reply", "preset style persona instructions", activePresetCombo),
             new SettingsRow("Presets", "Sets of instructions you can switch between", "presets instructions",
-                below: true, presetsList, SettingsRows.Line(
-                    SettingsRows.Action("New…", () => _ = CreatePresetAsync()),
-                    SettingsRows.Action("Edit…", () => _ = EditSelectedPresetAsync()),
-                    SettingsRows.Action("Delete", () => _ = DeleteSelectedPresetAsync()))),
+                below: true, SettingsRows.RoundPanel(presetsList), SettingsRows.Line(
+                    SettingsRows.Action("New…", () => _ = CreatePresetAsync()))),
         };
     }
 
@@ -2075,7 +2068,8 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load the vault status. {ex.Message}");
             if (!IsDisposed)
             {
-                vaultStatusLabel.Text = $"Vault status unavailable: {ex.Message}";
+                vaultStatusLabel.Text = "Obsidian · couldn't check the sync";
+                vaultDot.Color = DarkTheme.Muted;
             }
         }
     }
@@ -2087,11 +2081,16 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
         vault = status;
-        vaultStatusLabel.Text = DescribeVault(status, DateTimeOffset.Now);
-        vaultSyncButton.Enabled = openVaultButton.Enabled = status.VaultDir is not null;
+        vaultStatusLabel.Text = VaultLine(status, DateTimeOffset.Now);
+        // The full story (the folder, notes skipped and why) on hover.
+        railTips.SetToolTip(vaultStatusLabel, DescribeVault(status, DateTimeOffset.Now));
+        vaultDot.Color = status.VaultDir is null ? DarkTheme.Muted : status.Error is not null ? Color.IndianRed : DarkTheme.Green;
+        vaultSyncButton.Enabled = openVaultLink.Enabled = status.VaultDir is not null;
     }
 
     // #935: the Memory Facts tab's vault line, in Doctor's terms.
+    private readonly ToolTip railTips = new();
+
     internal static string DescribeVault(ManaVaultStatus status, DateTimeOffset now)
     {
         if (status.VaultDir is null)
@@ -2145,27 +2144,16 @@ internal sealed class SettingsPanel : UserControl
         foreach (var chip in factChips)
         {
             var (state, label) = ((string, string))chip.Tag!;
-            chip.Text = $"{label} ({facts.Count(f => FactState(f) == state)})";
+            chip.Text = $"{label} {facts.Count(f => FactState(f) == state)}";
         }
         var keep = SelectedFact?.Key;
-        factsList.BeginUpdate();
-        factsList.Items.Clear();
         var now = DateTimeOffset.Now;
-        foreach (var fact in facts.Where(f => FactState(f) == factFilter && MatchesSearch(factsSearch.Text, f.Key, f.Text, f.Trigger)))
-        {
-            var item = new ListViewItem((fact.Pinned ? "★ " : "") + fact.Key) { Tag = fact, Selected = fact.Key == keep, Group = factsList.Groups[fact.Category] ?? factsList.Groups["other"] };
-            item.SubItems.Add((fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}") + (fact.Paused ? " (paused)" : ""));
-            item.SubItems.Add(UpdatedText(fact.UpdatedAt, now));
-            factsList.Items.Add(item);
-        }
-        // Group headers only over real facts, not over "Nothing here".
-        factsList.ShowGroups = factsList.Items.Count > 0;
-        if (factsList.Items.Count == 0)
-        {
-            factsList.Items.Add(new ListViewItem(factsSearch.Text.Trim().Length > 0 ? "Nothing matches" : "Nothing here") { ForeColor = DarkTheme.Muted });
-        }
-        factsList.EndUpdate();
-        ShowFactActions();
+        var shown = facts
+            .Where(f => FactState(f) == factFilter && MatchesSearch(factsSearch.Text, f.Key, f.Text, f.Trigger))
+            .Select(f => new RowList.Entry(f, f.Key, f.Text + (f.Paused ? " (paused)" : ""), UpdatedText(f.UpdatedAt, now),
+                Tag: f.Trigger == "" ? null : f.Trigger.Length > 24 ? f.Trigger[..23] + "…" : f.Trigger,
+                Pinned: f.Pinned, Group: f.Category));
+        factsList.ShowEntries(shown, FactCategories, factsSearch.Text.Trim().Length > 0 ? "Nothing matches" : "Nothing here", v => ((ManaMemoryFact)v).Key == keep);
     }
 
 
@@ -2387,14 +2375,7 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        skillsList.Items.Clear();
-        foreach (var skill in skills)
-        {
-            var item = new ListViewItem(skill.Name) { Tag = skill.Name };
-            item.SubItems.Add(skill.Description ?? "");
-            item.SubItems.Add(skill.Status ?? "");
-            skillsList.Items.Add(item);
-        }
+        skillsList.ShowEntries(skills.Select(s => new RowList.Entry(s.Name, s.Name, s.Description ?? "", s.Status ?? "")), null, "No skills yet");
     }
 
     private TabPage BuildApprovalsTab()
@@ -3665,15 +3646,10 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        presetsList.Items.Clear();
-        foreach (var preset in presets)
-        {
-            presetsList.Items.Add(new ListViewItem(preset.Name) { Tag = preset });
-        }
-
         // #681: a stored id that no longer exists (deleted) falls back to
         // None and is cleared, same as windows-launcher's renderPresetSelect.
         var activeId = ManaSettingsStore.Load().ActivePresetId;
+        presetsList.ShowEntries(presets.Select(p => new RowList.Entry(p, p.Name, p.Instructions.ReplaceLineEndings(" "), p.Id == activeId ? "Active" : "")), null, "No presets yet");
         populatingPresets = true;
         try
         {

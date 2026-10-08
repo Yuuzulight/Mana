@@ -14,11 +14,10 @@ internal sealed class RelationshipPanel : System.ComponentModel.Component
 {
     private readonly ManaBackendClient backendClient;
     private IReadOnlyList<ManaCharacterRelationship> relationships = [];
-    private readonly List<ManaRelationshipItem> shown = [];
     private readonly Label status = SettingsRows.Status();
 
     internal ComboBox Characters { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Character", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
-    internal ListBox Items { get; } = SettingsRows.List("Notes and milestones", 120);
+    internal RowList Items { get; } = new() { Height = 130, NameWidth = 90, AccessibleName = "Notes and milestones" };
     internal TextBox EditText { get; } = SettingsRows.Box("Text", 340, "Note or milestone");
     internal TextBox EditDate { get; } = SettingsRows.Box("Milestone date", 100, "YYYY-MM-DD");
     internal string StatusText => status.Text;
@@ -36,6 +35,7 @@ internal sealed class RelationshipPanel : System.ComponentModel.Component
         Button NewButton(string text, Func<Task> click) => SettingsRows.Action(text, () => _ = click());
 
         Characters.SelectedIndexChanged += (_, _) => ShowItems();
+        Items.ActionsFor = _ => [new("", "Remove", RemoveSelectedAsync)];
         Items.SelectedIndexChanged += (_, _) =>
         {
             var item = Selected;
@@ -48,8 +48,8 @@ internal sealed class RelationshipPanel : System.ComponentModel.Component
             new SettingsRow("Notes and milestones", "What each character remembers about the two of you, and dates she brings up now and then", "relationship notes milestones persona evil mana mood",
                 below: true,
                 SettingsRows.Line(Characters, mood),
-                Items,
-                SettingsRows.Line(EditText, EditDate, NewButton("Save", SaveSelectedAsync), NewButton("Remove", RemoveSelectedAsync), status)),
+                SettingsRows.RoundPanel(Items),
+                SettingsRows.Line(EditText, EditDate, NewButton("Save", SaveSelectedAsync), status)),
         };
         if (loadNow)
         {
@@ -57,11 +57,9 @@ internal sealed class RelationshipPanel : System.ComponentModel.Component
         }
     }
 
-    private ManaRelationshipItem? Selected => Items.SelectedIndex >= 0 && Items.SelectedIndex < shown.Count ? shown[Items.SelectedIndex] : null;
+    private ManaRelationshipItem? Selected => Items.SelectedItems.Count > 0 ? Items.SelectedItems[0].Tag as ManaRelationshipItem : null;
     private ManaCharacterRelationship? Character => Characters.SelectedIndex >= 0 && Characters.SelectedIndex < relationships.Count ? relationships[Characters.SelectedIndex] : null;
 
-    internal static string Display(ManaRelationshipItem item) =>
-        item.Kind == "milestones" ? $"Milestone {item.Date}: {item.Text}" : $"Note: {item.Text}";
 
     internal async Task ReloadAsync()
     {
@@ -92,13 +90,10 @@ internal sealed class RelationshipPanel : System.ComponentModel.Component
 
     private void ShowItems()
     {
-        shown.Clear();
-        Items.Items.Clear();
-        if (Character is { } character)
-        {
-            shown.AddRange(character.Notes.Concat(character.Milestones));
-            Items.Items.AddRange(shown.Select(i => (object)Display(i)).ToArray());
-        }
+        var shown = Character is { } character ? character.Notes.Concat(character.Milestones) : [];
+        Items.ShowEntries(shown.Select(i => i.Kind == "milestones"
+            ? new RowList.Entry(i, "Milestone", i.Text, i.Date ?? "")
+            : new RowList.Entry(i, "Note", i.Text)), null, "Nothing yet");
         EditText.Text = "";
         EditDate.Text = "";
     }
