@@ -3687,11 +3687,19 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
-        visionModelPathBox.Width = visionMmprojPathBox.Width = 240;
-        StyleTextBox(visionModelPathBox);
-        StyleTextBox(visionMmprojPathBox);
-        visionModelPathBox.ReadOnly = visionMmprojPathBox.ReadOnly = true;
-        visionModelPathBox.PlaceholderText = visionMmprojPathBox.PlaceholderText = "Found on its own";
+        // Read-only paths that read like the model file's name: no box, the
+        // row's own colour, right-aligned against Browse.
+        foreach (var path in new[] { visionModelPathBox, visionMmprojPathBox })
+        {
+            path.Width = 260;
+            path.ReadOnly = true;
+            path.BorderStyle = BorderStyle.None;
+            path.BackColor = DarkTheme.Panel2;
+            path.ForeColor = DarkTheme.Muted;
+            path.TextAlign = HorizontalAlignment.Right;
+            path.PlaceholderText = "Found on its own";
+            path.Margin = new Padding(0, 7, 6, 0);
+        }
 
         var spending = new ApiSpendingPanel(backendClient, loadNow: false, showEscalation: false) { Dock = DockStyle.None, AutoSize = true, AutoScroll = false };
         apiSpending = spending;
@@ -3712,13 +3720,13 @@ internal sealed class SettingsPanel : UserControl
         var parts = new List<Control> { SettingsRows.Section("Providers") };
         parts.AddRange(providersPanel.Rows);
         parts.Add(SettingsRows.Section("Uses"));
-        parts.Add(new SettingsRow("Main model", "Who answers your chats. Switching restarts the model", "model brain local gguf qwen remote profile",
-            mainStatus, mainSource, modelProfileCombo, mainModelBox, mainSwitch));
-        parts.Add(new SettingsRow("Cloud fallback", "Used when this PC's model can't answer in time. Provider charges may apply", "fallback cloud remote",
-            fallbackStatus, fallbackSource, fallbackModelBox));
+        parts.Add(Said(mainStatus, new SettingsRow("Main model", "Who answers your chats. Switching restarts the model", "model brain local gguf qwen remote profile",
+            mainSource, modelProfileCombo, mainModelBox, mainSwitch)));
+        parts.Add(Said(fallbackStatus, new SettingsRow("Cloud fallback", "Used when this PC's model can't answer in time. Provider charges may apply", "fallback cloud remote",
+            fallbackSource, fallbackModelBox)));
         parts.Add(new SettingsRow("Fall back", "How long this PC's model gets first", "fallback wait timeout", wait));
-        parts.Add(new SettingsRow("Self-work escalation", "Tried when her own attempts at an issue fail: DeepSeek Flash, then Pro, 5 runs a day, held at peak price", "escalation self-work deepseek",
-            escalationStatus, escalationSource));
+        parts.Add(Said(escalationStatus, new SettingsRow("Self-work escalation", "Tried when her own attempts at an issue fail: DeepSeek Flash, then Pro, 5 runs a day, held at peak price", "escalation self-work deepseek",
+            escalationSource)));
         parts.Add(SettingsRows.Section("This PC's model"));
         parts.Add(new SettingsRow("Model file", "Which file this PC's model loads", "gguf file local model scan browse",
             selectedModelLabel,
@@ -3745,6 +3753,21 @@ internal sealed class SettingsPanel : UserControl
             SettingsRows.Action("Open", ManaApplicationContext.OpenModelWebUi)));
         ShowMainFields();
         return SettingsRows.Page("Models", parts.ToArray());
+    }
+
+    // A use's status shows on its row's own line, in place of the
+    // explanation while there's something to say, so its controls keep the
+    // right-hand side to themselves.
+    private static SettingsRow Said(Label status, SettingsRow row)
+    {
+        var explanation = row.Explanation!;
+        var usual = explanation.Text;
+        status.TextChanged += (_, _) =>
+        {
+            explanation.Text = status.Text.Length > 0 ? status.Text : usual;
+            explanation.ForeColor = status.Text.Length > 0 ? DarkTheme.Accent : DarkTheme.Muted;
+        };
+        return row;
     }
 
     private SettingsSwitch? loadIntoVramSwitch;
@@ -4165,7 +4188,7 @@ internal sealed class SettingsPanel : UserControl
         await RefreshLlamaBuildAsync();
     }
 
-    private async Task RefreshModelTabAsync()
+    internal async Task RefreshModelTabAsync()
     {
         ManaModelStatus status;
         ManaEscalationSettings escalation;

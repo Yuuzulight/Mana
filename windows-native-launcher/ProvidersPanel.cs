@@ -27,6 +27,10 @@ internal sealed class ProvidersPanel : Component
     private readonly TextBox addKey = SettingsRows.Box("API key", 220, "Paste its API key");
     private readonly Button addButton = SettingsRows.Action("Save and test", () => { });
     private IReadOnlyList<ManaProviderPreset> presets = [];
+
+    // The providers Settings offers to add for now; the backend knows all
+    // twelve presets, and the rest come later.
+    internal static readonly string[] OfferedPresets = ["deepseek"];
     private bool open;
 
     // The list changed: added, removed, or checked.
@@ -154,7 +158,7 @@ internal sealed class ProvidersPanel : Component
     // custom ones) and its key (the ones that need one).
     private Control AddLine()
     {
-        var addable = presets.Where(p => p.Id == "custom" || !Providers.Any(added => added.Preset == p.Id)).ToList();
+        var addable = presets.Where(p => OfferedPresets.Contains(p.Id) && (p.Id == "custom" || !Providers.Any(added => added.Preset == p.Id))).ToList();
         var keep = (addPreset.SelectedItem as ManaProviderPreset)?.Id;
         addPreset.Items.Clear();
         addPreset.Items.AddRange(addable.ToArray<object>());
@@ -162,6 +166,7 @@ internal sealed class ProvidersPanel : Component
         addKey.Clear();
         var line = SettingsRows.Line(SettingsRows.Words("Add"), addPreset, addAddress, addKey, addButton);
         line.Margin = new Padding(0, 10, 0, 0);
+        line.Visible = addable.Count > 0; // nothing left to add
         ShowAddFields();
         return line;
     }
