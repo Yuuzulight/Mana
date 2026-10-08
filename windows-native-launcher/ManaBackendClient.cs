@@ -1389,6 +1389,7 @@ internal sealed class ManaBackendClient
                         Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
                         Description = entry.TryGetProperty("description", out var descEl) ? descEl.GetString() : null,
                         Enabled = entry.TryGetProperty("enabled", out var enabledEl) && enabledEl.GetBoolean(),
+                        Category = category.Name,
                     });
                 }
             }
@@ -3831,6 +3832,7 @@ internal sealed class ManaPlugin
     public string Name { get; init; } = "";
     public string? Description { get; init; }
     public bool Enabled { get; init; }
+    public string Category { get; init; } = ""; // #1426: the group it shows under
 }
 
 // #529: GET /admin/memory/facts.

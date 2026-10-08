@@ -154,6 +154,9 @@ internal sealed class ManaSettingsStore
     // Settings > Desktop (#997) edits it; read again on every move.
     public List<string>? DesktopActionFolders { get; set; }
 
+    // #1426: the add-ons (plugins I installed) I've said yes to running.
+    public List<string>? AddOnsAllowed { get; set; }
+
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.
     public string? AvatarFraming { get; set; }

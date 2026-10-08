@@ -39,12 +39,12 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Models", Pages("models"));
             Assert.Equal("Permissions", Pages("permissions"));
             Assert.Equal("Privacy", Pages("privacy"));
-            Assert.Equal("Calendar & Email, Mobile Devices, Accounts, Plugins, MCP Clients", Pages("connections"));
+            Assert.Equal("Connections", Pages("connections"));
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five, Voice's two, Check-ins' three, Memory's six, Models' four, Permissions' three and Privacy's two, each now one page.
-            Assert.Equal(17, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five, Voice's two, Check-ins' three, Memory's six, Models' four, Permissions' three, Privacy's two and Connections' five, each now one page.
+            Assert.Equal(13, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -65,12 +65,11 @@ public class SettingsPanelLayoutTests
             // Pills pick the page, so no group shows a tab strip; a one-page group shows no pills either.
             Assert.All(panel.Groups, g => Assert.Equal(1, g.Tabs.ItemSize.Height));
             Assert.Empty(panel.PagePills.Controls); // Models is one page now
-            panel.ShowGroup("connections");
-            Assert.Equal(new[] { "Calendar & Email", "Mobile Devices", "Accounts", "Plugins", "MCP Clients" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
-            panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Plugins").PerformClick();
-            Assert.Equal("Plugins", panel.Groups.Single(g => g.Id == "connections").Tabs.SelectedTab!.Text);
             panel.ShowGroup("advanced");
             Assert.Equal("Backend", panel.Groups.Single(g => g.Id == "advanced").Tabs.SelectedTab!.Text);
+            Assert.Equal(new[] { "Backend", "Hooks", "Logs", "Timings", "Developer" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
+            panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Logs").PerformClick();
+            Assert.Equal("Logs", panel.Groups.Single(g => g.Id == "advanced").Tabs.SelectedTab!.Text);
             Assert.Equal(new[] { "advanced" }, panel.Nav.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag!));
             panel.ShowGroup("nope");
             Assert.Equal("general", panel.CurrentGroup);
@@ -253,6 +252,33 @@ public class SettingsPanelLayoutTests
             panel.SaveAnswerAsync().GetAwaiter().GetResult();
             Assert.StartsWith("/admin/memory/ask/apply {\"changes\":[{\"action\":\"change\"", posts[1]);
             Assert.Equal("", panel.AskBox.Text);
+        });
+    }
+
+    // #1426 stage 2: plugins grouped by category, an add-on marked, and a pairing code on its row.
+    [Fact]
+    public void Connections_GroupsPlugins_AndShowsThePairingCode()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
+            {
+                var json = request.RequestUri!.AbsolutePath switch
+                {
+                    "/plugins" => "{\"plugins\":{\"Core\":[{\"key\":\"cron\",\"name\":\"Cron Scheduler\",\"enabled\":true}],\"User Installed\":[{\"key\":\"mine\",\"name\":\"My plugin\",\"enabled\":false}]}}",
+                    _ => null,
+                };
+                return json is null
+                    ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+            }));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Width = 900 };
+            panel.RefreshAllAsync().GetAwaiter().GetResult();
+            var items = panel.PluginsList.Items.Cast<ListViewItem>().ToList();
+            Assert.Equal(new[] { "Core", "Cron Scheduler", "User Installed", "My plugin" }, items.Select(i => RowList.IsHeader(i) ? i.Text : panel.PluginsList.EntryOf(i)!.Name));
+            Assert.Equal("Add-on", panel.PluginsList.EntryOf(items[3])!.Tag);
+            Assert.Equal("Off", panel.PluginsList.EntryOf(items[3])!.Right);
+            Assert.Equal("Turn on", panel.PluginsList.ActionsFor!(items[3].Tag!).Single().Name);
         });
     }
 
