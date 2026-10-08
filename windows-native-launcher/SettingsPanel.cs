@@ -60,7 +60,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
     private readonly Label gamingStatusLabel = SettingsRows.Status();
     private readonly SettingsSwitch gamingModeCheck = new() { AccessibleName = "Gaming mode" };
-    private readonly ListView perfOperationsList = new();
+    private readonly RowList perfOperationsList = new() { MaxVisibleRows = 8, NameWidth = 170, AccessibleName = "Operation timings" };
     private readonly RowList presetsList = new() { NameWidth = 160 };
     // #681: which preset replies actually use ("None" = index 0).
     private readonly ComboBox activePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
@@ -68,7 +68,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly RowList mobileDevicesList = new() { MaxVisibleRows = 5, NameWidth = 170, AccessibleName = "Phones" };
     private readonly RowList accountsList = new() { MaxVisibleRows = 5, NameWidth = 220, AccessibleName = "Accounts" };
     private readonly RowList mcpServersList = new() { MaxVisibleRows = 5, NameWidth = 140, AccessibleName = "MCP servers" };
-    private readonly ListView hooksList = new();
+    private readonly RowList hooksList = new() { MaxVisibleRows = 6, NameWidth = 150, AccessibleName = "Hooks" };
     private bool populatingPlugins;
     private bool populatingHooks;
 
@@ -102,9 +102,7 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (every group but Advanced so far).
-        var backendPage = BuildConnectionTab();
-        var timingsPage = BuildPerfTab();
+        // stage 2 redraws each group as one page of rows (every group now).
         AddGroup("general", "General", BuildGeneralPage());
         AddGroup("voice", "Voice", BuildVoicePage());
         AddGroup("checkins", "Check-ins", BuildCheckInsPage());
@@ -113,7 +111,7 @@ internal sealed class SettingsPanel : UserControl
         AddGroup("permissions", "Permissions", BuildPermissionsPage());
         AddGroup("privacy", "Privacy", BuildPrivacyPage()); // #1336
         AddGroup("connections", "Connections", BuildConnectionsPage());
-        AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage, BuildDeveloperTab());
+        AddGroup("advanced", "Advanced", BuildAdvancedPage());
 
         content.Dock = DockStyle.Fill;
         content.BackColor = DarkTheme.Background;
@@ -201,9 +199,6 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Backend"] = "url port server admin token",
-        ["Timings"] = "performance perf speed",
-        ["Developer"] = "project folder revert pr",
     };
 
     // What each group is for, under its name in the sidebar and the header.
@@ -631,68 +626,6 @@ internal sealed class SettingsPanel : UserControl
         list.Items.Add(new ListViewItem($"Failed to load: {message}") { ForeColor = Color.Firebrick });
     }
 
-    // #565: the backend URL and admin token are read straight from
-    // ManaSettingsStore rather than threaded in through SessionListForm/
-    // SettingsDialog's constructors -- both ManaBackendClient and
-    // TrayNotificationClient only read this file once, at app startup,
-    // so a change here can't take effect live regardless; reading/writing
-    // the same small file directly here is simpler than plumbing a store
-    // reference through two more constructors for a value nothing else
-    // needs mid-session.
-    private TabPage BuildConnectionTab()
-    {
-        var settings = ManaSettingsStore.Load();
-
-        var urlLabel = new Label { Text = "Backend URL", AutoSize = true, ForeColor = DarkTheme.Text };
-        var urlBox = new TextBox { Text = settings.BackendBaseUrl, Width = 320, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-        var tokenLabel = new Label { Text = "Admin token", AutoSize = true, ForeColor = DarkTheme.Text };
-        var tokenHint = new Label { Text = "Only needed when Mana's backend runs separately from this launcher, like on another PC. It's the ADMIN_TOKEN in node-bot/.env.", AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = DarkTheme.Muted };
-        var tokenBox = new TextBox { Text = settings.AdminToken ?? "", Width = 320, UseSystemPasswordChar = true, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-        var statusLabel = new Label { AutoSize = true, ForeColor = DarkTheme.Muted };
-
-        var saveButton = new Button { Text = "Save" };
-        DarkTheme.ApplyButton(saveButton);
-        saveButton.Click += (_, _) =>
-        {
-            var url = urlBox.Text.Trim();
-            // A malformed value saved here would throw on the *next*
-            // launch (ManaBackendClient's constructor does `new Uri(...)`
-            // with no try/catch of its own) -- rejecting it here, before
-            // it's ever persisted, is cheaper than a crash-on-startup bug
-            // report from a single typo.
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) || (parsed.Scheme != "http" && parsed.Scheme != "https"))
-            {
-                statusLabel.ForeColor = Color.Firebrick;
-                statusLabel.Text = "Backend URL must be a valid http:// or https:// address.";
-                return;
-            }
-
-            // #681: reload rather than save the copy read when this tab was
-            // built -- the Presets tab may have changed ActivePresetId since.
-            var latest = ManaSettingsStore.Load();
-            latest.BackendBaseUrl = url;
-            latest.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
-            latest.Save();
-            statusLabel.ForeColor = DarkTheme.Muted;
-            statusLabel.Text = "Saved -- restart Mana for this to take effect.";
-        };
-
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            AutoSize = true,
-            Padding = new Padding(12),
-        };
-        layout.Controls.Add(urlLabel);
-        layout.Controls.Add(urlBox);
-        layout.Controls.Add(tokenLabel);
-        layout.Controls.Add(tokenHint);
-        layout.Controls.Add(tokenBox);
-        layout.Controls.Add(saveButton);
-        layout.Controls.Add(statusLabel);
-        return new TabPage("Backend") { Controls = { layout } };
-    }
 
     // #1426: a page holding one row that used to sit on another tab.
     private static TabPage OneRowPage(string title, Control row)
@@ -1897,11 +1830,6 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(row);
         return new TabPage(title) { Controls = { layout } };
     }
-
-    private TabPage BuildDeveloperTab() => ButtonsPage("Developer",
-        "For working on Mana herself.",
-        ("Open project folder", () => Process.Start(new ProcessStartInfo { FileName = ManaApplicationContext.FindRootDirectory(), UseShellExecute = true })),
-        ("Revert a merged PR…", () => RevertMergedPr?.Invoke()));
 
     // Saved at once, straight to the Run key (StartWithWindows).
     internal static SettingsRow BuildStartWithWindowsRow(string runKeyPath = StartWithWindows.RunKeyPath, Action<string, Action>? changed = null)
@@ -3490,25 +3418,6 @@ internal sealed class SettingsPanel : UserControl
     // itself (BackendLogBuffer, fed by ManaProcessManager) only has
     // content when this launcher actually spawned the backend process --
     // an externally-already-running backend has nothing to redirect from.
-    private TabPage BuildLogsTab()
-    {
-        logsTextBox.BackColor = DarkTheme.Panel2;
-        logsTextBox.ForeColor = DarkTheme.Text;
-        logsTextBox.Font = new Font(FontFamily.GenericMonospace, 9);
-
-        RefreshLogsTab();
-        // Only while it's in view: Settings in the tool panel lives as long as the app (#1119).
-        logRefreshTimer.Tick += (_, _) =>
-        {
-            if (logsTextBox.Visible)
-            {
-                RefreshLogsTab();
-            }
-        };
-        logRefreshTimer.Start();
-
-        return new TabPage("Logs") { Controls = { logsTextBox } };
-    }
 
     private void RefreshLogsTab()
     {
@@ -3535,28 +3444,6 @@ internal sealed class SettingsPanel : UserControl
     }
 
 
-    // #575: Operations is free-form per node-bot's own perfMetrics.operations
-    // (see GetPerformanceStatusAsync's own comment) -- shown as raw JSON per
-    // row rather than parsed into specific fields, since this tab only
-    // needs to display it, not act on it.
-    private TabPage BuildPerfTab()
-    {
-        perfSummaryLabel.Dock = DockStyle.Top;
-        perfSummaryLabel.Padding = new Padding(8);
-        perfSummaryLabel.ForeColor = DarkTheme.Text;
-
-        perfOperationsList.Dock = DockStyle.Fill;
-        perfOperationsList.View = View.Details;
-        perfOperationsList.FullRowSelect = true;
-        perfOperationsList.Columns.Add("Operation", 180);
-        perfOperationsList.Columns.Add("Details", 340);
-        DarkTheme.ApplyListView(perfOperationsList);
-
-        var page = new TabPage("Timings");
-        page.Controls.Add(perfOperationsList);
-        page.Controls.Add(perfSummaryLabel);
-        return page;
-    }
 
     // #688: like Electron's gaming status line.
     internal static string GamingStatusText(bool enabled, bool running, IReadOnlyList<string> processes) =>
@@ -3576,7 +3463,7 @@ internal sealed class SettingsPanel : UserControl
             Console.WriteLine($"SettingsPanel: failed to load performance status. {ex.Message}");
             if (!IsDisposed)
             {
-                perfSummaryLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
+                perfSummaryLabel.Text = $"Couldn't load: {BackendError.Describe(ex)}";
             }
             return;
         }
@@ -3612,13 +3499,7 @@ internal sealed class SettingsPanel : UserControl
         perfSummaryLabel.Text = summary;
         gamingStatusLabel.Text = GamingStatusText(gamingModeCheck.Checked, status.GamingAppRunning, status.MatchedProcesses);
 
-        perfOperationsList.Items.Clear();
-        foreach (var (name, details) in status.Operations)
-        {
-            var item = new ListViewItem(name);
-            item.SubItems.Add(details);
-            perfOperationsList.Items.Add(item);
-        }
+        perfOperationsList.ShowEntries(status.Operations.Select(o => new RowList.Entry(o.Key, o.Key, o.Value)), null, "Nothing timed yet");
     }
 
 
@@ -4813,56 +4694,106 @@ internal sealed class SettingsPanel : UserControl
     // matches node-bot's own narrow scope for that route (hooks-store.js's
     // setRuleEnabled), so this tab's checkbox is the one edit action, same
     // shape as the Plugins tab's own enable/disable toggle above.
-    private TabPage BuildHooksTab()
+    // #1426 stage 2: Advanced as one page of rows, last in the sidebar under
+    // More -- where her backend is, her hooks, the backend's log, how long
+    // things take, and the tools for working on Mana herself. A line at the
+    // top says what's here.
+    internal RowList HooksList => hooksList; // tests
+
+    private TabPage BuildAdvancedPage()
     {
-        hooksList.Dock = DockStyle.Fill;
-        hooksList.View = View.Details;
-        hooksList.CheckBoxes = true;
-        hooksList.FullRowSelect = true;
-        hooksList.Columns.Add("Tool", 150);
-        hooksList.Columns.Add("Phase", 60);
-        hooksList.Columns.Add("Action", 100);
-        hooksList.Columns.Add("Path filter", 140);
-        hooksList.Columns.Add("Last run", 70);
-        hooksList.ItemChecked += OnHookChecked;
-        DarkTheme.ApplyListView(hooksList);
+        // #565: read straight from ManaSettingsStore, and read again only at
+        // the next start, so these say so.
+        var settings = ManaSettingsStore.Load();
+        var urlBox = new TextBox { Text = settings.BackendBaseUrl, AccessibleName = "Backend address" };
+        var tokenBox = new TextBox { Text = settings.AdminToken ?? "", UseSystemPasswordChar = true, AccessibleName = "Admin token", PlaceholderText = "Not needed on this PC" };
+        var backendStatus = SettingsRows.Status();
+        var save = SettingsRows.Action("Save", () =>
+        {
+            var url = urlBox.Text.Trim();
+            // A malformed value would throw on the next launch (the client's
+            // constructor does new Uri with no try), so it's refused here.
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) || (parsed.Scheme != "http" && parsed.Scheme != "https"))
+            {
+                backendStatus.ForeColor = Color.IndianRed;
+                backendStatus.Text = "The address must start with http:// or https://";
+                return;
+            }
+            var latest = ManaSettingsStore.Load();
+            latest.BackendBaseUrl = url;
+            latest.AdminToken = string.IsNullOrWhiteSpace(tokenBox.Text) ? null : tokenBox.Text.Trim();
+            latest.Save();
+            backendStatus.ForeColor = DarkTheme.Muted;
+            backendStatus.Text = "Saved. Applies next time Mana starts";
+        });
 
-        var addButton = new Button { Text = "Add..." };
-        var deleteButton = new Button { Text = "Delete" };
-        DarkTheme.ApplyButton(addButton);
-        DarkTheme.ApplyButton(deleteButton);
-        addButton.Click += async (_, _) => await AddHookAsync();
-        deleteButton.Click += async (_, _) => await DeleteSelectedHookAsync();
+        // #566: a hook's one edit is on or off, beside Delete.
+        hooksList.ActionsFor = value => value is ManaHookRule hook
+            ? [new(hook.Enabled ? "" : "", hook.Enabled ? "Turn off" : "Turn on", () => SetHookAsync(hook, !hook.Enabled)), new("", "Delete", () => DeleteHookAsync(hook))]
+            : [];
 
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(addButton);
-        buttonRow.Controls.Add(deleteButton);
+        // #582: the backend's own output, while it's in view.
+        logsTextBox.Dock = DockStyle.None;
+        logsTextBox.Height = 260;
+        logsTextBox.BorderStyle = BorderStyle.None;
+        logsTextBox.BackColor = DarkTheme.Panel;
+        logsTextBox.ForeColor = DarkTheme.Text;
+        logsTextBox.Font = new Font("Consolas", 9f);
+        RefreshLogsTab();
+        // Only while it's in view: Settings lives as long as the app (#1119).
+        logRefreshTimer.Tick += (_, _) =>
+        {
+            if (logsTextBox.Visible)
+            {
+                RefreshLogsTab();
+            }
+        };
+        logRefreshTimer.Start();
 
-        var page = new TabPage("Hooks");
-        page.Controls.Add(hooksList);
-        page.Controls.Add(buttonRow);
-        return page;
+        perfSummaryLabel.ForeColor = DarkTheme.Muted;
+        perfSummaryLabel.BackColor = Color.Transparent;
+        perfSummaryLabel.Margin = new Padding(0, 2, 0, 6);
+
+        var warning = SettingsRows.Note("For troubleshooting and working on Mana herself. A wrong change here can stop her working.");
+        warning.ForeColor = DarkTheme.Warn;
+        return SettingsRows.Page("Advanced",
+            warning,
+            SettingsRows.Section("Backend"),
+            new SettingsRow("Backend address", "Where this launcher finds her backend", "url port server backend address",
+                SettingsRows.RoundField(urlBox, 300)),
+            new SettingsRow("Admin token", "Only needed when her backend runs on another PC: the ADMIN_TOKEN in node-bot/.env", "admin token secret key",
+                backendStatus, SettingsRows.RoundField(tokenBox, 180), save),
+            SettingsRows.Section("Hooks"),
+            new SettingsRow("Hooks", "Rules that run before or after one of her tools. Pick one to switch it or delete it", "hooks rules tool before after",
+                below: true, SettingsRows.RoundPanel(hooksList), SettingsRows.Line(SettingsRows.Action("Add…", () => _ = AddHookAsync()))),
+            SettingsRows.Section("Logs"),
+            new SettingsRow("Backend log", "Her backend's own output, newest at the bottom", "logs output console debug",
+                below: true, SettingsRows.RoundPanel(logsTextBox)),
+            SettingsRows.Section("Timings"),
+            new SettingsRow("How long things take", "Her uptime and memory, and each operation's timings", "performance perf speed timings uptime memory",
+                below: true, perfSummaryLabel, SettingsRows.RoundPanel(perfOperationsList)),
+            SettingsRows.Section("Developer"),
+            new SettingsRow("Project folder", "Mana's own code", "project folder repo source",
+                SettingsRows.Action("Open", () => Process.Start(new ProcessStartInfo { FileName = ManaApplicationContext.FindRootDirectory(), UseShellExecute = true }))),
+            new SettingsRow("Revert a merged PR", "Undo a change that has already merged into her code", "revert pr undo merge",
+                SettingsRows.Action("Revert…", () => RevertMergedPr?.Invoke())));
     }
 
-    private async void OnHookChecked(object? sender, ItemCheckedEventArgs e)
+    private async Task SetHookAsync(ManaHookRule hook, bool enabled)
     {
-        // Same reentrancy guard as OnPluginChecked above -- suppressed
-        // while RefreshHooksAsync is setting each item's initial Checked
-        // state from the server's own value.
-        if (populatingHooks)
-        {
-            return;
-        }
-        var id = (string)e.Item.Tag!;
         try
         {
-            await backendClient.SetHookEnabledAsync(id, e.Item.Checked);
+            await backendClient.SetHookEnabledAsync(hook.Id, enabled);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"SettingsPanel: failed to toggle hook '{id}'. {ex.Message}");
+            Console.WriteLine($"SettingsPanel: failed to toggle hook '{hook.Id}'. {ex.Message}");
+            return;
         }
+        await RefreshHooksAsync();
     }
+
+
 
     private async Task AddHookAsync()
     {
@@ -4887,13 +4818,9 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private async Task DeleteSelectedHookAsync()
+    private async Task DeleteHookAsync(ManaHookRule hook)
     {
-        if (hooksList.SelectedItems.Count == 0)
-        {
-            return;
-        }
-        var id = (string)hooksList.SelectedItems[0].Tag!;
+        var id = hook.Id;
         try
         {
             await backendClient.DeleteHookAsync(id);
@@ -4930,24 +4857,10 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        populatingHooks = true;
-        try
-        {
-            hooksList.Items.Clear();
-            foreach (var hook in hooks)
-            {
-                var item = new ListViewItem(hook.ToolName) { Tag = hook.Id, Checked = hook.Enabled };
-                item.SubItems.Add(hook.Phase);
-                item.SubItems.Add(hook.Action);
-                item.SubItems.Add(hook.PathContains ?? "");
-                item.SubItems.Add(hook.LastRunOk switch { true => "ok", false => "failed", null => "" });
-                hooksList.Items.Add(item);
-            }
-        }
-        finally
-        {
-            populatingHooks = false;
-        }
+        hooksList.ShowEntries(hooks.Select(h => new RowList.Entry(h, h.ToolName,
+                $"{h.Phase}, {h.Action}" + (string.IsNullOrEmpty(h.PathContains) ? "" : $", on paths with {h.PathContains}"),
+                (h.Enabled ? "On" : "Off") + h.LastRunOk switch { true => " · last run ok", false => " · last run failed", null => "" })),
+            null, "No hooks");
     }
 
     // #1426 stage 2: Privacy as one page of rows -- local-only mode, her
