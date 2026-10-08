@@ -177,7 +177,7 @@ public class SettingsPanelLayoutTests
                 if (request.RequestUri!.AbsolutePath == "/admin/memory/facts")
                 {
                     var json = "{\"facts\":[" +
-                        $"{{\"key\":\"editor\",\"text\":\"VS Code\",\"status\":\"active\",\"pinned\":true,\"updatedAt\":\"{today}\"}}," +
+                        $"{{\"key\":\"editor\",\"text\":\"VS Code\",\"status\":\"active\",\"pinned\":true,\"category\":\"about-you\",\"updatedAt\":\"{today}\"}}," +
                         "{\"key\":\"pet\",\"text\":\"a cat\",\"status\":\"pending\"}," +
                         "{\"key\":\"old\",\"text\":\"was here\",\"status\":\"archived\"}]}";
                     return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
@@ -192,16 +192,20 @@ public class SettingsPanelLayoutTests
             var editor = panel.FactsList.Items[0];
             Assert.Equal(new[] { "★ editor", "VS Code", "Today" }, editor.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(s => s.Text));
             string[] Actions() => panel.FactActions.Controls.OfType<Button>().Select(b => b.Text).ToArray();
+            Assert.Equal("About you", editor.Group!.Header); // #1426: grouped by what it's about
             editor.Selected = true;
             Assert.Equal(new[] { "Edit", "Unpin", "Archive", "Delete" }, Actions());
+            Assert.Equal("About you", panel.FactActions.Controls.OfType<ComboBox>().Single().Text);
 
             panel.FactChips[1].Checked = true;
+            Assert.Equal("Other", panel.FactsList.Items[0].Group!.Header); // no category yet
             panel.FactsList.Items[0].Selected = true;
             Assert.Equal(new[] { "Confirm", "Edit", "Not true" }, Actions());
 
             panel.FactChips[2].Checked = true;
             panel.FactsList.Items[0].Selected = true;
             Assert.Equal(new[] { "Restore", "Delete" }, Actions());
+            Assert.Empty(panel.FactActions.Controls.OfType<ComboBox>()); // archived facts stay where they were
             panel.FactActions.Controls.OfType<Button>().First().PerformClick();
             for (var i = 0; i < 50 && posts.Count == 0; i++)
             {

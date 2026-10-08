@@ -6,8 +6,9 @@
 //   Facts/<key>.md           active
 //   Facts/Pending/<key>.md   waiting for the user's OK (approved only in Mana)
 //   Facts/Archived/<key>.md  archived or superseded
-// A YAML header (status, pinned; trigger/paused for intents; since/source
-// are informational) and the fact text as the body. Forgotten ("stale")
+// A YAML header (status, pinned, category -- #1426, what it's about;
+// trigger/paused for intents; since/source are informational) and the fact
+// text as the body. Forgotten ("stale")
 // facts have no note.
 //
 // One sync() does both directions, vault first so the user's edit wins a
@@ -20,6 +21,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { FACT_CATEGORIES } = require("./acp-memory-store");
 
 const FOLDERS = { active: "Facts", pending: "Facts/Pending", archived: "Facts/Archived" };
 const FOLDER_STATUS = { facts: "active", "facts/pending": "pending", "facts/archived": "archived" };
@@ -37,7 +39,7 @@ const WAIT = "wait";
 // it's down, and a catch-up for events it missed.
 const POLL_MS = 60 * 1000;
 // The header fields Mana writes (renderNote); any other key is the user's.
-const OWN_FIELDS = new Set(["status", "pinned", "trigger", "paused", "since", "source"]);
+const OWN_FIELDS = new Set(["status", "pinned", "category", "trigger", "paused", "since", "source"]);
 // An archived note the user deleted: kept deleted, not written again.
 const DELETED = "deleted";
 // Views/ and Journal/: Mana writes these, the user only reads them.
@@ -127,7 +129,7 @@ function statusOf(fact) {
 // lines that aren't Mana's stay, and so does its body's layout while the
 // body still says the same as the fact (the fact's text has single spaces).
 function renderNote(fact, kept = {}) {
-  const lines = ["---", `status: ${statusOf(fact)}`, `pinned: ${Boolean(fact.pinned)}`];
+  const lines = ["---", `status: ${statusOf(fact)}`, `pinned: ${Boolean(fact.pinned)}`, `category: ${fact.category || "other"}`];
   if (fact.trigger) lines.push(`trigger: ${JSON.stringify(fact.trigger)}`, `paused: ${Boolean(fact.paused)}`);
   lines.push(`since: ${localDate(fact.validFrom || fact.createdAt)}`);
   const source = SOURCE_LABELS[fact.origin?.kind];
@@ -331,6 +333,7 @@ function createMemoryVault(options = {}) {
         source: "vault",
         origin,
         ...(trigger ? { trigger, triggerUserWords: trigger } : {}),
+        ...(typeof header.category === "string" ? { category: header.category } : {}),
       });
       log(`new note "${note.rel}" is waiting for your OK in Mana.`);
       requestOk(key, body);
@@ -345,6 +348,10 @@ function createMemoryVault(options = {}) {
     const wanted = headerStatus !== current ? headerStatus : folderStatus;
     const textChanged = body !== fact.text;
     const triggerChanged = Boolean(fact.trigger && trigger && trigger !== fact.trigger);
+    // #1426: a category line edited to another known one moves the fact;
+    // anything else is left as it was (the next write puts it back).
+    const category = typeof header.category === "string" ? header.category.trim().toLowerCase() : "";
+    const categoryChanged = FACT_CATEGORIES.includes(category) && category !== (fact.category || "other");
 
     if (current === "archived" && wanted === "active") {
       if (!store.restoreFact(fact, origin).restored) {
@@ -361,7 +368,7 @@ function createMemoryVault(options = {}) {
       }
     }
 
-    if (textChanged || triggerChanged) {
+    if (textChanged || triggerChanged || categoryChanged) {
       store.rememberFact({
         key: fact.key,
         text: body,
@@ -372,8 +379,9 @@ function createMemoryVault(options = {}) {
         // user; only confirming in Mana clears that.
         ...(fact.unverifiedSource ? { unverifiedSource: true } : {}),
         ...(triggerChanged ? { trigger, triggerUserWords: trigger } : {}),
+        ...(categoryChanged ? { category } : {}),
       });
-      if (current === "pending") requestOk(fact.key, body);
+      if (current === "pending" && (textChanged || triggerChanged)) requestOk(fact.key, body);
     }
     if (current === "pending") return { key: fact.key };
     // A pinned fact is in every prompt, so pinning is asked about like a new
