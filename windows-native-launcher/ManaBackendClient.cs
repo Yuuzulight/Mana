@@ -1354,6 +1354,7 @@ internal sealed class ManaBackendClient
                     Trust = entry.TryGetProperty("trust", out var trustEl) ? trustEl.GetString() ?? "" : "",
                     Trigger = entry.TryGetProperty("trigger", out var triggerEl) ? triggerEl.GetString() ?? "" : "",
                     Paused = entry.TryGetProperty("paused", out var pausedEl) && pausedEl.ValueKind == JsonValueKind.True,
+                    Category = entry.TryGetProperty("category", out var categoryEl) && categoryEl.ValueKind == JsonValueKind.String ? categoryEl.GetString() ?? "other" : "other",
                     UpdatedAt = entry.TryGetProperty("updatedAt", out var updatedEl) && updatedEl.ValueKind == JsonValueKind.String ? updatedEl.GetString()
                         : entry.TryGetProperty("createdAt", out var createdEl) && createdEl.ValueKind == JsonValueKind.String ? createdEl.GetString() : null,
                 });
@@ -1413,6 +1414,16 @@ internal sealed class ManaBackendClient
     public async Task UpdateMemoryFactAsync(string key, string text, string? trigger = null)
     {
         var payload = JsonSerializer.Serialize(trigger is null ? (object)new { text } : new { text, trigger });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: moves a live fact to another group (FactCategories).
+    public async Task SetMemoryFactCategoryAsync(string key, string category)
+    {
+        var payload = JsonSerializer.Serialize(new { category });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
         using var response = await http.SendAsync(request);
@@ -3612,6 +3623,8 @@ internal sealed class ManaMemoryFact
     public bool Paused { get; init; }
     // #1426: when it last changed (or was made), ISO 8601.
     public string? UpdatedAt { get; init; }
+    // #1426: what it's about, one of FactCategories' ids.
+    public string Category { get; init; } = "other";
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).

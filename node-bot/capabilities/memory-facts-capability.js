@@ -66,6 +66,8 @@ function registerMemoryFactsRoutes(app, context = {}) {
         source: "human",
         origin: { kind: "user_stated" },
         ...(trigger ? { trigger, triggerUserWords: trigger } : {}),
+        // #1426: what it's about; the store keeps "other" for anything else.
+        ...(typeof req.body?.category === "string" ? { category: req.body.category } : {}),
       });
       return res.json({ ok: true, ...result });
     } catch (e) {
@@ -228,6 +230,8 @@ function registerMemoryFactsRoutes(app, context = {}) {
         source: "human",
         origin: { kind: "user_stated" },
         ...(trigger ? { trigger, triggerUserWords: trigger } : {}),
+        // #1426: moving it to another group, alone or with an edit.
+        ...(typeof req.body?.category === "string" ? { category: req.body.category } : {}),
       });
       return res.json({ ok: true, ...result });
     } catch (e) {

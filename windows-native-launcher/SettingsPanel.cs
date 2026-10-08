@@ -1036,6 +1036,10 @@ internal sealed class SettingsPanel : UserControl
     internal IReadOnlyList<RadioButton> FactChips => factChips; // tests
     internal FlowLayoutPanel FactActions => factActions; // tests
 
+    // #1426: node-bot's FACT_CATEGORIES, in the order the list shows them.
+    internal static readonly (string Id, string Label)[] FactCategories =
+        [("about-you", "About you"), ("projects", "Projects"), ("hobbies", "Games and hobbies"), ("people", "People"), ("other", "Other")];
+
     internal static string FactState(ManaMemoryFact fact) => fact.Status is "pending" or "archived" ? fact.Status : "active";
 
     // "Today", "3 Oct", or "3 Oct 2025" from another year.
@@ -1055,7 +1059,12 @@ internal sealed class SettingsPanel : UserControl
         factsList.FullRowSelect = true;
         factsList.MultiSelect = false;
         factsList.HideSelection = false;
-        factsList.Height = 180; // about seven facts; the list scrolls, the page doesn't grow
+        factsList.Height = 220; // about seven facts and their groups; the list scrolls, the page doesn't grow
+        factsList.ShowGroups = true;
+        foreach (var (id, label) in FactCategories)
+        {
+            factsList.Groups.Add(new ListViewGroup(id, label));
+        }
         factsList.Columns.Add("Name", 170);
         factsList.Columns.Add("What she knows", 300);
         factsList.Columns.Add("Updated", 100);
@@ -1177,7 +1186,39 @@ internal sealed class SettingsPanel : UserControl
                 }.OfType<Control>().ToArray(),
             };
         factActions.Controls.AddRange(actions);
+        if (fact is not null && FactState(fact) != "archived")
+        {
+            factActions.Controls.Add(SettingsRows.Words("Move to"));
+            factActions.Controls.Add(FactCategoryChoice(fact));
+        }
         factActions.ResumeLayout();
+    }
+
+    // #1426: the picked fact's group, moved as soon as another is chosen.
+    private ComboBox FactCategoryChoice(ManaMemoryFact fact)
+    {
+        var index = Math.Max(0, Array.FindIndex(FactCategories, c => c.Id == fact.Category));
+        var combo = SettingsRows.Choice("Move to", Array.ConvertAll(FactCategories, c => c.Label), index);
+        combo.SelectionChangeCommitted += async (_, _) =>
+        {
+            try
+            {
+                await backendClient.SetMemoryFactCategoryAsync(fact.Key, FactCategories[combo.SelectedIndex].Id);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed)
+                {
+                    vaultStatusLabel.Text = $"Couldn't move \"{fact.Key}\": {BackendError.Describe(ex)}";
+                }
+                return;
+            }
+            if (!IsDisposed)
+            {
+                await RefreshMemoryFactsAsync();
+            }
+        };
+        return combo;
     }
 
     private async Task RestoreSelectedFactAsync()
@@ -2112,11 +2153,13 @@ internal sealed class SettingsPanel : UserControl
         var now = DateTimeOffset.Now;
         foreach (var fact in facts.Where(f => FactState(f) == factFilter && MatchesSearch(factsSearch.Text, f.Key, f.Text, f.Trigger)))
         {
-            var item = new ListViewItem((fact.Pinned ? "★ " : "") + fact.Key) { Tag = fact, Selected = fact.Key == keep };
+            var item = new ListViewItem((fact.Pinned ? "★ " : "") + fact.Key) { Tag = fact, Selected = fact.Key == keep, Group = factsList.Groups[fact.Category] ?? factsList.Groups["other"] };
             item.SubItems.Add((fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}") + (fact.Paused ? " (paused)" : ""));
             item.SubItems.Add(UpdatedText(fact.UpdatedAt, now));
             factsList.Items.Add(item);
         }
+        // Group headers only over real facts, not over "Nothing here".
+        factsList.ShowGroups = factsList.Items.Count > 0;
         if (factsList.Items.Count == 0)
         {
             factsList.Items.Add(new ListViewItem(factsSearch.Text.Trim().Length > 0 ? "Nothing matches" : "Nothing here") { ForeColor = DarkTheme.Muted });

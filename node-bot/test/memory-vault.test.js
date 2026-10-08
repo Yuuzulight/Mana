@@ -771,3 +771,22 @@ test("the hygiene walk is bounded in entries and depth", () => {
   assert.equal(t.vault.getStatus().findings.length, 50);
   assert.match(doctorVault(t).message, /and 45 more/);
 });
+
+test("a fact's category is in its note, and editing that line moves the fact (#1426)", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "The user has an RTX 5080.", origin: { kind: "user_stated" }, category: "about-you" });
+  t.store.rememberFact({ key: "raid", text: "Raid is Thursday.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.category, "about-you");
+  assert.equal(parseNote(t.read("Facts/raid.md")).header.category, "other");
+
+  t.write("Facts/raid.md", t.read("Facts/raid.md").replace("category: other", "category: hobbies"));
+  t.vault.sync();
+  assert.equal(t.fact("raid").category, "hobbies");
+  assert.equal(t.fact("raid").text, "Raid is Thursday.");
+
+  // Not one of hers: left as it was, and the next write puts the line back.
+  t.write("Facts/raid.md", t.read("Facts/raid.md").replace("category: hobbies", "category: stuff"));
+  t.vault.sync();
+  assert.equal(t.fact("raid").category, "hobbies");
+});

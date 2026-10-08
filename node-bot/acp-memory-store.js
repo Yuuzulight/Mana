@@ -266,6 +266,14 @@ function factsBlockFor(pinned, matched) {
 // is exactly what a migration needs in order to recognize them.
 const FACT_SCHEMA_VERSION = 1;
 
+// #1426: what a fact is about, for grouping it in Settings and the vault.
+// Mana picks one when she saves a fact; anything else (or none) is "other".
+const FACT_CATEGORIES = ["about-you", "projects", "hobbies", "people", "other"];
+function normalizeCategory(value) {
+  const clean = String(value || "").trim().toLowerCase();
+  return FACT_CATEGORIES.includes(clean) ? clean : null;
+}
+
 // Issue #336: what kind of claim a fact is. Sits alongside unverifiedSource
 // (#317) rather than replacing it -- "not traceable to anything the user
 // said this turn" is a different statement from "this is an inference", and
@@ -981,6 +989,7 @@ function createAcpMemoryStore(options = {}) {
     trigger,
     triggerUserWords,
     expiresAt,
+    category,
   } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
@@ -1090,6 +1099,8 @@ function createAcpMemoryStore(options = {}) {
     const cleanTrigger = cleanText(trigger, 200);
     const cleanTriggerUserWords = cleanText(triggerUserWords, 200);
     const cleanExpiresAt = cleanText(expiresAt, 40);
+    // #1426: only written when supplied, like epistemic.
+    const cleanCategory = normalizeCategory(category);
 
     // Issue #673: the write decision. "insert" on a key that already has a
     // live fact updates that fact instead of adding a second one with the
@@ -1106,7 +1117,8 @@ function createAcpMemoryStore(options = {}) {
         (cleanTrigger && cleanTrigger !== existing.trigger) ||
         (cleanTriggerUserWords && cleanTriggerUserWords !== existing.triggerUserWords) ||
         (cleanExpiresAt && cleanExpiresAt !== existing.expiresAt);
-      if (sameText && !supersedes && !upgrades && !intentChanged) {
+      const categoryChanged = Boolean(cleanCategory && cleanCategory !== (existing.category || "other"));
+      if (sameText && !supersedes && !upgrades && !intentChanged && !categoryChanged) {
         return { ok: true, action: "patch", decision: "none", key: cleanKey, text: cleanTextValue };
       }
       snapshot();
@@ -1157,6 +1169,7 @@ function createAcpMemoryStore(options = {}) {
       if (cleanTrigger) existing.trigger = cleanTrigger;
       if (cleanTriggerUserWords) existing.triggerUserWords = cleanTriggerUserWords;
       if (cleanExpiresAt) existing.expiresAt = cleanExpiresAt;
+      if (cleanCategory) existing.category = cleanCategory;
       const supersededPatch = applySupersedes(facts, cleanKey, supersedes, timestamp);
       saveFacts(facts, { op: "update", key: cleanKey, origin: cleanOrigin });
       return {
@@ -1190,6 +1203,7 @@ function createAcpMemoryStore(options = {}) {
       ...(cleanTrigger ? { trigger: cleanTrigger } : {}),
       ...(cleanTrigger && cleanTriggerUserWords ? { triggerUserWords: cleanTriggerUserWords } : {}),
       ...(cleanExpiresAt ? { expiresAt: cleanExpiresAt } : {}),
+      category: cleanCategory || "other",
     });
     const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
     saveFacts(trimFacts(facts), { op: "add", key: cleanKey, origin: cleanOrigin });
@@ -2804,6 +2818,8 @@ function createAcpMemoryStore(options = {}) {
 }
 
 module.exports = {
+  FACT_CATEGORIES,
+  normalizeCategory,
   createAcpMemoryStore,
   extractEntities,
   factRecallCandidates,

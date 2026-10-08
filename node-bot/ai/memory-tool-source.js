@@ -151,6 +151,12 @@ function buildToolSchemas(existingKeys) {
               description:
                 "With trigger: the same topic in the user's own words, exactly as they put it when they asked (e.g. \"when the lads are online\"). Either wording brings the reminder up. Give it whenever you set or change trigger.",
             },
+            category: {
+              type: "string",
+              enum: ["about-you", "projects", "hobbies", "people", "other"],
+              description:
+                "What the fact is about, for grouping it: \"about-you\" (the user themself: preferences, setup, health, routine), \"projects\" (things they're building or working on), \"hobbies\" (games and hobbies), \"people\" (people in their life), or \"other\". Give it when you save a new fact; leave it unset when updating one unless it's in the wrong group.",
+            },
             expires: {
               type: "string",
               description:
@@ -371,6 +377,7 @@ function createMemoryToolSource(options = {}) {
       ...(isIntent && args?.trigger ? { trigger: args.trigger } : {}),
       ...(isIntent && args?.trigger_user_words ? { triggerUserWords: args.trigger_user_words } : {}),
       ...(expiresAt ? { expiresAt } : {}),
+      ...(args?.category ? { category: args.category } : {}),
       // Issue #663: not asked to remember (model_inferred) or tool_derived
       // -> the store keeps the value pending until the user confirms it.
       // #698: a reminder the user just said yes to is theirs.
