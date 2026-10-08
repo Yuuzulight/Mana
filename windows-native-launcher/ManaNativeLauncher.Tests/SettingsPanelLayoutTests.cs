@@ -34,7 +34,7 @@ public class SettingsPanelLayoutTests
             string Pages(string id) => string.Join(", ", panel.Groups.Single(g => g.Id == id).Tabs.TabPages.Cast<TabPage>().Select(p => p.Text));
             Assert.Equal("General", Pages("general")); // stage 2: one page of rows
             Assert.Equal("Voice", Pages("voice"));
-            Assert.Equal("Proactive, Briefing, Heartbeat", Pages("checkins"));
+            Assert.Equal("Check-ins", Pages("checkins"));
             Assert.Equal("Facts, Characters, Group mode, Skills, Presets, Memory tools", Pages("memory"));
             Assert.Equal("Model, API Spending, Coding mode, Model tools", Pages("models"));
             Assert.Equal("Approvals, Desktop folders, Pending edits", Pages("permissions"));
@@ -43,8 +43,8 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five and Voice's two, each now one page.
-            Assert.Equal(30, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five, Voice's two and Check-ins' three, each now one page.
+            Assert.Equal(28, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 

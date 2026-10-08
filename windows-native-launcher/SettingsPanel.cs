@@ -119,7 +119,7 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (General and Voice so far).
+        // stage 2 redraws each group as one page of rows (General, Voice and Check-ins so far).
         var backendPage = BuildConnectionTab(out var localOnlyPage);
         var timingsPage = BuildPerfTab();
         var privacyPage = BuildPrivacyTab();
@@ -128,10 +128,7 @@ internal sealed class SettingsPanel : UserControl
         factsPage.Text = "Facts";
         AddGroup("general", "General", BuildGeneralPage());
         AddGroup("voice", "Voice", BuildVoicePage());
-        AddGroup("checkins", "Check-ins",
-            new TabPage("Proactive") { Controls = { new ProactivePanel(backendClient) } }, // #697
-            BuildBriefingTab(),
-            new TabPage("Heartbeat") { Controls = { new HeartbeatPanel(backendClient) } }); // #699
+        AddGroup("checkins", "Check-ins", BuildCheckInsPage());
         AddGroup("memory", "Memory", factsPage,
             new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }, // #914
             BuildGroupModeTab(), BuildSkillsTab(), BuildPresetsTab(), BuildMemoryToolsTab());
@@ -641,6 +638,8 @@ internal sealed class SettingsPanel : UserControl
         await RefreshVoiceTabAsync();
         await (refreshSpeechWords?.Invoke() ?? Task.CompletedTask);
         await (refreshBriefing?.Invoke() ?? Task.CompletedTask);
+        await (proactive?.ReloadAsync() ?? Task.CompletedTask);
+        await (heartbeat?.ReloadAsync() ?? Task.CompletedTask);
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
@@ -1024,6 +1023,10 @@ internal sealed class SettingsPanel : UserControl
         var control = flip;
         control.CheckedChanged += (_, _) =>
         {
+            if (loadingRows)
+            {
+                return;
+            }
             save(control.Checked);
             Changed($"{name} {(control.Checked ? "on" : "off")}", () => control.Checked = !control.Checked);
         };
@@ -2802,35 +2805,53 @@ internal sealed class SettingsPanel : UserControl
 
     // #907: node-bot's daily briefing (GET/POST /briefing). "Brief me" in
     // chat gives it on demand whatever's set here.
-    private static readonly (string Key, string Label)[] BriefingSections =
+    private static readonly (string Key, string Label, string Explanation)[] BriefingSections =
     {
-        ("reminders", "Today's reminders"),
-        ("memory", "What's coming up (memory)"),
-        ("news", "News on my topics"),
-        ("games", "Game patch and maintenance news"),
-        ("calendar", "Calendar and mail (once connected)"),
+        ("reminders", "Reminders", "What's due today"),
+        ("memory", "What's coming up", "Things she remembers are coming up"),
+        ("news", "News", "On your news topics, below"),
+        ("games", "Game news", "Patches and maintenance for your games, below"),
+        ("calendar", "Calendar and mail", "Once they're connected"),
     };
     private Func<Task>? refreshBriefing;
 
-    private TabPage BuildBriefingTab()
-    {
-        Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-        TextBox Box(string name, int width) => new() { Width = width, AccessibleName = name, BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-        FlowLayoutPanel Row(params Control[] controls)
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-            row.Controls.AddRange(controls);
-            return row;
-        }
+    // #1426 stage 2: Check-ins as one page of rows -- the daily briefing,
+    // when she speaks up on her own (#697, #700) and her background checks
+    // (#699). What the backend holds loads with the rest of Settings.
+    private ProactivePanel? proactive;
+    private HeartbeatPanel? heartbeat;
 
-        var enabled = new CheckBox { Text = "Give me a daily briefing, the first time I'm at the PC after", AutoSize = true, ForeColor = DarkTheme.Text };
-        var time = Box("Briefing time", 60);
-        var sections = BriefingSections.Select(s => new CheckBox { Text = s.Label, Tag = s.Key, AutoSize = true, ForeColor = DarkTheme.Text }).ToArray();
-        var topics = Box("News topics", 300);
-        var games = Box("Games", 300);
-        var save = new Button { Text = "Save", AutoSize = true };
-        DarkTheme.ApplyButton(save);
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+    private TabPage BuildCheckInsPage()
+    {
+        proactive = new ProactivePanel(backendClient, loadNow: false, Changed);
+        heartbeat = new HeartbeatPanel(backendClient, loadNow: false);
+        var parts = new List<Control> { SettingsRows.Section("Daily briefing") };
+        parts.AddRange(BuildBriefingRows());
+        parts.Add(SettingsRows.Section("Speaking up"));
+        // Part of #700: the backend reads it when the launcher next starts it.
+        parts.Add(SwitchRow("Check in when you seem down", "At most once a day. Applies next time Mana starts", "mood sad check in wellbeing",
+            !ManaSettingsStore.Load().NoCheckIns, on =>
+            {
+                var latest = ManaSettingsStore.Load();
+                latest.NoCheckIns = !on;
+                latest.Save();
+            }));
+        parts.AddRange(proactive.Rows);
+        parts.Add(SettingsRows.Section("Background checks"));
+        parts.AddRange(heartbeat.Rows);
+        return SettingsRows.Page("Check-ins", parts.ToArray());
+    }
+
+    // Each switch saves the whole briefing at once; a box saves when it's left changed.
+    private Control[] BuildBriefingRows()
+    {
+        var time = SettingsRows.Box("Briefing time", 50, "09:00");
+        var topics = SettingsRows.Box("News topics", 240, "Comma-separated");
+        var games = SettingsRows.Box("Games", 240, "Comma-separated");
+        var status = SettingsRows.Status();
+        var enabled = new SettingsSwitch { AccessibleName = "Daily briefing" };
+        var sections = BriefingSections.Select(s => new SettingsSwitch { AccessibleName = s.Label, Tag = s.Key }).ToArray();
+        ManaBriefingSettings? shown = null;
 
         void Render(ManaBriefingSettings settings)
         {
@@ -2838,38 +2859,57 @@ internal sealed class SettingsPanel : UserControl
             {
                 return;
             }
-            enabled.Checked = settings.Enabled;
-            time.Text = settings.Time;
-            foreach (var check in sections)
+            shown = settings;
+            loadingRows = true;
+            try
             {
-                check.Checked = settings.Sections.Contains((string)check.Tag!);
+                enabled.Checked = settings.Enabled;
+                foreach (var check in sections)
+                {
+                    check.Checked = settings.Sections.Contains((string)check.Tag!);
+                }
             }
+            finally
+            {
+                loadingRows = false;
+            }
+            time.Text = settings.Time;
             topics.Text = settings.Topics;
             games.Text = settings.Games;
         }
 
-        save.Click += async (_, _) =>
+        async Task SaveAsync()
         {
             try
             {
                 Render(await backendClient.UpdateBriefingAsync(new ManaBriefingSettings
                 {
                     Enabled = enabled.Checked,
-                    Time = time.Text,
+                    Time = time.Text.Trim(),
                     Sections = sections.Where(c => c.Checked).Select(c => (string)c.Tag!).ToList(),
                     Topics = topics.Text,
                     Games = games.Text,
                 }));
-                status.Text = "Saved.";
+                status.Text = "";
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 if (!status.IsDisposed)
                 {
-                    status.Text = $"Couldn't save: {ex.Message}";
+                    status.Text = $"Couldn't save: {BackendError.Describe(ex)}";
                 }
             }
-        };
+        }
+        foreach (var box in new[] { time, topics, games })
+        {
+            box.Leave += (_, _) =>
+            {
+                if (shown is { } now && (time.Text.Trim() != now.Time || topics.Text != now.Topics || games.Text != now.Games))
+                {
+                    _ = SaveAsync();
+                }
+            };
+        }
         refreshBriefing = async () =>
         {
             try
@@ -2882,42 +2922,21 @@ internal sealed class SettingsPanel : UserControl
             }
         };
 
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
-        layout.Controls.Add(Row(enabled, time, Caption("(HH:MM)")));
-        layout.Controls.Add(Caption("It's a toast and Mana says it; while I'm playing it waits for a break. Say \"brief me\" any time for it on demand."));
-        layout.Controls.AddRange(sections);
-        layout.Controls.Add(Row(Caption("News topics (comma-separated)"), topics));
-        layout.Controls.Add(Row(Caption("Games"), games));
-        layout.Controls.Add(Row(save, status));
-        layout.Controls.Add(BuildCheckInsRow());
-        return new TabPage("Briefing") { Controls = { layout } };
+        var rows = new List<Control>
+        {
+            SwitchRow("Daily briefing", "The first time you're at the PC after this time, as a toast and in her voice. Say \"brief me\" for it any time", "briefing morning summary",
+                false, on => _ = SaveAsync(), SettingsRows.Line(status, SettingsRows.Words("After"), time), enabled),
+        };
+        for (var i = 0; i < sections.Length; i++)
+        {
+            var (key, label, explanation) = BriefingSections[i];
+            rows.Add(SwitchRow(label, explanation, $"briefing {key}", false, on => _ = SaveAsync(), flip: sections[i]));
+        }
+        rows.Add(new SettingsRow("News topics", "What the news part covers", "briefing news topics", topics));
+        rows.Add(new SettingsRow("Games", "Whose patches and maintenance to include", "briefing games patch", games));
+        return rows.ToArray();
     }
 
-    // Part of #700: saved at once like local-only (#670); the backend reads
-    // it when the launcher next starts it.
-    private static FlowLayoutPanel BuildCheckInsRow()
-    {
-        var check = new CheckBox
-        {
-            Text = "Let Mana check in on me (at most once a day) when I've seemed down",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-            Checked = !ManaSettingsStore.Load().NoCheckIns,
-        };
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        check.CheckedChanged += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.NoCheckIns = !check.Checked;
-            latest.Save();
-            status.Text = "Saved -- restart Mana for this to take effect. MANA_CHECK_INS=0 in node-bot/.env keeps them off.";
-        };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(check);
-        row.Controls.Add(status);
-        return row;
-    }
 
     // #923/#925/#926: node-bot's speech words (whisper listens for them),
     // mishearing fixes (applied to every transcript) and whisper's language,
@@ -2927,24 +2946,12 @@ internal sealed class SettingsPanel : UserControl
 
     private Control[] BuildSpeechWordsRows()
     {
-        TextBox Box(string placeholder, int width) => new() { Width = width, PlaceholderText = placeholder, AccessibleName = placeholder, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-        ListBox NewList(string name) => new() { Width = 300, Height = 80, AccessibleName = name, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
-        // A list over its box and buttons, at the row's right.
-        static Control Editor(ListBox list, params Control[] line)
-        {
-            var below = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0) };
-            below.Controls.AddRange(line);
-            var stack = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
-            stack.Controls.Add(list);
-            stack.Controls.Add(below);
-            return stack;
-        }
-
-        var words = NewList("Speech words");
+        TextBox Box(string placeholder, int width) => SettingsRows.Box(placeholder, width, placeholder);
+        var words = SettingsRows.List("Speech words");
         var word = Box("Word or name", 160);
         var addWord = SettingsRows.Action("Add", () => { });
         var removeWord = SettingsRows.Action("Remove", () => { });
-        var fixes = NewList("Mishearing fixes");
+        var fixes = SettingsRows.List("Mishearing fixes");
         var fixKeys = new List<string>();
         var heard = Box("She heard", 100);
         var meant = Box("You said", 100);
@@ -3046,9 +3053,9 @@ internal sealed class SettingsPanel : UserControl
             ChoiceRow("Speech language", "The language she listens for", "whisper language english auto detect",
                 new[] { "English only", "Detect it" }, 0, i => _ = Save(new { language = i == 1 ? "auto" : "en" }), language, status),
             new SettingsRow("Words she should know", "Names and terms she mishears", "vocabulary names words",
-                Editor(words, word, addWord, removeWord)),
+                SettingsRows.Editor(words, word, addWord, removeWord)),
             new SettingsRow("Mishearing fixes", "What she keeps hearing, and what you said", "corrections mishear",
-                Editor(fixes, heard, meant, addFix, removeFix)),
+                SettingsRows.Editor(fixes, heard, meant, addFix, removeFix)),
         };
     }
 
