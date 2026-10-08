@@ -25,7 +25,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly Func<string?>? getCurrentSessionId;
     private readonly ListeningPause? listeningPause; // #922
     private CancellationTokenSource? enrolmentCancel; // #922: set while teaching Mana my voice
-    private readonly ListView pluginsList = new();
+    private readonly RowList pluginsList = new() { MaxVisibleRows = 10, NameWidth = 170, AccessibleName = "Plugins" };
     private readonly RowList factsList = new();
     // #688: search boxes over the last-loaded plugins/facts.
     private readonly TextBox pluginsSearch = new() { Dock = DockStyle.Fill, PlaceholderText = "Search plugins", AccessibleName = "Search plugins" };
@@ -65,9 +65,9 @@ internal sealed class SettingsPanel : UserControl
     // #681: which preset replies actually use ("None" = index 0).
     private readonly ComboBox activePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private bool populatingPresets;
-    private readonly ListView mobileDevicesList = new();
-    private readonly ListView accountsList = new();
-    private readonly ListView mcpServersList = new();
+    private readonly RowList mobileDevicesList = new() { MaxVisibleRows = 5, NameWidth = 170, AccessibleName = "Phones" };
+    private readonly RowList accountsList = new() { MaxVisibleRows = 5, NameWidth = 220, AccessibleName = "Accounts" };
+    private readonly RowList mcpServersList = new() { MaxVisibleRows = 5, NameWidth = 140, AccessibleName = "MCP servers" };
     private readonly ListView hooksList = new();
     private bool populatingPlugins;
     private bool populatingHooks;
@@ -102,7 +102,7 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins, Memory, Models, Permissions and Privacy so far).
+        // stage 2 redraws each group as one page of rows (every group but Advanced so far).
         var backendPage = BuildConnectionTab();
         var timingsPage = BuildPerfTab();
         AddGroup("general", "General", BuildGeneralPage());
@@ -112,7 +112,7 @@ internal sealed class SettingsPanel : UserControl
         AddGroup("models", "Models", BuildModelsPage());
         AddGroup("permissions", "Permissions", BuildPermissionsPage());
         AddGroup("privacy", "Privacy", BuildPrivacyPage()); // #1336
-        AddGroup("connections", "Connections", BuildMailCalendarTab(), BuildMobileDevicesTab(), BuildAccountsTab(), BuildPluginsTab(), BuildMcpServersTab());
+        AddGroup("connections", "Connections", BuildConnectionsPage());
         AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage, BuildDeveloperTab());
 
         content.Dock = DockStyle.Fill;
@@ -201,8 +201,6 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Plugins"] = "addon add-on extension",
-        ["MCP Clients"] = "mcp servers tools",
         ["Backend"] = "url port server admin token",
         ["Timings"] = "performance perf speed",
         ["Developer"] = "project folder revert pr",
@@ -623,6 +621,12 @@ internal sealed class SettingsPanel : UserControl
     // One visible placeholder row beats a silent, misleading empty state.
     private static void ShowLoadFailure(ListView list, string message)
     {
+        // #1426: a row list sizes itself to the one line.
+        if (list is RowList rows)
+        {
+            rows.ShowEntries([], null, $"Couldn't load: {message}");
+            return;
+        }
         list.Items.Clear();
         list.Items.Add(new ListViewItem($"Failed to load: {message}") { ForeColor = Color.Firebrick });
     }
@@ -1921,33 +1925,6 @@ internal sealed class SettingsPanel : UserControl
     }
 
 
-    private TabPage BuildPluginsTab()
-    {
-        pluginsList.Dock = DockStyle.Fill;
-        pluginsList.View = View.Details;
-        pluginsList.CheckBoxes = true;
-        pluginsList.FullRowSelect = true;
-        pluginsList.Columns.Add("Plugin", 220);
-        pluginsList.Columns.Add("Description", 300);
-        pluginsList.ItemChecked += OnPluginChecked;
-        DarkTheme.ApplyListView(pluginsList);
-
-        // #688: search, and "+ Add" -> the guide listing plugins and how to
-        // add one (no installer, same as Electron).
-        StyleSearchBox(pluginsSearch);
-        pluginsSearch.TextChanged += (_, _) => ShowPlugins();
-        var addButton = new Button { Text = "+ Add", Dock = DockStyle.Right, Width = 70 };
-        DarkTheme.ApplyButton(addButton);
-        addButton.Click += (_, _) => OpenPluginGuide();
-        var searchRow = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = DarkTheme.Background };
-        searchRow.Controls.Add(pluginsSearch);
-        searchRow.Controls.Add(addButton);
-
-        var page = new TabPage("Plugins");
-        page.Controls.Add(pluginsList);
-        page.Controls.Add(searchRow);
-        return page;
-    }
 
     private static void StyleSearchBox(TextBox box)
     {
@@ -1980,27 +1957,6 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private async void OnPluginChecked(object? sender, ItemCheckedEventArgs e)
-    {
-        // Suppressed while RefreshPluginsAsync is setting each item's
-        // initial Checked state from the server's own value -- without
-        // this, populating the list would fire one spurious
-        // SetPluginEnabledAsync call per plugin, re-sending the value
-        // that was just read.
-        if (populatingPlugins)
-        {
-            return;
-        }
-        var key = (string)e.Item.Tag!;
-        try
-        {
-            await backendClient.SetPluginEnabledAsync(key, e.Item.Checked);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"SettingsPanel: failed to toggle plugin '{key}'. {ex.Message}");
-        }
-    }
 
     private async Task RefreshPluginsAsync()
     {
@@ -2024,23 +1980,134 @@ internal sealed class SettingsPanel : UserControl
         ShowPlugins();
     }
 
+    // #1426 stage 2: Connections as one page of rows -- the email and
+    // calendar she reads, the phones paired with her, the accounts that reach
+    // her, her plugins and add-ons, and the MCP servers she uses.
+    internal RowList PluginsList => pluginsList; // tests
+    internal RowList DevicesList => mobileDevicesList; // tests
+    private readonly Label pairingLabel = SettingsRows.Status();
+
+    // The plugins she counts as add-ons: installed by you, so they ask
+    // first, the first time they're switched on.
+    private const string AddOnCategory = "User Installed";
+
+    private TabPage BuildConnectionsPage()
+    {
+        pluginsList.ActionsFor = value => value is ManaPlugin plugin
+            ? [new(plugin.Enabled ? "" : "", plugin.Enabled ? "Turn off" : "Turn on", () => SetPluginAsync(plugin, !plugin.Enabled))]
+            : [];
+        pluginsList.ItemActivate += async (_, _) =>
+        {
+            if (pluginsList.SelectedItems.Count > 0 && pluginsList.SelectedItems[0].Tag is ManaPlugin plugin)
+            {
+                await SetPluginAsync(plugin, !plugin.Enabled);
+            }
+        };
+        StyleSearchBox(pluginsSearch);
+        pluginsSearch.Dock = DockStyle.Fill;
+        pluginsSearch.PlaceholderText = "Search plugins";
+        pluginsSearch.TextChanged += (_, _) => ShowPlugins();
+
+        mobileDevicesList.ActionsFor = value => value is ManaMobileDevice { Revoked: false } device
+            ? [new("", "New token", () => RotateDeviceTokenAsync(device)), new("", "Revoke", () => RevokeDeviceAsync(device))]
+            : [];
+        accountsList.ActionsFor = value => value is ManaAccount account ? [new("", "Revoke", () => DeleteAccountAsync(account))] : [];
+        mcpServersList.ActionsFor = value => value is ManaMcpServer server ? [new("", "Remove", () => DeleteMcpServerAsync(server))] : [];
+        pairingLabel.MaximumSize = new Size(300, 0);
+
+        var pairButton = SettingsRows.Action("Pair a phone…", () => _ = GeneratePairingCodeAsync());
+        return SettingsRows.Page("Connections",
+            SettingsRows.Section("Calendar and email"),
+            BuildAccountRow("Email", "Her mail, read only when you ask", "imap mail email inbox", "email",
+                [("Server", mailHostBox), ("Port", mailPortBox), ("Username", mailUserBox), ("App password", mailPasswordBox), ("Mailbox", mailMailboxBox)],
+                mailStatusLabel,
+                () => new { kind = "email", host = mailHostBox.Text.Trim(), port = mailPortBox.Text.Trim(), user = mailUserBox.Text.Trim(), password = mailPasswordBox.Text, mailbox = mailMailboxBox.Text.Trim() }),
+            BuildAccountRow("Calendar", "Read when you ask; an event is added only after you approve it. An iCal feed is read only: leave its username blank", "ical caldav calendar google outlook", "calendar",
+                [("Address", calendarUrlBox), ("Username", calendarUserBox), ("App password", calendarPasswordBox)],
+                calendarStatusLabel,
+                () => new { kind = "calendar", url = calendarUrlBox.Text.Trim(), user = calendarUserBox.Text.Trim(), password = calendarPasswordBox.Text }),
+            new SettingsRow("Setup steps", "How to get an app password or a calendar address, per provider", "help guide gmail outlook",
+                SettingsRows.Action("Open", () => OpenRepoDoc("docs", "mail_calendar_setup.md"))), // #1127
+            SettingsRows.Section("Devices and accounts"),
+            new SettingsRow("Phones", "The Mana app on your phone. Pair one with a code; pick one to give it a new token or revoke it", "mobile phone device pair token",
+                below: true, SettingsRows.RoundPanel(mobileDevicesList), SettingsRows.Line(pairButton, pairingLabel)),
+            new SettingsRow("Accounts", "API keys for other people and apps that reach her", "accounts api keys users",
+                below: true, SettingsRows.RoundPanel(accountsList), SettingsRows.Line(SettingsRows.Action("Create…", () => _ = CreateAccountAsync()))),
+            SettingsRows.Section("Plugins"),
+            new SettingsRow("Plugins and add-ons", "What she can do beyond chat. Add-ons are ones you installed, and ask before they first run", "plugins addon add-on extension enable disable",
+                below: true,
+                SettingsRows.Line(SettingsRows.RoundField(pluginsSearch, 220), SettingsRows.Action("How to add one", OpenPluginGuide)),
+                SettingsRows.RoundPanel(pluginsList)),
+            SettingsRows.Section("MCP servers"),
+            new SettingsRow("MCP servers", "Other tools she can use. A new one waits for your OK first", "mcp servers tools clients",
+                below: true, SettingsRows.RoundPanel(mcpServersList), SettingsRows.Line(SettingsRows.Action("Register…", () => _ = RegisterMcpServerAsync()))));
+    }
+
+    // Email or calendar: what's set up on the row's own line, the fields
+    // behind "Change", and Save and test.
+    private SettingsRow BuildAccountRow(string name, string explanation, string keywords, string kind, (string Label, TextBox Box)[] fields, Label status, Func<object> change)
+    {
+        var grid = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(0, 4, 0, 0), Visible = false };
+        foreach (var (label, box) in fields)
+        {
+            box.AccessibleName = label;
+            box.BackColor = DarkTheme.Panel;
+            box.ForeColor = DarkTheme.Text;
+            box.BorderStyle = BorderStyle.FixedSingle;
+            grid.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 12, 3) });
+            grid.Controls.Add(box);
+        }
+        var save = SettingsRows.Action("Save and test", () => _ = SaveMailCalendarAsync(kind, change(), status, test: true));
+        SettingsRows.MakePrimary(save);
+        grid.Controls.Add(new Label { AutoSize = true, BackColor = Color.Transparent });
+        grid.Controls.Add(SettingsRows.Line(save, SettingsRows.Action("Remove", () => _ = SaveMailCalendarAsync(kind, new { kind, clear = true }, status, test: false))));
+        var toggle = SettingsRows.Action("Change", () => { });
+        toggle.Click += (_, _) =>
+        {
+            grid.Visible = !grid.Visible;
+            toggle.Text = grid.Visible ? "Done" : "Change";
+        };
+        status.ForeColor = DarkTheme.Muted;
+        status.BackColor = Color.Transparent;
+        status.MaximumSize = new Size(320, 0);
+        status.Margin = new Padding(0, 7, 10, 0);
+        return new SettingsRow(name, explanation, keywords, below: true, SettingsRows.Line(status, toggle), grid);
+    }
+
+    // #688: plugins grouped by their category, an add-on marked as one.
     private void ShowPlugins()
     {
-        populatingPlugins = true;
+        var shown = plugins.Where(p => MatchesSearch(pluginsSearch.Text, p.Name, p.Description, p.Key)).ToList();
+        var groups = shown.Select(p => p.Category).Distinct().Select(c => (c, c)).ToList();
+        pluginsList.ShowEntries(
+            shown.Select(p => new RowList.Entry(p, p.Name, p.Description ?? "", p.Enabled ? "On" : "Off",
+                Tag: p.Category == AddOnCategory ? "Add-on" : null, Group: p.Category)),
+            groups, pluginsSearch.Text.Trim().Length > 0 ? "Nothing matches" : "No plugins");
+    }
+
+    // An add-on asks the first time it's switched on: it runs code you installed.
+    internal async Task SetPluginAsync(ManaPlugin plugin, bool enabled)
+    {
+        if (enabled && plugin.Category == AddOnCategory && !(ManaSettingsStore.Load().AddOnsAllowed ?? []).Contains(plugin.Key))
+        {
+            if (MessageBox.Show(FindForm(), $"Turn on {plugin.Name}? It's an add-on you installed, so it runs its own code with her.", "Add-on", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            {
+                return;
+            }
+            var settings = ManaSettingsStore.Load();
+            settings.AddOnsAllowed = [.. settings.AddOnsAllowed ?? [], plugin.Key];
+            settings.Save();
+        }
         try
         {
-            pluginsList.Items.Clear();
-            foreach (var plugin in plugins.Where(p => MatchesSearch(pluginsSearch.Text, p.Name, p.Description, p.Key)))
-            {
-                var item = new ListViewItem(plugin.Name) { Tag = plugin.Key, Checked = plugin.Enabled };
-                item.SubItems.Add(plugin.Description ?? "");
-                pluginsList.Items.Add(item);
-            }
+            await backendClient.SetPluginEnabledAsync(plugin.Key, enabled);
         }
-        finally
+        catch (Exception ex)
         {
-            populatingPlugins = false;
+            Console.WriteLine($"SettingsPanel: failed to toggle plugin '{plugin.Key}'. {ex.Message}");
+            return;
         }
+        await RefreshPluginsAsync();
     }
 
 
@@ -4359,37 +4426,6 @@ internal sealed class SettingsPanel : UserControl
     // (mobile-routes.js reads MOBILE_TOTP_SECRET straight from the
     // environment) -- this tab covers pairing-code generation and device
     // management only, matching what the backend actually exposes.
-    private TabPage BuildMobileDevicesTab()
-    {
-        mobileDevicesList.Dock = DockStyle.Fill;
-        mobileDevicesList.View = View.Details;
-        mobileDevicesList.FullRowSelect = true;
-        mobileDevicesList.Columns.Add("Name", 140);
-        mobileDevicesList.Columns.Add("Created", 140);
-        mobileDevicesList.Columns.Add("Last seen", 140);
-        mobileDevicesList.Columns.Add("Status", 70);
-        DarkTheme.ApplyListView(mobileDevicesList);
-
-        var pairButton = new Button { Text = "Generate Pairing Code" };
-        var rotateButton = new Button { Text = "Rotate Token" };
-        var revokeButton = new Button { Text = "Revoke" };
-        DarkTheme.ApplyButton(pairButton);
-        DarkTheme.ApplyButton(rotateButton);
-        DarkTheme.ApplyButton(revokeButton);
-        pairButton.Click += async (_, _) => await GeneratePairingCodeAsync();
-        rotateButton.Click += async (_, _) => await RotateSelectedDeviceTokenAsync();
-        revokeButton.Click += async (_, _) => await RevokeSelectedDeviceAsync();
-
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(pairButton);
-        buttonRow.Controls.Add(rotateButton);
-        buttonRow.Controls.Add(revokeButton);
-
-        var page = new TabPage("Mobile Devices");
-        page.Controls.Add(mobileDevicesList);
-        page.Controls.Add(buttonRow);
-        return page;
-    }
 
     private async Task GeneratePairingCodeAsync()
     {
@@ -4408,22 +4444,13 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
         var expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(result.ExpiresAtMs).ToLocalTime();
-        MessageBox.Show(
-            this,
-            $"Pairing code: {result.Code}\n\nEnter this in the Mana mobile app. Expires at {expiresAt:T}.",
-            "Generate Pairing Code",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+        pairingLabel.ForeColor = DarkTheme.Text;
+        pairingLabel.Text = $"Code {result.Code}: type it into the Mana app before {expiresAt:t}";
     }
 
-    private async Task RotateSelectedDeviceTokenAsync()
+    private async Task RotateDeviceTokenAsync(ManaMobileDevice device)
     {
-        if (mobileDevicesList.SelectedItems.Count == 0)
-        {
-            return;
-        }
-        var id = (string)mobileDevicesList.SelectedItems[0].Tag!;
-        var name = mobileDevicesList.SelectedItems[0].Text;
+        var (id, name) = (device.Id, device.Name);
         var confirmed = MessageBox.Show(
             this,
             $"Rotate the token for \"{name}\"? The device will need to be re-paired with the new token.",
@@ -4459,14 +4486,9 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private async Task RevokeSelectedDeviceAsync()
+    private async Task RevokeDeviceAsync(ManaMobileDevice device)
     {
-        if (mobileDevicesList.SelectedItems.Count == 0)
-        {
-            return;
-        }
-        var id = (string)mobileDevicesList.SelectedItems[0].Tag!;
-        var name = mobileDevicesList.SelectedItems[0].Text;
+        var (id, name) = (device.Id, device.Name);
         var confirmed = MessageBox.Show(
             this,
             $"Revoke \"{name}\"? It will no longer be able to reach Mana.",
@@ -4514,15 +4536,11 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        mobileDevicesList.Items.Clear();
-        foreach (var device in devices)
-        {
-            var item = new ListViewItem(device.Name) { Tag = device.Id };
-            item.SubItems.Add(device.CreatedAt ?? "");
-            item.SubItems.Add(device.LastSeenAt ?? "never");
-            item.SubItems.Add(device.Revoked ? "revoked" : "active");
-            mobileDevicesList.Items.Add(item);
-        }
+        var now = DateTimeOffset.Now;
+        mobileDevicesList.ShowEntries(devices.Select(d => new RowList.Entry(d, d.Name,
+                d.LastSeenAt is { } seen ? $"Last seen {UpdatedText(seen, now)}" : "Not seen yet",
+                d.Revoked ? "Revoked" : "Active")),
+            null, "No phones paired yet");
     }
 
     // #568: requires an admin-role API key entered as the Connection
@@ -4531,31 +4549,6 @@ internal sealed class SettingsPanel : UserControl
     // approvals tabs above check for, since /admin/accounts uses a
     // different gate. A missing/wrong token surfaces the same
     // ShowLoadFailure placeholder those tabs already use.
-    private TabPage BuildAccountsTab()
-    {
-        accountsList.Dock = DockStyle.Fill;
-        accountsList.View = View.Details;
-        accountsList.FullRowSelect = true;
-        accountsList.Columns.Add("Email", 220);
-        accountsList.Columns.Add("Role", 80);
-        DarkTheme.ApplyListView(accountsList);
-
-        var createButton = new Button { Text = "Create..." };
-        var deleteButton = new Button { Text = "Revoke" };
-        DarkTheme.ApplyButton(createButton);
-        DarkTheme.ApplyButton(deleteButton);
-        createButton.Click += async (_, _) => await CreateAccountAsync();
-        deleteButton.Click += async (_, _) => await DeleteSelectedAccountAsync();
-
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(createButton);
-        buttonRow.Controls.Add(deleteButton);
-
-        var page = new TabPage("Accounts");
-        page.Controls.Add(accountsList);
-        page.Controls.Add(buttonRow);
-        return page;
-    }
 
     private async Task CreateAccountAsync()
     {
@@ -4589,14 +4582,9 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private async Task DeleteSelectedAccountAsync()
+    private async Task DeleteAccountAsync(ManaAccount account)
     {
-        if (accountsList.SelectedItems.Count == 0)
-        {
-            return;
-        }
-        var userId = (string)accountsList.SelectedItems[0].Tag!;
-        var email = accountsList.SelectedItems[0].Text;
+        var (userId, email) = (account.UserId, account.Email);
         var confirmed = MessageBox.Show(
             this,
             $"Revoke account \"{email}\"? This cannot be undone.",
@@ -4644,13 +4632,7 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        accountsList.Items.Clear();
-        foreach (var account in accounts)
-        {
-            var item = new ListViewItem(account.Email) { Tag = account.UserId };
-            item.SubItems.Add(account.Role);
-            accountsList.Items.Add(item);
-        }
+        accountsList.ShowEntries(accounts.Select(a => new RowList.Entry(a, a.Email, "", a.Role)), null, "No accounts yet");
     }
 
     // #950 (#906): the email and calendar accounts Mana reads, through
@@ -4669,64 +4651,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly TextBox calendarPasswordBox = new() { Width = 260, UseSystemPasswordChar = true };
     private readonly Label calendarStatusLabel = new() { AutoSize = true, MaximumSize = new Size(520, 0) };
 
-    private TabPage BuildMailCalendarTab()
-    {
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = DarkTheme.Background };
-        layout.Controls.Add(BuildMailCalendarGroup(
-            "Email (IMAP, read-only)",
-            "email",
-            new (string, TextBox)[] { ("Server", mailHostBox), ("Port", mailPortBox), ("Username", mailUserBox), ("App password", mailPasswordBox), ("Mailbox", mailMailboxBox) },
-            mailStatusLabel,
-            () => new { kind = "email", host = mailHostBox.Text.Trim(), port = mailPortBox.Text.Trim(), user = mailUserBox.Text.Trim(), password = mailPasswordBox.Text, mailbox = mailMailboxBox.Text.Trim() }));
-        layout.Controls.Add(BuildMailCalendarGroup(
-            "Calendar (CalDAV, or a Google/Outlook iCal feed)",
-            "calendar",
-            new (string, TextBox)[] { ("Address", calendarUrlBox), ("Username", calendarUserBox), ("App password", calendarPasswordBox) },
-            calendarStatusLabel,
-            () => new { kind = "calendar", url = calendarUrlBox.Text.Trim(), user = calendarUserBox.Text.Trim(), password = calendarPasswordBox.Text }));
-        layout.Controls.Add(new Label
-        {
-            Text = "Mana reads these only when I ask, and adds a calendar event only after I approve it. An iCal feed (Google's secret address, Outlook's published calendar) is read-only: leave its Username blank.",
-            AutoSize = true,
-            MaximumSize = new Size(520, 0),
-            ForeColor = DarkTheme.Muted,
-            Margin = new Padding(8),
-        });
-        var guide = new Button { Text = "Setup steps per provider", AutoSize = true, Margin = new Padding(8, 0, 8, 8) };
-        DarkTheme.ApplyButton(guide);
-        guide.Click += (_, _) => OpenRepoDoc("docs", "mail_calendar_setup.md"); // #1127
-        layout.Controls.Add(guide);
-        return new TabPage("Calendar & Email") { Controls = { layout } };
-    }
 
-    private GroupBox BuildMailCalendarGroup(string title, string kind, (string Label, TextBox Box)[] rows, Label status, Func<object> change)
-    {
-        var group = NewGroup(title);
-        var table = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = DarkTheme.Background };
-        foreach (var (label, box) in rows)
-        {
-            StyleTextBox(box);
-            box.AccessibleName = label;
-            table.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) });
-            table.Controls.Add(box);
-        }
-        var saveButton = new Button { Text = "Save and test", AutoSize = true };
-        var removeButton = new Button { Text = "Remove", AutoSize = true };
-        DarkTheme.ApplyButton(saveButton);
-        DarkTheme.ApplyButton(removeButton);
-        saveButton.Click += async (_, _) => await SaveMailCalendarAsync(kind, change(), status, test: true);
-        removeButton.Click += async (_, _) => await SaveMailCalendarAsync(kind, new { kind, clear = true }, status, test: false);
-        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(saveButton);
-        buttonRow.Controls.Add(removeButton);
-        status.ForeColor = DarkTheme.Muted;
-        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
-        stack.Controls.Add(table);
-        stack.Controls.Add(buttonRow);
-        stack.Controls.Add(status);
-        group.Controls.Add(stack);
-        return group;
-    }
 
     private async Task SaveMailCalendarAsync(string kind, object change, Label status, bool test)
     {
@@ -4779,7 +4704,7 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
-        const string unreadable = "The saved settings can't be read on this Windows account: enter them again.";
+        const string unreadable = "Saved on another Windows account: enter them again";
         var email = state.Email;
         mailHostBox.Text = email?.Host ?? "";
         mailPortBox.Text = email is { Port: > 0 } ? email.Port.ToString() : "993";
@@ -4788,7 +4713,7 @@ internal sealed class SettingsPanel : UserControl
         mailPasswordBox.Clear();
         mailPasswordBox.PlaceholderText = email?.PasswordSet == true ? "saved (blank keeps it)" : "";
         mailStatusLabel.ForeColor = DarkTheme.Muted;
-        mailStatusLabel.Text = email is null ? "Not set up." : email.Unreadable ? unreadable : $"Set up: {email.User} on {email.Host}.";
+        mailStatusLabel.Text = email is null ? "Not set up" : email.Unreadable ? unreadable : $"Set up: {email.User} on {email.Host}";
 
         var calendar = state.Calendar;
         calendarUserBox.Text = calendar?.User ?? "";
@@ -4798,12 +4723,12 @@ internal sealed class SettingsPanel : UserControl
         calendarPasswordBox.PlaceholderText = calendar?.PasswordSet == true ? "saved (blank keeps it)" : "";
         calendarStatusLabel.ForeColor = DarkTheme.Muted;
         calendarStatusLabel.Text = calendar is null
-            ? "Not set up."
+            ? "Not set up"
             : calendar.Unreadable
                 ? unreadable
                 : calendar.ReadOnly
-                    ? $"Set up: iCal feed from {calendar.Host} (read-only)."
-                    : $"Set up: {calendar.User} on {calendar.Host}.";
+                    ? $"Set up: an iCal feed from {calendar.Host}, read only"
+                    : $"Set up: {calendar.User} on {calendar.Host}";
     }
 
     // #567: registration goes through the approval gate server-side, not
@@ -4811,32 +4736,6 @@ internal sealed class SettingsPanel : UserControl
     // this tab has no toggle/edit action, only Add and Delete, matching
     // that: there's nothing here to PATCH, and a pending registration is
     // decided from the existing Approvals tab, not this one.
-    private TabPage BuildMcpServersTab()
-    {
-        mcpServersList.Dock = DockStyle.Fill;
-        mcpServersList.View = View.Details;
-        mcpServersList.FullRowSelect = true;
-        mcpServersList.Columns.Add("Name", 120);
-        mcpServersList.Columns.Add("Transport", 200);
-        mcpServersList.Columns.Add("Allowed tools", 200);
-        DarkTheme.ApplyListView(mcpServersList);
-
-        var addButton = new Button { Text = "Register..." };
-        var deleteButton = new Button { Text = "Remove" };
-        DarkTheme.ApplyButton(addButton);
-        DarkTheme.ApplyButton(deleteButton);
-        addButton.Click += async (_, _) => await RegisterMcpServerAsync();
-        deleteButton.Click += async (_, _) => await DeleteSelectedMcpServerAsync();
-
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(addButton);
-        buttonRow.Controls.Add(deleteButton);
-
-        var page = new TabPage("MCP Clients");
-        page.Controls.Add(mcpServersList);
-        page.Controls.Add(buttonRow);
-        return page;
-    }
 
     private async Task RegisterMcpServerAsync()
     {
@@ -4860,7 +4759,7 @@ internal sealed class SettingsPanel : UserControl
         {
             MessageBox.Show(
                 this,
-                status == "pending" ? "Registration submitted -- approve it from the Approvals tab." : $"Registration status: {status}",
+                status == "pending" ? "Registered. It waits for your OK under Permissions first." : $"Registration status: {status}",
                 "Register MCP Server",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -4868,13 +4767,9 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private async Task DeleteSelectedMcpServerAsync()
+    private async Task DeleteMcpServerAsync(ManaMcpServer server)
     {
-        if (mcpServersList.SelectedItems.Count == 0)
-        {
-            return;
-        }
-        var id = (string)mcpServersList.SelectedItems[0].Tag!;
+        var id = server.Id;
         try
         {
             await backendClient.DeleteMcpServerAsync(id);
@@ -4911,14 +4806,7 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        mcpServersList.Items.Clear();
-        foreach (var server in servers)
-        {
-            var item = new ListViewItem(server.Name) { Tag = server.Id };
-            item.SubItems.Add(server.TransportSummary);
-            item.SubItems.Add(server.AllowedTools);
-            mcpServersList.Items.Add(item);
-        }
+        mcpServersList.ShowEntries(servers.Select(m => new RowList.Entry(m, m.Name, m.TransportSummary, m.AllowedTools)), null, "No MCP servers yet");
     }
 
     // #566: PATCH /hooks/:id only settles `enabled` (pause/resume) --
