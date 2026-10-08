@@ -16,13 +16,13 @@ internal sealed class HeartbeatPanel : System.ComponentModel.Component
     private List<ManaHeartbeatItem> items = [];
     private readonly Label status = SettingsRows.Status();
 
-    internal ListBox Checks { get; } = SettingsRows.List("Heartbeat checks", 120);
+    internal RowList Checks { get; } = new() { MaxVisibleRows = 6, NameWidth = 110, AccessibleName = "Heartbeat checks" };
     internal TextBox EditText { get; } = SettingsRows.Box("Check", 340, "warn me if D: drops below 50 GB");
     internal TextBox EditSchedule { get; } = SettingsRows.Box("How often (every 30m, every 2h, daily 09:00)", 90, "every 30m");
-    internal CheckBox Write { get; } = NewCheckBox("Write");
-    internal CheckBox Network { get; } = NewCheckBox("Network");
-    internal CheckBox Urgent { get; } = NewCheckBox("Urgent");
-    internal CheckBox On { get; } = NewCheckBox("On");
+    internal CheckBox Write { get; } = new SettingsTogglePill { Text = "Write" };
+    internal CheckBox Network { get; } = new SettingsTogglePill { Text = "Network" };
+    internal CheckBox Urgent { get; } = new SettingsTogglePill { Text = "Urgent" };
+    internal CheckBox On { get; } = new SettingsTogglePill { Text = "On" };
     internal string StatusText => status.Text;
 
     // #1426: its row on the Check-ins page, and a line on what the boxes mean.
@@ -38,9 +38,10 @@ internal sealed class HeartbeatPanel : System.ComponentModel.Component
         Checks.SelectedIndexChanged += (_, _) => ShowSelected();
         Rows = new Control[]
         {
-            new SettingsRow("Background checks", "Things she keeps an eye on quietly, speaking up only when one needs you. A new or changed check does a dry run and waits for your OK first", "heartbeat background checks monitor watch",
+            new SettingsRow("Checks", "Things she keeps an eye on quietly, speaking up only when one needs you. Pick one to change it. A new or changed check does a dry run and waits for your OK first", "heartbeat background checks monitor watch",
+                below: true,
+                SettingsRows.RoundPanel(Checks),
                 SettingsRows.Stack(
-                    Checks,
                     SettingsRows.Line(EditText),
                     SettingsRows.Line(EditSchedule, Write, Network, Urgent, On),
                     SettingsRows.Line(NewButton("Add", AddAsync), NewButton("Save", SaveSelectedAsync), NewButton("Remove", RemoveSelectedAsync), status))),
@@ -52,15 +53,11 @@ internal sealed class HeartbeatPanel : System.ComponentModel.Component
         }
     }
 
-    private static CheckBox NewCheckBox(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, BackColor = System.Drawing.Color.Transparent, Margin = new Padding(6, 4, 3, 3) };
+    private int SelectedIndex => Checks.SelectedItems.Count > 0 && Checks.EntryOf(Checks.SelectedItems[0])?.Value is ManaHeartbeatItem item ? items.IndexOf(item) : -1;
 
-    private int SelectedIndex => Checks.SelectedIndex >= 0 && Checks.SelectedIndex < items.Count ? Checks.SelectedIndex : -1;
-
-    internal static string Display(ManaHeartbeatItem item)
-    {
-        var tags = item.Permissions.Concat(item.Urgent ? new[] { "urgent" } : Array.Empty<string>()).ToList();
-        return $"{(item.Enabled ? "" : "(off) ")}{item.Schedule}{(tags.Count > 0 ? $" [{string.Join(", ", tags)}]" : "")}: {item.Text}";
-    }
+    // Its schedule, what it checks, and what it may do.
+    private static RowList.Entry EntryFor(ManaHeartbeatItem item) => new(item, item.Schedule, item.Text,
+        string.Join(" · ", item.Permissions.Select(p => char.ToUpperInvariant(p[0]) + p[1..]).Concat(item.Urgent ? ["Urgent"] : []).Append(item.Enabled ? "On" : "Off")));
 
     internal async Task ReloadAsync()
     {
@@ -77,8 +74,7 @@ internal sealed class HeartbeatPanel : System.ComponentModel.Component
     private void ShowItems(IReadOnlyList<ManaHeartbeatItem> list)
     {
         items = list.ToList();
-        Checks.Items.Clear();
-        Checks.Items.AddRange(items.Select(i => (object)Display(i)).ToArray());
+        Checks.ShowEntries(items.Select(EntryFor), null, "No checks yet");
         ShowSelected();
     }
 

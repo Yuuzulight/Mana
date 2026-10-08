@@ -38,23 +38,23 @@ internal sealed class SettingsPanel : UserControl
     private readonly RowList skillsList = new() { NameWidth = 160 };
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
-    private readonly ComboBox importedSkillUseBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
+    private readonly ComboBox importedSkillUseBox = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly RowList approvalsList = new() { MaxVisibleRows = 6, NameWidth = 130, AccessibleName = "Waiting for your OK" };
     // #1154: remembered always/never answers, with Forget.
     private readonly RowList rememberedList = new() { MaxVisibleRows = 6, NameWidth = 70, AccessibleName = "Remembered answers" };
     // #669: index-aligned with ToolApprovalModes below.
-    private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
+    private readonly ComboBox toolApprovalModeCombo = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private static readonly string[] ToolApprovalModes = { "smart", "ask", "off" };
     // #1191: "Git and GitHub" approval, one choice per tier; each combo is
     // index-aligned with GitApprovalModes.
     private static readonly string[] GitApprovalTiers = { "local", "github", "danger" };
     private static readonly string[] GitApprovalModes = { "ask", "once", "off" };
-    private readonly ComboBox[] gitApprovalCombos = Array.ConvertAll(GitApprovalTiers, tier => new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, AccessibleName = $"Git approval: {tier}" });
+    private readonly ComboBox[] gitApprovalCombos = Array.ConvertAll(GitApprovalTiers, tier => new SettingsCombo { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, AccessibleName = $"Git approval: {tier}" });
     private readonly Label gitDangerWarning = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.OrangeRed, AccessibleName = "Git danger warning" };
     // #1265: Mana's daily Folio update PRs, through "GitHub writes".
     private readonly SettingsSwitch keepFolioCheck = new() { AccessibleName = "Keep Folio up to date" };
     private readonly Label folioStatusLabel = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 8, 3, 3), AccessibleName = "Folio check result" };
-    private readonly ComboBox voiceProviderCombo = new();
+    private readonly ComboBox voiceProviderCombo = new SettingsCombo();
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
@@ -63,23 +63,21 @@ internal sealed class SettingsPanel : UserControl
     private readonly RowList perfOperationsList = new() { MaxVisibleRows = 8, NameWidth = 170, AccessibleName = "Operation timings" };
     private readonly RowList presetsList = new() { NameWidth = 160 };
     // #681: which preset replies actually use ("None" = index 0).
-    private readonly ComboBox activePresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private readonly ComboBox activePresetCombo = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private bool populatingPresets;
     private readonly RowList mobileDevicesList = new() { MaxVisibleRows = 5, NameWidth = 170, AccessibleName = "Phones" };
     private readonly RowList accountsList = new() { MaxVisibleRows = 5, NameWidth = 220, AccessibleName = "Accounts" };
     private readonly RowList mcpServersList = new() { MaxVisibleRows = 5, NameWidth = 140, AccessibleName = "MCP servers" };
     private readonly RowList hooksList = new() { MaxVisibleRows = 6, NameWidth = 150, AccessibleName = "Hooks" };
-    private bool populatingPlugins;
-    private bool populatingHooks;
 
     // #572: Model tab controls -- kept as fields (unlike most other tabs'
     // plain local variables in their Build*Tab methods) because Refresh
     // needs to repopulate them from a fresh GetModelStatusAsync call, the
     // same reason pluginsList/factsList/etc. above are fields too.
-    private readonly ComboBox modelProfileCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+    private readonly ComboBox modelProfileCombo = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private readonly Label selectedModelLabel = new() { AutoSize = true };
-    private readonly TextBox visionModelPathBox = new() { Width = 300 };
-    private readonly TextBox visionMmprojPathBox = new() { Width = 300 };
+    private readonly TextBox visionModelPathBox = new SettingsField() { Width = 300 };
+    private readonly TextBox visionMmprojPathBox = new SettingsField() { Width = 300 };
     // #693: llama.cpp build group. Update stays disabled until a check
     // finds a newer build -- nothing downloads without that click.
     private readonly Label llamaBuildLabel = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
@@ -669,7 +667,7 @@ internal sealed class SettingsPanel : UserControl
 
 
     private readonly SettingsSwitch groupModeCheck = new() { AccessibleName = "Group mode" };
-    private readonly ComboBox groupPartnerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Group mode partner" };
+    private readonly ComboBox groupPartnerCombo = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Group mode partner" };
     private readonly Label groupModeStatus = new() { AutoSize = true };
     private bool loadingGroupMode;
 
@@ -1371,7 +1369,7 @@ internal sealed class SettingsPanel : UserControl
         return new Control[]
         {
             new SettingsRow("Active preset", "Extra instructions added to every reply", "preset style persona instructions", activePresetCombo),
-            new SettingsRow("Presets", "Sets of instructions you can switch between", "presets instructions",
+            new SettingsRow("Your presets", "Sets of instructions you can switch between", "presets instructions",
                 below: true, SettingsRows.RoundPanel(presetsList), SettingsRows.Line(
                     SettingsRows.Action("New…", () => _ = CreatePresetAsync()))),
         };
@@ -1677,17 +1675,11 @@ internal sealed class SettingsPanel : UserControl
     {
         int Ticks(double v) => (int)Math.Round((Math.Clamp(v, min, max) - min) / step);
         double ValueAt(int ticks) => Math.Round(min + (ticks * step), 6);
-        var slider = new TrackBar
+        var slider = new SettingsSlider
         {
-            Minimum = 0,
             Maximum = Ticks(max),
             Value = Ticks(value),
-            TickStyle = TickStyle.None,
-            AutoSize = false,
-            Size = new Size(150, 26),
-            SmallChange = 1,
             LargeChange = Math.Max(1, Ticks(max) / 10),
-            BackColor = DarkTheme.Panel2,
             AccessibleName = name,
         };
         Label Words(string text, Color color) => new() { Text = text, AutoSize = true, ForeColor = color, BackColor = Color.Transparent, Anchor = AnchorStyles.Left, UseMnemonic = false };
@@ -1715,8 +1707,6 @@ internal sealed class SettingsPanel : UserControl
         }
         slider.MouseUp += (_, _) => Commit();
         slider.KeyUp += (_, _) => Commit();
-        // The wheel scrolls the page, not the slider under the pointer.
-        slider.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
         var reset = SettingsRows.Action("Default", () =>
         {
             slider.Value = Ticks(fallback);
@@ -1967,7 +1957,7 @@ internal sealed class SettingsPanel : UserControl
                 SettingsRows.Line(SettingsRows.RoundField(pluginsSearch, 220), SettingsRows.Action("How to add one", OpenPluginGuide)),
                 SettingsRows.RoundPanel(pluginsList)),
             SettingsRows.Section("MCP servers"),
-            new SettingsRow("MCP servers", "Other tools she can use. A new one waits for your OK first", "mcp servers tools clients",
+            new SettingsRow("Servers", "Other tools she can use. A new one waits for your OK first", "mcp servers tools clients",
                 below: true, SettingsRows.RoundPanel(mcpServersList), SettingsRows.Line(SettingsRows.Action("Register…", () => _ = RegisterMcpServerAsync()))));
     }
 
@@ -1979,9 +1969,6 @@ internal sealed class SettingsPanel : UserControl
         foreach (var (label, box) in fields)
         {
             box.AccessibleName = label;
-            box.BackColor = DarkTheme.Panel;
-            box.ForeColor = DarkTheme.Text;
-            box.BorderStyle = BorderStyle.FixedSingle;
             grid.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 12, 3) });
             grid.Controls.Add(box);
         }
@@ -2823,7 +2810,7 @@ internal sealed class SettingsPanel : UserControl
 
     private SettingsRow BuildHotkeyRow(HotkeyAction action)
     {
-        var box = new TextBox { ReadOnly = true, Width = 140, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, AccessibleName = $"{action.Label} hotkey", ShortcutsEnabled = false };
+        var box = new SettingsField { ReadOnly = true, Width = 140, AccessibleName = $"{action.Label} hotkey", ShortcutsEnabled = false };
         var status = SettingsRows.Status();
         var current = HotkeyBindings.Resolve(ManaSettingsStore.Load().Hotkeys, action);
         box.Text = HotkeyBindings.Format(current);
@@ -3022,17 +3009,14 @@ internal sealed class SettingsPanel : UserControl
     private Control[] BuildSpeechWordsRows()
     {
         TextBox Box(string placeholder, int width) => SettingsRows.Box(placeholder, width, placeholder);
-        var words = SettingsRows.List("Speech words");
+        var words = new RowList { MaxVisibleRows = 5, NameWidth = 220, AccessibleName = "Speech words" };
         var word = Box("Word or name", 160);
         var addWord = SettingsRows.Action("Add", () => { });
-        var removeWord = SettingsRows.Action("Remove", () => { });
-        var fixes = SettingsRows.List("Mishearing fixes");
-        var fixKeys = new List<string>();
+        var fixes = new RowList { MaxVisibleRows = 5, NameWidth = 140, AccessibleName = "Mishearing fixes" };
         var heard = Box("She heard", 100);
         var meant = Box("You said", 100);
         var addFix = SettingsRows.Action("Add", () => { });
-        var removeFix = SettingsRows.Action("Remove", () => { });
-        var language = new ComboBox();
+        var language = new SettingsCombo();
         var status = SettingsRows.Status();
 
         void Render(ManaSpeechVocabulary speech)
@@ -3041,15 +3025,12 @@ internal sealed class SettingsPanel : UserControl
             {
                 return;
             }
-            words.Items.Clear();
-            words.Items.AddRange(speech.Words.ToArray<object>());
-            fixes.Items.Clear();
-            fixKeys.Clear();
-            foreach (var (from, to) in speech.Corrections)
+            words.ShowEntries(speech.Words.Select(w => new RowList.Entry(w, w, "")), null, "None yet");
+            fixes.ShowEntries(speech.Corrections.Select(pair =>
             {
-                fixes.Items.Add($"{from} → {to}");
-                fixKeys.Add(from);
-            }
+                var (from, to) = pair;
+                return new RowList.Entry(from, from, $"→ {to}");
+            }), null, "None yet");
             loadingRows = true;
             language.SelectedIndex = speech.Language == "auto" ? 1 : 0;
             loadingRows = false;
@@ -3089,13 +3070,7 @@ internal sealed class SettingsPanel : UserControl
                 word.Clear();
             }
         };
-        removeWord.Click += async (_, _) =>
-        {
-            if (words.SelectedItem is string selected)
-            {
-                await Save(new { removeWord = selected });
-            }
-        };
+        words.ActionsFor = value => value is string w ? [new("\uE74D", "Remove", () => Save(new { removeWord = w }))] : [];
         addFix.Click += async (_, _) =>
         {
             if (await Save(new { heard = heard.Text, term = meant.Text }, new { heard = heard.Text, term = meant.Text, confirm = true }))
@@ -3104,13 +3079,7 @@ internal sealed class SettingsPanel : UserControl
                 meant.Clear();
             }
         };
-        removeFix.Click += async (_, _) =>
-        {
-            if (fixes.SelectedIndex >= 0)
-            {
-                await Save(new { removeCorrection = fixKeys[fixes.SelectedIndex] });
-            }
-        };
+        fixes.ActionsFor = value => value is string from ? [new("\uE74D", "Remove", () => Save(new { removeCorrection = from }))] : [];
         refreshSpeechWords = async () =>
         {
             try
@@ -3127,10 +3096,10 @@ internal sealed class SettingsPanel : UserControl
         {
             ChoiceRow("Speech language", "The language she listens for", "whisper language english auto detect",
                 new[] { "English only", "Detect it" }, 0, i => _ = Save(new { language = i == 1 ? "auto" : "en" }), language, status),
-            new SettingsRow("Words she should know", "Names and terms she mishears", "vocabulary names words",
-                SettingsRows.Editor(words, word, addWord, removeWord)),
-            new SettingsRow("Mishearing fixes", "What she keeps hearing, and what you said", "corrections mishear",
-                SettingsRows.Editor(fixes, heard, meant, addFix, removeFix)),
+            new SettingsRow("Words she should know", "Names and terms she mishears. Pick one to remove it", "vocabulary names words",
+                below: true, SettingsRows.RoundPanel(words), SettingsRows.Line(word, addWord)),
+            new SettingsRow("Mishearing fixes", "What she keeps hearing, and what you said. Pick one to remove it", "corrections mishear",
+                below: true, SettingsRows.RoundPanel(fixes), SettingsRows.Line(heard, SettingsRows.Words("→"), meant, addFix)),
         };
     }
 
@@ -3657,15 +3626,15 @@ internal sealed class SettingsPanel : UserControl
     // self-work escalation), this PC's own model, what it has cost, and the
     // engine underneath.
     private ProvidersPanel? providersPanel;
-    private readonly ComboBox mainSource = new() { AccessibleName = "Main model" };
+    private readonly ComboBox mainSource = new SettingsCombo() { AccessibleName = "Main model" };
     private readonly TextBox mainModelBox = SettingsRows.Box("Main model's name", 180, "Its model name");
     private readonly Button mainSwitch = SettingsRows.Action("Switch", () => { });
     private readonly Label mainStatus = SettingsRows.Status();
-    private readonly ComboBox fallbackSource = new() { AccessibleName = "Cloud fallback" };
+    private readonly ComboBox fallbackSource = new SettingsCombo() { AccessibleName = "Cloud fallback" };
     private readonly TextBox fallbackModelBox = SettingsRows.Box("Cloud fallback's model", 180, "Its model name");
-    private readonly ComboBox fallbackWait = new() { AccessibleName = "Fall back" };
+    private readonly ComboBox fallbackWait = new SettingsCombo() { AccessibleName = "Fall back" };
     private readonly Label fallbackStatus = SettingsRows.Status();
-    private readonly ComboBox escalationSource = new() { AccessibleName = "Self-work escalation" };
+    private readonly ComboBox escalationSource = new SettingsCombo() { AccessibleName = "Self-work escalation" };
     private readonly Label escalationStatus = SettingsRows.Status();
     private readonly RowList scanResults = new() { Height = 190, NameWidth = 260, AccessibleName = "Models found on this PC" };
     private Control? scanRow;
@@ -4521,15 +4490,15 @@ internal sealed class SettingsPanel : UserControl
     // saves them DPAPI-encrypted and never sends them back, so a blank
     // password or calendar address keeps the saved one.
     // docs/mail_calendar_setup.md has the steps per provider.
-    private readonly TextBox mailHostBox = new() { Width = 260, PlaceholderText = "imap.gmail.com" };
-    private readonly TextBox mailPortBox = new() { Width = 60 };
-    private readonly TextBox mailUserBox = new() { Width = 260 };
-    private readonly TextBox mailPasswordBox = new() { Width = 260, UseSystemPasswordChar = true };
-    private readonly TextBox mailMailboxBox = new() { Width = 260 };
+    private readonly TextBox mailHostBox = new SettingsField() { Width = 260, PlaceholderText = "imap.gmail.com" };
+    private readonly TextBox mailPortBox = new SettingsField() { Width = 60 };
+    private readonly TextBox mailUserBox = new SettingsField() { Width = 260 };
+    private readonly TextBox mailPasswordBox = new SettingsField() { Width = 260, UseSystemPasswordChar = true };
+    private readonly TextBox mailMailboxBox = new SettingsField() { Width = 260 };
     private readonly Label mailStatusLabel = new() { AutoSize = true, MaximumSize = new Size(520, 0) };
-    private readonly TextBox calendarUrlBox = new() { Width = 420 };
-    private readonly TextBox calendarUserBox = new() { Width = 260, PlaceholderText = "blank for an iCal feed" };
-    private readonly TextBox calendarPasswordBox = new() { Width = 260, UseSystemPasswordChar = true };
+    private readonly TextBox calendarUrlBox = new SettingsField() { Width = 420 };
+    private readonly TextBox calendarUserBox = new SettingsField() { Width = 260, PlaceholderText = "blank for an iCal feed" };
+    private readonly TextBox calendarPasswordBox = new SettingsField() { Width = 260, UseSystemPasswordChar = true };
     private readonly Label calendarStatusLabel = new() { AutoSize = true, MaximumSize = new Size(520, 0) };
 
 
@@ -4764,7 +4733,7 @@ internal sealed class SettingsPanel : UserControl
             new SettingsRow("Admin token", "Only needed when her backend runs on another PC: the ADMIN_TOKEN in node-bot/.env", "admin token secret key",
                 backendStatus, SettingsRows.RoundField(tokenBox, 180), save),
             SettingsRows.Section("Hooks"),
-            new SettingsRow("Hooks", "Rules that run before or after one of her tools. Pick one to switch it or delete it", "hooks rules tool before after",
+            new SettingsRow("Rules", "Run before or after one of her tools. Pick one to switch it or delete it", "hooks rules tool before after",
                 below: true, SettingsRows.RoundPanel(hooksList), SettingsRows.Line(SettingsRows.Action("Add…", () => _ = AddHookAsync()))),
             SettingsRows.Section("Logs"),
             new SettingsRow("Backend log", "Her backend's own output, newest at the bottom", "logs output console debug",

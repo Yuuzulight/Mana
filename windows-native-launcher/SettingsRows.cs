@@ -36,10 +36,7 @@ internal static class SettingsRows
     // As wide as its longest option. into: a combo the page keeps as a field.
     internal static ComboBox Choice(string name, string[] options, int index, ComboBox? into = null)
     {
-        var combo = into ?? new ComboBox();
-        combo.DropDownStyle = ComboBoxStyle.DropDownList;
-        combo.BackColor = DarkTheme.Panel;
-        combo.ForeColor = DarkTheme.Text;
+        var combo = into ?? new SettingsCombo();
         combo.AccessibleName = name;
         combo.Items.AddRange(options);
         combo.Width = Math.Max(150, options.Max(o => TextRenderer.MeasureText(o, combo.Font).Width) + 30);
@@ -49,8 +46,7 @@ internal static class SettingsRows
 
     internal static Button Action(string text, Action click)
     {
-        var button = new Button { Text = text, AutoSize = true, UseMnemonic = false };
-        DarkTheme.ApplyButton(button);
+        var button = new SettingsButton { Text = text, AutoSize = true };
         button.Click += (_, _) => click();
         return button;
     }
@@ -71,13 +67,8 @@ internal static class SettingsRows
         return stack;
     }
 
-    internal static FlowLayoutPanel Editor(ListBox list, params Control[] line) => Stack(list, Line(line));
-
-    internal static ListBox List(string name, int height = 80) =>
-        new() { Width = 340, Height = height, AccessibleName = name, BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-
     internal static TextBox Box(string name, int width, string? placeholder = null) =>
-        new() { Width = width, AccessibleName = name, PlaceholderText = placeholder ?? "", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+        new SettingsField { Width = width, AccessibleName = name, PlaceholderText = placeholder ?? "" };
 
     internal static Label Words(string text) =>
         new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Anchor = AnchorStyles.Left, UseMnemonic = false };
@@ -141,6 +132,11 @@ internal static class SettingsRows
     // The one filled button in a group: the accent behind its words.
     internal static void MakePrimary(Button button)
     {
+        if (button is SettingsButton drawn)
+        {
+            drawn.Primary = true;
+            return;
+        }
         button.BackColor = DarkTheme.Accent;
         button.ForeColor = DarkTheme.OnAccent;
         button.FlatAppearance.BorderColor = DarkTheme.Accent;
@@ -359,32 +355,8 @@ internal sealed class SettingsPill : RadioButton
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        var g = e.Graphics;
-        if (Parent is not null)
-        {
-            var state = g.Save();
-            g.TranslateTransform(-Left, -Top);
-            InvokePaintBackground(Parent, new PaintEventArgs(g, new Rectangle(Location, Size)));
-            g.Restore(state);
-        }
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var pill = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
-        using var shape = SettingsRows.Rounded(pill, pill.Height / 2);
-        if (Checked)
-        {
-            using var fill = new SolidBrush(Color.FromArgb(56, DarkTheme.Accent));
-            g.FillPath(fill, shape);
-        }
-        using (var edge = new Pen(Checked ? DarkTheme.Accent : DarkTheme.Border))
-        {
-            g.DrawPath(edge, shape);
-        }
-        TextRenderer.DrawText(g, Text, Font, Rectangle.Round(pill), Checked ? DarkTheme.Accent : DarkTheme.Text,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-        if (Focused && ShowFocusCues)
-        {
-            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
-        }
+        SettingsPaint.Behind(this, e.Graphics);
+        SettingsPaint.Pill(e.Graphics, this, Checked);
     }
 
     protected override void OnCheckedChanged(EventArgs e)
