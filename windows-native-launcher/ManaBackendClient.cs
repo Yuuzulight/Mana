@@ -1430,6 +1430,43 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1426: "Tell Mana what to remember or change" -- her suggested change,
+    // nothing written. A refusal (no model loaded, nothing understood) comes
+    // back in words in the exception.
+    public async Task<ManaMemoryAnswer> AskMemoryAsync(string text)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { text }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/memory/ask", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        static string Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+        var lines = new List<ManaMemoryChange>();
+        var changes = root.TryGetProperty("changes", out var list) && list.ValueKind == JsonValueKind.Array ? list : default;
+        if (changes.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var change in changes.EnumerateArray())
+            {
+                lines.Add(new ManaMemoryChange(Str(change, "action"), Str(change, "key"), Str(change, "text"), Str(change, "was")));
+            }
+        }
+        return new ManaMemoryAnswer
+        {
+            Reply = Str(root, "reply"),
+            ChangesJson = changes.ValueKind == JsonValueKind.Array ? changes.GetRawText() : "[]",
+            Changes = lines,
+        };
+    }
+
+    // #1426: Save it -- the changes AskMemoryAsync suggested, as my own words.
+    public async Task ApplyMemoryAnswerAsync(ManaMemoryAnswer answer)
+    {
+        using var content = new StringContent($"{{\"changes\":{answer.ChangesJson}}}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/memory/ask/apply", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #698: a paused standing intent never fires.
     public async Task SetMemoryFactPausedAsync(string key, bool paused)
     {
@@ -3757,6 +3794,18 @@ internal sealed class ManaPendingWrite
 }
 
 // #573: GET /presets.
+// #1426: POST /admin/memory/ask: what she'd change, in her words and as lines.
+internal sealed class ManaMemoryAnswer
+{
+    public string Reply { get; init; } = "";
+    public IReadOnlyList<ManaMemoryChange> Changes { get; init; } = [];
+    // Sent back as is by Save it; node-bot checks it again.
+    public string ChangesJson { get; init; } = "[]";
+}
+
+// One suggested change: add, change, archive or forget; Was is the text it replaces.
+internal sealed record ManaMemoryChange(string Action, string Key, string Text, string Was);
+
 // #1426: GET /admin/characters, one character as Settings edits her.
 internal sealed class ManaCharacterProfile
 {
