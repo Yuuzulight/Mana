@@ -25,8 +25,8 @@ internal sealed class ProactivePanel : Component
     internal TextBox QuietEndBox { get; } = SettingsRows.Box("Quiet hours end", 60, "09:00");
     internal Label QuietStatusLabel { get; } = SettingsRows.Status();
     internal Label SnoozeStatusLabel => snoozeRow.Explanation!;
-    internal ListBox LearnedList { get; } = SettingsRows.List("What Mana has learned", 100);
-    internal ListBox MutedList { get; } = SettingsRows.List("Muted remark kinds", 60);
+    internal RowList LearnedList { get; } = new() { MaxVisibleRows = 5, NameWidth = 160, AccessibleName = "What Mana has learned" };
+    internal RowList MutedList { get; } = new() { MaxVisibleRows = 4, NameWidth = 160, AccessibleName = "Muted remark kinds" };
 
     internal string StatusText => status.Text;
 
@@ -74,6 +74,11 @@ internal sealed class ProactivePanel : Component
             NewButton("4 hours", () => SnoozeAsync(240)),
             NewButton("Resume", () => SnoozeAsync(0)));
 
+        LearnedList.ActionsFor = value => value is string reason
+            ? [new("\uE72C", "Reset", () => UpdateAsync(new { resetReason = reason }, $"Reset what she learned about {reason}"))]
+            : [];
+        MutedList.ActionsFor = value => value is string kind ? [new("\uE767", "Unmute", () => UpdateAsync(new { unmute = kind }, $"Unmuted {kind}"))] : [];
+
         Rows = new Control[]
         {
             new SettingsRow("Hold speech during calls", "While another app uses the mic or plays audio, remarks come as quiet toasts and she speaks once it's free", "call media audio meeting",
@@ -81,10 +86,10 @@ internal sealed class ProactivePanel : Component
             new SettingsRow("Quiet hours", "She keeps remarks to herself between these times", "quiet hours night sleep do not disturb",
                 QuietStatusLabel, SettingsRows.Words("From"), QuietStartBox, SettingsRows.Words("to"), QuietEndBox, QuietHoursCheck),
             snoozeRow,
-            new SettingsRow("What she's learned", "How each kind of remark went down. Disliked ones wait for a better moment", "learned reactions scores",
-                SettingsRows.Editor(LearnedList, NewButton("Reset", ResetSelectedLearnedAsync), NewButton("Reset all", ResetAllLearnedAsync))),
-            new SettingsRow("Muted remarks", "Kinds you told her not to bring up again", "muted never",
-                SettingsRows.Editor(MutedList, NewButton("Unmute", UnmuteSelectedAsync))),
+            new SettingsRow("What she's learned", "How each kind of remark went down. Disliked ones wait for a better moment. Pick one to reset it", "learned reactions scores",
+                below: true, SettingsRows.RoundPanel(LearnedList), SettingsRows.Line(NewButton("Reset all", ResetAllLearnedAsync))),
+            new SettingsRow("Muted remarks", "Kinds you told her not to bring up again. Pick one to unmute it", "muted never",
+                below: true, SettingsRows.RoundPanel(MutedList)),
             status,
         };
 
@@ -128,26 +133,10 @@ internal sealed class ProactivePanel : Component
             ? $"Snoozed until {DateTimeOffset.FromUnixTimeMilliseconds(until).ToLocalTime():HH:mm, d MMM}"
             : "Pause her remarks for a while";
 
-        LearnedList.Items.Clear();
-        if (settings.Learned.Count == 0)
-        {
-            LearnedList.Items.Add("(Nothing learned yet)");
-        }
-        foreach (var (reason, info) in settings.Learned.OrderBy(kv => kv.Key))
-        {
-            var sentiment = info.Score > 0.1 ? "welcomed" : info.Score < -0.1 ? "disliked" : "neutral";
-            LearnedList.Items.Add($"{reason}: {sentiment} ({info.Score:+0.00;-0.00;0.00})");
-        }
-
-        MutedList.Items.Clear();
-        if (settings.Muted.Count == 0)
-        {
-            MutedList.Items.Add("(None muted)");
-        }
-        foreach (var muted in settings.Muted.OrderBy(m => m))
-        {
-            MutedList.Items.Add(muted);
-        }
+        LearnedList.ShowEntries(settings.Learned.OrderBy(kv => kv.Key).Select(kv => new RowList.Entry(kv.Key, kv.Key,
+                kv.Value.Score > 0.1 ? "Welcomed" : kv.Value.Score < -0.1 ? "Disliked" : "Neutral", $"{kv.Value.Score:+0.00;-0.00;0.00}")),
+            null, "Nothing learned yet");
+        MutedList.ShowEntries(settings.Muted.OrderBy(m => m).Select(m => new RowList.Entry(m, m, "")), null, "None muted");
     }
 
     // One change to the backend, then what it says now.
@@ -176,29 +165,5 @@ internal sealed class ProactivePanel : Component
 
     private Task SnoozeAsync(int minutes) => UpdateAsync(new { snoozeMinutes = minutes }, minutes > 0 ? $"Snoozed for {minutes / 60} hour{(minutes == 60 ? "" : "s")}" : "Remarks back on");
 
-    // A list's real entry, not its "(none)" line.
-    private static string? Picked(ListBox list) => list.SelectedItem is string item && !item.StartsWith('(') ? item : null;
-
-    private Task ResetSelectedLearnedAsync()
-    {
-        if (Picked(LearnedList) is not { } item)
-        {
-            status.Text = "Pick a kind to reset";
-            return Task.CompletedTask;
-        }
-        var reason = item.Split(':')[0].Trim();
-        return UpdateAsync(new { resetReason = reason }, $"Reset what she learned about {reason}");
-    }
-
     private Task ResetAllLearnedAsync() => UpdateAsync(new { resetAllLearned = true }, "Reset everything she learned");
-
-    private Task UnmuteSelectedAsync()
-    {
-        if (Picked(MutedList) is not { } item)
-        {
-            status.Text = "Pick a kind to unmute";
-            return Task.CompletedTask;
-        }
-        return UpdateAsync(new { unmute = item }, $"Unmuted {item}");
-    }
 }

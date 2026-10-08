@@ -20,10 +20,10 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
     private bool clearingKey;
 
     internal CheckBox UseDeepSeek { get; } = new() { Text = "Use DeepSeek when my own attempts at an issue fail", AutoSize = true, ForeColor = DarkTheme.Text };
-    internal TextBox Key { get; } = new() { Width = 320, UseSystemPasswordChar = true, AccessibleName = "DeepSeek API key", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+    internal TextBox Key { get; } = new SettingsField { Width = 320, UseSystemPasswordChar = true, AccessibleName = "DeepSeek API key" };
     internal Label KeyStatus { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, MaximumSize = new Size(560, 0) };
     internal ListView Totals { get; } = new() { Width = 760, Height = 96, AccessibleName = "Spending totals" };
-    internal ComboBox SplitPeriod { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140, AccessibleName = "Split period", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+    internal ComboBox SplitPeriod { get; } = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140, AccessibleName = "Split period", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
     internal ListView Split { get; } = new() { Width = 760, Height = 200, AccessibleName = "Spending split" };
     internal Label SpendingStatus { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, MaximumSize = new Size(760, 0) };
     internal Label[] Figures { get; } = [NewFigure(), NewFigure(), NewFigure()];
@@ -32,8 +32,8 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
     internal KindSpendBar Kinds { get; } = new() { Width = 760, Height = 140, Margin = new Padding(3, 0, 3, 8) };
     internal Label Balance { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Text, MaximumSize = new Size(760, 0), Margin = new Padding(3, 2, 3, 4) };
     internal Label Insights { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, MaximumSize = new Size(760, 0), Margin = new Padding(3, 0, 3, 6) };
-    internal ComboBox Range { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110, AccessibleName = "Chart range", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-    internal ComboBox ShowBy { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110, AccessibleName = "Show by", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+    internal ComboBox Range { get; } = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110, AccessibleName = "Chart range", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
+    internal ComboBox ShowBy { get; } = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110, AccessibleName = "Show by", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
     internal Label DayTitle { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Text = "Click a day in the chart to see the issues it paid for.", Margin = new Padding(3, 0, 3, 4) };
     internal ListView DayIssues { get; } = new() { Width = 760, Height = 110, AccessibleName = "Issues the chosen day paid for" };
     internal Label ResultsSummary { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Text, MaximumSize = new Size(760, 0), Margin = new Padding(3, 0, 3, 6) };
@@ -57,26 +57,49 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
         FlowDirection = FlowDirection.TopDown;
         WrapContents = false;
         AutoScroll = true;
-        BackColor = DarkTheme.Background;
+        // #1426: on a Settings row (no escalation part), the row's own card
+        // shows through, and its lists sit on the shade the other lists do.
+        BackColor = showEscalation ? DarkTheme.Background : DarkTheme.Panel2;
 
         Button NewButton(string text, Func<Task> click)
         {
-            var button = new Button { Text = text, AutoSize = true };
-            DarkTheme.ApplyButton(button);
+            var button = new SettingsButton { Text = text, AutoSize = true };
             button.Click += async (_, _) => await click();
             return button;
         }
         FlowLayoutPanel Row(params Control[] controls)
         {
-            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
+            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = Color.Transparent };
             row.Controls.AddRange(controls);
             return row;
         }
         Label Heading(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Text, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 12, 3, 3) };
 
-        foreach (var list in new[] { Totals, Split })
+        foreach (var list in new[] { Totals, Split, DayIssues, TopIssues })
         {
             DarkTheme.ApplyListView(list);
+            list.BorderStyle = showEscalation ? BorderStyle.FixedSingle : BorderStyle.None;
+            // The headers in the theme's colours, not Windows' white.
+            list.OwnerDraw = true;
+            list.DrawColumnHeader += (_, e) =>
+            {
+                using (var back = new SolidBrush(DarkTheme.Panel2))
+                {
+                    e.Graphics.FillRectangle(back, e.Bounds);
+                }
+                using (var line = new Pen(DarkTheme.Border))
+                {
+                    e.Graphics.DrawLine(line, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+                }
+                var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
+                    | (e.Header?.TextAlign == HorizontalAlignment.Right ? TextFormatFlags.Right : TextFormatFlags.Left);
+                TextRenderer.DrawText(e.Graphics, e.Header?.Text, list.Font, Rectangle.Inflate(e.Bounds, -6, 0), DarkTheme.Muted, flags);
+            };
+            list.DrawItem += (_, e) => e.DrawDefault = true;
+            list.DrawSubItem += (_, e) => e.DrawDefault = true;
+        }
+        foreach (var list in new[] { Totals, Split })
+        {
             list.View = View.Details;
             list.FullRowSelect = true;
             list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
@@ -85,7 +108,6 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
         Split.Columns[0].Text = "Model or use";
         foreach (var list in new[] { DayIssues, TopIssues })
         {
-            DarkTheme.ApplyListView(list);
             list.View = View.Details;
             list.FullRowSelect = true;
             list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
@@ -116,15 +138,16 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
                 NewButton("Clear key", () => { clearingKey = true; Key.Clear(); Key.PlaceholderText = "Key will be cleared on Save"; return Task.CompletedTask; })));
             Controls.Add(KeyStatus);
         }
-        Controls.Add(Row(Heading("API spending"), NewButton("Refresh", ReloadAsync)));
+        // On Settings the row already says what this is.
+        Controls.Add(showEscalation ? Row(Heading("API spending"), NewButton("Refresh", ReloadAsync)) : Row(NewButton("Refresh", ReloadAsync)));
         Controls.Add(Balance);
         // Today, this month and all time: the figure, then requests and tokens.
-        var figures = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(3, 4, 3, 6) };
+        var figures = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(3, 4, 3, 6) };
         string[] periods = ["TODAY", "THIS MONTH", "ALL TIME"];
         for (var i = 0; i < 3; i++)
         {
             figures.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
-            var cell = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background, Margin = new Padding(0) };
+            var cell = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0) };
             cell.Controls.Add(new Label { Text = periods[i], AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(0) });
             cell.Controls.Add(Figures[i]);
             cell.Controls.Add(FigureNotes[i]);

@@ -16,7 +16,7 @@ internal sealed class RelationshipPanel : System.ComponentModel.Component
     private IReadOnlyList<ManaCharacterRelationship> relationships = [];
     private readonly Label status = SettingsRows.Status();
 
-    internal ComboBox Characters { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Character", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
+    internal ComboBox Characters { get; } = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Character", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
     internal RowList Items { get; } = new() { MaxVisibleRows = 5, NameWidth = 90, AccessibleName = "Notes and milestones" };
     internal TextBox EditText { get; } = SettingsRows.Box("Text", 340, "Note or milestone");
     internal TextBox EditDate { get; } = SettingsRows.Box("Milestone date", 100, "YYYY-MM-DD");

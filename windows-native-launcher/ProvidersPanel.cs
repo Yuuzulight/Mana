@@ -22,7 +22,7 @@ internal sealed class ProvidersPanel : Component
     private readonly FlowLayoutPanel details = SettingsRows.Stack();
     private readonly LinkLabel toggle = new() { AutoSize = true };
     private readonly Label status = SettingsRows.Status();
-    private readonly ComboBox addPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, AccessibleName = "Provider to add", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
+    private readonly ComboBox addPreset = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, AccessibleName = "Provider to add", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
     private readonly TextBox addAddress = SettingsRows.Box("Address", 220, "http://127.0.0.1:11434/v1");
     private readonly TextBox addKey = SettingsRows.Box("API key", 220, "Paste its API key");
     private readonly Button addButton = SettingsRows.Action("Save and test", () => { });

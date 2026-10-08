@@ -145,7 +145,7 @@ public class SettingsPanelLayoutTests
             using var panel = NewPanel();
             var saved = new System.Collections.Generic.List<double>();
             using var row = panel.SliderRow("Pause", "How long", "", 0, 1, 0.1, 0.5, 0.3, "Quick", "Slow", v => v.ToString("0.0 s", System.Globalization.CultureInfo.InvariantCulture), saved.Add);
-            var slider = GetAllDescendants(row).OfType<TrackBar>().Single();
+            var slider = GetAllDescendants(row).OfType<SettingsSlider>().Single();
             Assert.Equal(5, slider.Value);
             slider.Value = 8;
             Assert.Contains(GetAllDescendants(row).OfType<Label>(), l => l.Text == "0.8 s");

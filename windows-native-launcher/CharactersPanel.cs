@@ -101,12 +101,12 @@ internal sealed class CharactersPanel : Component
             card.SwitchClicked += () => _ = SwitchAsync(profile.Id);
             grid.Controls.Add(card);
         }
-        var add = SettingsRows.Action("+ Add character", () => ShowEditor(null));
+        var add = (SettingsButton)SettingsRows.Action("+ Add character", () => ShowEditor(null));
+        add.Dashed = true;
         add.AutoSize = false;
         add.Height = CharacterCard.CardHeight;
         add.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         add.Margin = new Padding(0, 0, 8, 8);
-        add.ForeColor = DarkTheme.Muted;
         grid.Controls.Add(add);
         Show(grid);
     }
@@ -306,7 +306,7 @@ internal sealed class CharacterEditor : TableLayoutPanel
     private static readonly (string Id, string Label)[] VoiceChoices = [("mana", "Mana's voice"), ("keep", "Her own voice"), ("clip", "A new clip…")];
 
     private readonly TextBox name = SettingsRows.Box("Name", 260);
-    private readonly TextBox prompt = new() { Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, Height = 220, Font = new Font("Consolas", 9.75f), BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle, AccessibleName = "Character prompt" };
+    private readonly TextBox prompt = new SettingsField() { Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, Height = 220, Font = new Font("Consolas", 9.75f), AccessibleName = "Character prompt" };
     private readonly Label count = SettingsRows.Words("");
     private readonly TextBox handoff = SettingsRows.Box("Handoff line", 420, "{previous} is taking a break, so it's me~");
     private readonly ComboBox voice;

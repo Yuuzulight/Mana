@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
+using System.Windows.Forms;
 using Mana.NativeLauncher;
 using Xunit;
 
@@ -38,11 +39,23 @@ public sealed class HeartbeatPanelTests
         {
             using var panel = new HeartbeatPanel(client, loadNow: false);
             panel.ReloadAsync().GetAwaiter().GetResult();
+            _ = panel.Checks.Handle;
+            void Pick(int index)
+            {
+                foreach (ListViewItem item in panel.Checks.Items)
+                {
+                    item.Selected = false;
+                }
+                if (index >= 0)
+                {
+                    panel.Checks.Items[index].Selected = true;
+                }
+            }
             Assert.Equal(
-                new[] { "every 2h [network]: check github.com notifications", "(off) every 30m [urgent]: warn me if D: is low" },
-                panel.Checks.Items.Cast<string>());
+                new[] { ("every 2h", "check github.com notifications", "Network · On"), ("every 30m", "warn me if D: is low", "Urgent · Off") },
+                panel.Checks.Items.Cast<ListViewItem>().Select(i => panel.Checks.EntryOf(i)!).Select(e => (e.Name, e.Text, e.Right)));
 
-            panel.Checks.SelectedIndex = 0;
+            Pick(0);
             Assert.True(panel.Network.Checked);
             Assert.Equal("every 2h", panel.EditSchedule.Text);
             panel.On.Checked = false;
@@ -50,13 +63,13 @@ public sealed class HeartbeatPanelTests
             Assert.Contains("\"text\":\"check github.com notifications\",\"schedule\":\"every 2h\",\"permissions\":[\"network\"],\"urgent\":false,\"enabled\":false}", puts[0]);
             Assert.Equal("Saved.", panel.StatusText);
 
-            panel.Checks.SelectedIndex = -1;
+            Pick(-1);
             panel.EditText.Text = "new check";
             panel.Write.Checked = true;
             panel.AddAsync().GetAwaiter().GetResult();
             Assert.Contains("\"text\":\"new check\",\"schedule\":\"\",\"permissions\":[\"write\"],\"urgent\":false,\"enabled\":true}]}", puts[1]);
 
-            panel.Checks.SelectedIndex = 1;
+            Pick(1);
             panel.RemoveSelectedAsync().GetAwaiter().GetResult();
             Assert.DoesNotContain("warn me if D: is low", puts[2]);
             Assert.Contains("check github.com notifications", puts[2]);
