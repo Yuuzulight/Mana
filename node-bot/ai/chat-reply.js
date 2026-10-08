@@ -1486,7 +1486,7 @@ async function buildAssistantReply(
     fallbackAttempt = (context.createChatAttempt || require('./chat-attempt').createChatAttempt)(fallbackConfig?.timeoutSeconds);
     memoryExtraMessages.signal = fallbackAttempt.signal;
     memoryExtraMessages.onReplyStarted = fallbackAttempt.markStarted;
-    memoryExtraMessages.requireCancellable = [30, 60].includes(fallbackConfig?.timeoutSeconds);
+    memoryExtraMessages.requireCancellable = [10, 30, 60].includes(fallbackConfig?.timeoutSeconds);
     let replyWithBackup;
     try {
     let usedBackup = false;

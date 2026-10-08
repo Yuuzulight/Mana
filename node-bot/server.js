@@ -3251,8 +3251,8 @@ function registerRoutes(app, upload, deps = {}) {
     return { ...summary, balance, runway: runway(balance, summary.avgDaily) };
   }
   const escalationView = () => {
-    const { enabled, baseUrl, apiKey } = modelSettingsStore.getEscalationSettings();
-    return { enabled, baseUrl, hasKey: Boolean(apiKey), localOnly: require("./local-only").isLocalOnly(deps.env || process.env) };
+    const { enabled, baseUrl, apiKey, providerId } = modelSettingsStore.getEscalationSettings();
+    return { enabled, providerId, baseUrl, hasKey: Boolean(apiKey), localOnly: require("./local-only").isLocalOnly(deps.env || process.env) };
   };
   app.get("/self-work/escalation", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
@@ -3260,10 +3260,17 @@ function registerRoutes(app, upload, deps = {}) {
   });
   app.post("/self-work/escalation", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
-    const { enabled, apiKey } = req.body || {};
+    const { enabled, apiKey, providerId } = req.body || {};
     if (enabled !== undefined && typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
     if (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.length > 512)) return res.status(400).json({ error: "apiKey must be a string" });
-    modelSettingsStore.setEscalationSettings({ enabled, apiKey });
+    // #1426: a provider from Settings' list; DeepSeek's tiers and prices
+    // are built in, so only a DeepSeek one for now.
+    if (providerId) {
+      const provider = modelSettingsStore.getProvider(providerId);
+      if (!provider) return res.status(400).json({ error: "That provider isn't added" });
+      if (provider.preset !== "deepseek") return res.status(400).json({ error: "Self-work escalation works with DeepSeek for now" });
+    }
+    modelSettingsStore.setEscalationSettings({ enabled, apiKey, providerId });
     return res.json(escalationView());
   });
   app.get("/self-work/lessons", (req, res) => {

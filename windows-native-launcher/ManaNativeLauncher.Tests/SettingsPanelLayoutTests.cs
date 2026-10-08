@@ -36,15 +36,15 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Voice", Pages("voice"));
             Assert.Equal("Check-ins", Pages("checkins"));
             Assert.Equal("Memory", Pages("memory"));
-            Assert.Equal("Model, API Spending, Coding mode, Model tools", Pages("models"));
+            Assert.Equal("Models", Pages("models"));
             Assert.Equal("Approvals, Desktop folders, Pending edits", Pages("permissions"));
             Assert.Equal("Local-only, Your data", Pages("privacy"));
             Assert.Equal("Calendar & Email, Mobile Devices, Accounts, Plugins, MCP Clients", Pages("connections"));
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five, Voice's two, Check-ins' three and Memory's six, each now one page.
-            Assert.Equal(23, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five, Voice's two, Check-ins' three, Memory's six and Models' four, each now one page.
+            Assert.Equal(20, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -64,7 +64,9 @@ public class SettingsPanelLayoutTests
             Assert.Equal(new[] { "general", "voice" }, left);
             // Pills pick the page, so no group shows a tab strip; a one-page group shows no pills either.
             Assert.All(panel.Groups, g => Assert.Equal(1, g.Tabs.ItemSize.Height));
-            Assert.Equal(new[] { "Model", "API Spending", "Coding mode", "Model tools" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
+            Assert.Empty(panel.PagePills.Controls); // Models is one page now
+            panel.ShowGroup("permissions");
+            Assert.Equal(new[] { "Approvals", "Desktop folders", "Pending edits" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
             panel.ShowGroup("privacy");
             panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Your data").PerformClick();
             Assert.Equal("Your data", panel.Groups.Single(g => g.Id == "privacy").Tabs.SelectedTab!.Text);
@@ -85,7 +87,7 @@ public class SettingsPanelLayoutTests
             panel.SearchBox.Text = "deepseek";
             Assert.True(panel.SearchResults.Visible);
             var hit = panel.SearchResults.Items.Cast<ListViewItem>().First();
-            Assert.Equal("Models › API Spending", hit.SubItems[1].Text);
+            Assert.Equal("Models", hit.SubItems[1].Text); // the Providers row
 
             panel.SearchBox.Text = "admin token";
             var token = panel.SearchResults.Items.Cast<ListViewItem>().First(i => i.Text == "Admin token");
@@ -360,40 +362,37 @@ public class SettingsPanelLayoutTests
         });
     }
 
+    // #1426 stage 2: Models' uses pick from the providers added; only DeepSeek is offered to add for now (#1441).
     [Fact]
-    public void CloudFallback_HasOptInAndAllTimingOptions_OffByDefault()
+    public void Models_UsesPickFromTheProviders_AndOnlyDeepSeekIsOffered()
     {
         ToolPanelHostTests.RunSta(() =>
         {
-            var client = new ManaBackendClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
-            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Size = new System.Drawing.Size(800, 900) };
-            var group = GetAllDescendants(panel).OfType<GroupBox>().Single(g => g.Text == "Chat Cloud Fallback");
-            var toggle = GetAllDescendants(group).OfType<CheckBox>().Single();
-            Assert.False(toggle.Checked);
-            var timing = GetAllDescendants(group).OfType<ComboBox>().Single();
-            Assert.Equal(new[] { "30 seconds", "60 seconds", "No timeout" }, timing.Items.Cast<string>());
-            Assert.Equal("No timeout", timing.SelectedItem);
-            Assert.Contains(GetAllDescendants(group).OfType<TextBox>(), box => box.UseSystemPasswordChar);
-            if (Environment.GetEnvironmentVariable("MANA_CHAT_MODEL_SNAPSHOT_DIR") is { } output)
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
             {
-                using var host = new Panel { Size = new System.Drawing.Size(500, 300), BackColor = DarkTheme.Background };
-                host.Controls.Add(group);
-                group.Location = System.Drawing.Point.Empty;
-                host.CreateControl();
-                group.CreateControl();
-                foreach (var child in GetAllDescendants(group)) { child.CreateControl(); _ = child.Handle; }
-                group.PerformLayout();
-                foreach (var box in GetAllDescendants(group).OfType<TextBox>())
+                var json = request.RequestUri!.AbsolutePath switch
                 {
-                    Assert.True(box.Visible);
-                    Assert.True(box.Width >= 180 && box.Height >= 20);
-                    box.Text = box.UseSystemPasswordChar ? "test-key" : "configured-endpoint-model";
-                }
-                using var bitmap = new System.Drawing.Bitmap(group.Width, group.Height);
-                group.DrawToBitmap(bitmap, group.ClientRectangle);
-                Directory.CreateDirectory(output);
-                bitmap.Save(Path.Combine(output, "cloud-fallback-settings.png"));
-            }
+                    "/models/status" => "{\"activeProfile\":\"default\",\"profiles\":{\"default\":{}},\"brain\":{\"type\":\"local\"},\"fallback\":{\"enabled\":false,\"timeoutSeconds\":0},\"loadIntoVram\":true}",
+                    "/self-work/escalation" => "{\"enabled\":false,\"hasKey\":true,\"localOnly\":false,\"providerId\":\"deepseek\"}",
+                    "/models/providers" => "{\"presets\":[{\"id\":\"deepseek\",\"label\":\"DeepSeek\",\"baseUrl\":\"https://api.deepseek.com\",\"needsKey\":true},{\"id\":\"openai\",\"label\":\"OpenAI\",\"baseUrl\":\"https://api.openai.com/v1\",\"needsKey\":true}]," +
+                        "\"providers\":[{\"id\":\"deepseek\",\"preset\":\"deepseek\",\"label\":\"DeepSeek\",\"baseUrl\":\"https://api.deepseek.com\",\"hasKey\":true,\"keyHint\":\"…9876\",\"lastCheck\":{\"at\":\"2026-10-09T00:00:00Z\",\"ok\":true},\"usedBy\":[]}]}",
+                    _ => null,
+                };
+                return json is null
+                    ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+            }));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Size = new System.Drawing.Size(900, 900) };
+            panel.RefreshModelTabAsync().GetAwaiter().GetResult();
+            string[] Items(ComboBox combo) => combo.Items.Cast<object>().Select(i => i.ToString()!).ToArray();
+            Assert.Equal(new[] { "This PC's model", "DeepSeek" }, Items(panel.MainSource));
+            Assert.Equal("This PC's model", panel.MainSource.Text);
+            Assert.Equal(new[] { "Off", "DeepSeek" }, Items(panel.FallbackSource));
+            Assert.Equal("Off", panel.FallbackSource.Text); // off until I pick one
+            Assert.Equal(new[] { "Off", "DeepSeek" }, Items(panel.EscalationSource));
+            var chip = panel.ProvidersPanel!.Summary.Controls.OfType<ProviderChip>().Single();
+            Assert.Equal("✓", chip.Mark); // the last check reached it
+            Assert.Empty(panel.ProvidersPanel.AddPreset.Items); // DeepSeek is added, and OpenAI isn't offered yet
         });
     }
 

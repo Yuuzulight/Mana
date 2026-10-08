@@ -48,7 +48,9 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
     private ManaApiSpending? spending;
 
     // loadNow: false in tests, which call ReloadAsync themselves.
-    public ApiSpendingPanel(ManaBackendClient backendClient, bool loadNow = true)
+    // showEscalation: false on Settings > Models, where escalation picks a
+    // provider in Uses (#1426) instead of taking a key here.
+    public ApiSpendingPanel(ManaBackendClient backendClient, bool loadNow = true, bool showEscalation = true)
     {
         this.backendClient = backendClient;
         Dock = DockStyle.Fill;
@@ -105,12 +107,15 @@ internal sealed class ApiSpendingPanel : FlowLayoutPanel
         SplitPeriod.SelectedIndex = 1;
         SplitPeriod.SelectedIndexChanged += (_, _) => ShowSplit();
 
-        Controls.Add(Heading("DeepSeek"));
-        Controls.Add(UseDeepSeek);
-        Controls.Add(Row(new Label { Text = "API key", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left }, Key,
-            NewButton("Save", SaveAsync),
-            NewButton("Clear key", () => { clearingKey = true; Key.Clear(); Key.PlaceholderText = "Key will be cleared on Save"; return Task.CompletedTask; })));
-        Controls.Add(KeyStatus);
+        if (showEscalation)
+        {
+            Controls.Add(Heading("DeepSeek"));
+            Controls.Add(UseDeepSeek);
+            Controls.Add(Row(new Label { Text = "API key", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left }, Key,
+                NewButton("Save", SaveAsync),
+                NewButton("Clear key", () => { clearingKey = true; Key.Clear(); Key.PlaceholderText = "Key will be cleared on Save"; return Task.CompletedTask; })));
+            Controls.Add(KeyStatus);
+        }
         Controls.Add(Row(Heading("API spending"), NewButton("Refresh", ReloadAsync)));
         Controls.Add(Balance);
         // Today, this month and all time: the figure, then requests and tokens.
