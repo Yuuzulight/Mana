@@ -38,13 +38,13 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Memory", Pages("memory"));
             Assert.Equal("Models", Pages("models"));
             Assert.Equal("Permissions", Pages("permissions"));
-            Assert.Equal("Local-only, Your data", Pages("privacy"));
+            Assert.Equal("Privacy", Pages("privacy"));
             Assert.Equal("Calendar & Email, Mobile Devices, Accounts, Plugins, MCP Clients", Pages("connections"));
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five, Voice's two, Check-ins' three, Memory's six, Models' four and Permissions' three, each now one page.
-            Assert.Equal(18, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five, Voice's two, Check-ins' three, Memory's six, Models' four, Permissions' three and Privacy's two, each now one page.
+            Assert.Equal(17, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -65,11 +65,10 @@ public class SettingsPanelLayoutTests
             // Pills pick the page, so no group shows a tab strip; a one-page group shows no pills either.
             Assert.All(panel.Groups, g => Assert.Equal(1, g.Tabs.ItemSize.Height));
             Assert.Empty(panel.PagePills.Controls); // Models is one page now
-            panel.ShowGroup("privacy");
-            Assert.Equal(new[] { "Local-only", "Your data" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
-            panel.ShowGroup("privacy");
-            panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Your data").PerformClick();
-            Assert.Equal("Your data", panel.Groups.Single(g => g.Id == "privacy").Tabs.SelectedTab!.Text);
+            panel.ShowGroup("connections");
+            Assert.Equal(new[] { "Calendar & Email", "Mobile Devices", "Accounts", "Plugins", "MCP Clients" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
+            panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Plugins").PerformClick();
+            Assert.Equal("Plugins", panel.Groups.Single(g => g.Id == "connections").Tabs.SelectedTab!.Text);
             panel.ShowGroup("advanced");
             Assert.Equal("Backend", panel.Groups.Single(g => g.Id == "advanced").Tabs.SelectedTab!.Text);
             Assert.Equal(new[] { "advanced" }, panel.Nav.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag!));
@@ -345,7 +344,7 @@ public class SettingsPanelLayoutTests
         {
             var client = new ManaBackendClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
             using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Width = 800 };
-            var privacyTab = panel.Groups.Single(g => g.Id == "privacy").Tabs.TabPages.Cast<TabPage>().FirstOrDefault(p => p.Text == "Your data");
+            var privacyTab = panel.Groups.Single(g => g.Id == "privacy").Tabs.TabPages.Cast<TabPage>().FirstOrDefault(p => p.Text == "Privacy");
             Assert.NotNull(privacyTab);
 
             var buttons = GetAllDescendants(privacyTab)
@@ -354,11 +353,11 @@ public class SettingsPanelLayoutTests
 
             Assert.Contains(buttons, b => b.AccessibleName == "Export everything");
             Assert.Contains(buttons, b => b.AccessibleName == "Delete everything");
-            Assert.Contains(buttons, b => b.AccessibleName == "Delete Voice Data");
-            Assert.Contains(buttons, b => b.AccessibleName == "Delete Chat History");
-            Assert.Contains(buttons, b => b.AccessibleName == "Delete Memory Facts");
-            Assert.Contains(buttons, b => b.AccessibleName == "Delete Vault Sync State");
-            Assert.Contains(buttons, b => b.AccessibleName == "Delete Caches & Logs");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Voice data");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Chat history");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Memory facts");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Vault sync");
+            Assert.Contains(buttons, b => b.AccessibleName == "Delete Caches and logs");
         });
     }
 

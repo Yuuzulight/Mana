@@ -102,18 +102,16 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins, Memory, Models and Permissions so far).
-        var backendPage = BuildConnectionTab(out var localOnlyPage);
+        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins, Memory, Models, Permissions and Privacy so far).
+        var backendPage = BuildConnectionTab();
         var timingsPage = BuildPerfTab();
-        var privacyPage = BuildPrivacyTab();
-        privacyPage.Text = "Your data";
         AddGroup("general", "General", BuildGeneralPage());
         AddGroup("voice", "Voice", BuildVoicePage());
         AddGroup("checkins", "Check-ins", BuildCheckInsPage());
         AddGroup("memory", "Memory", BuildMemoryPage());
         AddGroup("models", "Models", BuildModelsPage());
         AddGroup("permissions", "Permissions", BuildPermissionsPage());
-        AddGroup("privacy", "Privacy", localOnlyPage, privacyPage); // #1336
+        AddGroup("privacy", "Privacy", BuildPrivacyPage()); // #1336
         AddGroup("connections", "Connections", BuildMailCalendarTab(), BuildMobileDevicesTab(), BuildAccountsTab(), BuildPluginsTab(), BuildMcpServersTab());
         AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage, BuildDeveloperTab());
 
@@ -203,8 +201,6 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Local-only"] = "offline cloud privacy",
-        ["Your data"] = "export delete wipe backup",
         ["Plugins"] = "addon add-on extension",
         ["MCP Clients"] = "mcp servers tools",
         ["Backend"] = "url port server admin token",
@@ -639,7 +635,7 @@ internal sealed class SettingsPanel : UserControl
     // the same small file directly here is simpler than plumbing a store
     // reference through two more constructors for a value nothing else
     // needs mid-session.
-    private TabPage BuildConnectionTab(out TabPage localOnlyPage)
+    private TabPage BuildConnectionTab()
     {
         var settings = ManaSettingsStore.Load();
 
@@ -691,7 +687,6 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(tokenBox);
         layout.Controls.Add(saveButton);
         layout.Controls.Add(statusLabel);
-        localOnlyPage = OneRowPage("Local-only", BuildLocalOnlyRow(settings.LocalOnly));
         return new TabPage("Backend") { Controls = { layout } };
     }
 
@@ -1587,8 +1582,7 @@ internal sealed class SettingsPanel : UserControl
 
     // #1426 stage 2: Voice as one page of rows. The microphone's settings
     // are read each time listening starts; the vocabulary applies to the
-    // next thing you say. Voice clips sit here until the Privacy group is
-    // redrawn.
+    // next thing you say.
     private TabPage BuildVoicePage()
     {
         var saved = ManaSettingsStore.Load();
@@ -1638,8 +1632,6 @@ internal sealed class SettingsPanel : UserControl
             SettingsRows.Section("Vocabulary"),
         };
         parts.AddRange(BuildSpeechWordsRows());
-        parts.Add(SettingsRows.Section("Voice clips"));
-        parts.AddRange(BuildVoiceClipsRows());
         parts.Add(SettingsRows.Section("Troubleshooting"));
         parts.Add(BuildSpeechLogRow());
         return SettingsRows.Page("Voice", parts.ToArray());
@@ -1928,31 +1920,6 @@ internal sealed class SettingsPanel : UserControl
         return new SettingsRow("Start with Windows", "Mana opens in the tray when you sign in", "login boot startup sign in", status, flip);
     }
 
-    // #670: saved at once like the Voice tab's checkboxes; the backend
-    // reads it when the launcher next starts it.
-    private static FlowLayoutPanel BuildLocalOnlyRow(bool localOnly)
-    {
-        var check = new CheckBox
-        {
-            Text = "Local-only mode (nothing leaves this PC and your local network)",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-            Checked = localOnly,
-        };
-        var status = new Label { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-        check.CheckedChanged += (_, _) =>
-        {
-            var latest = ManaSettingsStore.Load();
-            latest.LocalOnly = check.Checked;
-            latest.Save();
-            status.Text = "Saved -- restart Mana for this to take effect. MANA_LOCAL_ONLY=1 in node-bot/.env keeps it on.";
-        };
-
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(check);
-        row.Controls.Add(status);
-        return row;
-    }
 
     private TabPage BuildPluginsTab()
     {
@@ -5095,71 +5062,49 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    // #1336: Export all my data as a zip archive, or wipe data completely / by category.
-    private TabPage BuildPrivacyTab()
+    // #1426 stage 2: Privacy as one page of rows -- local-only mode, her
+    // voice clips (moved here from Voice), exporting everything, and
+    // deleting: a category at a time, or everything (#1336). Every delete
+    // asks you to type what it does first.
+    private TabPage BuildPrivacyPage()
     {
-        var layout = new TableLayoutPanel
+        var parts = new List<Control>
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            AutoSize = true,
-            Padding = new Padding(12),
+            SettingsRows.Section("Your data"),
+            // #670: the backend reads it when the launcher next starts it.
+            SwitchRow("Local-only mode", "Nothing leaves this PC and your local network. Applies next time Mana starts", "offline cloud local only privacy",
+                ManaSettingsStore.Load().LocalOnly, on =>
+                {
+                    var latest = ManaSettingsStore.Load();
+                    latest.LocalOnly = on;
+                    latest.Save();
+                }),
         };
+        parts.AddRange(BuildVoiceClipsRows());
+        parts.Add(BuildExportRow());
+        parts.Add(SettingsRows.Section("Delete"));
+        (string Key, string Name, string Explanation)[] categories =
+        [
+            ("voice", "Voice data", "Voice samples, your voiceprint and training clips"),
+            ("chats", "Chat history", "Every conversation and transcript"),
+            ("memory", "Memory facts", "What she has learned about you, and her moods"),
+            ("vault", "Vault sync", "What she remembers of syncing with Obsidian; your notes stay"),
+            ("cache-logs", "Caches and logs", "Tool logs, debug files and upload caches"),
+        ];
+        foreach (var (key, name, explanation) in categories)
+        {
+            parts.Add(BuildDeleteRow(key, name, explanation));
+        }
+        parts.Add(BuildDeleteRow(null, "Everything", "Back to a first-run Mana: chats, memory, voice, caches and logs. This can't be undone"));
+        return SettingsRows.Page("Privacy", parts.ToArray());
+    }
 
-        var titleLabel = new Label
-        {
-            Text = "Data & Privacy",
-            UseMnemonic = false,
-            Font = new Font(Font.FontFamily, 12, FontStyle.Bold),
-            ForeColor = DarkTheme.Text,
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 8),
-        };
-        layout.Controls.Add(titleLabel);
-
-        var introLabel = new Label
-        {
-            Text = "Export your personal data or permanently delete stored history, memories, and voice samples.",
-            ForeColor = DarkTheme.Muted,
-            AutoSize = true,
-            MaximumSize = new Size(600, 0),
-            Margin = new Padding(0, 0, 0, 16),
-        };
-        layout.Controls.Add(introLabel);
-
-        // Section 1: Export Everything
-        var exportHeader = new Label
-        {
-            Text = "Export All Data",
-            Font = new Font(Font.FontFamily, 10, FontStyle.Bold),
-            ForeColor = DarkTheme.Text,
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 4),
-        };
-        var exportDesc = new Label
-        {
-            Text = "Create a single ZIP archive containing all chat sessions (JSON and Markdown), memory facts, vault sync records, voice samples, generated artifacts, and settings (credentials redacted).",
-            ForeColor = DarkTheme.Muted,
-            AutoSize = true,
-            MaximumSize = new Size(600, 0),
-            Margin = new Padding(0, 0, 0, 8),
-        };
-        var exportStatus = new Label
-        {
-            AutoSize = true,
-            ForeColor = DarkTheme.Muted,
-            Margin = new Padding(8, 6, 0, 0),
-        };
-
-        var exportButton = new Button
-        {
-            Text = "Export everything...",
-            AccessibleName = "Export everything",
-            AutoSize = true,
-            Padding = new Padding(8, 4, 8, 4),
-        };
-        DarkTheme.ApplyButton(exportButton);
-        exportButton.Click += async (_, _) =>
+    private SettingsRow BuildExportRow()
+    {
+        var status = SettingsRows.Status();
+        var export = SettingsRows.Action("Export…", () => { });
+        export.AccessibleName = "Export everything";
+        export.Click += async (_, _) =>
         {
             using var saveDialog = new SaveFileDialog
             {
@@ -5171,252 +5116,85 @@ internal sealed class SettingsPanel : UserControl
             {
                 return;
             }
-
-            exportButton.Enabled = false;
-            exportStatus.ForeColor = DarkTheme.Muted;
-            exportStatus.Text = "Exporting data archive...";
+            export.Enabled = false;
+            status.ForeColor = DarkTheme.Muted;
+            status.Text = "Exporting…";
             try
             {
                 var zipBytes = await backendClient.ExportAllDataAsync();
                 await File.WriteAllBytesAsync(saveDialog.FileName, zipBytes);
-                exportStatus.ForeColor = DarkTheme.Green;
-                exportStatus.Text = $"Export saved successfully ({zipBytes.Length / 1024:N0} KB).";
+                status.ForeColor = DarkTheme.Green;
+                status.Text = $"Saved ({zipBytes.Length / 1024:N0} KB)";
             }
             catch (Exception ex)
             {
-                exportStatus.ForeColor = Color.Firebrick;
-                exportStatus.Text = $"Export failed: {ex.Message}";
+                status.ForeColor = Color.IndianRed;
+                status.Text = $"Couldn't export: {BackendError.Describe(ex)}";
             }
             finally
             {
-                exportButton.Enabled = true;
+                export.Enabled = true;
             }
         };
+        return new SettingsRow("Export everything", "Chats, memory facts, voice samples, artifacts and settings in one ZIP, keys left out", "export backup download zip",
+            status, export);
+    }
 
-        layout.Controls.Add(exportHeader);
-        layout.Controls.Add(exportDesc);
-        var exportRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        exportRow.Controls.Add(exportButton);
-        exportRow.Controls.Add(exportStatus);
-        layout.Controls.Add(exportRow);
-
-        // Section 2: Delete Everything
-        var deleteHeader = new Label
+    // key null deletes everything. Either way you type what it does first.
+    private SettingsRow BuildDeleteRow(string? key, string name, string explanation)
+    {
+        var status = SettingsRows.Status();
+        var delete = SettingsRows.Action(key is null ? "Delete everything…" : "Delete…", () => { });
+        delete.ForeColor = Color.IndianRed;
+        delete.AccessibleName = key is null ? "Delete everything" : $"Delete {name}";
+        delete.Click += async (_, _) =>
         {
-            Text = "Delete Everything",
-            Font = new Font(Font.FontFamily, 10, FontStyle.Bold),
-            ForeColor = Color.IndianRed,
-            AutoSize = true,
-            Margin = new Padding(0, 20, 0, 4),
-        };
-        var deleteDesc = new Label
-        {
-            Text = "Permanently wipes all chat history, memory facts, entity indexes, vault sync state, voice samples, caches, and logs. This leaves Mana in a clean first-run state. This cannot be undone.",
-            ForeColor = DarkTheme.Muted,
-            AutoSize = true,
-            MaximumSize = new Size(600, 0),
-            Margin = new Padding(0, 0, 0, 8),
-        };
-        var deleteStatus = new Label
-        {
-            AutoSize = true,
-            ForeColor = DarkTheme.Muted,
-            Margin = new Padding(8, 6, 0, 0),
-        };
-
-        var deleteAllButton = new Button
-        {
-            Text = "Delete everything...",
-            AccessibleName = "Delete everything",
-            AutoSize = true,
-            ForeColor = Color.IndianRed,
-            Padding = new Padding(8, 4, 8, 4),
-        };
-        DarkTheme.ApplyButton(deleteAllButton);
-        deleteAllButton.Click += async (_, _) =>
-        {
+            var expected = key is null ? "delete-everything" : $"delete-{key}";
             using var prompt = new TextPromptDialog(
-                "Delete everything",
-                "Type 'delete-everything' to permanently delete all data and reset to first-run state:",
-                ""
-            );
+                key is null ? "Delete everything" : $"Delete {name.ToLowerInvariant()}",
+                $"Type '{expected}' to permanently delete {(key is null ? "all of Mana's data and start fresh" : name.ToLowerInvariant())}:",
+                "");
             if (prompt.ShowDialog(this) != DialogResult.OK)
             {
                 return;
             }
-
             var input = prompt.Value.Trim();
-            if (input != "delete-everything")
+            if (input != expected && !(key is not null && input == "delete-everything"))
             {
-                MessageBox.Show(this, "Confirmation text did not match 'delete-everything'. Deletion canceled.", "Delete Canceled", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                status.ForeColor = DarkTheme.Muted;
+                status.Text = "Not deleted: the words didn't match";
                 return;
             }
-
-            deleteAllButton.Enabled = false;
-            deleteStatus.ForeColor = DarkTheme.Muted;
-            deleteStatus.Text = "Wiping all data...";
+            delete.Enabled = false;
+            status.ForeColor = DarkTheme.Muted;
+            status.Text = "Deleting…";
             try
             {
-                var success = await backendClient.DeleteAllDataAsync("delete-everything");
-                if (success)
+                var done = key is null
+                    ? await backendClient.DeleteAllDataAsync(input)
+                    : await backendClient.DeleteDataCategoryAsync(key, input);
+                status.ForeColor = done ? DarkTheme.Green : Color.IndianRed;
+                status.Text = done ? (key is null ? "Deleted. Mana is back to a first run" : "Deleted") : "Couldn't delete it";
+                if (done && key is null)
                 {
-                    deleteStatus.ForeColor = DarkTheme.Green;
-                    deleteStatus.Text = "All data wiped successfully. Mana is in first-run state.";
-                    MessageBox.Show(this, "All personal data has been wiped. Mana is now in first-run state.", "Data Deleted", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     await RefreshAllAsync();
                 }
-                else
+                else if (done && key == "memory")
                 {
-                    deleteStatus.ForeColor = Color.Firebrick;
-                    deleteStatus.Text = "Failed to wipe data (backend returned an error).";
+                    await RefreshMemoryFactsAsync();
                 }
             }
             catch (Exception ex)
             {
-                deleteStatus.ForeColor = Color.Firebrick;
-                deleteStatus.Text = $"Failed to wipe data: {ex.Message}";
+                status.ForeColor = Color.IndianRed;
+                status.Text = $"Couldn't delete it: {BackendError.Describe(ex)}";
             }
             finally
             {
-                deleteAllButton.Enabled = true;
+                delete.Enabled = true;
             }
         };
-
-        layout.Controls.Add(deleteHeader);
-        layout.Controls.Add(deleteDesc);
-        var deleteRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        deleteRow.Controls.Add(deleteAllButton);
-        deleteRow.Controls.Add(deleteStatus);
-        layout.Controls.Add(deleteRow);
-
-        // Section 3: Delete by Category
-        var categoryHeader = new Label
-        {
-            Text = "Delete by Category",
-            Font = new Font(Font.FontFamily, 10, FontStyle.Bold),
-            ForeColor = DarkTheme.Text,
-            AutoSize = true,
-            Margin = new Padding(0, 20, 0, 4),
-        };
-        var categoryDesc = new Label
-        {
-            Text = "Selectively remove specific data categories without affecting the rest of your profile.",
-            ForeColor = DarkTheme.Muted,
-            AutoSize = true,
-            MaximumSize = new Size(600, 0),
-            Margin = new Padding(0, 0, 0, 8),
-        };
-        layout.Controls.Add(categoryHeader);
-        layout.Controls.Add(categoryDesc);
-
-        var categories = new (string Key, string Title, string Desc)[]
-        {
-            ("voice", "Voice Data", "Voice samples, speaker profiles, and acoustic enrolment recordings."),
-            ("chats", "Chat History", "All conversation sessions, message histories, and transcripts."),
-            ("memory", "Memory Facts", "Learned memory facts, entity indexes, and emotional states."),
-            ("vault", "Vault Sync State", "Obsidian vault synchronization state and cached sync notes."),
-            ("cache-logs", "Caches & Logs", "Tool execution logs, temporary debug files, and upload caches."),
-        };
-
-        foreach (var (key, title, desc) in categories)
-        {
-            layout.Controls.Add(BuildCategoryDeleteRow(key, title, desc));
-        }
-
-        return new TabPage("Privacy") { Controls = { layout } };
+        return new SettingsRow(name, explanation, $"delete wipe erase {name.ToLowerInvariant()}", status, delete);
     }
 
-    private FlowLayoutPanel BuildCategoryDeleteRow(string categoryKey, string categoryTitle, string categoryDesc)
-    {
-        var row = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            BackColor = DarkTheme.Background,
-            Margin = new Padding(0, 4, 0, 4),
-        };
-
-        var btn = new Button
-        {
-            Text = $"Delete {categoryTitle}...",
-            AccessibleName = $"Delete {categoryTitle}",
-            AutoSize = true,
-            Padding = new Padding(6, 2, 6, 2),
-            UseMnemonic = false, // "Caches & Logs" keeps its "&"
-        };
-        DarkTheme.ApplyButton(btn);
-
-        var lbl = new Label
-        {
-            Text = categoryDesc,
-            ForeColor = DarkTheme.Muted,
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Margin = new Padding(8, 6, 0, 0),
-        };
-
-        var status = new Label
-        {
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Margin = new Padding(8, 6, 0, 0),
-        };
-
-        btn.Click += async (_, _) =>
-        {
-            var expected = $"delete-{categoryKey}";
-            using var prompt = new TextPromptDialog(
-                $"Delete {categoryTitle}",
-                $"Type '{expected}' to permanently delete {categoryTitle.ToLowerInvariant()}:",
-                ""
-            );
-            if (prompt.ShowDialog(this) != DialogResult.OK)
-            {
-                return;
-            }
-
-            var input = prompt.Value.Trim();
-            if (input != expected && input != "delete-everything")
-            {
-                MessageBox.Show(this, $"Confirmation text did not match '{expected}'. Deletion canceled.", "Delete Canceled", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            btn.Enabled = false;
-            status.ForeColor = DarkTheme.Muted;
-            status.Text = "Deleting...";
-            try
-            {
-                var success = await backendClient.DeleteDataCategoryAsync(categoryKey, input);
-                if (success)
-                {
-                    status.ForeColor = DarkTheme.Green;
-                    status.Text = "Deleted.";
-                    if (categoryKey == "memory")
-                    {
-                        await RefreshMemoryFactsAsync();
-                    }
-                }
-                else
-                {
-                    status.ForeColor = Color.Firebrick;
-                    status.Text = "Failed.";
-                }
-            }
-            catch (Exception ex)
-            {
-                status.ForeColor = Color.Firebrick;
-                status.Text = $"Error: {ex.Message}";
-            }
-            finally
-            {
-                btn.Enabled = true;
-            }
-        };
-
-        row.Controls.Add(btn);
-        row.Controls.Add(status);
-        row.Controls.Add(lbl);
-        return row;
-    }
 }
