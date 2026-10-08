@@ -35,7 +35,7 @@ public class SettingsPanelLayoutTests
             Assert.Equal("General", Pages("general")); // stage 2: one page of rows
             Assert.Equal("Voice", Pages("voice"));
             Assert.Equal("Check-ins", Pages("checkins"));
-            Assert.Equal("Facts, Characters, Group mode, Skills, Presets, Memory tools", Pages("memory"));
+            Assert.Equal("Memory", Pages("memory"));
             Assert.Equal("Model, API Spending, Coding mode, Model tools", Pages("models"));
             Assert.Equal("Approvals, Desktop folders, Pending edits", Pages("permissions"));
             Assert.Equal("Local-only, Your data", Pages("privacy"));
@@ -43,8 +43,8 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five, Voice's two and Check-ins' three, each now one page.
-            Assert.Equal(28, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five, Voice's two, Check-ins' three and Memory's six, each now one page.
+            Assert.Equal(23, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -158,6 +158,68 @@ public class SettingsPanelLayoutTests
             Assert.Equal(5, slider.Value);
             Assert.Equal(new[] { 0.8, 0.3, 0.5 }, saved);
         });
+    }
+
+    // #1426 stage 2: facts filter by state with counts, and the actions follow the fact picked.
+    [Fact]
+    public void Facts_FilterByState_AndOfferWhatFitsTheFact()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            var posts = new System.Collections.Generic.List<string>();
+            var today = DateTimeOffset.Now.ToString("o");
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post)
+                {
+                    posts.Add(request.RequestUri!.AbsolutePath);
+                }
+                if (request.RequestUri!.AbsolutePath == "/admin/memory/facts")
+                {
+                    var json = "{\"facts\":[" +
+                        $"{{\"key\":\"editor\",\"text\":\"VS Code\",\"status\":\"active\",\"pinned\":true,\"updatedAt\":\"{today}\"}}," +
+                        "{\"key\":\"pet\",\"text\":\"a cat\",\"status\":\"pending\"}," +
+                        "{\"key\":\"old\",\"text\":\"was here\",\"status\":\"archived\"}]}";
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+                }
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json") };
+            }));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Width = 900 };
+            panel.ShowGroup("memory"); // its buttons only click while showing
+            _ = panel.FactsList.Handle; // selection needs the list's window
+            panel.RefreshMemoryFactsAsync().GetAwaiter().GetResult();
+            Assert.Equal(new[] { "Active (1)", "Waiting for you (1)", "Archived (1)" }, panel.FactChips.Select(c => c.Text));
+            var editor = panel.FactsList.Items[0];
+            Assert.Equal(new[] { "★ editor", "VS Code", "Today" }, editor.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(s => s.Text));
+            string[] Actions() => panel.FactActions.Controls.OfType<Button>().Select(b => b.Text).ToArray();
+            editor.Selected = true;
+            Assert.Equal(new[] { "Edit", "Unpin", "Archive", "Delete" }, Actions());
+
+            panel.FactChips[1].Checked = true;
+            panel.FactsList.Items[0].Selected = true;
+            Assert.Equal(new[] { "Confirm", "Edit", "Not true" }, Actions());
+
+            panel.FactChips[2].Checked = true;
+            panel.FactsList.Items[0].Selected = true;
+            Assert.Equal(new[] { "Restore", "Delete" }, Actions());
+            panel.FactActions.Controls.OfType<Button>().First().PerformClick();
+            for (var i = 0; i < 50 && posts.Count == 0; i++)
+            {
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(20);
+            }
+            Assert.Equal("/admin/memory/facts/old/restore", posts.Single());
+        });
+    }
+
+    [Fact]
+    public void UpdatedText_SaysTodayOrTheDate()
+    {
+        var now = new DateTimeOffset(2026, 10, 8, 15, 0, 0, TimeSpan.FromHours(8));
+        Assert.Equal("Today", SettingsPanel.UpdatedText("2026-10-08T01:00:00Z", now));
+        Assert.Equal("3 Oct", SettingsPanel.UpdatedText("2026-10-03T09:00:00+08:00", now));
+        Assert.Equal("3 Oct 2025", SettingsPanel.UpdatedText("2025-10-03T09:00:00+08:00", now));
+        Assert.Equal("", SettingsPanel.UpdatedText(null, now));
     }
 
     // #1426: the window comes back where it was, unless that's off every screen.

@@ -1354,6 +1354,8 @@ internal sealed class ManaBackendClient
                     Trust = entry.TryGetProperty("trust", out var trustEl) ? trustEl.GetString() ?? "" : "",
                     Trigger = entry.TryGetProperty("trigger", out var triggerEl) ? triggerEl.GetString() ?? "" : "",
                     Paused = entry.TryGetProperty("paused", out var pausedEl) && pausedEl.ValueKind == JsonValueKind.True,
+                    UpdatedAt = entry.TryGetProperty("updatedAt", out var updatedEl) && updatedEl.ValueKind == JsonValueKind.String ? updatedEl.GetString()
+                        : entry.TryGetProperty("createdAt", out var createdEl) && createdEl.ValueKind == JsonValueKind.String ? createdEl.GetString() : null,
                 });
             }
         }
@@ -1363,6 +1365,13 @@ internal sealed class ManaBackendClient
     public async Task ArchiveMemoryFactAsync(string key)
     {
         using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/archive", null);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: an archived fact live again (409 when its name is taken since).
+    public async Task RestoreMemoryFactAsync(string key)
+    {
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/restore", null);
         response.EnsureSuccessStatusCode();
     }
 
@@ -3601,6 +3610,8 @@ internal sealed class ManaMemoryFact
     // #698: set on a standing intent ("when Trigger comes up, mention Text").
     public string Trigger { get; init; } = "";
     public bool Paused { get; init; }
+    // #1426: when it last changed (or was made), ISO 8601.
+    public string? UpdatedAt { get; init; }
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).

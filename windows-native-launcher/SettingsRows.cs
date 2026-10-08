@@ -105,6 +105,13 @@ internal sealed class SettingsRow : TableLayoutPanel
     private bool highlighted;
 
     internal SettingsRow(string name, string? explanation, string keywords, params Control[] controls)
+        : this(name, explanation, keywords, below: false, controls)
+    {
+    }
+
+    // below: the controls go under the name and explanation, the row's full
+    // width -- for a list or an editor too wide for the right-hand side.
+    internal SettingsRow(string name, string? explanation, string keywords, bool below, params Control[] controls)
     {
         Title = name;
         SearchText = $"{name} {explanation} {keywords}";
@@ -128,6 +135,22 @@ internal sealed class SettingsRow : TableLayoutPanel
         if (explanation is not null)
         {
             Controls.Add(Explanation = new Label { Text = explanation, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 1, 8, 1), UseMnemonic = false }, 0, 1);
+        }
+        if (below)
+        {
+            foreach (Control words in Controls)
+            {
+                SetColumnSpan(words, 2);
+            }
+            var at = 2;
+            foreach (var control in controls)
+            {
+                control.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+                control.Margin = new Padding(0, 6, 0, 0);
+                Controls.Add(control, 0, at++);
+                SetColumnSpan(control, 2);
+            }
+            return;
         }
         var right = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, BackColor = Color.Transparent, Margin = Padding.Empty };
         foreach (var control in controls)
