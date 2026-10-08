@@ -42,6 +42,9 @@ internal sealed class RowList : ListView
     // How wide the name column is, in logical pixels.
     public int NameWidth { get; set; } = 140;
 
+    // The colour of an entry's Tag pill: amber by default (a warning, like Add-on).
+    internal Func<Color> TagColor { get; set; } = () => DarkTheme.Warn;
+
     public RowList()
     {
         View = View.Details;
@@ -241,12 +244,12 @@ internal sealed class RowList : ListView
         {
             var size = TextRenderer.MeasureText(tag, smallFont);
             var pill = new Rectangle(x, row.Y + ((row.Height - size.Height - 4) / 2), size.Width + LogicalToDeviceUnits(8), size.Height + 4);
-            using (var fill = new SolidBrush(Color.FromArgb(48, DarkTheme.Warn)))
+            using (var fill = new SolidBrush(Color.FromArgb(48, TagColor())))
             using (var shape = SettingsRows.Rounded(pill, pill.Height / 2f))
             {
                 g.FillPath(fill, shape);
             }
-            TextRenderer.DrawText(g, tag, smallFont, pill, DarkTheme.Warn, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, tag, smallFont, pill, TagColor(), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             x = pill.Right + LogicalToDeviceUnits(6);
         }
         TextRenderer.DrawText(g, entry.Text, Font, new Rectangle(x, row.Y, Math.Max(0, rightEdge - x), row.Height), DarkTheme.Muted, line);

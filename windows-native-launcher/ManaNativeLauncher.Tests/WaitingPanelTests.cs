@@ -34,8 +34,10 @@ public class WaitingPanelTests
 
             Assert.Equal(4, Waiting.Count); // the approved edit isn't waiting
             var rows = panel.List.Items.Cast<ListViewItem>().Where(i => !RowList.IsHeader(i)).Select(i => panel.List.EntryOf(i)!).ToList();
-            Assert.Equal(new[] { ("Github write", "This chat"), ("Memory write", ""), ("File write", "Coding agent"), ("README.md", "") },
-                rows.Select(r => (r.Name, r.Right)));
+            Assert.Equal(new[] { ("GitHub", "This chat", ""), ("Memory", null, ""), ("File write", null, "Coding agent"), ("README.md", null, "") },
+                rows.Select(r => (r.Name, r.Tag, r.Right)));
+            Assert.Equal("Browser", WaitingPanel.Kind("browser-site:shop.test"));
+            Assert.Equal("Folio update", WaitingPanel.Kind("folio-update:d:/mana/folio"));
             Assert.Equal("2 changes", rows[3].Text);
 
             Assert.Equal(new[] { "Allow once", "Allow for this session", "Always allow", "Deny", "Never" }, panel.List.ActionsFor!(rows[0].Value).Select(a => a.Name));

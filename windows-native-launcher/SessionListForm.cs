@@ -1359,7 +1359,7 @@ internal sealed partial class SessionListForm : Form
         }
         foreach (var approval in waiting.Approvals.Where(a => a.SessionId == sessionId))
         {
-            chatView.ShowApprovalCard(approval.Id, $"**Needs your OK** · {WaitingPanel.Words(approval.ActionType)}\n\n{approval.Summary}", CardActions(approval));
+            chatView.ShowApprovalCard(approval.Id, $"**Needs your OK** · {WaitingPanel.Kind(approval.ActionType)}\n\n{approval.Summary}", CardActions(approval));
         }
     }
 

@@ -14,7 +14,7 @@ namespace Mana.NativeLauncher;
 // only the rules and the remembered answers, a button away.
 internal sealed class WaitingPanel : Panel
 {
-    private readonly RowList list = new() { Dock = DockStyle.Fill, NameWidth = 110, AccessibleName = "Waiting for you" };
+    private readonly RowList list = new() { NameWidth = 100, MaxVisibleRows = 10, AccessibleName = "Waiting for you" };
     private readonly Label status = new() { Dock = DockStyle.Bottom, AutoSize = false, Height = 22, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, UseMnemonic = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
 
     private static readonly IReadOnlyList<(string Id, string Label)> Groups = [("ask", "Asking now"), ("edit", "Edits to files")];
@@ -27,15 +27,17 @@ internal sealed class WaitingPanel : Panel
         BackColor = DarkTheme.Background;
         Padding = new Padding(10, 8, 10, 8);
         list.ActionsFor = value => ActionsFor(value, answer, review);
+        list.TagColor = () => DarkTheme.Accent; // "This chat": where you are, not a warning
 
+        // As tall as what's waiting (to ten rows), not the whole panel.
         var round = SettingsRows.RoundPanel(list);
-        round.Dock = DockStyle.Fill;
+        round.Dock = DockStyle.Top;
         var note = new Label
         {
             Dock = DockStyle.Top,
             AutoSize = false,
             Height = 36,
-            Text = "What she needs your OK for, from every chat. Pick one for its answers.",
+            Text = "What she needs your OK for, from every chat. Pick one to answer it.",
             ForeColor = DarkTheme.Muted,
             BackColor = Color.Transparent,
             UseMnemonic = false,
@@ -60,8 +62,8 @@ internal sealed class WaitingPanel : Panel
     {
         list.ShowEntries(
             [
-                .. waiting.Approvals.Select(a => new RowList.Entry(a, Words(a.ActionType), a.Summary,
-                    a.SessionId is { } from && from == sessionId ? "This chat" : "", Group: "ask")),
+                .. waiting.Approvals.Select(a => new RowList.Entry(a, Kind(a.ActionType), a.Summary,
+                    Tag: a.SessionId is { } from && from == sessionId ? "This chat" : null, Group: "ask")),
                 .. waiting.Writes.Select(w => new RowList.Entry(w, Words(w.Kind), w.Summary, "Coding agent", Group: "ask")),
                 .. waiting.PendingEdits.Select(p => new RowList.Entry(p, p.RelativePath,
                     p.Summary ?? $"{p.HunkCount} change{(p.HunkCount == 1 ? "" : "s")}", Group: "edit")),
@@ -111,12 +113,48 @@ internal sealed class WaitingPanel : Panel
     // What each answer did, for the panel's line and the chat card.
     internal static string Answered(string decision) => decision switch
     {
-        "allow-once" => "Allowed",
-        "allow-session" => "Allowed for this session",
-        "always-allow" => "Always allowed: she won't ask for this again",
-        "never" => "Never: she won't ask for this again",
-        _ => "Denied",
+        "allow-once" => "✓ Allowed",
+        "allow-session" => "✓ Allowed for this session",
+        "always-allow" => "✓ Always allowed: she won't ask for this again",
+        "never" => "✕ Never: she won't ask for this again",
+        _ => "✕ Denied",
     };
+
+    // A request's kind as a few words: node-bot's action types, some with
+    // what they're about after a colon (git-github:<repo>, browser-site:<site>).
+    internal static string Kind(string actionType)
+    {
+        var kind = actionType.Split(':')[0];
+        return kind switch
+        {
+            "memory-write" => "Memory",
+            "skill-write" or "skill-write-idle" => "New skill",
+            "skill-run" => "Run a skill",
+            "skill-use" => "Use a skill",
+            "skill-import" => "Import a skill",
+            "tool-destructive" => "Destructive tool",
+            "tool-write" => "Tool",
+            "generated-script-run" => "Run a script",
+            "snapshot-restore" => "Restore a snapshot",
+            "calendar-add-event" => "Calendar",
+            "document-read" => "Read a document",
+            "browser-site" => "Browser",
+            "git-local" => "Git",
+            "git-github" or "github-write" => "GitHub",
+            "git-danger" => "Merge or force-push",
+            "git-repo" => "Use a repository",
+            "folio-update" => "Folio update",
+            "mana-update-pull-main" => "Update Mana",
+            "improvement-issue" => "File an issue",
+            "self-work-lesson" => "Self-work lesson",
+            "coding-run-tests" or "self-work-sandbox-tests" => "Run tests",
+            "resource-cpu-execution" => "Heavy work",
+            "project-reference-link" => "Link a project",
+            "hook-ask" => "Hook",
+            _ when kind.StartsWith("tool-", StringComparison.Ordinal) => "Tool",
+            _ => Words(kind),
+        };
+    }
 
     // "github-write" -> "Github write": a request's kind, in words.
     internal static string Words(string kind) =>
