@@ -68,6 +68,13 @@ internal sealed class RowList : ListView
         Fit();
     }
 
+    // Sized as soon as it's placed, before anything loads into it.
+    protected override void OnParentChanged(EventArgs e)
+    {
+        base.OnParentChanged(e);
+        FitHeight();
+    }
+
     // As tall as its rows (to MaxVisibleRows), so a short list leaves no
     // empty panel; the rounded panel it sits on grows with it.
     private void FitHeight()

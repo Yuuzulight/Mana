@@ -40,11 +40,11 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Permissions", Pages("permissions"));
             Assert.Equal("Privacy", Pages("privacy"));
             Assert.Equal("Connections", Pages("connections"));
-            Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
+            Assert.Equal("Advanced", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five, Voice's two, Check-ins' three, Memory's six, Models' four, Permissions' three, Privacy's two and Connections' five, each now one page.
-            Assert.Equal(13, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five, Voice's two, Check-ins' three, Memory's six, Models' four, Permissions' three, Privacy's two, Connections' five and Advanced's five: every group is one page now.
+            Assert.Equal(9, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -66,10 +66,8 @@ public class SettingsPanelLayoutTests
             Assert.All(panel.Groups, g => Assert.Equal(1, g.Tabs.ItemSize.Height));
             Assert.Empty(panel.PagePills.Controls); // Models is one page now
             panel.ShowGroup("advanced");
-            Assert.Equal("Backend", panel.Groups.Single(g => g.Id == "advanced").Tabs.SelectedTab!.Text);
-            Assert.Equal(new[] { "Backend", "Hooks", "Logs", "Timings", "Developer" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
-            panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Logs").PerformClick();
-            Assert.Equal("Logs", panel.Groups.Single(g => g.Id == "advanced").Tabs.SelectedTab!.Text);
+            Assert.Empty(panel.PagePills.Controls); // every group is one page now, so no pills anywhere
+            Assert.False(panel.PagePills.Visible);
             Assert.Equal(new[] { "advanced" }, panel.Nav.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag!));
             panel.ShowGroup("nope");
             Assert.Equal("general", panel.CurrentGroup);
@@ -89,10 +87,9 @@ public class SettingsPanelLayoutTests
 
             panel.SearchBox.Text = "admin token";
             var token = panel.SearchResults.Items.Cast<ListViewItem>().First(i => i.Text == "Admin token");
-            Assert.Equal("Advanced › Backend", token.SubItems[1].Text);
+            Assert.Equal("Advanced", token.SubItems[1].Text);
             panel.OpenResult(token);
             Assert.Equal("advanced", panel.CurrentGroup);
-            Assert.Equal("Backend", panel.Groups.Single(g => g.Id == "advanced").Tabs.SelectedTab!.Text);
             Assert.False(panel.SearchResults.Visible);
             Assert.Equal("", panel.SearchBox.Text);
 
