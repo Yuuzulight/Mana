@@ -1,5 +1,5 @@
 Mana
-Copyright 2026 ManaAI (https://github.com/Yuuzulight)
+Copyright 2026 Mashiron Labs (https://github.com/Yuuzulight)
 
 This product is licensed under the Apache License, Version 2.0. You may
 obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.
@@ -17,7 +17,7 @@ Artwork restrictions
   `desktop-client/avatar/model/`) are proprietary and not covered by the
   code license. See LICENSE-ARTWORK for details. The model currently loaded
   in `desktop-client` is a temporary testing placeholder whose character
-  design rights belong to miHoYo/HoYoverse, not ManaAI — see
+  design rights belong to miHoYo/HoYoverse, not Mashiron Labs — see
   `desktop-client/AVATAR_NOTICE.md`.
 
 Third-party components
