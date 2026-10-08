@@ -10,6 +10,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const { createToolCallLog } = require("./tool-call-log");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data", "approval-gate");
@@ -58,6 +59,10 @@ function writeJson(filePath, value) {
 // tool-call-log.js instance so tests never write into the real data dir;
 // defaults to its own file under dataDir.
 function createApprovalGate(options = {}) {
+  // #1426: the chat a request comes from, so the launcher can show it as a
+  // card in that chat as well as in "Waiting for you".
+  const origin = new AsyncLocalStorage();
+  const withOrigin = (where, fn) => origin.run(where, fn);
   const dataDir = options.dataDir || DEFAULT_DATA_DIR;
   const alwaysAllowPath = path.join(dataDir, "always-allow.json");
   // #1154: "never" answers, remembered like always-allow ones.
@@ -297,6 +302,7 @@ function createApprovalGate(options = {}) {
       payload,
       flags,
       createdAt: now(),
+      ...(origin.getStore()?.sessionId ? { sessionId: origin.getStore().sessionId } : {}),
       ...(grantKey ? { grantKey } : {}),
       ...(forceReview ? { forceReview: true } : {}),
       ...(details ? { details } : {}),
@@ -394,6 +400,7 @@ function createApprovalGate(options = {}) {
   return {
     registerExecutor,
     requestApproval,
+    withOrigin,
     listPending,
     decide,
     denialCount,

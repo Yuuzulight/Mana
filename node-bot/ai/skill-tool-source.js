@@ -148,7 +148,7 @@ function createSkillToolSource(options = {}) {
       });
       return JSON.stringify({
         ...outcome,
-        note: `"${skill.name}" is an imported skill: the user has to approve using it. Tell them it's waiting in Approvals, then try again once they have.`,
+        note: `"${skill.name}" is an imported skill: the user has to approve using it. Tell them it's waiting for their OK (a card in this chat, and Waiting for you), then try again once they have.`,
       });
     } catch (e) {
       return JSON.stringify({ status: "error", error: e.message || String(e) });

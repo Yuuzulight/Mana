@@ -39,7 +39,6 @@ internal sealed class SettingsPanel : UserControl
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
     private readonly ComboBox importedSkillUseBox = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
-    private readonly RowList approvalsList = new() { MaxVisibleRows = 6, NameWidth = 130, AccessibleName = "Waiting for your OK" };
     // #1154: remembered always/never answers, with Forget.
     private readonly RowList rememberedList = new() { MaxVisibleRows = 6, NameWidth = 70, AccessibleName = "Remembered answers" };
     // #669: index-aligned with ToolApprovalModes below.
@@ -582,7 +581,6 @@ internal sealed class SettingsPanel : UserControl
         await RefreshPluginsAsync();
         await RefreshMemoryFactsAsync();
         await RefreshSkillsAsync();
-        await RefreshApprovalsAsync();
         await RefreshRememberedAsync();
         await RefreshToolApprovalModeAsync();
         await RefreshGitApprovalModesAsync();
@@ -1375,20 +1373,17 @@ internal sealed class SettingsPanel : UserControl
         };
     }
 
-    // #1426 stage 2: Permissions as one page of rows -- what's waiting for
-    // your OK, the rules for her tools and her git and GitHub work, the
-    // answers she remembers, and the folders and camera she may use. (What's
-    // waiting moves to its own list in the chat window in stage 3.)
+    // #1426: Permissions as one page of rows -- the rules for her tools and
+    // her git and GitHub work, the answers she remembers, and the folders and
+    // camera she may use. What's waiting is the chat window's "Waiting for
+    // you" (stage 3).
     private DesktopFoldersPanel? desktopFolders;
 
-    internal RowList ApprovalsList => approvalsList; // tests
     internal RowList RememberedList => rememberedList; // tests
     internal Label GitDangerWarning => gitDangerWarning; // tests
 
     private TabPage BuildPermissionsPage()
     {
-        approvalsList.ActionsFor = value => value is string id ? ApprovalActions(id) : [];
-        approvalsList.ItemActivate += async (_, _) => await DecideSelectedApprovalAsync("allow-once");
         rememberedList.ActionsFor = _ => [new("", "Forget: ask again next time", ForgetSelectedAsync)];
 
         var toolRow = ChoiceRow("Ask before tool calls", "Destructive commands (rm -rf, registry edits, download-and-run) always ask, whatever this says", "approval approvals ask tools",
@@ -1428,11 +1423,6 @@ internal sealed class SettingsPanel : UserControl
         var saved = ManaSettingsStore.Load();
         var parts = new List<Control>
         {
-            SettingsRows.Section("Waiting for you"),
-            new SettingsRow("Asking now", "What she's waiting on your OK for. Pick one for its answers", "approvals pending waiting allow deny never",
-                below: true, SettingsRows.RoundPanel(approvalsList)),
-            new SettingsRow("Pending edits", "Changes she's proposed to files, waiting for your OK", "proposals edits approve changes",
-                SettingsRows.Action("Review…", () => new ProposalsForm(backendClient).Show())),
             SettingsRows.Section("Tools"),
             toolRow,
             SettingsRows.Section("Git and GitHub"),
@@ -1456,23 +1446,6 @@ internal sealed class SettingsPanel : UserControl
             }));
         parts.Add(BuildSnapshotFolderRow());
         return SettingsRows.Page("Permissions", parts.ToArray());
-    }
-
-    // The answers to one request, as the icons on its row. A coding agent's
-    // request is decided once: allowed or denied (#838).
-    private IReadOnlyList<RowList.RowAction> ApprovalActions(string id)
-    {
-        RowList.RowAction Act(string glyph, string name, string decision) => new(glyph, name, () => DecideSelectedApprovalAsync(decision));
-        return id.StartsWith(PendingWriteTag, StringComparison.Ordinal)
-            ? [Act("", "Allow once", "allow-once"), Act("", "Deny", "deny")]
-            :
-            [
-                Act("", "Allow once", "allow-once"),
-                Act("", "Allow for this session", "allow-session"),
-                Act("", "Always allow", "always-allow"), // an open lock
-                Act("", "Deny", "deny"),
-                Act("", "Never", "never"), // a lock
-            ];
     }
 
     private async Task CheckFolioAsync()
@@ -2361,7 +2334,7 @@ internal sealed class SettingsPanel : UserControl
         }
         if (error is null)
         {
-            MessageBox.Show(this, "Import submitted -- review and approve it from the Approvals tab. Nothing in it runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Import submitted -- review and approve it in Waiting for you, in the chat window. Nothing in it runs.", "Import Skill", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         else
         {
@@ -2392,14 +2365,14 @@ internal sealed class SettingsPanel : UserControl
                 }
                 catch (Exception ex)
                 {
-                    note = $"Skill submitted, but approving it failed ({ex.Message}) -- approve it from the Approvals tab.";
+                    note = $"Skill submitted, but approving it failed ({ex.Message}) -- approve it in Waiting for you, in the chat window.";
                 }
             }
             else if (!result.Created)
             {
                 note = result.Flags.Count > 0
-                    ? $"Flagged: {string.Join(", ", result.Flags)}. Review and approve it from the Approvals tab."
-                    : "Skill submitted -- approve it from the Approvals tab.";
+                    ? $"Flagged: {string.Join(", ", result.Flags)}. Review and approve it in Waiting for you, in the chat window."
+                    : "Skill submitted -- approve it in Waiting for you, in the chat window.";
             }
         }
         catch (Exception ex)
@@ -2708,91 +2681,6 @@ internal sealed class SettingsPanel : UserControl
             }
         }
     }
-
-    private async Task DecideSelectedApprovalAsync(string decision)
-    {
-        if (approvalsList.SelectedItems.Count == 0)
-        {
-            return;
-        }
-        var id = (string)approvalsList.SelectedItems[0].Tag!;
-        try
-        {
-            // #838: an ACP agent request is decided once; there are no
-            // session or standing grants for it.
-            if (id.StartsWith(PendingWriteTag, StringComparison.Ordinal))
-            {
-                if (decision is not ("allow-once" or "deny"))
-                {
-                    MessageBox.Show(this, "This request from the coding agent can only be allowed once or denied.", "Approvals", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
-                await backendClient.DecidePendingWriteAsync(id[PendingWriteTag.Length..], decision == "allow-once");
-            }
-            else
-            {
-                await backendClient.DecideApprovalAsync(id, decision);
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"SettingsPanel: failed to decide approval '{id}'. {ex.Message}");
-            return;
-        }
-        if (!IsDisposed)
-        {
-            await RefreshApprovalsAsync();
-            await RefreshRememberedAsync();
-        }
-    }
-
-    private async Task RefreshApprovalsAsync()
-    {
-        System.Collections.Generic.IReadOnlyList<ManaPendingApproval> pending;
-        try
-        {
-            pending = await backendClient.GetPendingApprovalsAsync();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"SettingsPanel: failed to load pending approvals. {ex.Message}");
-            if (!IsDisposed)
-            {
-                ShowLoadFailure(approvalsList, BackendError.Describe(ex));
-            }
-            return;
-        }
-        if (IsDisposed)
-        {
-            return;
-        }
-
-        IReadOnlyList<ManaPendingWrite> writes = [];
-        try
-        {
-            writes = await backendClient.GetPendingWritesAsync();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"SettingsPanel: failed to load pending agent writes. {ex.Message}");
-        }
-        if (IsDisposed)
-        {
-            return;
-        }
-
-        approvalsList.ShowEntries(
-            pending.Select(a => new RowList.Entry(a.Id, Words(a.ActionType), a.Summary))
-                .Concat(writes.Select(w => new RowList.Entry(PendingWriteTag + w.Id, Words(w.Kind), w.Summary))),
-            null, "Nothing waiting");
-    }
-
-    // "github-write" -> "Github write": a request's kind, in words.
-    internal static string Words(string kind) =>
-        kind.Length == 0 ? "Request" : char.ToUpperInvariant(kind[0]) + kind[1..].Replace('-', ' ').Replace('_', ' ');
-
-    // Marks an approvals-list row as an ACP agent pending write (#838).
-    private const string PendingWriteTag = "write:";
 
     // #583: "Auto" (null override) plus the 4 providers server.js's
     // TTS_OVERRIDE_PROVIDERS allow-lists -- selecting it clears the
@@ -4609,7 +4497,7 @@ internal sealed class SettingsPanel : UserControl
         {
             MessageBox.Show(
                 this,
-                status == "pending" ? "Registered. It waits for your OK under Permissions first." : $"Registration status: {status}",
+                status == "pending" ? "Registered. It waits for your OK in Waiting for you first." : $"Registration status: {status}",
                 "Register MCP Server",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);

@@ -9,7 +9,7 @@ namespace Mana.NativeLauncher;
 // #699: Settings > Check-ins' background checks -- heartbeat.md's checks (GET/PUT
 // /heartbeat/items). Each change saves the whole list; node-bot checks it
 // and refuses a bad one (nothing is written then). A new or edited check
-// still does its dry run and waits in Approvals before it runs for real.
+// still does its dry run and waits in Waiting for you before it runs for real.
 internal sealed class HeartbeatPanel : System.ComponentModel.Component
 {
     private readonly ManaBackendClient backendClient;
@@ -98,7 +98,7 @@ internal sealed class HeartbeatPanel : System.ComponentModel.Component
         Enabled = On.Checked,
     };
 
-    internal Task AddAsync() => SaveAsync([.. items, FromEditor()], "Added. It does a dry run and waits in Approvals first.");
+    internal Task AddAsync() => SaveAsync([.. items, FromEditor()], "Added. It does a dry run and waits for your OK in Waiting for you first.");
 
     internal Task SaveSelectedAsync()
     {

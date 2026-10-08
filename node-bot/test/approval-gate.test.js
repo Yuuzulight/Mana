@@ -25,6 +25,13 @@ test("an unrecognized action type pauses as a pending request instead of running
   assert.equal(gate.listPending().length, 1);
 });
 
+test("a request made within a chat's turn names that chat", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  await gate.withOrigin({ sessionId: "chat-1" }, () => gate.requestApproval("skill-write", { summary: "Create skill X", payload: {} }));
+  await gate.requestApproval("skill-write", { summary: "Create skill Y", payload: {} });
+  assert.deepEqual(gate.listPending().map((p) => p.sessionId), ["chat-1", undefined]);
+});
+
 test("allow-once runs the executor exactly once and does not persist trust", async () => {
   let callCount = 0;
   const gate = createApprovalGate({ dataDir: createTempDir() });

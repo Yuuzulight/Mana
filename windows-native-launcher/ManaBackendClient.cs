@@ -2424,6 +2424,7 @@ internal sealed class ManaBackendClient
                     Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
                     ActionType = entry.TryGetProperty("actionType", out var typeEl) ? typeEl.GetString() ?? "" : "",
                     Summary = entry.TryGetProperty("summary", out var summaryEl) ? summaryEl.GetString() ?? "" : "",
+                    SessionId = entry.TryGetProperty("sessionId", out var sessionEl) && sessionEl.ValueKind == JsonValueKind.String ? sessionEl.GetString() : null,
                 });
             }
         }
@@ -2560,7 +2561,7 @@ internal sealed class ManaBackendClient
         {
             "current" => "Folio is up to date.",
             "opened" => Text("text") ?? "Opened a Folio update PR.",
-            "pending" => "Waiting for your OK in Approvals.",
+            "pending" => "Waiting for your OK in Waiting for you.",
             "waiting" => $"Folio update #{Text("pr")} is still open.",
             "tried" => $"The newest Folio was already tried (#{Text("pr")}).",
             "off" => "Keep Folio up to date is off.",
@@ -3905,6 +3906,8 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+    // #1426: the chat it was asked from, if any (a card shows there too).
+    public string? SessionId { get; init; }
 }
 
 // #838: one undecided GET /admin/pending-writes entry.

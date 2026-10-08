@@ -680,6 +680,37 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         Add(message, forceScroll: false);
     });
 
+    // #1426 stage 3: a request from this chat waiting on my OK, as a card
+    // with its answers. Answered here, the answer's note replaces them;
+    // answered in "Waiting for you", EndApprovalCard does.
+    public void ShowApprovalCard(string id, string text, IReadOnlyList<ChatAction> actions) => RunOnUiThread(() =>
+    {
+        if (messages.Any(m => m.ApprovalId == id))
+        {
+            return;
+        }
+        var message = new Message(fromUser: false) { ApprovalId = id, FinalText = text };
+        message.Blocks.AddRange(ChatMarkdownParser.Parse(text));
+        message.Actions.AddRange(actions);
+        Add(message, forceScroll: false);
+    });
+
+    public void EndApprovalCard(string id, string note) => RunOnUiThread(() =>
+    {
+        if (messages.FirstOrDefault(m => m.ApprovalId == id) is not { ActionRunning: false } message || message.Actions.Count == 0)
+        {
+            return;
+        }
+        message.Actions.Clear();
+        message.Note = note;
+        message.Invalidate();
+        Relayout(forceScroll: false);
+    });
+
+    // The cards still waiting for an answer.
+    internal IReadOnlyList<string> OpenApprovalCards =>
+        messages.Where(m => m.ApprovalId is not null && m.Actions.Count > 0).Select(m => m.ApprovalId!).ToList();
+
     // Puts buttons under Mana's latest message (replacing any it had, except
     // kept ones like the artifact button, which move after the new ones).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
@@ -1398,6 +1429,19 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 using var border = new Pen(DarkTheme.Border);
                 g.DrawRectangle(border, bubble.X, bubble.Y, bubble.Width - 1, bubble.Height - 1);
             }
+            if (message.ApprovalId is not null)
+            {
+                // #1426: a request card -- edged in the accent, a bar down its
+                // left while it waits, the plain edge once it's answered.
+                var waiting = message.Actions.Count > 0;
+                using var edge = new Pen(waiting ? DarkTheme.Accent : DarkTheme.Border);
+                g.DrawRectangle(edge, bubble.X, bubble.Y, bubble.Width - 1, bubble.Height - 1);
+                if (waiting)
+                {
+                    using var bar = new SolidBrush(DarkTheme.Accent);
+                    g.FillRectangle(bar, bubble.X, bubble.Y, 3, bubble.Height);
+                }
+            }
 
             var origin = new Point(bubble.X + PadX, bubble.Y + PadY);
             if (!string.IsNullOrWhiteSpace(message.Thought))
@@ -1903,8 +1947,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 using var fill = new SolidBrush(faded ? Color.FromArgb(140, DarkTheme.Accent) : DarkTheme.Accent);
                 g.FillRectangle(fill, rect);
-                TextRenderer.DrawText(g, action.Label, bodyFont, rect, DarkTheme.OnAccent,
+                var labelRect = action.Menu is null ? rect : new Rectangle(rect.X, rect.Y, rect.Width - MenuArrowWidth, rect.Height);
+                TextRenderer.DrawText(g, action.Label, bodyFont, labelRect, DarkTheme.OnAccent,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                if (action.Menu is not null)
+                {
+                    // #1426: a primary split button too (Allow, and its arrow's other answers).
+                    var arrow = new Rectangle(rect.Right - MenuArrowWidth, rect.Y, MenuArrowWidth, rect.Height);
+                    using var divider = new Pen(Color.FromArgb(110, DarkTheme.OnAccent));
+                    g.DrawLine(divider, arrow.X, rect.Y + 5, arrow.X, rect.Bottom - 6);
+                    TextRenderer.DrawText(g, "▾", bodyFont, arrow, DarkTheme.OnAccent,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                }
             }
             else
             {
@@ -2317,6 +2371,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
         // The full reply text once VoiceLoop reported it; later sentences start a new bubble.
         public string? FinalText { get; set; }
+
+        // #1426: set on a request card (ShowApprovalCard): the approval's id.
+        public string? ApprovalId { get; init; }
 
         // #1318: set on a grey step-group line (no bubble, no label) placed
         // after the reply text of its segment; clicking it toggles StepsOpen.

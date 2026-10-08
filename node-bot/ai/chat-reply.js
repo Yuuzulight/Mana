@@ -1268,9 +1268,11 @@ async function buildAssistantReply(
             let result;
             try {
               // #1121: a command this call runs is stopped by this loop's Stop.
-              result = await context.terminalFeed.runWith({ stop: () => context.agentActivity.stop(run.id) }, () =>
-                executeLoggedTool(name, args),
-              );
+              // #1426: an approval this call asks for belongs to this chat.
+              const inThisChat = () => context.activeApprovalGate?.withOrigin
+                ? context.activeApprovalGate.withOrigin({ sessionId }, () => executeLoggedTool(name, args))
+                : executeLoggedTool(name, args);
+              result = await context.terminalFeed.runWith({ stop: () => context.agentActivity.stop(run.id) }, inThisChat);
               turnTools.push(name);
               ok = true;
               return result;

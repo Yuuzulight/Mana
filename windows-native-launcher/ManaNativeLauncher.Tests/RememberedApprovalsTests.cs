@@ -70,7 +70,7 @@ public class RememberedApprovalsTests
             var list = panel.RememberedList;
             Assert.Equal(["Always: Browser: shop.test", "Never: Browser: bad.test", "Always: memory-write"],
                 list.Items.Cast<ListViewItem>().Select(i => i.Text));
-            Assert.Contains(panel.ApprovalsList.ActionsFor!("req-1"), a => a.Name == "Never"); // a request can be answered "never"
+            Assert.Contains(WaitingPanel.ApprovalChoices, c => c.Decision == "never"); // a request can be answered "never"
 
             _ = list.Handle; // SelectedItems needs the native list
             list.Items[1].Selected = true;
