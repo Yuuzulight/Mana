@@ -145,6 +145,26 @@ function registerMemoryFactsRoutes(app, context = {}) {
     }
   });
 
+  // #1426: Settings' Restore on an archived fact makes it live again (the
+  // latest archived one under that key); 409 when another live fact has
+  // taken the key since, 404 when nothing archived has it.
+  app.post("/admin/memory/facts/:key/restore", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const key = String(req.params.key || "").toLowerCase();
+      const fact = acpMemoryStore
+        .listFacts()
+        .filter((f) => f.status === "archived" && f.key.toLowerCase() === key)
+        .pop();
+      if (!fact) return res.status(404).json({ ok: false, error: "nothing archived has that name" });
+      const result = acpMemoryStore.restoreFact(fact, { kind: "user_stated" });
+      if (!result.restored) return res.status(409).json({ ok: false, error: "another fact has that name now" });
+      return res.json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
   // Issue #673: every logged change to one fact key (facts-log.jsonl),
   // oldest first -- before/after for the diff, origin for the blame.
   // Rolling back is snapshot__restore on a memory-fact snapshot (approval-

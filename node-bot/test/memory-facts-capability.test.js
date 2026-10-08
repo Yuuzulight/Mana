@@ -242,3 +242,18 @@ test("DELETE /admin/memory/facts/:key really removes a live or archived fact and
   });
   assert.ok(store.listFacts().every((f) => f.status === "stale"));
 });
+
+test("POST /admin/memory/facts/:key/restore makes an archived fact live again, and refuses when its name is taken (#1426)", async () => {
+  const { app, store } = realStoreApp();
+  store.rememberFact({ key: "pet", text: "I have a cat", source: "human", origin: { kind: "user_stated" } });
+  store.rememberFact({ key: "pet", action: "archive", source: "human" });
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/missing/restore")).status, 404);
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/PET/restore")).status, 200);
+    assert.equal(store.listFacts().find((f) => f.key === "pet").status, "active");
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/pet/restore")).status, 404); // nothing archived now
+    store.rememberFact({ key: "pet", action: "archive", source: "human" });
+    store.rememberFact({ key: "pet", text: "I have a dog", source: "human", origin: { kind: "user_stated" } });
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/pet/restore")).status, 409);
+  });
+});

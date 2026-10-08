@@ -119,19 +119,15 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (General, Voice and Check-ins so far).
+        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins and Memory so far).
         var backendPage = BuildConnectionTab(out var localOnlyPage);
         var timingsPage = BuildPerfTab();
         var privacyPage = BuildPrivacyTab();
         privacyPage.Text = "Your data";
-        var factsPage = BuildMemoryFactsTab();
-        factsPage.Text = "Facts";
         AddGroup("general", "General", BuildGeneralPage());
         AddGroup("voice", "Voice", BuildVoicePage());
         AddGroup("checkins", "Check-ins", BuildCheckInsPage());
-        AddGroup("memory", "Memory", factsPage,
-            new TabPage("Characters") { Controls = { new RelationshipPanel(backendClient) } }, // #914
-            BuildGroupModeTab(), BuildSkillsTab(), BuildPresetsTab(), BuildMemoryToolsTab());
+        AddGroup("memory", "Memory", BuildMemoryPage());
         AddGroup("models", "Models", BuildModelTab(),
             new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }, // #1406
             BuildCodingModeTab(), BuildModelToolsTab());
@@ -228,8 +224,6 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Facts"] = "memory remember knowledge obsidian vault",
-        ["Characters"] = "persona relationship milestones evil mana",
         ["Model"] = "llm gguf brain remote cloud fallback provider",
         ["API Spending"] = "deepseek key cost money balance tokens escalation",
         ["Approvals"] = "permission ask allow deny git github",
@@ -241,8 +235,6 @@ internal sealed class SettingsPanel : UserControl
         ["Backend"] = "url port server admin token",
         ["Timings"] = "performance perf speed",
         ["Coding mode"] = "14b engineering code programming",
-        ["Group mode"] = "partner sister evil mana second character duo",
-        ["Memory tools"] = "graph snapshots undo rollback",
         ["Model tools"] = "compare web ui llama",
         ["Pending edits"] = "proposals approve changes",
         ["Developer"] = "project folder revert pr",
@@ -640,6 +632,7 @@ internal sealed class SettingsPanel : UserControl
         await (refreshBriefing?.Invoke() ?? Task.CompletedTask);
         await (proactive?.ReloadAsync() ?? Task.CompletedTask);
         await (heartbeat?.ReloadAsync() ?? Task.CompletedTask);
+        await (relationships?.ReloadAsync() ?? Task.CompletedTask);
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
@@ -811,9 +804,7 @@ internal sealed class SettingsPanel : UserControl
     public Action<bool>? DictateAnywhereChanged { get; set; }
 
 
-    // #1426: group mode (#914) moved here from the tray: a second character
-    // replies alongside the active one, and her avatar stands beside Mana's.
-    private readonly CheckBox groupModeCheck = new() { Text = "Group mode: a second character replies alongside the active one", AutoSize = true };
+    private readonly SettingsSwitch groupModeCheck = new() { AccessibleName = "Group mode" };
     private readonly ComboBox groupPartnerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Group mode partner" };
     private readonly Label groupModeStatus = new() { AutoSize = true };
     private bool loadingGroupMode;
@@ -822,38 +813,6 @@ internal sealed class SettingsPanel : UserControl
     internal ComboBox GroupPartnerCombo => groupPartnerCombo; // tests
     internal Label GroupModeStatus => groupModeStatus; // tests
 
-    private TabPage BuildGroupModeTab()
-    {
-        groupModeCheck.ForeColor = DarkTheme.Text;
-        groupModeStatus.ForeColor = DarkTheme.Muted;
-        groupPartnerCombo.BackColor = DarkTheme.Panel2;
-        groupPartnerCombo.ForeColor = DarkTheme.Text;
-        groupPartnerCombo.DisplayMember = nameof(GroupPartner.Name);
-        groupModeCheck.CheckedChanged += async (_, _) => await SaveGroupModeAsync();
-        groupPartnerCombo.SelectedIndexChanged += async (_, _) =>
-        {
-            if (groupModeCheck.Checked)
-            {
-                await SaveGroupModeAsync();
-            }
-        };
-        var hint = new Label
-        {
-            Text = "On casual chat she adds a short reply of her own, in her voice. It pauses while a game runs, unless you turn it on during that game.",
-            AutoSize = true,
-            MaximumSize = new Size(460, 0),
-            ForeColor = DarkTheme.Muted,
-        };
-        var partnerRow = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background, Margin = new Padding(0, 6, 0, 0) };
-        partnerRow.Controls.Add(new Label { Text = "Partner", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 7, 6, 3) });
-        partnerRow.Controls.Add(groupPartnerCombo);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
-        layout.Controls.Add(groupModeCheck);
-        layout.Controls.Add(hint);
-        layout.Controls.Add(partnerRow);
-        layout.Controls.Add(groupModeStatus);
-        return new TabPage("Group mode") { Controls = { layout } };
-    }
 
     private sealed record GroupPartner(string Id, string Name);
 
@@ -1031,6 +990,320 @@ internal sealed class SettingsPanel : UserControl
             Changed($"{name} {(control.Checked ? "on" : "off")}", () => control.Checked = !control.Checked);
         };
         return status is null ? new SettingsRow(name, explanation, keywords, control) : new SettingsRow(name, explanation, keywords, status, control);
+    }
+
+    // #1426 stage 2: Memory as one page of rows -- the facts she keeps about
+    // you, each character's own notes (#914), group mode, skills, presets
+    // and the memory tools. Character cards and "Tell Mana what to remember"
+    // come in their own PRs.
+    private RelationshipPanel? relationships;
+
+    private TabPage BuildMemoryPage()
+    {
+        relationships = new RelationshipPanel(backendClient, loadNow: false);
+        var parts = new List<Control>
+        {
+            SettingsRows.Section("What she knows"),
+            BuildFactsRow(),
+            SettingsRows.Section("Characters"),
+        };
+        parts.AddRange(relationships.Rows);
+        parts.AddRange(BuildGroupModeRows());
+        parts.Add(SettingsRows.Section("Skills"));
+        parts.AddRange(BuildSkillsRows());
+        parts.Add(SettingsRows.Section("Presets"));
+        parts.AddRange(BuildPresetsRows());
+        parts.Add(SettingsRows.Section("Tools"));
+        parts.Add(new SettingsRow("Memory graph", "How what she knows connects", "graph map links",
+            SettingsRows.Action("Open…", () => new MemoryGraphForm(backendClient).Show())));
+        parts.Add(new SettingsRow("Edit snapshots", "Her edits, kept so you can roll one back", "snapshots undo rollback history",
+            SettingsRows.Action("Open…", () => new SnapshotsForm(backendClient).Show())));
+        return SettingsRows.Page("Memory", parts.ToArray());
+    }
+
+    // #1426: the facts she keeps about you, like Claude's memory tab: a
+    // search and a filter by state (with counts) over a one-line list, and
+    // what can be done with the fact picked. Facts sync both ways with the
+    // Obsidian vault (#935).
+    private static readonly (string State, string Label)[] FactFilters = [("active", "Active"), ("pending", "Waiting for you"), ("archived", "Archived")];
+    private string factFilter = "active";
+    private readonly List<RadioButton> factChips = new();
+    private readonly FlowLayoutPanel factActions = SettingsRows.Line();
+    private readonly Button openVaultButton = SettingsRows.Action("Open in Obsidian", () => { });
+    private ManaVaultStatus? vault;
+
+    internal ListView FactsList => factsList; // tests
+    internal IReadOnlyList<RadioButton> FactChips => factChips; // tests
+    internal FlowLayoutPanel FactActions => factActions; // tests
+
+    internal static string FactState(ManaMemoryFact fact) => fact.Status is "pending" or "archived" ? fact.Status : "active";
+
+    // "Today", "3 Oct", or "3 Oct 2025" from another year.
+    internal static string UpdatedText(string? iso, DateTimeOffset now)
+    {
+        if (!DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var at))
+        {
+            return "";
+        }
+        var local = at.ToOffset(now.Offset);
+        return local.Date == now.Date ? "Today" : local.Year == now.Year ? local.ToString("d MMM", System.Globalization.CultureInfo.InvariantCulture) : local.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private SettingsRow BuildFactsRow()
+    {
+        factsList.View = View.Details;
+        factsList.FullRowSelect = true;
+        factsList.MultiSelect = false;
+        factsList.HideSelection = false;
+        factsList.Height = 180; // about seven facts; the list scrolls, the page doesn't grow
+        factsList.Columns.Add("Name", 170);
+        factsList.Columns.Add("What she knows", 300);
+        factsList.Columns.Add("Updated", 100);
+        DarkTheme.ApplyListView(factsList);
+        factsList.ClientSizeChanged += (_, _) => factsList.Columns[1].Width = Math.Max(120, factsList.ClientSize.Width - 170 - 100);
+        factsList.SelectedIndexChanged += (_, _) => ShowFactActions();
+        factsList.ItemActivate += async (_, _) =>
+        {
+            if (SelectedFact is { } fact && FactState(fact) != "archived")
+            {
+                await EditSelectedFactAsync();
+            }
+        };
+
+        StyleSearchBox(factsSearch);
+        factsSearch.Dock = DockStyle.None;
+        factsSearch.Width = 180;
+        factsSearch.TextChanged += (_, _) => ShowFacts();
+        var top = SettingsRows.Line(factsSearch);
+        top.Margin = Padding.Empty;
+        foreach (var (state, label) in FactFilters)
+        {
+            var chip = new RadioButton
+            {
+                Appearance = Appearance.Button,
+                AutoSize = true,
+                FlatStyle = FlatStyle.Flat,
+                Text = label,
+                Tag = (state, label),
+                Checked = state == factFilter,
+                BackColor = DarkTheme.Panel,
+                ForeColor = state == factFilter ? DarkTheme.Accent : DarkTheme.Text,
+                Margin = new Padding(6, 0, 0, 0),
+                UseMnemonic = false,
+            };
+            chip.FlatAppearance.BorderColor = state == factFilter ? DarkTheme.Accent : DarkTheme.Border;
+            chip.FlatAppearance.CheckedBackColor = DarkTheme.Panel;
+            chip.CheckedChanged += (_, _) =>
+            {
+                chip.ForeColor = chip.Checked ? DarkTheme.Accent : DarkTheme.Text;
+                chip.FlatAppearance.BorderColor = chip.Checked ? DarkTheme.Accent : DarkTheme.Border;
+                if (chip.Checked)
+                {
+                    factFilter = state;
+                    ShowFacts();
+                }
+            };
+            factChips.Add(chip);
+            top.Controls.Add(chip);
+        }
+        top.Controls.Add(SettingsRows.Action("+ Add", () => _ = AddFactAsync()));
+
+        // #935: the vault's state, opening it, and a sync right now.
+        openVaultButton.Enabled = false;
+        openVaultButton.Click += (_, _) =>
+        {
+            if (vault?.VaultDir is not { } dir)
+            {
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo($"obsidian://open?path={Uri.EscapeDataString(dir)}") { UseShellExecute = true });
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+            {
+                vaultStatusLabel.Text = $"Couldn't open Obsidian: {ex.Message}";
+            }
+        };
+        DarkTheme.ApplyButton(vaultSyncButton);
+        vaultSyncButton.Click += async (_, _) =>
+        {
+            vaultSyncButton.Enabled = false;
+            try
+            {
+                ShowVaultStatus(await backendClient.SyncMemoryVaultAsync());
+                await RefreshMemoryFactsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SettingsPanel: vault sync failed. {ex.Message}");
+                if (!IsDisposed)
+                {
+                    vaultStatusLabel.Text = $"Vault sync failed: {BackendError.Describe(ex)}";
+                    vaultSyncButton.Enabled = true;
+                }
+            }
+        };
+        vaultStatusLabel.BackColor = Color.Transparent;
+        ShowFactActions();
+        return new SettingsRow("Facts about you", "Shared by every character. Pinned ones go into every reply", "memory remember knowledge facts obsidian vault pin",
+            below: true, top, factsList, factActions, SettingsRows.Line(openVaultButton, vaultSyncButton, vaultStatusLabel));
+    }
+
+    private ManaMemoryFact? SelectedFact => factsList.SelectedItems.Count > 0 ? factsList.SelectedItems[0].Tag as ManaMemoryFact : null;
+
+    // What can be done with the fact picked, by its state.
+    private void ShowFactActions()
+    {
+        factActions.SuspendLayout();
+        foreach (var old in factActions.Controls.Cast<Control>().ToList())
+        {
+            old.Dispose();
+        }
+        Button Act(string text, Func<Task> act) => SettingsRows.Action(text, () => _ = act());
+        var fact = SelectedFact;
+        var actions = fact is null ? new Control[] { SettingsRows.Words("Pick a fact for what you can do with it") }
+            : FactState(fact) switch
+            {
+                "pending" => new Control[] { Act("Confirm", ConfirmSelectedFactAsync), Act("Edit", EditSelectedFactAsync), Act("Not true", DeleteSelectedFactAsync) },
+                "archived" => new Control[] { Act("Restore", RestoreSelectedFactAsync), Act("Delete", DeleteSelectedFactAsync) },
+                _ => new[]
+                {
+                    Act("Edit", EditSelectedFactAsync),
+                    Act(fact.Pinned ? "Unpin" : "Pin", TogglePinSelectedFactAsync),
+                    fact.Trigger == "" ? null : Act(fact.Paused ? "Resume reminder" : "Pause reminder", TogglePauseSelectedFactAsync),
+                    Act("Archive", ArchiveSelectedFactAsync),
+                    Act("Delete", DeleteSelectedFactAsync),
+                }.OfType<Control>().ToArray(),
+            };
+        factActions.Controls.AddRange(actions);
+        factActions.ResumeLayout();
+    }
+
+    private async Task RestoreSelectedFactAsync()
+    {
+        if (SelectedFact is not { } fact)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.RestoreMemoryFactAsync(fact.Key);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                vaultStatusLabel.Text = $"Couldn't restore \"{fact.Key}\": {BackendError.Describe(ex)}";
+            }
+            return;
+        }
+        if (!IsDisposed)
+        {
+            await RefreshMemoryFactsAsync();
+        }
+    }
+
+    // #1426: group mode (#914) moved here from the tray: a second character
+    // replies alongside the active one, and her avatar stands beside Mana's.
+    private Control[] BuildGroupModeRows()
+    {
+        groupModeStatus.ForeColor = DarkTheme.Muted;
+        groupModeStatus.BackColor = Color.Transparent;
+        groupModeStatus.MaximumSize = new Size(260, 0);
+        groupPartnerCombo.BackColor = DarkTheme.Panel;
+        groupPartnerCombo.ForeColor = DarkTheme.Text;
+        groupPartnerCombo.DisplayMember = nameof(GroupPartner.Name);
+        groupModeCheck.CheckedChanged += async (_, _) => await SaveGroupModeAsync();
+        groupPartnerCombo.SelectedIndexChanged += async (_, _) =>
+        {
+            if (groupModeCheck.Checked)
+            {
+                await SaveGroupModeAsync();
+            }
+        };
+        return new Control[]
+        {
+            new SettingsRow("Group mode", "On casual chat a second character adds a short reply in her own voice. It pauses while a game runs", "group partner duo evil mana second character",
+                groupModeStatus, groupModeCheck),
+            new SettingsRow("Partner", "Who replies alongside her", "group partner", groupPartnerCombo),
+        };
+    }
+
+    private Control[] BuildSkillsRows()
+    {
+        skillsList.View = View.Details;
+        skillsList.FullRowSelect = true;
+        skillsList.MultiSelect = false;
+        skillsList.Height = 160;
+        skillsList.Columns.Add("Skill", 160);
+        skillsList.Columns.Add("What it's for", 300);
+        skillsList.Columns.Add("Status", 90);
+        DarkTheme.ApplyListView(skillsList);
+        skillsList.ClientSizeChanged += (_, _) => skillsList.Columns[1].Width = Math.Max(120, skillsList.ClientSize.Width - 160 - 90);
+        skillsList.ItemActivate += async (_, _) => await EditSelectedSkillAsync();
+        return new Control[]
+        {
+            new SettingsRow("Her skills", "Know-how every character shares. One you write is approved at once unless it looks risky", "skills know-how abilities",
+                below: true, skillsList, SettingsRows.Line(
+                    SettingsRows.Action("New…", () => _ = CreateSkillAsync()),
+                    SettingsRows.Action("Edit…", () => _ = EditSelectedSkillAsync()),
+                    SettingsRows.Action("Delete", () => _ = DeleteSelectedSkillAsync()),
+                    SettingsRows.Action("Import folder…", () => _ = ImportSkillFolderAsync()),
+                    SettingsRows.Action("Import zip…", () => _ = ImportSkillZipAsync()),
+                    SettingsRows.Action("Import link…", () => _ = ImportSkillLinkAsync()))),
+            // Q20: how Mana may use imported skills (default: ask the first time).
+            ChoiceRow("Imported skills", "How she may use a skill you import", "import skill openclaw agentskills",
+                new[] { "Use freely", "Ask each time", "Ask the first time" }, 2, i => _ = SaveImportedSkillUseAsync(i), importedSkillUseBox),
+        };
+    }
+
+    private async Task SaveImportedSkillUseAsync(int index)
+    {
+        try
+        {
+            await backendClient.SetImportedSkillUseAsync(ImportedSkillUseModes[index]);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SettingsPanel: failed to save the imported-skills setting. {ex.Message}");
+        }
+    }
+
+    // #573: full CRUD -- New and Edit share PresetDialog, Edit pre-filled
+    // from the item's ManaPreset (its Tag). #681: the active one reaches
+    // every reply.
+    private Control[] BuildPresetsRows()
+    {
+        presetsList.View = View.Details;
+        presetsList.FullRowSelect = true;
+        presetsList.MultiSelect = false;
+        presetsList.HeaderStyle = ColumnHeaderStyle.None;
+        presetsList.Height = 100;
+        presetsList.Columns.Add("Name", 300);
+        DarkTheme.ApplyListView(presetsList);
+        presetsList.ClientSizeChanged += (_, _) => presetsList.Columns[0].Width = presetsList.ClientSize.Width;
+        presetsList.ItemActivate += async (_, _) => await EditSelectedPresetAsync();
+
+        activePresetCombo.BackColor = DarkTheme.Panel;
+        activePresetCombo.ForeColor = DarkTheme.Text;
+        activePresetCombo.AccessibleName = "Active preset";
+        activePresetCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (!populatingPresets)
+            {
+                SaveActivePresetId((activePresetCombo.SelectedItem as ManaPreset)?.Id);
+            }
+        };
+        return new Control[]
+        {
+            new SettingsRow("Active preset", "Extra instructions added to every reply", "preset style persona instructions", activePresetCombo),
+            new SettingsRow("Presets", "Sets of instructions you can switch between", "presets instructions",
+                below: true, presetsList, SettingsRows.Line(
+                    SettingsRows.Action("New…", () => _ = CreatePresetAsync()),
+                    SettingsRows.Action("Edit…", () => _ = EditSelectedPresetAsync()),
+                    SettingsRows.Action("Delete", () => _ = DeleteSelectedPresetAsync()))),
+        };
     }
 
     // A row with a dropdown that saves on each pick; Undo picks the one before.
@@ -1375,11 +1648,6 @@ internal sealed class SettingsPanel : UserControl
         return new TabPage(title) { Controls = { layout } };
     }
 
-    private TabPage BuildMemoryToolsTab() => ButtonsPage("Memory tools",
-        "The memory graph shows how what she knows connects. Snapshots keep her edits, so you can roll one back.",
-        ("Memory graph…", () => new MemoryGraphForm(backendClient).Show()),
-        ("Edit snapshots…", () => new SnapshotsForm(backendClient).Show()));
-
     private TabPage BuildModelToolsTab() => ButtonsPage("Model tools",
         "Put two models side by side on the same prompt, or open the local model's own web page.",
         ("Compare models…", () => new CompareModeForm(backendClient).Show()),
@@ -1563,195 +1831,6 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private TabPage BuildMemoryFactsTab()
-    {
-        factsList.Dock = DockStyle.Fill;
-        factsList.View = View.Details;
-        factsList.FullRowSelect = true;
-        factsList.Columns.Add("Key", 150);
-        factsList.Columns.Add("Fact", 300);
-        factsList.Columns.Add("Status", 80);
-        factsList.Columns.Add("Pinned", 60);
-        factsList.Columns.Add("Trust", 80);
-        DarkTheme.ApplyListView(factsList);
-
-        // #674: pinned facts go into every reply's prompt (up to 5).
-        var pinButton = new Button { Text = "Pin / Unpin", Dock = DockStyle.Bottom, Height = 28 };
-        DarkTheme.ApplyButton(pinButton);
-        pinButton.Click += async (_, _) =>
-        {
-            pinButton.Enabled = false;
-            try
-            {
-                await TogglePinSelectedFactAsync();
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    pinButton.Enabled = true;
-                }
-            }
-        };
-
-        var archiveButton = new Button { Text = "Archive", Dock = DockStyle.Bottom, Height = 28 };
-        DarkTheme.ApplyButton(archiveButton);
-        archiveButton.Click += async (_, _) =>
-        {
-            // Guards against a rapid double-click firing two overlapping
-            // archive calls for the same fact -- harmless server-side
-            // (archive is idempotent) but not worth even attempting.
-            archiveButton.Enabled = false;
-            try
-            {
-                await ArchiveSelectedFactAsync();
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    archiveButton.Enabled = true;
-                }
-            }
-        };
-
-        // #663: a pending fact is one Mana picked up without being asked.
-        var confirmButton = new Button { Text = "Confirm (pending)", Dock = DockStyle.Bottom, Height = 28 };
-        DarkTheme.ApplyButton(confirmButton);
-        confirmButton.Click += async (_, _) =>
-        {
-            confirmButton.Enabled = false;
-            try
-            {
-                await ConfirmSelectedFactAsync();
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    confirmButton.Enabled = true;
-                }
-            }
-        };
-
-        // #698: a paused standing reminder ("When ...") never fires.
-        var pauseButton = new Button { Text = "Pause / Resume reminder", Dock = DockStyle.Bottom, Height = 28 };
-        DarkTheme.ApplyButton(pauseButton);
-        pauseButton.Click += async (_, _) =>
-        {
-            pauseButton.Enabled = false;
-            try
-            {
-                await TogglePauseSelectedFactAsync();
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    pauseButton.Enabled = true;
-                }
-            }
-        };
-
-        // Q29: edit a fact's text (and a reminder's "when" part) in place;
-        // chat edits ("move the raid reminder to Friday") work too.
-        var editButton = new Button { Text = "Edit", Dock = DockStyle.Bottom, Height = 28 };
-        DarkTheme.ApplyButton(editButton);
-        editButton.Click += async (_, _) =>
-        {
-            editButton.Enabled = false;
-            try
-            {
-                await EditSelectedFactAsync();
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    editButton.Enabled = true;
-                }
-            }
-        };
-
-        // #1331: delete asks once, then really removes the fact.
-        var deleteButton = new Button { Text = "Delete", Dock = DockStyle.Bottom, Height = 28 };
-        DarkTheme.ApplyButton(deleteButton);
-        deleteButton.Click += async (_, _) =>
-        {
-            deleteButton.Enabled = false;
-            try
-            {
-                await DeleteSelectedFactAsync();
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    deleteButton.Enabled = true;
-                }
-            }
-        };
-
-        StyleSearchBox(factsSearch);
-        factsSearch.Dock = DockStyle.Fill;
-        factsSearch.TextChanged += (_, _) => ShowFacts();
-        var addFactButton = new Button { Text = "+ Add", Dock = DockStyle.Right, Width = 70 };
-        DarkTheme.ApplyButton(addFactButton);
-        addFactButton.Click += async (_, _) =>
-        {
-            addFactButton.Enabled = false;
-            try
-            {
-                await AddFactAsync();
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    addFactButton.Enabled = true;
-                }
-            }
-        };
-        var factsSearchRow = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = DarkTheme.Background };
-        factsSearchRow.Controls.Add(factsSearch);
-        factsSearchRow.Controls.Add(addFactButton);
-
-        // #935: the Obsidian vault sync's status, and a sync right now.
-        DarkTheme.ApplyButton(vaultSyncButton);
-        vaultSyncButton.Click += async (_, _) =>
-        {
-            vaultSyncButton.Enabled = false;
-            try
-            {
-                ShowVaultStatus(await backendClient.SyncMemoryVaultAsync());
-                await RefreshMemoryFactsAsync();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"SettingsPanel: vault sync failed. {ex.Message}");
-                if (!IsDisposed)
-                {
-                    vaultStatusLabel.Text = $"Vault sync failed: {ex.Message}";
-                    vaultSyncButton.Enabled = true;
-                }
-            }
-        };
-        var vaultRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = DarkTheme.Background };
-        vaultRow.Controls.Add(vaultSyncButton);
-        vaultRow.Controls.Add(vaultStatusLabel);
-
-        var page = new TabPage("Memory Facts");
-        page.Controls.Add(factsList);
-        page.Controls.Add(factsSearchRow);
-        page.Controls.Add(vaultRow);
-        page.Controls.Add(deleteButton);
-        page.Controls.Add(editButton);
-        page.Controls.Add(pinButton);
-        page.Controls.Add(archiveButton);
-        page.Controls.Add(confirmButton);
-        page.Controls.Add(pauseButton);
-        return page;
-    }
 
     private async Task TogglePinSelectedFactAsync()
     {
@@ -1966,8 +2045,9 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
+        vault = status;
         vaultStatusLabel.Text = DescribeVault(status, DateTimeOffset.Now);
-        vaultSyncButton.Enabled = status.VaultDir is not null;
+        vaultSyncButton.Enabled = openVaultButton.Enabled = status.VaultDir is not null;
     }
 
     // #935: the Memory Facts tab's vault line, in Doctor's terms.
@@ -1996,7 +2076,7 @@ internal sealed class SettingsPanel : UserControl
         return text;
     }
 
-    private async Task RefreshMemoryFactsAsync()
+    internal async Task RefreshMemoryFactsAsync()
     {
         await RefreshVaultStatusAsync();
         try
@@ -2021,82 +2101,30 @@ internal sealed class SettingsPanel : UserControl
 
     private void ShowFacts()
     {
-        factsList.Items.Clear();
-        foreach (var fact in facts.Where(f => MatchesSearch(factsSearch.Text, f.Key, f.Text, f.Trigger)))
+        foreach (var chip in factChips)
         {
-            var item = new ListViewItem(fact.Key) { Tag = fact };
-            item.SubItems.Add(fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}");
-            item.SubItems.Add(fact.Paused ? $"{fact.Status}, paused" : fact.Status);
-            item.SubItems.Add(fact.Pinned ? "yes" : "");
-            item.SubItems.Add(fact.Trust);
+            var (state, label) = ((string, string))chip.Tag!;
+            chip.Text = $"{label} ({facts.Count(f => FactState(f) == state)})";
+        }
+        var keep = SelectedFact?.Key;
+        factsList.BeginUpdate();
+        factsList.Items.Clear();
+        var now = DateTimeOffset.Now;
+        foreach (var fact in facts.Where(f => FactState(f) == factFilter && MatchesSearch(factsSearch.Text, f.Key, f.Text, f.Trigger)))
+        {
+            var item = new ListViewItem((fact.Pinned ? "★ " : "") + fact.Key) { Tag = fact, Selected = fact.Key == keep };
+            item.SubItems.Add((fact.Trigger == "" ? fact.Text : $"When {fact.Trigger} comes up: {fact.Text}") + (fact.Paused ? " (paused)" : ""));
+            item.SubItems.Add(UpdatedText(fact.UpdatedAt, now));
             factsList.Items.Add(item);
         }
-    }
-
-    private TabPage BuildSkillsTab()
-    {
-        skillsList.Dock = DockStyle.Fill;
-        skillsList.View = View.Details;
-        skillsList.FullRowSelect = true;
-        skillsList.Columns.Add("Skill", 150);
-        skillsList.Columns.Add("Description", 260);
-        skillsList.Columns.Add("Status", 80);
-        DarkTheme.ApplyListView(skillsList);
-
-        var newButton = new Button { Text = "New..." };
-        var editButton = new Button { Text = "Edit..." };
-        var deleteButton = new Button { Text = "Delete" };
-        DarkTheme.ApplyButton(newButton);
-        DarkTheme.ApplyButton(editButton);
-        DarkTheme.ApplyButton(deleteButton);
-        newButton.Click += async (_, _) => await CreateSkillAsync();
-        editButton.Click += async (_, _) => await EditSelectedSkillAsync();
-        deleteButton.Click += async (_, _) => await DeleteSelectedSkillAsync();
-        // #664 (Q21): import an OpenClaw/AgentSkills SKILL.md folder, or a zip of one.
-        var importButton = new Button { Text = "Import folder...", AutoSize = true };
-        DarkTheme.ApplyButton(importButton);
-        importButton.Click += async (_, _) => await ImportSkillFolderAsync();
-        var importZipButton = new Button { Text = "Import zip...", AutoSize = true };
-        DarkTheme.ApplyButton(importZipButton);
-        importZipButton.Click += async (_, _) => await ImportSkillZipAsync();
-        var importLinkButton = new Button { Text = "Import link...", AutoSize = true };
-        DarkTheme.ApplyButton(importLinkButton);
-        importLinkButton.Click += async (_, _) => await ImportSkillLinkAsync();
-
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(newButton);
-        buttonRow.Controls.Add(editButton);
-        buttonRow.Controls.Add(deleteButton);
-        buttonRow.Controls.Add(importButton);
-        buttonRow.Controls.Add(importZipButton);
-        buttonRow.Controls.Add(importLinkButton);
-
-        // Q20: how Mana may use imported skills (default: ask the first time).
-        importedSkillUseBox.Items.AddRange(new object[] { "Use freely", "Ask each time", "Ask the first time" });
-        importedSkillUseBox.SelectedIndex = 2;
-        importedSkillUseBox.BackColor = DarkTheme.Panel2;
-        importedSkillUseBox.ForeColor = DarkTheme.Text;
-        importedSkillUseBox.SelectionChangeCommitted += async (_, _) =>
+        if (factsList.Items.Count == 0)
         {
-            try
-            {
-                await backendClient.SetImportedSkillUseAsync(ImportedSkillUseModes[importedSkillUseBox.SelectedIndex]);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"SettingsPanel: failed to save the imported-skills setting. {ex.Message}");
-            }
-        };
-        var settingRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        settingRow.Controls.Add(new Label { Text = "Imported skills:", AutoSize = true, ForeColor = DarkTheme.Text, Padding = new Padding(0, 6, 0, 0) });
-        settingRow.Controls.Add(importedSkillUseBox);
-
-        var page = new TabPage("Skills");
-        page.Controls.Add(skillsList);
-        page.Controls.Add(settingRow);
-        page.Controls.Add(buttonRow);
-        return page;
+            factsList.Items.Add(new ListViewItem(factsSearch.Text.Trim().Length > 0 ? "Nothing matches" : "Nothing here") { ForeColor = DarkTheme.Muted });
+        }
+        factsList.EndUpdate();
+        ShowFactActions();
     }
+
 
     private async Task ImportSkillFolderAsync()
     {
@@ -2302,7 +2330,9 @@ internal sealed class SettingsPanel : UserControl
             var mode = Array.IndexOf(ImportedSkillUseModes, await backendClient.GetImportedSkillUseAsync());
             if (!IsDisposed && mode >= 0)
             {
+                loadingRows = true;
                 importedSkillUseBox.SelectedIndex = mode;
+                loadingRows = false;
             }
         }
         catch (Exception ex)
@@ -3474,55 +3504,6 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    // #573: full CRUD, unlike the Skills tab above (view/delete only,
-    // per its own documented scope cut) -- presets-capability.js exposes
-    // a real PATCH route, so Edit reuses the same PresetDialog New does,
-    // pre-filled from the selected item's full ManaPreset (kept as the
-    // item's Tag so Edit doesn't need a round-trip just to get the
-    // current instructions text back).
-    private TabPage BuildPresetsTab()
-    {
-        presetsList.Dock = DockStyle.Fill;
-        presetsList.View = View.Details;
-        presetsList.FullRowSelect = true;
-        presetsList.Columns.Add("Name", 200);
-        DarkTheme.ApplyListView(presetsList);
-
-        var newButton = new Button { Text = "New..." };
-        var editButton = new Button { Text = "Edit..." };
-        var deleteButton = new Button { Text = "Delete" };
-        DarkTheme.ApplyButton(newButton);
-        DarkTheme.ApplyButton(editButton);
-        DarkTheme.ApplyButton(deleteButton);
-        newButton.Click += async (_, _) => await CreatePresetAsync();
-        editButton.Click += async (_, _) => await EditSelectedPresetAsync();
-        deleteButton.Click += async (_, _) => await DeleteSelectedPresetAsync();
-
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(newButton);
-        buttonRow.Controls.Add(editButton);
-        buttonRow.Controls.Add(deleteButton);
-
-        // #681: without an active choice no preset ever reached a reply.
-        activePresetCombo.BackColor = DarkTheme.Panel2;
-        activePresetCombo.ForeColor = DarkTheme.Text;
-        activePresetCombo.SelectedIndexChanged += (_, _) =>
-        {
-            if (!populatingPresets)
-            {
-                SaveActivePresetId((activePresetCombo.SelectedItem as ManaPreset)?.Id);
-            }
-        };
-        var activeRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        activeRow.Controls.Add(new Label { Text = "Active preset", AutoSize = true, ForeColor = DarkTheme.Text, Padding = new Padding(0, 6, 0, 0) });
-        activeRow.Controls.Add(activePresetCombo);
-
-        var page = new TabPage("Presets");
-        page.Controls.Add(presetsList);
-        page.Controls.Add(activeRow);
-        page.Controls.Add(buttonRow);
-        return page;
-    }
 
     private void SaveActivePresetId(string? presetId)
     {
