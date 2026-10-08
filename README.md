@@ -24,7 +24,7 @@
   [<a href="docs/quick_start_windows.md">Quick start</a>]
 </p>
 
-**License (code): Apache License 2.0 — © 2026 ManaAI.** See LICENSE and NOTICE.
+**License (code): Apache License 2.0 — © 2026 Mashiron Labs.** See LICENSE and NOTICE.
 
 **Artwork (images/sprites/avatar models): All rights reserved.** The images in `sprites/` and any avatar model files are proprietary and may not be reused without permission; see LICENSE-ARTWORK.
 

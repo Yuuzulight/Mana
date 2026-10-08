@@ -8,7 +8,7 @@ Short version
 Policy details
 
 1. No unsolicited contributions
-   - This repository is maintained by ManaAI. External pull requests will be closed unless they are part of an agreed contribution workflow.
+   - This repository is maintained by Mashiron Labs. External pull requests will be closed unless they are part of an agreed contribution workflow.
 
 2. Accepted contribution process
    - To propose changes, open an issue describing the change and why it is needed with examples and design notes. Maintainters will review the proposal and, if appropriate, invite you to contribute under an approved license agreement (CLA) or the DCO.
