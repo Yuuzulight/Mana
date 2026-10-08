@@ -3,6 +3,7 @@
 // the new character's handoff line is the reply, spoken in her voice.
 // Group mode (a partner replying too) is toggled the same two ways:
 // POST /characters/group or "group mode on" / "let Evil Mana join".
+const rateLimit = require("express-rate-limit");
 const {
   ValidationError,
   requireString,
@@ -11,6 +12,16 @@ const {
 const { CharacterError, handoffLine } = require("../characters");
 
 const KEY = "characters";
+
+// #1426: server.js's app-wide limiter already covers these, but CodeQL
+// can't see through registerRoutes, so the editor's admin routes carry
+// their own (as memory-facts-capability.js's do).
+const adminCharactersRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: Number(process.env.MANA_RATE_LIMIT_MAX || 300),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // What a client needs: no persona or voice, only the model the launcher loads.
 const summary = (c) => ({ id: c.id, name: c.name, live2dModel: c.live2dModel });
@@ -29,7 +40,7 @@ function createCharactersCapability(characters) {
       };
       const id = (req) => String(req.params.id || "").trim().toLowerCase();
 
-      app.get("/admin/characters", (req, res) => {
+      app.get("/admin/characters", adminCharactersRateLimiter, (req, res) => {
         if (!admin(req, res)) return;
         try {
           return res.json({ active: characters.active().id, characters: characters.editable() });
@@ -38,7 +49,7 @@ function createCharactersCapability(characters) {
         }
       });
 
-      app.post("/admin/characters", (req, res) => {
+      app.post("/admin/characters", adminCharactersRateLimiter, (req, res) => {
         if (!admin(req, res)) return;
         try {
           return res.json({ character: summary(characters.saveCharacter(null, req.body || {})) });
@@ -47,7 +58,7 @@ function createCharactersCapability(characters) {
         }
       });
 
-      app.put("/admin/characters/:id", (req, res) => {
+      app.put("/admin/characters/:id", adminCharactersRateLimiter, (req, res) => {
         if (!admin(req, res)) return;
         try {
           const saved = characters.saveCharacter(id(req), req.body || {});
@@ -59,7 +70,7 @@ function createCharactersCapability(characters) {
       });
 
       // A built-in's prompt back to the original.
-      app.post("/admin/characters/:id/reset", (req, res) => {
+      app.post("/admin/characters/:id/reset", adminCharactersRateLimiter, (req, res) => {
         if (!admin(req, res)) return;
         try {
           const reset = characters.resetPrompt(id(req));
@@ -71,7 +82,7 @@ function createCharactersCapability(characters) {
       });
 
       // A character I added, with her notes and milestones; built-ins stay.
-      app.delete("/admin/characters/:id", (req, res) => {
+      app.delete("/admin/characters/:id", adminCharactersRateLimiter, (req, res) => {
         if (!admin(req, res)) return;
         try {
           if (!characters.removeCharacter(id(req))) {
