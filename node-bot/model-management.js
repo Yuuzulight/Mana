@@ -22,14 +22,8 @@ const { assertLocalUrl, isLocalOnly } = require("./local-only");
 // that actually speak that shape. "custom" leaves baseUrl for the user to
 // fill in -- any other OpenAI-compatible server (a different local
 // runtime, a proxy, another host on the LAN) works the same way.
-const BRAIN_PROVIDER_PRESETS = {
-  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", needsKey: true },
-  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", needsKey: true },
-  groq: { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", needsKey: true },
-  ollama: { label: "Ollama (local)", baseUrl: "http://127.0.0.1:11434/v1", needsKey: false },
-  lmstudio: { label: "LM Studio (local)", baseUrl: "http://127.0.0.1:1234/v1", needsKey: false },
-  custom: { label: "Custom", baseUrl: "", needsKey: false },
-};
+// #1426: the providers Settings knows by name (provider-presets.js).
+const { PROVIDER_PRESETS: BRAIN_PROVIDER_PRESETS } = require("./provider-presets");
 
 // Directory names skipped during a full-storage scan for .gguf files: OS
 // internals and huge dev-tool caches that are never where a downloaded model
@@ -642,6 +636,9 @@ function createModelManagement(options = {}) {
     // #670: no cloud "brain" while local-only mode is on.
     if (isLocalOnly()) {
       const next = { ...modelSettingsStore.getBrainSettings(), ...partial };
+      // #1426: a provider picked brings its own address.
+      const provider = partial.providerId ? modelSettingsStore.getProvider(partial.providerId) : null;
+      if (provider) next.baseUrl = provider.baseUrl;
       if (next.type === "openai_compatible") assertLocalUrl(next.baseUrl, "remote AI at");
     }
     modelSettingsStore.setBrainSettings(partial);
@@ -652,7 +649,7 @@ function createModelManagement(options = {}) {
     for (const key of ['baseUrl', 'apiKey', 'model']) {
       if (partial[key] !== undefined && typeof partial[key] !== 'string') throw new Error(`${key} must be a string`);
     }
-    if (partial.timeoutSeconds !== undefined && ![0, 30, 60].includes(partial.timeoutSeconds)) throw new Error('timeoutSeconds must be 0, 30 or 60');
+    if (partial.timeoutSeconds !== undefined && ![0, 10, 30, 60].includes(partial.timeoutSeconds)) throw new Error('timeoutSeconds must be 0, 10, 30 or 60');
     if (partial.baseUrl) {
       let parsed;
       try {
@@ -768,6 +765,22 @@ function createModelManagement(options = {}) {
     }
   }
 
+  // #1426: providers, through the settings store. Checking one reaches its
+  // address with its key and remembers how that went.
+  const listProviders = () => modelSettingsStore.listProviders();
+  const addProvider = (fields) => modelSettingsStore.addProvider(fields);
+  const updateProvider = (id, fields = {}) =>
+    modelSettingsStore.updateProvider(id, { baseUrl: fields.baseUrl, apiKey: fields.apiKey, label: fields.label });
+  const removeProvider = (id) => modelSettingsStore.removeProvider(id);
+  async function checkProvider(id) {
+    const provider = modelSettingsStore.getProvider(id);
+    if (!provider) return null;
+    const result = await (options.testConnection || testBrainConnection)({ baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+    return modelSettingsStore.updateProvider(id, {
+      lastCheck: { at: new Date().toISOString(), ok: result.ok === true, ...(result.ok ? {} : { error: String(result.error || "").slice(0, 200) }) },
+    });
+  }
+
   function getChatModels() {
     const models = [{ id: 'automatic', label: 'Automatic' }];
     for (const profile of getKnownLlamaModelProfiles()) models.push({ id: `local:${profile}`, label: `Local: ${profile}` });
@@ -793,6 +806,11 @@ function createModelManagement(options = {}) {
     setModelPath,
     setVisionSettings,
     testBrainConnection,
+    listProviders,
+    addProvider,
+    updateProvider,
+    removeProvider,
+    checkProvider,
   };
 }
 

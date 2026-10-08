@@ -573,6 +573,7 @@ internal sealed class ManaBackendClient
             BrainBaseUrl = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("baseUrl", out var baseUrlEl) ? baseUrlEl.GetString() ?? "" : "",
             BrainModel = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("model", out var brainModelEl) ? brainModelEl.GetString() ?? "" : "",
             BrainHasApiKey = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("hasApiKey", out var hasKeyEl) && hasKeyEl.GetBoolean(),
+            BrainProviderId = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("providerId", out var brainProviderEl) && brainProviderEl.ValueKind == JsonValueKind.String ? brainProviderEl.GetString() : null,
             VisionModelPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("modelPath", out var visionModelEl) ? visionModelEl.GetString() ?? "" : "",
             VisionMmprojPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("mmprojPath", out var mmprojEl) ? mmprojEl.GetString() ?? "" : "",
             RecommendedProfile = recommendation.ValueKind == JsonValueKind.Object && recommendation.TryGetProperty("profile", out var recProfileEl) ? recProfileEl.GetString() : null,
@@ -591,6 +592,79 @@ internal sealed class ManaBackendClient
     {
         using var content = new StringContent(JsonSerializer.Serialize(new { sessionId, model }), Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/models/chat", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: Settings' providers -- the presets, and the ones added (a key
+    // never comes back, only its last four characters).
+    public async Task<(IReadOnlyList<ManaProviderPreset> Presets, IReadOnlyList<ManaProvider> Providers)> GetProvidersAsync()
+    {
+        using var response = await http.GetAsync("/models/providers");
+        response.EnsureSuccessStatusCode();
+        var payload = JsonSerializer.Deserialize<ManaProviders>(await response.Content.ReadAsStringAsync(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+        return (payload.Presets, payload.Providers);
+    }
+
+    // Added and checked at once; a refusal's words come back in the exception.
+    public async Task<ManaProvider> AddProviderAsync(string preset, string? baseUrl, string? apiKey)
+    {
+        var fields = new Dictionary<string, string> { ["preset"] = preset };
+        if (!string.IsNullOrWhiteSpace(baseUrl)) fields["baseUrl"] = baseUrl.Trim();
+        if (!string.IsNullOrWhiteSpace(apiKey)) fields["apiKey"] = apiKey.Trim();
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/providers", content);
+        response.EnsureSuccessStatusCode();
+        return await ReadProviderAsync(response);
+    }
+
+    public async Task<ManaProvider> UpdateProviderKeyAsync(string id, string apiKey)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { apiKey }), Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync($"/models/providers/{Uri.EscapeDataString(id)}", content);
+        response.EnsureSuccessStatusCode();
+        return await ReadProviderAsync(response);
+    }
+
+    public async Task<ManaProvider> CheckProviderAsync(string id)
+    {
+        using var response = await http.PostAsync($"/models/providers/{Uri.EscapeDataString(id)}/check", null);
+        response.EnsureSuccessStatusCode();
+        return await ReadProviderAsync(response);
+    }
+
+    // Refused (409, naming the use) while a use picks it.
+    public async Task RemoveProviderAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/models/providers/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task<ManaProvider> ReadProviderAsync(HttpResponseMessage response)
+    {
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.TryGetProperty("provider", out var provider)
+            ? JsonSerializer.Deserialize<ManaProvider>(provider.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new()
+            : new();
+    }
+
+    // #1426: the main model -- this PC's (providerId null) or a provider's.
+    public async Task SetMainModelAsync(string? providerId, string model)
+    {
+        var fields = providerId is null
+            ? (object)new { type = "local" }
+            : new { type = "openai_compatible", providerId, model };
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/brain-provider", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: the cloud fallback through a provider; providerId null switches it off.
+    public async Task SetCloudFallbackProviderAsync(string? providerId, string model, int timeoutSeconds)
+    {
+        var fields = new Dictionary<string, object?> { ["enabled"] = providerId is not null, ["timeoutSeconds"] = timeoutSeconds, ["model"] = model };
+        if (providerId is not null) fields["providerId"] = providerId;
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/cloud-fallback", content);
         response.EnsureSuccessStatusCode();
     }
 
@@ -613,13 +687,16 @@ internal sealed class ManaBackendClient
         using var document = await JsonDocument.ParseAsync(stream);
         var root = document.RootElement;
         bool Flag(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.True;
-        return new ManaEscalationSettings(Flag("enabled"), Flag("hasKey"), Flag("localOnly"));
+        var provider = root.TryGetProperty("providerId", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        return new ManaEscalationSettings(Flag("enabled"), Flag("hasKey"), Flag("localOnly")) { ProviderId = provider };
     }
 
-    public async Task SetEscalationAsync(bool enabled, string? apiKey)
+    // providerId (#1426): a DeepSeek provider from Settings' list; null leaves it.
+    public async Task SetEscalationAsync(bool enabled, string? apiKey, string? providerId = null)
     {
         var fields = new Dictionary<string, object> { ["enabled"] = enabled };
         if (apiKey is not null) fields["apiKey"] = apiKey;
+        if (providerId is not null) fields["providerId"] = providerId;
         using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/self-work/escalation", content);
         response.EnsureSuccessStatusCode();
@@ -3423,6 +3500,8 @@ internal sealed class ManaModelStatus
     public bool BrainHasApiKey { get; init; }
     public string VisionModelPath { get; init; } = "";
     public string VisionMmprojPath { get; init; } = "";
+    // #1426: the provider the main model uses, when it isn't this PC's.
+    public string? BrainProviderId { get; init; }
     // #625: model-management.js's hardware-based profile suggestion key.
     public string? RecommendedProfile { get; init; }
     // Whether llama-server loads the model straight into VRAM (effective value).
@@ -3438,6 +3517,47 @@ internal sealed class ManaCloudFallback
     public string BaseUrl { get; init; } = "";
     public string Model { get; init; } = "";
     public bool HasApiKey { get; init; }
+    public string? ProviderId { get; init; } // #1426
+}
+
+// #1426: GET /models/providers.
+internal sealed class ManaProviders
+{
+    public List<ManaProviderPreset> Presets { get; init; } = new();
+    public List<ManaProvider> Providers { get; init; } = new();
+}
+
+internal sealed class ManaProviderPreset
+{
+    public string Id { get; init; } = "";
+    public string Label { get; init; } = "";
+    public string BaseUrl { get; init; } = "";
+    public bool NeedsKey { get; init; }
+    public bool Local { get; init; }
+
+    public override string ToString() => Label;
+}
+
+internal sealed class ManaProvider
+{
+    public string Id { get; init; } = "";
+    public string Preset { get; init; } = "";
+    public string Label { get; init; } = "";
+    public string BaseUrl { get; init; } = "";
+    public bool HasKey { get; init; }
+    public string? KeyHint { get; init; }
+    public ManaProviderCheck? LastCheck { get; init; }
+    public List<string> UsedBy { get; init; } = new();
+
+    public override string ToString() => Label;
+}
+
+// When it was last reached and how that went.
+internal sealed class ManaProviderCheck
+{
+    public DateTimeOffset At { get; init; }
+    public bool Ok { get; init; }
+    public string? Error { get; init; }
 }
 
 internal sealed class ManaChatModels
@@ -4258,7 +4378,10 @@ internal sealed class ManaLearnedReason
 }
 
 // #1406
-public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool LocalOnly);
+public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool LocalOnly)
+{
+    public string? ProviderId { get; init; } // #1426
+}
 public sealed record ManaSpendingTotals(double Usd, long Requests, long CacheHit, long CacheMiss, long Output, long Reasoning, long UnpricedRequests,
     double UsdCacheHit = 0, double UsdCacheMiss = 0, double UsdOutput = 0, double UsdReasoning = 0, double UsdPeakExtra = 0, double? CacheHitRate = null);
 public sealed record ManaIssueCost(int Issue, string? Title, string? State, IReadOnlyList<int> Prs, double Usd, long Requests);

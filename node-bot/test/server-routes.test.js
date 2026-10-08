@@ -287,6 +287,7 @@ test("cloud fallback route persists fallback settings through model management",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
       model: "gpt-test",
+      providerId: undefined,
     });
     assert.equal(payload.fallback.hasApiKey, true);
     assert.equal(payload.fallback.apiKey, undefined);
@@ -2032,5 +2033,52 @@ test("POST snapshots/:id/restore still returns 200 with the normal shape when th
     const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 200);
     assert.deepEqual(payload, { restored: { restoredPath: "/repo/a.txt" } });
+  });
+});
+
+test("provider routes: added and checked from this PC only, keys never back out, kept while in use (#1426)", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { createModelSettingsStore } = require("../model-settings-store");
+  const { createModelManagement } = require("../model-management");
+  const store = createModelSettingsStore({
+    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-providers-")),
+    secrets: { protect: (v) => `enc:${v}`, unprotect: (b) => b.slice(4) },
+  });
+  const checked = [];
+  const modelManagement = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: store,
+    testConnection: async ({ baseUrl, apiKey }) => {
+      checked.push([baseUrl, apiKey]);
+      return { ok: true };
+    },
+  });
+  const app = createApp({ modelManagement });
+  await withServer(app, async (baseUrl) => {
+    const listed = await (await fetch(`${baseUrl}/models/providers`, { headers: ADMIN })).json();
+    assert.ok(listed.presets.some((p) => p.id === "deepseek"));
+    assert.deepEqual(listed.providers, []);
+
+    const remote = await postJson(`${baseUrl}/models/providers`, { preset: "groq", apiKey: "gsk-1234" }, { ...ADMIN, "X-Forwarded-For": "192.168.1.50" });
+    assert.equal(remote.response.status, 403);
+
+    const added = await postJson(`${baseUrl}/models/providers`, { preset: "groq", apiKey: "gsk-1234" }, ADMIN);
+    assert.equal(added.response.status, 200);
+    assert.equal(added.payload.provider.keyHint, "…1234");
+    assert.equal(added.payload.provider.lastCheck.ok, true);
+    assert.ok(!JSON.stringify(added.payload).includes("gsk-1234"));
+    assert.deepEqual(checked, [["https://api.groq.com/openai/v1", "gsk-1234"]]);
+
+    const twice = await postJson(`${baseUrl}/models/providers`, { preset: "groq", apiKey: "x" }, ADMIN);
+    assert.equal(twice.response.status, 400);
+    assert.match(twice.payload.error, /already added/);
+
+    store.setFallbackSettings({ enabled: true, providerId: "groq", model: "llama" });
+    const busy = await fetch(`${baseUrl}/models/providers/groq`, { method: "DELETE", headers: ADMIN });
+    assert.equal(busy.status, 409);
+    assert.match((await busy.json()).error, /Cloud fallback/);
   });
 });

@@ -306,7 +306,8 @@ test("getKnownBrainProviders lists presets without leaking anything key-shaped",
 
   const providers = manager.getKnownBrainProviders();
   const ollama = providers.find((p) => p.id === "ollama");
-  assert.equal(ollama.label, "Ollama (local)");
+  assert.equal(ollama.label, "Ollama");
+  assert.equal(ollama.local, true); // #1426: it runs on this PC
   assert.equal(ollama.baseUrl, "http://127.0.0.1:11434/v1");
   assert.equal(ollama.needsKey, false);
   assert.equal(providers.some((p) => p.id === "custom"), true);

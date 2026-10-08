@@ -78,25 +78,8 @@ internal sealed class SettingsPanel : UserControl
     // same reason pluginsList/factsList/etc. above are fields too.
     private readonly ComboBox modelProfileCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private readonly Label selectedModelLabel = new() { AutoSize = true };
-    private readonly Label recommendationLabel = new() { AutoSize = true };
-    private readonly ListBox scanResultsList = new() { Height = 100, Width = 400 };
-    private readonly CheckBox useRemoteAiCheckBox = new() { Text = "Use Remote AI (OpenAI-compatible endpoint)" };
-    private readonly ComboBox brainPresetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
-    private readonly TextBox brainBaseUrlBox = new() { Width = 300 };
-    private readonly TextBox brainApiKeyBox = new() { Width = 300, UseSystemPasswordChar = true };
-    private readonly TextBox brainModelBox = new() { Width = 300 };
-    private readonly Label brainStatusLabel = new() { AutoSize = true };
-    private readonly CheckBox cloudFallbackToggle = new() { Text = "Cloud fallback", AutoSize = true };
-    private readonly ComboBox cloudFallbackTiming = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180, AccessibleName = "Fallback wait" };
-    private readonly TextBox cloudFallbackUrl = new() { Width = 300, AccessibleName = "Fallback base URL" };
-    private readonly TextBox cloudFallbackKey = new() { Width = 300, UseSystemPasswordChar = true, AccessibleName = "Fallback API key" };
-    private readonly TextBox cloudFallbackModel = new() { Width = 300, AccessibleName = "Fallback model" };
-    private readonly Label cloudFallbackStatus = new() { AutoSize = true, MaximumSize = new Size(400, 0) };
-    private bool clearingFallbackKey;
     private readonly TextBox visionModelPathBox = new() { Width = 300 };
     private readonly TextBox visionMmprojPathBox = new() { Width = 300 };
-    private readonly CheckBox loadIntoVramCheckBox = new() { Text = "Load the model straight into VRAM (saves ~4 GB RAM)", AutoSize = true };
-    private System.Collections.Generic.IReadOnlyList<ManaBrainProviderPreset> brainPresets = System.Array.Empty<ManaBrainProviderPreset>();
     // #693: llama.cpp build group. Update stays disabled until a check
     // finds a newer build -- nothing downloads without that click.
     private readonly Label llamaBuildLabel = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
@@ -119,7 +102,7 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins and Memory so far).
+        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins, Memory and Models so far).
         var backendPage = BuildConnectionTab(out var localOnlyPage);
         var timingsPage = BuildPerfTab();
         var privacyPage = BuildPrivacyTab();
@@ -128,9 +111,7 @@ internal sealed class SettingsPanel : UserControl
         AddGroup("voice", "Voice", BuildVoicePage());
         AddGroup("checkins", "Check-ins", BuildCheckInsPage());
         AddGroup("memory", "Memory", BuildMemoryPage());
-        AddGroup("models", "Models", BuildModelTab(),
-            new TabPage("API Spending") { Controls = { new ApiSpendingPanel(backendClient) } }, // #1406
-            BuildCodingModeTab(), BuildModelToolsTab());
+        AddGroup("models", "Models", BuildModelsPage());
         AddGroup("permissions", "Permissions", BuildApprovalsTab(),
             new TabPage("Desktop folders") { Controls = { new DesktopFoldersPanel() } }, // #997
             BuildPendingEditsTab());
@@ -224,8 +205,6 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Model"] = "llm gguf brain remote cloud fallback provider",
-        ["API Spending"] = "deepseek key cost money balance tokens escalation",
         ["Approvals"] = "permission ask allow deny git github",
         ["Desktop folders"] = "files tidy move rename",
         ["Local-only"] = "offline cloud privacy",
@@ -234,8 +213,6 @@ internal sealed class SettingsPanel : UserControl
         ["MCP Clients"] = "mcp servers tools",
         ["Backend"] = "url port server admin token",
         ["Timings"] = "performance perf speed",
-        ["Coding mode"] = "14b engineering code programming",
-        ["Model tools"] = "compare web ui llama",
         ["Pending edits"] = "proposals approve changes",
         ["Developer"] = "project folder revert pr",
     };
@@ -732,51 +709,10 @@ internal sealed class SettingsPanel : UserControl
 
     // #1426: moved here from the tray. Starts or stops the 14B coding
     // engine (#1343); it can't run while a game does.
-    private readonly CheckBox codingModeCheck = new() { Text = "Coding mode (14B engine)", AutoSize = true };
-    private readonly Label codingModeStatus = new() { AutoSize = true };
+    private readonly SettingsSwitch codingModeCheck = new() { AccessibleName = "Coding mode" };
+    private readonly Label codingModeStatus = SettingsRows.Status();
     private bool loadingCodingMode;
 
-    private TabPage BuildCodingModeTab()
-    {
-        codingModeCheck.ForeColor = DarkTheme.Text;
-        codingModeStatus.ForeColor = DarkTheme.Muted;
-        codingModeCheck.CheckedChanged += async (_, _) =>
-        {
-            if (loadingCodingMode)
-            {
-                return;
-            }
-            try
-            {
-                if (codingModeCheck.Checked)
-                {
-                    await backendClient.StartCodingSessionAsync();
-                }
-                else
-                {
-                    await backendClient.StopCodingSessionAsync();
-                }
-            }
-            catch (Exception ex)
-            {
-                codingModeStatus.Text = $"Couldn't switch it: {BackendError.Describe(ex)}";
-                return;
-            }
-            await RefreshCodingModeAsync();
-        };
-        var hint = new Label
-        {
-            Text = "Loads the bigger engineering model for coding work, and unloads it when you switch this off.",
-            AutoSize = true,
-            MaximumSize = new Size(460, 0),
-            ForeColor = DarkTheme.Muted,
-        };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true, Padding = new Padding(12) };
-        layout.Controls.Add(codingModeCheck);
-        layout.Controls.Add(hint);
-        layout.Controls.Add(codingModeStatus);
-        return new TabPage("Coding mode") { Controls = { layout } };
-    }
 
     private async Task RefreshCodingModeAsync()
     {
@@ -1681,11 +1617,6 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(row);
         return new TabPage(title) { Controls = { layout } };
     }
-
-    private TabPage BuildModelToolsTab() => ButtonsPage("Model tools",
-        "Put two models side by side on the same prompt, or open the local model's own web page.",
-        ("Compare models…", () => new CompareModeForm(backendClient).Show()),
-        ("Open model web UI", ManaApplicationContext.OpenModelWebUi));
 
     private TabPage BuildPendingEditsTab() => ButtonsPage("Pending edits",
         "Changes she has proposed, waiting for your OK. The chat window opens this when one arrives.",
@@ -3678,26 +3609,290 @@ internal sealed class SettingsPanel : UserControl
     // panel rather than sub-tabs, keeping this a single Settings tab per
     // the issue's own scope, matching windows-launcher's own single
     // "Model" settings panel covering the same 4 concerns.
-    private TabPage BuildModelTab()
+    // #1426 stage 2: Models as one page of rows -- the providers (each API
+    // account once), what uses them (the main model, the cloud fallback,
+    // self-work escalation), this PC's own model, what it has cost, and the
+    // engine underneath.
+    private ProvidersPanel? providersPanel;
+    private readonly ComboBox mainSource = new() { AccessibleName = "Main model" };
+    private readonly TextBox mainModelBox = SettingsRows.Box("Main model's name", 180, "Its model name");
+    private readonly Button mainSwitch = SettingsRows.Action("Switch", () => { });
+    private readonly Label mainStatus = SettingsRows.Status();
+    private readonly ComboBox fallbackSource = new() { AccessibleName = "Cloud fallback" };
+    private readonly TextBox fallbackModelBox = SettingsRows.Box("Cloud fallback's model", 180, "Its model name");
+    private readonly ComboBox fallbackWait = new() { AccessibleName = "Fall back" };
+    private readonly Label fallbackStatus = SettingsRows.Status();
+    private readonly ComboBox escalationSource = new() { AccessibleName = "Self-work escalation" };
+    private readonly Label escalationStatus = SettingsRows.Status();
+    private readonly RowList scanResults = new() { Height = 190, NameWidth = 260, AccessibleName = "Models found on this PC" };
+    private Control? scanRow;
+    private static readonly int[] FallbackWaits = [10, 30, 60, 0];
+    private ManaModelStatus? modelStatus;
+
+    internal ProvidersPanel? ProvidersPanel => providersPanel; // tests
+    internal ComboBox MainSource => mainSource; // tests
+    internal ComboBox FallbackSource => fallbackSource; // tests
+    internal ComboBox EscalationSource => escalationSource; // tests
+
+    // A use's choice: "this PC" / "off", or one of the providers.
+    private sealed record Source(string? ProviderId, string Label)
     {
-        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = DarkTheme.Background };
-        var stack = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.TopDown,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
-            BackColor = DarkTheme.Background,
-        };
-        stack.Controls.Add(BuildActiveProfileGroup());
-        stack.Controls.Add(BuildLocalModelGroup());
-        stack.Controls.Add(BuildBrainProviderGroup());
-        stack.Controls.Add(BuildCloudFallbackGroup());
-        stack.Controls.Add(BuildVisionModelGroup());
-        stack.Controls.Add(BuildLlamaBuildGroup());
-        scroll.Controls.Add(stack);
-        return new TabPage("Model") { Controls = { scroll } };
+        public override string ToString() => Label;
     }
+
+    private TabPage BuildModelsPage()
+    {
+        providersPanel = new ProvidersPanel(backendClient);
+        providersPanel.Changed += () => _ = RefreshModelTabAsync();
+
+        foreach (var combo in new[] { mainSource, fallbackSource, escalationSource, modelProfileCombo })
+        {
+            combo.DropDownStyle = ComboBoxStyle.DropDownList;
+            combo.BackColor = DarkTheme.Panel;
+            combo.ForeColor = DarkTheme.Text;
+            combo.Width = 190;
+        }
+        modelProfileCombo.AccessibleName = "This PC's model";
+        mainSource.SelectedIndexChanged += (_, _) => ShowMainFields();
+        mainSwitch.Click += async (_, _) => await SwitchMainModelAsync();
+        SettingsRows.MakePrimary(mainSwitch);
+
+        fallbackSource.SelectionChangeCommitted += async (_, _) => await SaveFallbackAsync(askFirst: true);
+        fallbackModelBox.Leave += async (_, _) =>
+        {
+            if (modelStatus is { } now && fallbackModelBox.Text.Trim() != now.Fallback.Model)
+            {
+                await SaveFallbackAsync(askFirst: false);
+            }
+        };
+        var wait = SettingsRows.Choice("Fall back", ["After 10 seconds", "After 30 seconds", "After 60 seconds", "Only when it fails"], 3, fallbackWait);
+        wait.SelectionChangeCommitted += async (_, _) => await SaveFallbackAsync(askFirst: false);
+        escalationSource.SelectionChangeCommitted += async (_, _) => await SaveEscalationAsync();
+
+        // This PC's model file: found on its own, picked, or found by a scan.
+        selectedModelLabel.ForeColor = DarkTheme.Muted;
+        selectedModelLabel.BackColor = Color.Transparent;
+        selectedModelLabel.MaximumSize = new Size(300, 0);
+        scanResults.ActionsFor = _ => [new("", "Use this one", () => SetModelPathAsync((scanResults.SelectedItems.Count > 0 ? scanResults.SelectedItems[0].Tag as ManaGgufFile : null)?.Path))];
+        scanResults.ItemActivate += async (_, _) => await SetModelPathAsync((scanResults.SelectedItems.Count > 0 ? scanResults.SelectedItems[0].Tag as ManaGgufFile : null)?.Path);
+        scanRow = new SettingsRow("Models found on this PC", "Pick one to use it", "scan gguf found", below: true, SettingsRows.RoundPanel(scanResults)) { Visible = false };
+
+        var vram = new SettingsSwitch { AccessibleName = "Load into VRAM" };
+        loadIntoVramSwitch = vram;
+        vram.CheckedChanged += async (_, _) =>
+        {
+            if (!loadingRows)
+            {
+                await SaveLoadIntoVramAsync();
+            }
+        };
+
+        visionModelPathBox.Width = visionMmprojPathBox.Width = 240;
+        StyleTextBox(visionModelPathBox);
+        StyleTextBox(visionMmprojPathBox);
+        visionModelPathBox.ReadOnly = visionMmprojPathBox.ReadOnly = true;
+        visionModelPathBox.PlaceholderText = visionMmprojPathBox.PlaceholderText = "Found on its own";
+
+        var spending = new ApiSpendingPanel(backendClient, loadNow: false, showEscalation: false) { Dock = DockStyle.None, AutoSize = true, AutoScroll = false };
+        apiSpending = spending;
+
+        llamaBuildLabel.ForeColor = DarkTheme.Muted;
+        llamaBuildLabel.BackColor = Color.Transparent;
+        llamaBuildLabel.MaximumSize = new Size(320, 0);
+        llamaUpdateButton.Click += async (_, _) => await UpdateLlamaBuildAsync(allowMissingDigest: false);
+        llamaRollbackButton.Click += async (_, _) => await RollBackLlamaBuildAsync();
+        DarkTheme.ApplyButton(llamaUpdateButton);
+        DarkTheme.ApplyButton(llamaRollbackButton);
+        llamaUpdateButton.AutoSize = llamaRollbackButton.AutoSize = true;
+
+        codingModeStatus.ForeColor = DarkTheme.Muted;
+        codingModeStatus.BackColor = Color.Transparent;
+        codingModeCheck.CheckedChanged += async (_, _) => await SwitchCodingModeAsync();
+
+        var parts = new List<Control> { SettingsRows.Section("Providers") };
+        parts.AddRange(providersPanel.Rows);
+        parts.Add(SettingsRows.Section("Uses"));
+        parts.Add(new SettingsRow("Main model", "Who answers your chats. Switching restarts the model", "model brain local gguf qwen remote profile",
+            mainStatus, mainSource, modelProfileCombo, mainModelBox, mainSwitch));
+        parts.Add(new SettingsRow("Cloud fallback", "Used when this PC's model can't answer in time. Provider charges may apply", "fallback cloud remote",
+            fallbackStatus, fallbackSource, fallbackModelBox));
+        parts.Add(new SettingsRow("Fall back", "How long this PC's model gets first", "fallback wait timeout", wait));
+        parts.Add(new SettingsRow("Self-work escalation", "Tried when her own attempts at an issue fail: DeepSeek Flash, then Pro, 5 runs a day, held at peak price", "escalation self-work deepseek",
+            escalationStatus, escalationSource));
+        parts.Add(SettingsRows.Section("This PC's model"));
+        parts.Add(new SettingsRow("Model file", "Which file this PC's model loads", "gguf file local model scan browse",
+            selectedModelLabel,
+            SettingsRows.Action("Browse…", () => _ = BrowseForModelAsync()),
+            SettingsRows.Action("Find on this PC", () => _ = ScanForModelsAsync()),
+            SettingsRows.Action("Automatic", () => _ = SetModelPathAsync(null))));
+        parts.Add(scanRow);
+        parts.Add(new SettingsRow("Load straight into VRAM", "Saves about 4 GB of RAM. Applies next time the model loads", "gpu memory ram vram mmap", vram));
+        parts.Add(new SettingsRow("Vision model", "What she sees your screen with", "vision eyes screen gguf",
+            visionModelPathBox, SettingsRows.Action("Browse…", () => _ = PickVisionAsync(visionModelPathBox))));
+        parts.Add(new SettingsRow("Vision projector", "The vision model's mmproj file", "vision mmproj projector",
+            visionMmprojPathBox, SettingsRows.Action("Browse…", () => _ = PickVisionAsync(visionMmprojPathBox))));
+        parts.Add(SettingsRows.Section("Spending"));
+        parts.Add(new SettingsRow("API spending", "What her API use has cost", "spending cost money balance tokens price", below: true, spending));
+        parts.Add(SettingsRows.Section("Engine"));
+        parts.Add(new SettingsRow("Coding mode", "Loads the bigger 14B engineering model for coding work, and unloads it when you switch this off", "coding 14b engineering code programming",
+            codingModeStatus, codingModeCheck));
+        parts.Add(new SettingsRow("llama.cpp", "The engine her local models run on", "llama cpp build update rollback",
+            llamaBuildLabel, SettingsRows.Action("Check for update", () => _ = CheckLlamaBuildAsync()), llamaUpdateButton, llamaRollbackButton));
+        parts.Add(SettingsRows.Section("Tools"));
+        parts.Add(new SettingsRow("Compare models", "Two models side by side on the same prompt", "compare models",
+            SettingsRows.Action("Open…", () => new CompareModeForm(backendClient).Show())));
+        parts.Add(new SettingsRow("Model web page", "llama.cpp's own page for this PC's model", "web ui llama",
+            SettingsRows.Action("Open", ManaApplicationContext.OpenModelWebUi)));
+        ShowMainFields();
+        return SettingsRows.Page("Models", parts.ToArray());
+    }
+
+    private SettingsSwitch? loadIntoVramSwitch;
+    private ApiSpendingPanel? apiSpending;
+
+    // This PC's model picks a profile; a provider's needs a model name.
+    private void ShowMainFields()
+    {
+        var local = (mainSource.SelectedItem as Source)?.ProviderId is null;
+        modelProfileCombo.Visible = local;
+        mainModelBox.Visible = !local;
+    }
+
+    // Each use's list: its "none" choice, then every provider added (for
+    // escalation, only DeepSeek's).
+    private static void FillSources(ComboBox combo, string none, IEnumerable<ManaProvider> providers, string? selected)
+    {
+        var choices = providers.Select(p => new Source(p.Id, p.Label)).Prepend(new Source(null, none)).ToList();
+        combo.Items.Clear();
+        combo.Items.AddRange(choices.ToArray<object>());
+        combo.SelectedIndex = Math.Max(0, choices.FindIndex(c => c.ProviderId == selected));
+        combo.Width = Math.Max(190, choices.Max(c => TextRenderer.MeasureText(c.Label, combo.Font).Width) + 30);
+    }
+
+    private async Task SwitchMainModelAsync()
+    {
+        var source = mainSource.SelectedItem as Source;
+        try
+        {
+            if (source?.ProviderId is { } providerId)
+            {
+                if (mainModelBox.Text.Trim().Length == 0)
+                {
+                    mainStatus.Text = "Type the model's name first";
+                    return;
+                }
+                await backendClient.SetMainModelAsync(providerId, mainModelBox.Text.Trim());
+            }
+            else
+            {
+                await backendClient.SetMainModelAsync(null, "");
+                if (modelProfileCombo.SelectedItem is string profile && profile != modelStatus?.ActiveProfile)
+                {
+                    await backendClient.SetActiveProfileAsync(profile);
+                }
+            }
+            mainStatus.Text = "Switched";
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            mainStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshModelTabAsync();
+    }
+
+    // Saved as it's picked. Picking a provider where it was off asks first:
+    // a failed reply's chat goes to it.
+    private async Task SaveFallbackAsync(bool askFirst)
+    {
+        if (modelStatus is null)
+        {
+            return;
+        }
+        var providerId = (fallbackSource.SelectedItem as Source)?.ProviderId;
+        if (providerId is not null && fallbackModelBox.Text.Trim().Length == 0)
+        {
+            fallbackStatus.Text = "Type the model to use";
+            fallbackModelBox.Focus();
+            return;
+        }
+        if (askFirst && providerId is not null && !modelStatus.Fallback.Enabled
+            && MessageBox.Show(FindForm(), $"When this PC's model can't answer in time, send the chat to {fallbackSource.Text}? Provider charges may apply.", "Cloud fallback", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            await RefreshModelTabAsync();
+            return;
+        }
+        try
+        {
+            await backendClient.SetCloudFallbackProviderAsync(providerId, fallbackModelBox.Text.Trim(), FallbackWaits[Math.Max(0, fallbackWait.SelectedIndex)]);
+            fallbackStatus.Text = "";
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            fallbackStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshModelTabAsync();
+    }
+
+    private async Task SaveEscalationAsync()
+    {
+        var providerId = (escalationSource.SelectedItem as Source)?.ProviderId;
+        if (providerId is not null
+            && MessageBox.Show(FindForm(), $"Let Mana send her failed self-work issues (the issue, what failed, and the code she reads) to {escalationSource.Text}? It costs money; spending shows below.", "Self-work escalation", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            await RefreshModelTabAsync();
+            return;
+        }
+        try
+        {
+            await backendClient.SetEscalationAsync(providerId is not null, null, providerId);
+            escalationStatus.Text = "";
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            escalationStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshModelTabAsync();
+    }
+
+    private async Task PickVisionAsync(TextBox target)
+    {
+        using var dialog = new OpenFileDialog { Filter = "GGUF models (*.gguf)|*.gguf", CheckFileExists = true };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+        target.Text = dialog.FileName;
+        await SaveVisionSettingsAsync();
+    }
+
+    private async Task SwitchCodingModeAsync()
+    {
+        if (loadingCodingMode)
+        {
+            return;
+        }
+        try
+        {
+            if (codingModeCheck.Checked)
+            {
+                await backendClient.StartCodingSessionAsync();
+            }
+            else
+            {
+                await backendClient.StopCodingSessionAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            codingModeStatus.Text = $"Couldn't switch it: {BackendError.Describe(ex)}";
+            return;
+        }
+        await RefreshCodingModeAsync();
+    }
+
 
     private static GroupBox NewGroup(string title)
     {
@@ -3711,102 +3906,12 @@ internal sealed class SettingsPanel : UserControl
         box.ForeColor = DarkTheme.Text;
     }
 
-    private GroupBox BuildActiveProfileGroup()
-    {
-        var group = NewGroup("Active Model Profile");
-        modelProfileCombo.BackColor = DarkTheme.Panel2;
-        modelProfileCombo.ForeColor = DarkTheme.Text;
 
-        var switchButton = new Button { Text = "Switch" };
-        DarkTheme.ApplyButton(switchButton);
-        switchButton.Click += async (_, _) => await SwitchProfileAsync();
 
-        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        row.Controls.Add(modelProfileCombo);
-        row.Controls.Add(switchButton);
-        recommendationLabel.ForeColor = DarkTheme.Muted;
-        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
-        stack.Controls.Add(row);
-        stack.Controls.Add(recommendationLabel);
-        group.Controls.Add(stack);
-        return group;
-    }
-
-    private async Task SwitchProfileAsync()
-    {
-        if (modelProfileCombo.SelectedItem is not string profile)
-        {
-            return;
-        }
-        try
-        {
-            await backendClient.SetActiveProfileAsync(profile);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Failed to switch profile: {ex.Message}", "Model", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        if (!IsDisposed)
-        {
-            await RefreshModelTabAsync();
-        }
-    }
-
-    private GroupBox BuildLocalModelGroup()
-    {
-        var group = NewGroup("Local Model File");
-        selectedModelLabel.ForeColor = DarkTheme.Muted;
-
-        var browseButton = new Button { Text = "Browse..." };
-        var clearButton = new Button { Text = "Clear" };
-        var scanButton = new Button { Text = "Scan Storage" };
-        var useSelectedButton = new Button { Text = "Use Selected" };
-        DarkTheme.ApplyButton(browseButton);
-        DarkTheme.ApplyButton(clearButton);
-        DarkTheme.ApplyButton(scanButton);
-        DarkTheme.ApplyButton(useSelectedButton);
-        browseButton.Click += async (_, _) => await BrowseForModelAsync();
-        clearButton.Click += async (_, _) => await SetModelPathAsync(null);
-        scanButton.Click += async (_, _) => await ScanForModelsAsync();
-        useSelectedButton.Click += async (_, _) => await UseScanResultAsync();
-        loadIntoVramCheckBox.ForeColor = DarkTheme.Text;
-        // Click, not CheckedChanged: only a user toggle saves, not Refresh.
-        loadIntoVramCheckBox.Click += async (_, _) => await SaveLoadIntoVramAsync();
-
-        scanResultsList.BackColor = DarkTheme.Panel2;
-        scanResultsList.ForeColor = DarkTheme.Text;
-        // ManaGgufFile doesn't override ToString() -- without this, the
-        // list would show "Mana.NativeLauncher.ManaGgufFile" for every
-        // row instead of a usable path.
-        scanResultsList.DisplayMember = nameof(ManaGgufFile.Path);
-        // #625: owner-drawn so each row can lead with its hardware-fit pill.
-        scanResultsList.DrawMode = DrawMode.OwnerDrawFixed;
-        scanResultsList.ItemHeight = scanResultsList.Font.Height + 6;
-        scanResultsList.DrawItem += DrawScanResult;
-
-        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(browseButton);
-        buttonRow.Controls.Add(clearButton);
-        buttonRow.Controls.Add(scanButton);
-
-        var scanRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        scanRow.Controls.Add(scanResultsList);
-        scanRow.Controls.Add(useSelectedButton);
-
-        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
-        stack.Controls.Add(selectedModelLabel);
-        stack.Controls.Add(buttonRow);
-        stack.Controls.Add(scanRow);
-        stack.Controls.Add(loadIntoVramCheckBox);
-        stack.Controls.Add(new Label { Text = "Applies the next time the model loads (after 10 idle minutes, a model switch, or restarting Mana).", AutoSize = true, ForeColor = DarkTheme.Muted });
-        group.Controls.Add(stack);
-        return group;
-    }
 
     private async Task SaveLoadIntoVramAsync()
     {
-        var loadIntoVram = loadIntoVramCheckBox.Checked;
+        var loadIntoVram = loadIntoVramSwitch?.Checked == true;
         try
         {
             await backendClient.SetLoadIntoVramAsync(loadIntoVram);
@@ -3815,7 +3920,9 @@ internal sealed class SettingsPanel : UserControl
         {
             if (!IsDisposed)
             {
-                loadIntoVramCheckBox.Checked = !loadIntoVram;
+                loadingRows = true;
+                loadIntoVramSwitch!.Checked = !loadIntoVram;
+                loadingRows = false;
                 MessageBox.Show(this, $"Failed to save the model loading setting: {ex.Message}", "Model", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -3847,11 +3954,9 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
-        scanResultsList.Items.Clear();
-        foreach (var file in result.Files)
-        {
-            scanResultsList.Items.Add(file);
-        }
+        scanResults.ShowEntries(result.Files.Select(f => new RowList.Entry(f, System.IO.Path.GetFileName(f.Path), System.IO.Path.GetDirectoryName(f.Path) ?? "", ModelFitPill(f.Fit)?.Text ?? "")),
+            null, "No model files found");
+        scanRow!.Visible = true;
         if (result.Truncated)
         {
             MessageBox.Show(this, "The scan hit its time/directory budget and may not have covered everything.", "Model", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -3868,40 +3973,7 @@ internal sealed class SettingsPanel : UserControl
         _ => null,
     };
 
-    private void DrawScanResult(object? sender, DrawItemEventArgs e)
-    {
-        e.DrawBackground();
-        if (e.Index < 0 || e.Index >= scanResultsList.Items.Count || scanResultsList.Items[e.Index] is not ManaGgufFile file)
-        {
-            return;
-        }
-        var font = e.Font ?? scanResultsList.Font;
-        var x = e.Bounds.X + 4;
-        if (ModelFitPill(file.Fit) is { } pill)
-        {
-            var textSize = TextRenderer.MeasureText(pill.Text, font);
-            var rect = new Rectangle(x, e.Bounds.Y + 2, textSize.Width + 8, e.Bounds.Height - 4);
-            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var path = MermaidRenderer.RoundedRect(rect, rect.Height / 2f))
-            using (var pen = new Pen(pill.Color))
-            {
-                e.Graphics.DrawPath(pen, path);
-            }
-            TextRenderer.DrawText(e.Graphics, pill.Text, font, rect, pill.Color, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-            x = rect.Right + 6;
-        }
-        var pathRect = new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x, e.Bounds.Height);
-        TextRenderer.DrawText(e.Graphics, file.Path, font, pathRect, e.ForeColor, TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis);
-    }
 
-    private async Task UseScanResultAsync()
-    {
-        if (scanResultsList.SelectedItem is not ManaGgufFile file)
-        {
-            return;
-        }
-        await SetModelPathAsync(file.Path);
-    }
 
     private async Task SetModelPathAsync(string? path)
     {
@@ -3920,199 +3992,12 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private GroupBox BuildBrainProviderGroup()
-    {
-        var group = NewGroup("Brain Provider (Remote AI)");
-        useRemoteAiCheckBox.ForeColor = DarkTheme.Text;
-        brainPresetCombo.BackColor = DarkTheme.Panel2;
-        brainPresetCombo.ForeColor = DarkTheme.Text;
-        StyleTextBox(brainBaseUrlBox);
-        StyleTextBox(brainApiKeyBox);
-        StyleTextBox(brainModelBox);
-        brainStatusLabel.ForeColor = DarkTheme.Muted;
 
-        brainPresetCombo.SelectedIndexChanged += (_, _) => OnBrainPresetChanged();
 
-        var testButton = new Button { Text = "Test Connection" };
-        var saveButton = new Button { Text = "Save" };
-        DarkTheme.ApplyButton(testButton);
-        DarkTheme.ApplyButton(saveButton);
-        testButton.Click += async (_, _) => await TestBrainConnectionAsync();
-        saveButton.Click += async (_, _) => await SaveBrainSettingsAsync();
 
-        var layout = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = DarkTheme.Background };
-        void AddRow(string label, Control control)
-        {
-            layout.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) });
-            layout.Controls.Add(control);
-        }
-        AddRow("Preset", brainPresetCombo);
-        AddRow("Base URL", brainBaseUrlBox);
-        AddRow("API key", brainApiKeyBox);
-        AddRow("Model", brainModelBox);
 
-        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(testButton);
-        buttonRow.Controls.Add(saveButton);
 
-        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
-        stack.Controls.Add(useRemoteAiCheckBox);
-        stack.Controls.Add(layout);
-        stack.Controls.Add(buttonRow);
-        stack.Controls.Add(brainStatusLabel);
-        group.Controls.Add(stack);
-        return group;
-    }
 
-    private GroupBox BuildCloudFallbackGroup()
-    {
-        var group = NewGroup("Chat Cloud Fallback");
-        var layout = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Location = new Point(8, 24), BackColor = DarkTheme.Background };
-        void AddRow(string label, Control control)
-        {
-            layout.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left });
-            layout.Controls.Add(control);
-        }
-        cloudFallbackToggle.ForeColor = DarkTheme.Text;
-        cloudFallbackTiming.BackColor = DarkTheme.Panel2;
-        cloudFallbackTiming.ForeColor = DarkTheme.Text;
-        cloudFallbackTiming.Items.AddRange(new object[] { "30 seconds", "60 seconds", "No timeout" });
-        cloudFallbackTiming.SelectedIndex = 2;
-        StyleTextBox(cloudFallbackUrl);
-        StyleTextBox(cloudFallbackKey);
-        StyleTextBox(cloudFallbackModel);
-        cloudFallbackStatus.ForeColor = DarkTheme.Muted;
-        AddRow("Enabled", cloudFallbackToggle);
-        AddRow("Wait", cloudFallbackTiming);
-        AddRow("Base URL", cloudFallbackUrl);
-        AddRow("API key", cloudFallbackKey);
-        AddRow("Model", cloudFallbackModel);
-        var buttons = new FlowLayoutPanel { AutoSize = true, BackColor = DarkTheme.Background };
-        var save = new Button { Text = "Save" };
-        var clearKey = new Button { Text = "Clear key" };
-        DarkTheme.ApplyButton(save);
-        DarkTheme.ApplyButton(clearKey);
-        clearKey.Click += (_, _) => { clearingFallbackKey = true; cloudFallbackKey.Clear(); cloudFallbackKey.PlaceholderText = "Key will be cleared on Save"; };
-        save.Click += async (_, _) =>
-        {
-            if (cloudFallbackToggle.Checked && MessageBox.Show(this, "Allow failed or stalled chat replies to send chat context to this endpoint? Provider charges may apply.", "Cloud fallback", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-            save.Enabled = false;
-            try
-            {
-                var seconds = cloudFallbackTiming.SelectedIndex == 0 ? 30 : cloudFallbackTiming.SelectedIndex == 1 ? 60 : 0;
-                var key = clearingFallbackKey ? "" : string.IsNullOrWhiteSpace(cloudFallbackKey.Text) ? null : cloudFallbackKey.Text.Trim();
-                await backendClient.SetCloudFallbackAsync(cloudFallbackToggle.Checked, seconds, cloudFallbackUrl.Text.Trim(), key, cloudFallbackModel.Text.Trim());
-                clearingFallbackKey = false;
-                cloudFallbackKey.Clear();
-                await RefreshModelTabAsync();
-            }
-            catch (Exception ex) { if (!IsDisposed) cloudFallbackStatus.Text = ex.Message; }
-            finally { if (!IsDisposed) save.Enabled = true; }
-        };
-        buttons.Controls.Add(save);
-        buttons.Controls.Add(clearKey);
-        AddRow("", buttons);
-        AddRow("", cloudFallbackStatus);
-        group.Controls.Add(layout);
-        return group;
-    }
-
-    private void OnBrainPresetChanged()
-    {
-        if (brainPresetCombo.SelectedItem is not ManaBrainProviderPreset preset)
-        {
-            return;
-        }
-        if (!string.IsNullOrEmpty(preset.BaseUrl))
-        {
-            brainBaseUrlBox.Text = preset.BaseUrl;
-        }
-    }
-
-    private async Task TestBrainConnectionAsync()
-    {
-        try
-        {
-            var (ok, error) = await backendClient.TestBrainConnectionAsync(brainBaseUrlBox.Text.Trim(), string.IsNullOrWhiteSpace(brainApiKeyBox.Text) ? null : brainApiKeyBox.Text.Trim());
-            if (!IsDisposed)
-            {
-                brainStatusLabel.ForeColor = ok ? DarkTheme.Green : Color.Firebrick;
-                brainStatusLabel.Text = ok ? "Connected." : $"Failed: {error}";
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!IsDisposed)
-            {
-                brainStatusLabel.ForeColor = Color.Firebrick;
-                brainStatusLabel.Text = $"Failed: {ex.Message}";
-            }
-        }
-    }
-
-    private async Task SaveBrainSettingsAsync()
-    {
-        var type = useRemoteAiCheckBox.Checked ? "openai_compatible" : "local";
-        // Leaves the currently-configured key untouched when the box is
-        // blank (SetBrainSettingsAsync's own null-means-unchanged
-        // contract) -- otherwise reopening this tab (which never echoes
-        // the real key back, only BrainHasApiKey) and clicking Save would
-        // silently wipe a previously-saved key.
-        var apiKey = string.IsNullOrWhiteSpace(brainApiKeyBox.Text) ? null : brainApiKeyBox.Text.Trim();
-        try
-        {
-            await backendClient.SetBrainSettingsAsync(type, brainBaseUrlBox.Text.Trim(), apiKey, brainModelBox.Text.Trim());
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Failed to save brain provider settings: {ex.Message}", "Model", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        if (!IsDisposed)
-        {
-            await RefreshModelTabAsync();
-        }
-    }
-
-    private GroupBox BuildVisionModelGroup()
-    {
-        var group = NewGroup("Vision Model");
-        StyleTextBox(visionModelPathBox);
-        StyleTextBox(visionMmprojPathBox);
-
-        var browseModelButton = new Button { Text = "Browse..." };
-        var browseMmprojButton = new Button { Text = "Browse..." };
-        var saveButton = new Button { Text = "Save" };
-        DarkTheme.ApplyButton(browseModelButton);
-        DarkTheme.ApplyButton(browseMmprojButton);
-        DarkTheme.ApplyButton(saveButton);
-        browseModelButton.Click += (_, _) => BrowseInto(visionModelPathBox);
-        browseMmprojButton.Click += (_, _) => BrowseInto(visionMmprojPathBox);
-        saveButton.Click += async (_, _) => await SaveVisionSettingsAsync();
-
-        var layout = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, BackColor = DarkTheme.Background };
-        layout.Controls.Add(new Label { Text = "Model path", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) });
-        layout.Controls.Add(visionModelPathBox);
-        layout.Controls.Add(browseModelButton);
-        layout.Controls.Add(new Label { Text = "mmproj path", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) });
-        layout.Controls.Add(visionMmprojPathBox);
-        layout.Controls.Add(browseMmprojButton);
-
-        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
-        stack.Controls.Add(layout);
-        stack.Controls.Add(saveButton);
-        group.Controls.Add(stack);
-        return group;
-    }
-
-    private void BrowseInto(TextBox target)
-    {
-        using var dialog = new OpenFileDialog { Filter = "GGUF models (*.gguf)|*.gguf", CheckFileExists = true };
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-        {
-            target.Text = dialog.FileName;
-        }
-    }
 
     private async Task SaveVisionSettingsAsync()
     {
@@ -4131,30 +4016,6 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    private GroupBox BuildLlamaBuildGroup()
-    {
-        var group = NewGroup("llama.cpp Build");
-        llamaBuildLabel.ForeColor = DarkTheme.Muted;
-        var checkButton = new Button { Text = "Check for update", AutoSize = true };
-        llamaUpdateButton.AutoSize = true;
-        llamaRollbackButton.AutoSize = true;
-        DarkTheme.ApplyButton(checkButton);
-        DarkTheme.ApplyButton(llamaUpdateButton);
-        DarkTheme.ApplyButton(llamaRollbackButton);
-        checkButton.Click += async (_, _) => await CheckLlamaBuildAsync();
-        llamaUpdateButton.Click += async (_, _) => await UpdateLlamaBuildAsync(allowMissingDigest: false);
-        llamaRollbackButton.Click += async (_, _) => await RollBackLlamaBuildAsync();
-
-        var buttonRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttonRow.Controls.Add(checkButton);
-        buttonRow.Controls.Add(llamaUpdateButton);
-        buttonRow.Controls.Add(llamaRollbackButton);
-        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = DarkTheme.Background };
-        stack.Controls.Add(llamaBuildLabel);
-        stack.Controls.Add(buttonRow);
-        group.Controls.Add(stack);
-        return group;
-    }
 
     // #693: the group's text -- current build, then the one most relevant
     // thing that happened: an update in progress, a failed update, an
@@ -4307,70 +4168,73 @@ internal sealed class SettingsPanel : UserControl
     private async Task RefreshModelTabAsync()
     {
         ManaModelStatus status;
-        System.Collections.Generic.IReadOnlyList<ManaBrainProviderPreset> presets;
+        ManaEscalationSettings escalation;
         try
         {
             status = await backendClient.GetModelStatusAsync();
-            presets = await backendClient.GetBrainProvidersAsync();
+            escalation = await backendClient.GetEscalationAsync();
         }
         catch (Exception ex)
         {
             Console.WriteLine($"SettingsPanel: failed to load model status. {ex.Message}");
             if (!IsDisposed)
             {
-                selectedModelLabel.Text = $"Failed to load: {BackendError.Describe(ex)}";
+                mainStatus.Text = $"Couldn't load: {BackendError.Describe(ex)}";
             }
             return;
         }
+        await (providersPanel?.ReloadAsync() ?? Task.CompletedTask);
         if (IsDisposed)
         {
             return;
         }
-
-        modelProfileCombo.Items.Clear();
-        foreach (var key in status.Profiles.Keys)
+        modelStatus = status;
+        var providers = providersPanel?.Providers ?? [];
+        loadingRows = true;
+        try
         {
-            modelProfileCombo.Items.Add(key);
+            modelProfileCombo.Items.Clear();
+            foreach (var key in status.Profiles.Keys)
+            {
+                modelProfileCombo.Items.Add(key);
+            }
+            if (status.ActiveProfile is not null && modelProfileCombo.Items.Contains(status.ActiveProfile))
+            {
+                modelProfileCombo.SelectedItem = status.ActiveProfile;
+            }
+            FillSources(mainSource, "This PC's model", providers, status.BrainType == "openai_compatible" ? status.BrainProviderId : null);
+            mainModelBox.Text = status.BrainModel;
+            FillSources(fallbackSource, "Off", providers, status.Fallback.Enabled ? status.Fallback.ProviderId : null);
+            fallbackModelBox.Text = status.Fallback.Model;
+            fallbackWait.SelectedIndex = Array.IndexOf(FallbackWaits, status.Fallback.TimeoutSeconds) is var wait and >= 0 ? wait : 3;
+            FillSources(escalationSource, "Off", providers.Where(p => p.Preset == "deepseek"), escalation.Enabled ? escalation.ProviderId : null);
+            if (loadIntoVramSwitch is not null)
+            {
+                loadIntoVramSwitch.Checked = status.LoadIntoVram;
+            }
         }
-        if (status.ActiveProfile is not null && modelProfileCombo.Items.Contains(status.ActiveProfile))
+        finally
         {
-            modelProfileCombo.SelectedItem = status.ActiveProfile;
+            loadingRows = false;
         }
-        // #625: surfaces /models/status's `recommendation` (hardware-based).
-        recommendationLabel.Text = status.RecommendedProfile is null ? "" : $"Recommended for this PC: {status.RecommendedProfile}";
-
-        selectedModelLabel.Text = string.IsNullOrEmpty(status.SelectedModelPath)
-            ? "No local model file selected (auto-detecting)."
-            : $"Selected: {status.SelectedModelPath}";
-
-        brainPresets = presets;
-        brainPresetCombo.Items.Clear();
-        foreach (var preset in presets)
-        {
-            brainPresetCombo.Items.Add(preset);
-        }
-        brainPresetCombo.DisplayMember = nameof(ManaBrainProviderPreset.Label);
-
-        useRemoteAiCheckBox.Checked = status.BrainType == "openai_compatible";
-        brainBaseUrlBox.Text = status.BrainBaseUrl;
-        brainModelBox.Text = status.BrainModel;
-        cloudFallbackToggle.Enabled = !status.LocalOnly;
-        cloudFallbackToggle.Checked = !status.LocalOnly && status.Fallback.Enabled;
-        cloudFallbackTiming.SelectedIndex = status.Fallback.TimeoutSeconds == 30 ? 0 : status.Fallback.TimeoutSeconds == 60 ? 1 : 2;
-        cloudFallbackUrl.Text = status.Fallback.BaseUrl;
-        cloudFallbackModel.Text = status.Fallback.Model;
-        cloudFallbackKey.PlaceholderText = status.Fallback.HasApiKey ? "(configured -- leave blank to keep it)" : "";
-        cloudFallbackStatus.Text = status.LocalOnly ? "Local-only mode" : status.Fallback.Enabled && !status.Fallback.Active ? "Endpoint unavailable or not permitted" : "";
-        // Never pre-fills the real key (node-bot never echoes it) --
-        // just hints that one is already saved, so Save's "blank means
-        // leave it alone" behavior above doesn't look like a data-loss bug.
-        brainApiKeyBox.Text = "";
-        brainApiKeyBox.PlaceholderText = status.BrainHasApiKey ? "(configured -- leave blank to keep it)" : "";
-        brainStatusLabel.Text = "";
-
+        ShowMainFields();
+        // #625: the hardware-based suggestion, while it's this PC's model.
+        mainStatus.Text = status.BrainType != "openai_compatible" && status.RecommendedProfile is { } suggested && suggested != status.ActiveProfile
+            ? $"Suggested here: {suggested}"
+            : "";
+        selectedModelLabel.Text = string.IsNullOrEmpty(status.SelectedModelPath) ? "Found on its own" : System.IO.Path.GetFileName(status.SelectedModelPath);
+        railTips.SetToolTip(selectedModelLabel, status.SelectedModelPath ?? "");
+        fallbackSource.Enabled = fallbackModelBox.Enabled = !status.LocalOnly;
+        fallbackStatus.Text = status.LocalOnly ? "Off in local-only mode"
+            : status.Fallback.Enabled && !status.Fallback.Active ? "Can't reach it right now"
+            : "";
+        escalationSource.Enabled = !escalation.LocalOnly;
+        escalationStatus.Text = escalation.LocalOnly ? "Off in local-only mode"
+            : !providers.Any(p => p.Preset == "deepseek") ? "Add DeepSeek above to use it"
+            : "";
         visionModelPathBox.Text = status.VisionModelPath;
         visionMmprojPathBox.Text = status.VisionMmprojPath;
-        loadIntoVramCheckBox.Checked = status.LoadIntoVram;
+        await (apiSpending?.ReloadAsync() ?? Task.CompletedTask);
     }
 
     // #569: TOTP secret enrollment has no API endpoint at all

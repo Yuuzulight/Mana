@@ -10,6 +10,7 @@ const {
   sendValidationError,
 } = require("./request-validation");
 const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey, isLocalRestartRequest } = require("./admin-key");
+const { ProviderError } = require("./model-settings-store");
 const { readGgufMetadata } = require("./tools/gguf-metadata");
 const { createZedIntegration } = require("./zed-integration");
 const Diff = require("diff");
@@ -202,6 +203,7 @@ function registerModelRoutes(app, deps) {
           baseUrl: req.body?.baseUrl,
           apiKey: req.body?.apiKey,
           model: req.body?.model,
+          providerId: req.body?.providerId,
         }),
       );
     } catch (error) {
@@ -221,6 +223,7 @@ function registerModelRoutes(app, deps) {
           baseUrl: req.body?.baseUrl,
           apiKey: req.body?.apiKey,
           model: req.body?.model,
+          providerId: req.body?.providerId,
         }),
       );
     } catch (error) {
@@ -254,6 +257,75 @@ function registerModelRoutes(app, deps) {
       apiKey: req.body?.apiKey,
     });
     return res.json(result);
+  });
+
+  // #1426: Settings' providers. A key goes in and never comes back out --
+  // only its last four characters. Adding one and "Check again" reach its
+  // address, so like the test above they're only for this PC.
+  const fromThisPc = (req, res) => {
+    if (!isLocalRestartRequest(req)) {
+      res.status(403).json({ error: "this endpoint is only available from this PC" });
+      return false;
+    }
+    if (!isLocalAdminRequest(req)) {
+      res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
+      return false;
+    }
+    return true;
+  };
+  const providerFailure = (res, error) =>
+    res.status(error instanceof ProviderError ? 400 : 500).json({ error: error.message });
+
+  app.get("/models/providers", (req, res) => {
+    return res.json({ presets: modelManagement.getKnownBrainProviders(), providers: modelManagement.listProviders() });
+  });
+
+  // Added, then checked at once: the reply says whether it answered.
+  app.post("/models/providers", async (req, res) => {
+    if (!fromThisPc(req, res)) return;
+    try {
+      const added = modelManagement.addProvider({
+        preset: req.body?.preset,
+        baseUrl: req.body?.baseUrl,
+        apiKey: req.body?.apiKey,
+        label: req.body?.label,
+      });
+      return res.json({ provider: (await modelManagement.checkProvider(added.id)) || added });
+    } catch (error) {
+      return providerFailure(res, error);
+    }
+  });
+
+  // A new key (blank keeps the old one) or address.
+  app.put("/models/providers/:id", (req, res) => {
+    try {
+      const updated = modelManagement.updateProvider(req.params.id, req.body || {});
+      return updated ? res.json({ provider: updated }) : res.status(404).json({ error: "unknown provider" });
+    } catch (error) {
+      return providerFailure(res, error);
+    }
+  });
+
+  app.post("/models/providers/:id/check", async (req, res) => {
+    if (!fromThisPc(req, res)) return;
+    try {
+      const checked = await modelManagement.checkProvider(req.params.id);
+      return checked ? res.json({ provider: checked }) : res.status(404).json({ error: "unknown provider" });
+    } catch (error) {
+      return providerFailure(res, error);
+    }
+  });
+
+  // Not while a use picks it (409, naming which).
+  app.delete("/models/providers/:id", (req, res) => {
+    try {
+      const result = modelManagement.removeProvider(req.params.id);
+      if (!result) return res.status(404).json({ error: "unknown provider" });
+      if (!result.removed) return res.status(409).json({ error: `It's used by ${result.usedBy.join(" and ")}; pick another provider there first` });
+      return res.json({ ok: true });
+    } catch (error) {
+      return providerFailure(res, error);
+    }
   });
 
   // Vision GGUF + mmproj override ("" clears back to auto-detection).
