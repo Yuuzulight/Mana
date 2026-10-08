@@ -188,30 +188,26 @@ public class SettingsPanelLayoutTests
             panel.ShowGroup("memory"); // its buttons only click while showing
             _ = panel.FactsList.Handle; // selection needs the list's window
             panel.RefreshMemoryFactsAsync().GetAwaiter().GetResult();
-            Assert.Equal(new[] { "Active (1)", "Waiting for you (1)", "Archived (1)" }, panel.FactChips.Select(c => c.Text));
-            var editor = panel.FactsList.Items[0];
-            Assert.Equal(new[] { "★ editor", "VS Code", "Today" }, editor.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(s => s.Text));
-            string[] Actions() => panel.FactActions.Controls.OfType<Button>().Select(b => b.Text).ToArray();
-            Assert.Equal("About you", editor.Group!.Header); // #1426: grouped by what it's about
+            Assert.Equal(new[] { "Active 1", "Waiting 1", "Archived 1" }, panel.FactChips.Select(c => c.Text));
+            // #1426: grouped by what it's about, each group under its own header.
+            Assert.True(RowList.IsHeader(panel.FactsList.Items[0]));
+            Assert.Equal("About you", panel.FactsList.Items[0].Text);
+            var editor = panel.FactsList.Items[1];
+            Assert.Equal("editor: VS Code", editor.Text);
+            Assert.Equal("Today", panel.FactsList.EntryOf(editor)!.Right);
+            string[] Actions() => panel.FactsList.SelectedActions.Select(a => a.Name).ToArray();
             editor.Selected = true;
-            Assert.Equal(new[] { "Edit", "Unpin", "Archive", "Delete" }, Actions());
-            Assert.Equal("About you", panel.FactActions.Controls.OfType<ComboBox>().Single().Text);
+            Assert.Equal(new[] { "Edit", "Unpin", "Move to…", "Archive", "Delete" }, Actions());
 
             panel.FactChips[1].Checked = true;
-            Assert.Equal("Other", panel.FactsList.Items[0].Group!.Header); // no category yet
-            panel.FactsList.Items[0].Selected = true;
-            Assert.Equal(new[] { "Confirm", "Edit", "Not true" }, Actions());
+            Assert.Equal("Other", panel.FactsList.Items[0].Text); // no category yet
+            panel.FactsList.Items[1].Selected = true;
+            Assert.Equal(new[] { "Confirm", "Edit", "Move to…", "Not true" }, Actions());
 
             panel.FactChips[2].Checked = true;
-            panel.FactsList.Items[0].Selected = true;
-            Assert.Equal(new[] { "Restore", "Delete" }, Actions());
-            Assert.Empty(panel.FactActions.Controls.OfType<ComboBox>()); // archived facts stay where they were
-            panel.FactActions.Controls.OfType<Button>().First().PerformClick();
-            for (var i = 0; i < 50 && posts.Count == 0; i++)
-            {
-                Application.DoEvents();
-                System.Threading.Thread.Sleep(20);
-            }
+            panel.FactsList.Items[1].Selected = true;
+            Assert.Equal(new[] { "Restore", "Delete" }, Actions()); // archived facts stay where they were
+            panel.FactsList.SelectedActions[0].Run().GetAwaiter().GetResult();
             Assert.Equal("/admin/memory/facts/old/restore", posts.Single());
         });
     }
