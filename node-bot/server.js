@@ -836,6 +836,20 @@ const characterStore = createCharacterStore({
       ? null
       : path.join(__dirname, "data", "active-character.json"),
   onSwitch: (character) => notifyTray(characterEvent(character)),
+  // #1426: a character deleted in Settings takes her own files with her
+  // (her personality, mood, notes and milestones). Read when it happens,
+  // after they're all set up below.
+  onRemoved: (id) => {
+    relationshipStores.delete(id);
+    const files = [
+      characterFilePath(DEFAULT_PERSONALITY_FILE, id),
+      characterFilePath(moodFilePath, id),
+      characterFilePath(moodFilePath && path.join(acpMemoryStore.dataDir, "relationship.json"), id),
+    ];
+    for (const file of files) {
+      if (file) fs.rmSync(file, { force: true });
+    }
+  },
   // Group mode: the launcher shows (or hides, id null) the partner's avatar.
   isGaming: () => gamingWatch.isGaming(),
   onGroupChange: (partner) =>

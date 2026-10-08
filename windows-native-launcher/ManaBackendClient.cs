@@ -1507,6 +1507,43 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1426: "Tell Mana what to remember or change" -- her suggested change,
+    // nothing written. A refusal (no model loaded, nothing understood) comes
+    // back in words in the exception.
+    public async Task<ManaMemoryAnswer> AskMemoryAsync(string text)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { text }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/memory/ask", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        static string Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+        var lines = new List<ManaMemoryChange>();
+        var changes = root.TryGetProperty("changes", out var list) && list.ValueKind == JsonValueKind.Array ? list : default;
+        if (changes.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var change in changes.EnumerateArray())
+            {
+                lines.Add(new ManaMemoryChange(Str(change, "action"), Str(change, "key"), Str(change, "text"), Str(change, "was")));
+            }
+        }
+        return new ManaMemoryAnswer
+        {
+            Reply = Str(root, "reply"),
+            ChangesJson = changes.ValueKind == JsonValueKind.Array ? changes.GetRawText() : "[]",
+            Changes = lines,
+        };
+    }
+
+    // #1426: Save it -- the changes AskMemoryAsync suggested, as my own words.
+    public async Task ApplyMemoryAnswerAsync(ManaMemoryAnswer answer)
+    {
+        using var content = new StringContent($"{{\"changes\":{answer.ChangesJson}}}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/memory/ask/apply", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #698: a paused standing intent never fires.
     public async Task SetMemoryFactPausedAsync(string key, bool paused)
     {
@@ -1719,6 +1756,73 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("handoff", out var handoff) && handoff.ValueKind == JsonValueKind.String
             ? handoff.GetString()
             : null;
+    }
+
+    // #1426: Settings' character editor (admin-only): every character with
+    // her prompt, handoff line, voice clip and model.
+    public async Task<(string Active, IReadOnlyList<ManaCharacterProfile> Characters)> GetCharacterProfilesAsync()
+    {
+        using var response = await http.GetAsync("/admin/characters");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        static string? Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var characters = new List<ManaCharacterProfile>();
+        if (document.RootElement.TryGetProperty("characters", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var c in list.EnumerateArray())
+            {
+                var voice = c.TryGetProperty("voice", out var v) && v.ValueKind == JsonValueKind.Object ? v : (JsonElement?)null;
+                characters.Add(new ManaCharacterProfile
+                {
+                    Id = Str(c, "id") ?? "",
+                    Name = Str(c, "name") ?? "",
+                    Persona = Str(c, "persona") ?? "",
+                    Handoff = Str(c, "handoff") ?? "",
+                    BuiltIn = c.TryGetProperty("builtIn", out var b) && b.ValueKind == JsonValueKind.True,
+                    PromptEdited = c.TryGetProperty("promptEdited", out var p) && p.ValueKind == JsonValueKind.True,
+                    VoiceFile = voice is { } hasVoice ? Str(hasVoice, "file") : null,
+                    VoiceWords = voice is { } withWords ? Str(withWords, "refText") : null,
+                    Live2dModel = Str(c, "live2dModel"),
+                });
+            }
+        }
+        return (Str(document.RootElement, "active") ?? "mana", characters);
+    }
+
+    // #1426: id null adds her. voice: null leaves it, "mana" for Mana's, or
+    // new { clip, refText } for her own clip. live2dModel: null leaves it, ""
+    // for Mana's model. A refusal's words come back in the exception.
+    public async Task SaveCharacterAsync(string? id, string name, string persona, string handoff, object? voice, string? live2dModel)
+    {
+        var body = new Dictionary<string, object?> { ["name"] = name, ["persona"] = persona, ["handoff"] = handoff };
+        if (voice is not null)
+        {
+            body["voice"] = voice;
+        }
+        if (live2dModel is not null)
+        {
+            body["live2dModel"] = live2dModel;
+        }
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = id is null
+            ? await http.PostAsync("/admin/characters", content)
+            : await http.PutAsync($"/admin/characters/{Uri.EscapeDataString(id)}", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: a built-in character's prompt back to the original.
+    public async Task ResetCharacterPromptAsync(string id)
+    {
+        using var response = await http.PostAsync($"/admin/characters/{Uri.EscapeDataString(id)}/reset", null);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: a character I added, with her notes and milestones.
+    public async Task DeleteCharacterAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/admin/characters/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
     }
 
     public async Task SetTtsOverrideAsync(string? provider)
@@ -3810,6 +3914,33 @@ internal sealed class ManaPendingWrite
 }
 
 // #573: GET /presets.
+// #1426: POST /admin/memory/ask: what she'd change, in her words and as lines.
+internal sealed class ManaMemoryAnswer
+{
+    public string Reply { get; init; } = "";
+    public IReadOnlyList<ManaMemoryChange> Changes { get; init; } = [];
+    // Sent back as is by Save it; node-bot checks it again.
+    public string ChangesJson { get; init; } = "[]";
+}
+
+// One suggested change: add, change, archive or forget; Was is the text it replaces.
+internal sealed record ManaMemoryChange(string Action, string Key, string Text, string Was);
+
+// #1426: GET /admin/characters, one character as Settings edits her.
+internal sealed class ManaCharacterProfile
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Persona { get; init; } = "";
+    public string Handoff { get; init; } = "";
+    public bool BuiltIn { get; init; }
+    public bool PromptEdited { get; init; }
+    // Her own clip's file name and the words spoken in it; null for Mana's voice.
+    public string? VoiceFile { get; init; }
+    public string? VoiceWords { get; init; }
+    public string? Live2dModel { get; init; }
+}
+
 internal sealed class ManaPreset
 {
     public string Id { get; init; } = "";
