@@ -300,6 +300,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         sessionListForm.BindHotkey = (action, keys) => globalHotkeys.Bind(action.Id, keys);
         sessionListForm.DictateAnywhereChanged = on => dictationService.IsEnabled = on; // #1426: from Settings > Voice
         sessionListForm.AvatarSettingsChanged = () => RunOnUi(ApplyAvatarSettings); // #1426: from Settings > General > Avatar
+        sessionListForm.SwitchCharacter = SwitchCharacterAsync; // #1426: from Settings > Memory > Characters
         sessionListForm.RevertMergedPr = PromptRevertPr; // #1426: from Settings > Advanced > Developer
         // #524: originally a no-op (no chat/session window existed on
         // this branch yet) -- #521/#520 shipped one since, so this now

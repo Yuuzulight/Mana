@@ -633,6 +633,7 @@ internal sealed class SettingsPanel : UserControl
         await (proactive?.ReloadAsync() ?? Task.CompletedTask);
         await (heartbeat?.ReloadAsync() ?? Task.CompletedTask);
         await (relationships?.ReloadAsync() ?? Task.CompletedTask);
+        await (characterCards?.ReloadAsync() ?? Task.CompletedTask);
         await RefreshPerfTabAsync();
         await RefreshPresetsAsync();
         await RefreshModelTabAsync();
@@ -997,16 +998,40 @@ internal sealed class SettingsPanel : UserControl
     // and the memory tools. Character cards and "Tell Mana what to remember"
     // come in their own PRs.
     private RelationshipPanel? relationships;
+    private CharactersPanel? characterCards;
+
+    // #1426: the launcher's character switch, which also speaks her handoff line.
+    public Func<string, Task>? SwitchCharacter { get; set; }
+
+    internal CharactersPanel? CharacterCards => characterCards; // tests
 
     private TabPage BuildMemoryPage()
     {
         relationships = new RelationshipPanel(backendClient, loadNow: false);
+        characterCards = new CharactersPanel(backendClient, async id =>
+        {
+            if (SwitchCharacter is { } switchTo)
+            {
+                await switchTo(id);
+            }
+            else
+            {
+                await backendClient.SetCharacterAsync(id);
+            }
+        });
+        // Who's active, or who exists, changed: the rows that list them follow.
+        characterCards.Changed += () =>
+        {
+            _ = RefreshGroupModeAsync();
+            _ = relationships.ReloadAsync();
+        };
         var parts = new List<Control>
         {
             SettingsRows.Section("What she knows"),
             BuildFactsRow(),
             SettingsRows.Section("Characters"),
         };
+        parts.AddRange(characterCards.Rows);
         parts.AddRange(relationships.Rows);
         parts.AddRange(BuildGroupModeRows());
         parts.Add(SettingsRows.Section("Skills"));

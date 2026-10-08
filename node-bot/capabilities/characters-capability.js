@@ -8,7 +8,7 @@ const {
   requireString,
   sendValidationError,
 } = require("../request-validation");
-const { handoffLine } = require("../characters");
+const { CharacterError, handoffLine } = require("../characters");
 
 const KEY = "characters";
 
@@ -18,7 +18,71 @@ const summary = (c) => ({ id: c.id, name: c.name, live2dModel: c.live2dModel });
 function createCharactersCapability(characters) {
   return {
     key: KEY,
-    registerRoutes(app) {
+    registerRoutes(app, context = {}) {
+      // #1426: Settings' character editor -- the prompts themselves, so
+      // admin-only, unlike the list above.
+      const admin = (req, res) => (context.checkAdminAuth ? context.checkAdminAuth(req, res) : true);
+      const fail = (res, e) => {
+        if (e instanceof CharacterError) return res.status(400).json({ error: e.message });
+        console.error(e);
+        return res.status(500).json({ error: String(e) });
+      };
+      const id = (req) => String(req.params.id || "").trim().toLowerCase();
+
+      app.get("/admin/characters", (req, res) => {
+        if (!admin(req, res)) return;
+        try {
+          return res.json({ active: characters.active().id, characters: characters.editable() });
+        } catch (e) {
+          return fail(res, e);
+        }
+      });
+
+      app.post("/admin/characters", (req, res) => {
+        if (!admin(req, res)) return;
+        try {
+          return res.json({ character: summary(characters.saveCharacter(null, req.body || {})) });
+        } catch (e) {
+          return fail(res, e);
+        }
+      });
+
+      app.put("/admin/characters/:id", (req, res) => {
+        if (!admin(req, res)) return;
+        try {
+          const saved = characters.saveCharacter(id(req), req.body || {});
+          if (!saved) return res.status(404).json({ error: "unknown character" });
+          return res.json({ character: summary(saved) });
+        } catch (e) {
+          return fail(res, e);
+        }
+      });
+
+      // A built-in's prompt back to the original.
+      app.post("/admin/characters/:id/reset", (req, res) => {
+        if (!admin(req, res)) return;
+        try {
+          const reset = characters.resetPrompt(id(req));
+          if (!reset) return res.status(400).json({ error: "only a built-in character's prompt can be reset" });
+          return res.json({ character: summary(reset) });
+        } catch (e) {
+          return fail(res, e);
+        }
+      });
+
+      // A character I added, with her notes and milestones; built-ins stay.
+      app.delete("/admin/characters/:id", (req, res) => {
+        if (!admin(req, res)) return;
+        try {
+          if (!characters.removeCharacter(id(req))) {
+            return res.status(characters.get(id(req)) ? 400 : 404).json({ error: characters.get(id(req)) ? "built-in characters can't be deleted" : "unknown character" });
+          }
+          return res.json({ ok: true });
+        } catch (e) {
+          return fail(res, e);
+        }
+      });
+
       app.get("/characters", (req, res) => {
         try {
           return res.json({

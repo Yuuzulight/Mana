@@ -1585,6 +1585,9 @@ internal sealed partial class SessionListForm : Form
     // #1426: Settings > Voice > Dictation, applied live. Set by ManaApplicationContext.
     public Action<bool>? DictateAnywhereChanged { get; set; }
     public Action? AvatarSettingsChanged { get; set; }
+
+    // #1426: Settings > Memory > Characters' "Switch to her".
+    public Func<string, Task>? SwitchCharacter { get; set; }
     public Action? RevertMergedPr { get; set; }
 
     // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
@@ -1638,6 +1641,7 @@ internal sealed partial class SessionListForm : Form
         panel.OpenDoc = OpenDoc;
         panel.DictateAnywhereChanged = on => DictateAnywhereChanged?.Invoke(on);
         panel.AvatarSettingsChanged = () => AvatarSettingsChanged?.Invoke();
+        panel.SwitchCharacter = id => SwitchCharacter?.Invoke(id) ?? Task.CompletedTask;
         panel.RevertMergedPr = () => RevertMergedPr?.Invoke();
         return panel;
     }

@@ -45,6 +45,13 @@ const BUILT_IN = [
   },
 ];
 
+// #1426: why Settings' character editor couldn't save (a 400, in words).
+class CharacterError extends Error {}
+
+// A clip she speaks in: one of these, copied beside characters.json.
+const VOICE_CLIP_TYPES = new Set([".wav", ".mp3", ".flac", ".ogg"]);
+const MAX_VOICE_CLIP_BYTES = 20 * 1024 * 1024;
+
 const text = (value, max) =>
   typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null;
 
@@ -84,6 +91,8 @@ function createCharacterStore(options = {}) {
   const onSwitch = options.onSwitch || (() => {});
   const isGaming = options.isGaming || (() => false);
   const onGroupChange = options.onGroupChange || (() => {});
+  // #1426: a character deleted from Settings: her own files go too.
+  const onRemoved = options.onRemoved || (() => {});
   const builtIn = BUILT_IN.map((c) => ({ ...c, voice: null, live2dModel: null }));
   let activeId = DEFAULT_ID;
   if (activeFilePath) {
@@ -265,10 +274,146 @@ function createCharacterStore(options = {}) {
     );
   }
 
+  // #1426: Settings' character editor writes the same file people edit by
+  // hand. A built-in's entry only overrides what it sets, so "Reset prompt"
+  // takes its persona out again.
+  const isBuiltIn = (id) => builtIn.some((c) => c.id === id);
+  const builtInOf = (id) => builtIn.find((c) => c.id === id) || null;
+
+  function readEntries() {
+    try {
+      const entries = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (!Array.isArray(entries)) throw new Error("expected a JSON array of characters");
+      return entries;
+    } catch (e) {
+      if (e.code === "ENOENT") return [];
+      throw new CharacterError(`characters.json can't be read (${e.message}); fix or move it first`);
+    }
+  }
+
+  function writeEntries(entries) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const temp = `${filePath}.tmp`;
+    fs.writeFileSync(temp, `${JSON.stringify(entries, null, 2)}
+`, "utf8");
+    fs.renameSync(temp, filePath);
+    cache = { mtimeMs: NaN, characters: builtIn }; // read again, whatever the clock says
+  }
+
+  const entryIndex = (entries, id) => entries.findIndex((e) => String(e?.id || "").trim().toLowerCase() === id);
+
+  // A new character's id from her name: "Aoi Hana" -> "aoi-hana", numbered
+  // when taken.
+  function newId(name) {
+    const base = name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "character";
+    let id = base;
+    for (let n = 2; get(id); n += 1) id = `${base}-${n}`;
+    return id;
+  }
+
+  // id null for a new character. fields: name, persona, handoff; voice:
+  // "mana" (Mana's), {clip, refText} (a new clip, copied in) or absent
+  // (left as it is); live2dModel: a path, "" (Mana's) or absent. Null for
+  // an unknown id; throws CharacterError when it can't be saved.
+  function saveCharacter(id, fields = {}) {
+    const name = text(fields.name, 60);
+    const persona = text(fields.persona, Infinity);
+    if (!name) throw new CharacterError("A name is needed");
+    if (!persona) throw new CharacterError("A character prompt is needed");
+    if (persona.length > MAX_PERSONA_CHARS) throw new CharacterError(`The prompt is over ${MAX_PERSONA_CHARS} characters`);
+    if (id && !get(id)) return null;
+    const entryId = id || newId(name);
+    const dir = path.dirname(filePath);
+    const entries = readEntries();
+    const at = entryIndex(entries, entryId);
+    const entry = at >= 0 ? { ...entries[at], id: entryId } : { id: entryId };
+    entry.name = name;
+    entry.persona = persona;
+    const handoff = text(fields.handoff, 300);
+    if (handoff) entry.handoff = handoff;
+    else delete entry.handoff;
+
+    if (fields.voice === "mana") {
+      delete entry.voice;
+    } else if (fields.voice && typeof fields.voice === "object") {
+      const clip = text(fields.voice.clip, 1000);
+      const refText = text(fields.voice.refText, 1000);
+      if (!clip || !refText) throw new CharacterError("Her voice needs a clip and the exact words spoken in it");
+      const type = path.extname(clip).toLowerCase();
+      if (!VOICE_CLIP_TYPES.has(type)) throw new CharacterError("The voice clip must be a .wav, .mp3, .flac or .ogg file");
+      let size;
+      try {
+        size = fs.statSync(clip).size;
+      } catch (e) {
+        throw new CharacterError("That voice clip can't be found");
+      }
+      if (size > MAX_VOICE_CLIP_BYTES) throw new CharacterError("The voice clip is over 20 MB");
+      // Under the file's folder, where the voice service accepts clips from.
+      const target = path.join(dir, "voices", `${entryId}${type}`);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      if (path.resolve(clip) !== path.resolve(target)) fs.copyFileSync(clip, target);
+      entry.voice = { refAudio: path.relative(dir, target).split(path.sep).join("/"), refText };
+    }
+
+    if (fields.live2dModel === "") {
+      delete entry.live2dModel;
+    } else if (typeof fields.live2dModel === "string") {
+      if (!/.model3.json$/i.test(fields.live2dModel.trim())) throw new CharacterError("The avatar must be a Live2D .model3.json file");
+      entry.live2dModel = fields.live2dModel.trim();
+    }
+
+    if (at >= 0) entries[at] = entry;
+    else entries.push(entry);
+    writeEntries(entries);
+    return get(entryId);
+  }
+
+  // A built-in's prompt back to the one she shipped with. Null for anyone else.
+  function resetPrompt(id) {
+    if (!isBuiltIn(id)) return null;
+    const entries = readEntries();
+    const at = entryIndex(entries, id);
+    if (at >= 0 && "persona" in entries[at]) {
+      delete entries[at].persona;
+      if (Object.keys(entries[at]).every((key) => key === "id")) entries.splice(at, 1);
+      writeEntries(entries);
+    }
+    return get(id);
+  }
+
+  // A character you added, gone with her own files. Built-ins can't be:
+  // false for one of those or an unknown id.
+  function removeCharacter(id) {
+    if (isBuiltIn(id) || !get(id)) return false;
+    writeEntries(readEntries().filter((_, i, all) => i !== entryIndex(all, id)));
+    if (activeId === id) setActive(DEFAULT_ID);
+    if (group.partner === id) setGroup(false);
+    onRemoved(id);
+    return true;
+  }
+
+  // What Settings shows and edits: everything but the clip's full path.
+  function editable() {
+    return list().map((c) => ({
+      id: c.id,
+      name: c.name,
+      persona: c.persona,
+      handoff: c.handoff,
+      builtIn: isBuiltIn(c.id),
+      promptEdited: isBuiltIn(c.id) && c.persona !== builtInOf(c.id).persona,
+      voice: c.voice ? { file: path.basename(c.voice.refAudio), refText: c.voice.refText } : null,
+      live2dModel: c.live2dModel,
+    }));
+  }
+
   return {
     list,
     get,
     active,
+    editable,
+    saveCharacter,
+    resetPrompt,
+    removeCharacter,
     speakAs,
     setActive,
     findSwitchRequest,
@@ -323,7 +468,9 @@ function characterFilePath(filePath, id) {
 }
 
 module.exports = {
+  CharacterError,
   DEFAULT_ID,
+  MAX_PERSONA_CHARS,
   DEFAULT_FILE_PATH,
   characterFilePath,
   createCharacterStore,
