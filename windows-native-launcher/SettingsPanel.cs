@@ -39,9 +39,9 @@ internal sealed class SettingsPanel : UserControl
     // Q20: Settings > Skills' "Imported skills" choice, in node-bot's order.
     private static readonly string[] ImportedSkillUseModes = { "free", "each", "first" };
     private readonly ComboBox importedSkillUseBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
-    private readonly ListView approvalsList = new();
+    private readonly RowList approvalsList = new() { MaxVisibleRows = 6, NameWidth = 130, AccessibleName = "Waiting for your OK" };
     // #1154: remembered always/never answers, with Forget.
-    private readonly ListView rememberedList = new() { AccessibleName = "Remembered answers" };
+    private readonly RowList rememberedList = new() { MaxVisibleRows = 6, NameWidth = 70, AccessibleName = "Remembered answers" };
     // #669: index-aligned with ToolApprovalModes below.
     private readonly ComboBox toolApprovalModeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     private static readonly string[] ToolApprovalModes = { "smart", "ask", "off" };
@@ -52,7 +52,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly ComboBox[] gitApprovalCombos = Array.ConvertAll(GitApprovalTiers, tier => new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, AccessibleName = $"Git approval: {tier}" });
     private readonly Label gitDangerWarning = new() { AutoSize = true, MaximumSize = new Size(640, 0), ForeColor = Color.OrangeRed, AccessibleName = "Git danger warning" };
     // #1265: Mana's daily Folio update PRs, through "GitHub writes".
-    private readonly CheckBox keepFolioCheck = new() { Text = "Keep Folio up to date (a PR when Folio main moves on, merged once every check passes)", AutoSize = true, ForeColor = DarkTheme.Text, AccessibleName = "Keep Folio up to date" };
+    private readonly SettingsSwitch keepFolioCheck = new() { AccessibleName = "Keep Folio up to date" };
     private readonly Label folioStatusLabel = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 8, 3, 3), AccessibleName = "Folio check result" };
     private readonly ComboBox voiceProviderCombo = new();
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
@@ -102,7 +102,7 @@ internal sealed class SettingsPanel : UserControl
         // #1426: nine groups in a sidebar, each holding the pages that used to
         // be tabs of their own, and a search over every page's words. This is
         // stage 1 of the redesign: the pages are regrouped as they are, and
-        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins, Memory and Models so far).
+        // stage 2 redraws each group as one page of rows (General, Voice, Check-ins, Memory, Models and Permissions so far).
         var backendPage = BuildConnectionTab(out var localOnlyPage);
         var timingsPage = BuildPerfTab();
         var privacyPage = BuildPrivacyTab();
@@ -112,9 +112,7 @@ internal sealed class SettingsPanel : UserControl
         AddGroup("checkins", "Check-ins", BuildCheckInsPage());
         AddGroup("memory", "Memory", BuildMemoryPage());
         AddGroup("models", "Models", BuildModelsPage());
-        AddGroup("permissions", "Permissions", BuildApprovalsTab(),
-            new TabPage("Desktop folders") { Controls = { new DesktopFoldersPanel() } }, // #997
-            BuildPendingEditsTab());
+        AddGroup("permissions", "Permissions", BuildPermissionsPage());
         AddGroup("privacy", "Privacy", localOnlyPage, privacyPage); // #1336
         AddGroup("connections", "Connections", BuildMailCalendarTab(), BuildMobileDevicesTab(), BuildAccountsTab(), BuildPluginsTab(), BuildMcpServersTab());
         AddGroup("advanced", "Advanced", backendPage, BuildHooksTab(), BuildLogsTab(), timingsPage, BuildDeveloperTab());
@@ -205,15 +203,12 @@ internal sealed class SettingsPanel : UserControl
     // A few words people search for that no label on the page says.
     private static readonly Dictionary<string, string> PageKeywords = new()
     {
-        ["Approvals"] = "permission ask allow deny git github",
-        ["Desktop folders"] = "files tidy move rename",
         ["Local-only"] = "offline cloud privacy",
         ["Your data"] = "export delete wipe backup",
         ["Plugins"] = "addon add-on extension",
         ["MCP Clients"] = "mcp servers tools",
         ["Backend"] = "url port server admin token",
         ["Timings"] = "performance perf speed",
-        ["Pending edits"] = "proposals approve changes",
         ["Developer"] = "project folder revert pr",
     };
 
@@ -1450,6 +1445,124 @@ internal sealed class SettingsPanel : UserControl
         };
     }
 
+    // #1426 stage 2: Permissions as one page of rows -- what's waiting for
+    // your OK, the rules for her tools and her git and GitHub work, the
+    // answers she remembers, and the folders and camera she may use. (What's
+    // waiting moves to its own list in the chat window in stage 3.)
+    private DesktopFoldersPanel? desktopFolders;
+
+    internal RowList ApprovalsList => approvalsList; // tests
+    internal RowList RememberedList => rememberedList; // tests
+    internal Label GitDangerWarning => gitDangerWarning; // tests
+
+    private TabPage BuildPermissionsPage()
+    {
+        approvalsList.ActionsFor = value => value is string id ? ApprovalActions(id) : [];
+        approvalsList.ItemActivate += async (_, _) => await DecideSelectedApprovalAsync("allow-once");
+        rememberedList.ActionsFor = _ => [new("", "Forget: ask again next time", ForgetSelectedAsync)];
+
+        var toolRow = ChoiceRow("Ask before tool calls", "Destructive commands (rm -rf, registry edits, download-and-run) always ask, whatever this says", "approval approvals ask tools",
+            ["Smart: unless it's read-only or small", "Every tool call", "Only destructive commands"], 0, picked => _ = SaveToolApprovalModeAsync(), toolApprovalModeCombo);
+
+        (string Name, string Explanation, string Keywords)[] tiers =
+        [
+            ("Local changes", "Branch, commit, merge main in", "git local branch commit"),
+            ("GitHub writes", "Push a branch, open PRs, issues and comments", "github push pr issue comment"),
+            ("Merging and force-pushing", "Merge a PR, push to main, force-push, delete branches, rewrite history", "git merge force push main delete"),
+        ];
+        var gitRows = new List<Control>();
+        for (var i = 0; i < gitApprovalCombos.Length; i++)
+        {
+            var tier = GitApprovalTiers[i];
+            var combo = gitApprovalCombos[i];
+            var row = ChoiceRow(tiers[i].Name, tiers[i].Explanation, tiers[i].Keywords,
+                ["Ask every time", "Ask once, then allow", "Without asking"], 0, picked => _ = SaveGitApprovalModeAsync(tier, combo), combo);
+            gitRows.Add(tier == "danger" ? Said(gitDangerWarning, row, DarkTheme.Warn) : row);
+        }
+
+        // #1265: Mana's daily Folio update PRs, through "GitHub writes".
+        keepFolioCheck.CheckedChanged += async (_, _) =>
+        {
+            if (!loadingRows)
+            {
+                await SaveKeepFolioAsync();
+            }
+        };
+        folioStatusLabel.ForeColor = DarkTheme.Muted;
+        folioStatusLabel.BackColor = Color.Transparent;
+        folioStatusLabel.MaximumSize = new Size(240, 0);
+        var checkFolio = SettingsRows.Action("Check now", () => _ = CheckFolioAsync());
+        checkFolio.AccessibleName = "Check Folio now";
+
+        desktopFolders = new DesktopFoldersPanel();
+        var saved = ManaSettingsStore.Load();
+        var parts = new List<Control>
+        {
+            SettingsRows.Section("Waiting for you"),
+            new SettingsRow("Asking now", "What she's waiting on your OK for. Pick one for its answers", "approvals pending waiting allow deny never",
+                below: true, SettingsRows.RoundPanel(approvalsList)),
+            new SettingsRow("Pending edits", "Changes she's proposed to files, waiting for your OK", "proposals edits approve changes",
+                SettingsRows.Action("Review…", () => new ProposalsForm(backendClient).Show())),
+            SettingsRows.Section("Tools"),
+            toolRow,
+            SettingsRows.Section("Git and GitHub"),
+        };
+        parts.AddRange(gitRows);
+        parts.Add(new SettingsRow("Keep Folio up to date", "A PR when Folio's main moves on, merged once every check passes", "folio update pr",
+            folioStatusLabel, checkFolio, keepFolioCheck));
+        parts.Add(SettingsRows.Section("Remembered answers"));
+        parts.Add(new SettingsRow("Always and never", "Answers you told her to remember. Forget one and she asks again", "approval remembered always never forget",
+            below: true, SettingsRows.RoundPanel(rememberedList)));
+        parts.Add(SettingsRows.Section("Files and camera"));
+        parts.AddRange(desktopFolders.Rows);
+        // #912: off by default; read at each snapshot (the camera hotkey, or
+        // Mana's vision__camera when I ask her to look at something).
+        parts.Add(SwitchRow("Camera snapshots", "She can take a photo when you ask her to look at something", "camera webcam photo look",
+            saved.CameraSnapshots, on =>
+            {
+                var latest = ManaSettingsStore.Load();
+                latest.CameraSnapshots = on;
+                latest.Save();
+            }));
+        parts.Add(BuildSnapshotFolderRow());
+        return SettingsRows.Page("Permissions", parts.ToArray());
+    }
+
+    // The answers to one request, as the icons on its row. A coding agent's
+    // request is decided once: allowed or denied (#838).
+    private IReadOnlyList<RowList.RowAction> ApprovalActions(string id)
+    {
+        RowList.RowAction Act(string glyph, string name, string decision) => new(glyph, name, () => DecideSelectedApprovalAsync(decision));
+        return id.StartsWith(PendingWriteTag, StringComparison.Ordinal)
+            ? [Act("", "Allow once", "allow-once"), Act("", "Deny", "deny")]
+            :
+            [
+                Act("", "Allow once", "allow-once"),
+                Act("", "Allow for this session", "allow-session"),
+                Act("", "Always allow", "always-allow"), // an open lock
+                Act("", "Deny", "deny"),
+                Act("", "Never", "never"), // a lock
+            ];
+    }
+
+    private async Task CheckFolioAsync()
+    {
+        folioStatusLabel.Text = "Checking…";
+        string text;
+        try
+        {
+            text = await backendClient.CheckFolioNowAsync();
+        }
+        catch (Exception ex)
+        {
+            text = $"Couldn't check: {BackendError.Describe(ex)}";
+        }
+        if (!IsDisposed)
+        {
+            folioStatusLabel.Text = text;
+        }
+    }
+
     // A row with a dropdown that saves on each pick; Undo picks the one before.
     // combo: one the page keeps to show a fresh load in (inside loadingRows).
     private SettingsRow ChoiceRow(string name, string explanation, string keywords, string[] options, int index, Action<int> save, ComboBox? combo = null, Control? status = null)
@@ -1474,8 +1587,8 @@ internal sealed class SettingsPanel : UserControl
 
     // #1426 stage 2: Voice as one page of rows. The microphone's settings
     // are read each time listening starts; the vocabulary applies to the
-    // next thing you say. Camera and voice clips sit here until the
-    // Permissions and Privacy groups are redrawn.
+    // next thing you say. Voice clips sit here until the Privacy group is
+    // redrawn.
     private TabPage BuildVoicePage()
     {
         var saved = ManaSettingsStore.Load();
@@ -1525,10 +1638,6 @@ internal sealed class SettingsPanel : UserControl
             SettingsRows.Section("Vocabulary"),
         };
         parts.AddRange(BuildSpeechWordsRows());
-        parts.Add(SettingsRows.Section("Camera"));
-        parts.Add(SwitchRow("Camera snapshots", "She can take a photo when you ask her to look at something", "camera webcam photo look",
-            saved.CameraSnapshots, on => Save(s => s.CameraSnapshots = on)));
-        parts.Add(BuildSnapshotFolderRow());
         parts.Add(SettingsRows.Section("Voice clips"));
         parts.AddRange(BuildVoiceClipsRows());
         parts.Add(SettingsRows.Section("Troubleshooting"));
@@ -1605,7 +1714,8 @@ internal sealed class SettingsPanel : UserControl
                 folder.Text = dialog.SelectedPath;
             }
         });
-        return new SettingsRow("Snapshot folder", "Where photos you ask her to keep are saved", "camera folder save pictures", folder, browse);
+        folder.Dock = DockStyle.Fill;
+        return new SettingsRow("Snapshot folder", "Where photos you ask her to keep are saved", "camera folder save pictures", SettingsRows.RoundField(folder, 220), browse);
     }
 
     // #682: what the wake-word filter and voice match decided, for fixing problems.
@@ -1791,10 +1901,6 @@ internal sealed class SettingsPanel : UserControl
         layout.Controls.Add(row);
         return new TabPage(title) { Controls = { layout } };
     }
-
-    private TabPage BuildPendingEditsTab() => ButtonsPage("Pending edits",
-        "Changes she has proposed, waiting for your OK. The chat window opens this when one arrives.",
-        ("Review pending edits…", () => new ProposalsForm(backendClient).Show()));
 
     private TabPage BuildDeveloperTab() => ButtonsPage("Developer",
         "For working on Mana herself.",
@@ -2483,154 +2589,6 @@ internal sealed class SettingsPanel : UserControl
         skillsList.ShowEntries(skills.Select(s => new RowList.Entry(s.Name, s.Name, s.Description ?? "", s.Status ?? "")), null, "No skills yet");
     }
 
-    private TabPage BuildApprovalsTab()
-    {
-        approvalsList.Dock = DockStyle.Fill;
-        approvalsList.View = View.Details;
-        approvalsList.FullRowSelect = true;
-        approvalsList.Columns.Add("Type", 120);
-        approvalsList.Columns.Add("Summary", 300);
-        DarkTheme.ApplyListView(approvalsList);
-
-        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        var allowButton = new Button { Text = "Allow once" };
-        // #669: an in-memory grant that ends when Mana restarts.
-        var sessionButton = new Button { Text = "Allow for session", AutoSize = true };
-        var alwaysAllowButton = new Button { Text = "Always allow" };
-        var denyButton = new Button { Text = "Deny" };
-        // #1154: a deny that's remembered (e.g. never act on this site).
-        var neverButton = new Button { Text = "Never" };
-        DarkTheme.ApplyButton(allowButton);
-        DarkTheme.ApplyButton(sessionButton);
-        DarkTheme.ApplyButton(alwaysAllowButton);
-        DarkTheme.ApplyButton(denyButton);
-        DarkTheme.ApplyButton(neverButton);
-
-        // All four share one guard -- a decision resolves the request
-        // server-side, so a second click (this button or a different
-        // one) while the first is still in flight would just 404 there
-        // instead of doing anything useful.
-        async Task DecideAsync(string decision)
-        {
-            allowButton.Enabled = false;
-            sessionButton.Enabled = false;
-            alwaysAllowButton.Enabled = false;
-            denyButton.Enabled = false;
-            neverButton.Enabled = false;
-            try
-            {
-                await DecideSelectedApprovalAsync(decision);
-            }
-            finally
-            {
-                if (!IsDisposed)
-                {
-                    allowButton.Enabled = true;
-                    sessionButton.Enabled = true;
-                    alwaysAllowButton.Enabled = true;
-                    denyButton.Enabled = true;
-                    neverButton.Enabled = true;
-                }
-            }
-        }
-        allowButton.Click += async (_, _) => await DecideAsync("allow-once");
-        sessionButton.Click += async (_, _) => await DecideAsync("allow-session");
-        alwaysAllowButton.Click += async (_, _) => await DecideAsync("always-allow");
-        denyButton.Click += async (_, _) => await DecideAsync("deny");
-        neverButton.Click += async (_, _) => await DecideAsync("never");
-        buttonRow.Controls.Add(allowButton);
-        buttonRow.Controls.Add(sessionButton);
-        buttonRow.Controls.Add(alwaysAllowButton);
-        buttonRow.Controls.Add(denyButton);
-        buttonRow.Controls.Add(neverButton);
-
-        rememberedList.Dock = DockStyle.Fill;
-        rememberedList.View = View.Details;
-        rememberedList.FullRowSelect = true;
-        rememberedList.Columns.Add("Remembered", 300);
-        rememberedList.Columns.Add("Answer", 80);
-        DarkTheme.ApplyListView(rememberedList);
-        var forgetButton = new Button { Text = "Forget", Dock = DockStyle.Bottom, AccessibleName = "Forget: ask again next time" };
-        DarkTheme.ApplyButton(forgetButton);
-        forgetButton.Click += async (_, _) => await ForgetSelectedAsync();
-        var rememberedPanel = new Panel { Dock = DockStyle.Bottom, Height = 150, BackColor = DarkTheme.Background };
-        rememberedPanel.Controls.Add(rememberedList);
-        rememberedPanel.Controls.Add(forgetButton);
-        rememberedPanel.Controls.Add(new Label { Text = "Remembered answers (always / never)", Dock = DockStyle.Top, Height = 20, ForeColor = DarkTheme.Muted });
-
-        toolApprovalModeCombo.Items.AddRange(new object[]
-        {
-            "Smart -- ask unless it's read-only or a small change like the volume",
-            "Ask for every tool call",
-            "Only destructive commands",
-        });
-        toolApprovalModeCombo.BackColor = DarkTheme.Panel2;
-        toolApprovalModeCombo.ForeColor = DarkTheme.Text;
-        // SelectionChangeCommitted: user picks only, not Refresh's.
-        toolApprovalModeCombo.SelectionChangeCommitted += async (_, _) => await SaveToolApprovalModeAsync();
-        var modeRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        modeRow.Controls.Add(new Label { Text = "Ask before tool calls:", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 6, 3, 3) });
-        modeRow.Controls.Add(toolApprovalModeCombo);
-        var modePanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = DarkTheme.Background };
-        modePanel.Controls.Add(modeRow);
-        modePanel.Controls.Add(new Label { Text = "Destructive commands (rm -rf, registry edits, download-and-run...) always ask, in every mode.", AutoSize = true, ForeColor = DarkTheme.Muted });
-
-        // #1191: Mana's own git and GitHub actions. Reads never ask; a game
-        // running, the secret scan and "never" still apply in every mode.
-        modePanel.Controls.Add(new Label { Text = "Git and GitHub", AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 12, 3, 3) });
-        string[] tierNames =
-        {
-            "Local changes (branch, commit, merge main in):",
-            "GitHub writes (push a branch, PRs, issues, comments):",
-            "Merge a PR, push to main, force-push, delete branches, rewrite history:",
-        };
-        for (var i = 0; i < gitApprovalCombos.Length; i++)
-        {
-            var combo = gitApprovalCombos[i];
-            var tier = GitApprovalTiers[i];
-            combo.Items.AddRange(new object[] { "Ask every time", "Ask once, then always allow", "No approval" });
-            combo.BackColor = DarkTheme.Panel2;
-            combo.ForeColor = DarkTheme.Text;
-            combo.SelectionChangeCommitted += async (_, _) => await SaveGitApprovalModeAsync(tier, combo);
-            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-            row.Controls.Add(new Label { Text = tierNames[i], AutoSize = true, ForeColor = DarkTheme.Text, Margin = new Padding(3, 6, 3, 3) });
-            row.Controls.Add(combo);
-            modePanel.Controls.Add(row);
-        }
-        keepFolioCheck.Click += async (_, _) => await SaveKeepFolioAsync();
-        var checkFolioButton = new Button { Text = "Check now", AutoSize = true, AccessibleName = "Check Folio now" };
-        DarkTheme.ApplyButton(checkFolioButton);
-        checkFolioButton.Click += async (_, _) =>
-        {
-            folioStatusLabel.Text = "Checking...";
-            string text;
-            try
-            {
-                text = await backendClient.CheckFolioNowAsync();
-            }
-            catch (Exception ex)
-            {
-                text = $"Couldn't check: {ex.Message}";
-            }
-            if (!IsDisposed)
-            {
-                folioStatusLabel.Text = text;
-            }
-        };
-        var folioRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        folioRow.Controls.Add(keepFolioCheck);
-        folioRow.Controls.Add(checkFolioButton);
-        folioRow.Controls.Add(folioStatusLabel);
-        modePanel.Controls.Add(folioRow);
-        modePanel.Controls.Add(gitDangerWarning);
-
-        var page = new TabPage("Approvals");
-        page.Controls.Add(approvalsList);
-        page.Controls.Add(buttonRow);
-        page.Controls.Add(rememberedPanel);
-        page.Controls.Add(modePanel);
-        return page;
-    }
 
     internal async Task RefreshRememberedAsync()
     {
@@ -2652,13 +2610,8 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
-        rememberedList.Items.Clear();
-        foreach (var entry in remembered)
-        {
-            var item = new ListViewItem(entry.Label) { Tag = entry.Key };
-            item.SubItems.Add(entry.Answer == "never" ? "Never" : "Always");
-            rememberedList.Items.Add(item);
-        }
+        rememberedList.ShowEntries(remembered.Select(entry => new RowList.Entry(entry.Key, entry.Answer == "never" ? "Never" : "Always", entry.Label)),
+            null, "Nothing remembered: she asks each time");
     }
 
     private async Task ForgetSelectedAsync()
@@ -2697,7 +2650,9 @@ internal sealed class SettingsPanel : UserControl
         }
         if (!IsDisposed)
         {
+            loadingRows = true;
             toolApprovalModeCombo.SelectedIndex = Array.IndexOf(ToolApprovalModes, mode);
+            loadingRows = false;
         }
     }
 
@@ -2717,17 +2672,21 @@ internal sealed class SettingsPanel : UserControl
         {
             return;
         }
+        loadingRows = true;
         for (var i = 0; i < GitApprovalTiers.Length; i++)
         {
             gitApprovalCombos[i].SelectedIndex = modes.TryGetValue(GitApprovalTiers[i], out var mode) ? Array.IndexOf(GitApprovalModes, mode) : -1;
         }
+        loadingRows = false;
         UpdateGitDangerWarning();
         try
         {
             var keep = await backendClient.GetKeepFolioUpdatedAsync();
             if (!IsDisposed)
             {
+                loadingRows = true;
                 keepFolioCheck.Checked = keep;
+                loadingRows = false;
             }
         }
         catch (Exception ex)
@@ -2873,20 +2832,15 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
 
-        approvalsList.Items.Clear();
-        foreach (var approval in pending)
-        {
-            var item = new ListViewItem(approval.ActionType) { Tag = approval.Id };
-            item.SubItems.Add(approval.Summary);
-            approvalsList.Items.Add(item);
-        }
-        foreach (var write in writes)
-        {
-            var item = new ListViewItem(write.Kind) { Tag = PendingWriteTag + write.Id };
-            item.SubItems.Add(write.Summary);
-            approvalsList.Items.Add(item);
-        }
+        approvalsList.ShowEntries(
+            pending.Select(a => new RowList.Entry(a.Id, Words(a.ActionType), a.Summary))
+                .Concat(writes.Select(w => new RowList.Entry(PendingWriteTag + w.Id, Words(w.Kind), w.Summary))),
+            null, "Nothing waiting");
     }
+
+    // "github-write" -> "Github write": a request's kind, in words.
+    internal static string Words(string kind) =>
+        kind.Length == 0 ? "Request" : char.ToUpperInvariant(kind[0]) + kind[1..].Replace('-', ' ').Replace('_', ' ');
 
     // Marks an approvals-list row as an ACP agent pending write (#838).
     private const string PendingWriteTag = "write:";
@@ -3932,14 +3886,14 @@ internal sealed class SettingsPanel : UserControl
     // A use's status shows on its row's own line, in place of the
     // explanation while there's something to say, so its controls keep the
     // right-hand side to themselves.
-    private static SettingsRow Said(Label status, SettingsRow row)
+    private static SettingsRow Said(Label status, SettingsRow row, Color? color = null)
     {
         var explanation = row.Explanation!;
         var usual = explanation.Text;
         status.TextChanged += (_, _) =>
         {
             explanation.Text = status.Text.Length > 0 ? status.Text : usual;
-            explanation.ForeColor = status.Text.Length > 0 ? DarkTheme.Accent : DarkTheme.Muted;
+            explanation.ForeColor = status.Text.Length > 0 ? color ?? DarkTheme.Accent : DarkTheme.Muted;
         };
         return row;
     }

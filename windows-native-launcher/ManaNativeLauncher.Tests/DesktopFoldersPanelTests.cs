@@ -26,24 +26,22 @@ public sealed class DesktopFoldersPanelTests : IDisposable
         {
             using var panel = new DesktopFoldersPanel(SettingsPath, pickFolder: () => extra, confirm: _ => ++warnings > 0);
             var defaults = DesktopActions.AllowedFolders(null);
-            Assert.Equal(defaults, panel.Folders.Items.Cast<string>());
+            Assert.Equal(defaults, panel.FolderPaths);
 
             panel.AddFolder(); // a temp folder usually warns (AppData); either way it's added
             Assert.Equal(DesktopActions.CheckFolder(extra).Warning is null ? 0 : 1, warnings);
             Assert.Equal(defaults.Append(extra), ManaSettingsStore.Load(SettingsPath).DesktopActionFolders!);
 
-            panel.Folders.SelectedItem = defaults[0];
-            panel.RemoveSelected();
+            panel.Remove(defaults[0]);
             Assert.DoesNotContain(defaults[0], ManaSettingsStore.Load(SettingsPath).DesktopActionFolders!);
 
-            foreach (var folder in panel.Folders.Items.Cast<string>().ToList())
+            foreach (var folder in panel.FolderPaths.ToList())
             {
-                panel.Folders.SelectedItem = folder;
-                panel.RemoveSelected();
+                panel.Remove(folder);
             }
             // an empty list means no folders, not the defaults again
             Assert.Empty(ManaSettingsStore.Load(SettingsPath).DesktopActionFolders!);
-            Assert.Empty(panel.Folders.Items);
+            Assert.Empty(panel.FolderPaths);
         });
     }
 
