@@ -410,6 +410,8 @@ internal sealed class ChatBubblesForm : Form
 
     // The chat view's own Mana bubble (ChatView's paint: ManaBubble, glass
     // edges in the Mana preset), fading as a whole via a colour matrix.
+    private const float Radius = 10;
+
     private void DrawBubble(Graphics g, Rectangle bounds, ChatBubbleStack.Bubble bubble)
     {
         using var single = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
@@ -417,18 +419,21 @@ internal sealed class ChatBubblesForm : Form
         {
             b.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             var rect = new Rectangle(Point.Empty, bounds.Size);
+            // #1449: rounded like the chat window's bubbles; the corners stay see-through.
+            b.SmoothingMode = SmoothingMode.AntiAlias;
+            using var shape = SettingsRows.Rounded(new RectangleF(0.5f, 0.5f, rect.Width - 1f, rect.Height - 1f), Radius);
             using (var fill = new SolidBrush(Color.FromArgb(DarkTheme.IsGlass ? 175 : 235, DarkTheme.ManaBubble)))
             {
-                b.FillRectangle(fill, rect);
+                b.FillPath(fill, shape);
             }
             if (DarkTheme.IsGlass)
             {
-                GlassSurface.PaintGlassEdges(b, rect, null);
+                GlassSurface.PaintGlassEdges(b, rect, null, Radius);
             }
             else
             {
                 using var border = new Pen(DarkTheme.Border);
-                b.DrawRectangle(border, 0, 0, rect.Width - 1, rect.Height - 1);
+                b.DrawPath(border, shape);
             }
             using var text = new SolidBrush(DarkTheme.Text);
             b.DrawString(bubble.Text, font, text, new RectangleF(PadX, PadY, MaxTextWidth, rect.Height - PadY * 2));

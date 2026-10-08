@@ -329,10 +329,28 @@ internal static class GlassSurface
     public static float? SheenProgress(Control control) =>
         control.FindForm() is { } form && Attached.TryGetValue(form, out var attachment) ? attachment.Shimmer.ProgressFor(control) : null;
 
-    internal static void PaintGlassEdges(Graphics g, Rectangle bounds, float? sheenProgress)
+    // radius: rounded corners (#1449's chat bubbles); the sheen and the top
+    // edge keep inside them.
+    internal static void PaintGlassEdges(Graphics g, Rectangle bounds, float? sheenProgress, float radius = 0)
     {
         if (bounds.Width <= 0 || bounds.Height <= 0)
         {
+            return;
+        }
+        if (radius > 0)
+        {
+            using var shape = SettingsRows.Rounded(new RectangleF(bounds.X + 0.5f, bounds.Y + 0.5f, bounds.Width - 1f, bounds.Height - 1f), radius);
+            if (sheenProgress is float rounded)
+            {
+                var clip = g.Clip;
+                g.SetClip(shape, CombineMode.Intersect);
+                PaintSheen(g, bounds, rounded);
+                g.Clip = clip;
+            }
+            using var edge = new Pen(Outline);
+            g.DrawPath(edge, shape);
+            using var shine = new Pen(TopEdge);
+            g.DrawLine(shine, bounds.X + radius, bounds.Y + 1.5f, bounds.Right - radius - 1, bounds.Y + 1.5f);
             return;
         }
         if (sheenProgress is float progress)
