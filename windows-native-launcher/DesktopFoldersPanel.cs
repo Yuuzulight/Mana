@@ -1,30 +1,27 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #997 (#911): Settings > Desktop -- the folders Mana may move and rename
-// files in (DesktopActions.MoveFiles), saved to DesktopActionFolders. The
-// list starts as the defaults; any of them can be removed. Read again on
-// every move, so a change applies at once.
-internal sealed class DesktopFoldersPanel : FlowLayoutPanel
+// #997 (#911): the folders Mana may move and rename files in
+// (DesktopActions.MoveFiles), saved to DesktopActionFolders. The list starts
+// as the defaults; any of them can be removed. Read again on every move, so
+// a change applies at once. #1426: a row on Settings > Permissions, each
+// folder one line with Remove on it.
+internal sealed class DesktopFoldersPanel : Component
 {
     private readonly string? settingsPath;
     private readonly Func<string?> pickFolder;
     private readonly Func<string, bool> confirm;
-    private readonly Label status = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+    private readonly Label status = SettingsRows.Status();
 
-    internal ListBox Folders { get; } = new()
-    {
-        Width = 520,
-        Height = 160,
-        AccessibleName = "Allowed folders",
-        BackColor = DarkTheme.Panel2,
-        ForeColor = DarkTheme.Text,
-        BorderStyle = BorderStyle.FixedSingle,
-    };
+    internal RowList Folders { get; } = new() { MaxVisibleRows = 6, NameWidth = 120, AccessibleName = "Allowed folders" };
+    internal IReadOnlyList<string> FolderPaths { get; private set; } = [];
+    internal Control[] Rows { get; }
 
     // settingsPath/pickFolder/confirm: tests pass a temp file and fakes;
     // the real ones are the settings file, a folder picker and a Yes/No box.
@@ -32,30 +29,17 @@ internal sealed class DesktopFoldersPanel : FlowLayoutPanel
     {
         this.settingsPath = settingsPath;
         this.pickFolder = pickFolder ?? PickWithDialog;
-        this.confirm = confirm ?? (message => MessageBox.Show(FindForm(), message, "Desktop", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes);
-        Dock = DockStyle.Fill;
-        FlowDirection = FlowDirection.TopDown;
-        WrapContents = false;
-        AutoScroll = true;
-        BackColor = DarkTheme.Background;
-
-        var add = new Button { Text = "Add...", AutoSize = true };
-        var remove = new Button { Text = "Remove", AutoSize = true };
-        DarkTheme.ApplyButton(add);
-        DarkTheme.ApplyButton(remove);
-        add.Click += (_, _) => AddFolder();
-        remove.Click += (_, _) => RemoveSelected();
-
-        var buttons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-        buttons.Controls.AddRange(new Control[] { add, remove, status });
-        Controls.Add(new Label
+        this.confirm = confirm ?? (message => MessageBox.Show(Folders.FindForm(), message, "Desktop", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes);
+        Folders.ActionsFor = value => [new("", "Remove", () =>
         {
-            Text = "Folders Mana may move and rename files in when I ask (she asks before each move, never deletes, and it can be undone):",
-            AutoSize = true,
-            ForeColor = DarkTheme.Text,
-        });
-        Controls.Add(Folders);
-        Controls.Add(buttons);
+            Remove((string)value);
+            return Task.CompletedTask;
+        })];
+        Rows = new Control[]
+        {
+            new SettingsRow("Folders she may tidy", "She moves and renames files in these when you ask: she asks before each move, never deletes, and it can be undone", "desktop folders files tidy move rename",
+                below: true, SettingsRows.RoundPanel(Folders), SettingsRows.Line(SettingsRows.Action("Add folder…", AddFolder), status)),
+        };
         Reload();
     }
 
@@ -79,37 +63,32 @@ internal sealed class DesktopFoldersPanel : FlowLayoutPanel
             return;
         }
         var full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(path));
-        Save(Current().Append(full).Distinct(StringComparer.OrdinalIgnoreCase));
+        Save(FolderPaths.Append(full).Distinct(StringComparer.OrdinalIgnoreCase), $"Added {full}");
     }
 
-    internal void RemoveSelected()
-    {
-        if (Folders.SelectedItem is string folder)
-        {
-            Save(Current().Where(f => !f.Equals(folder, StringComparison.OrdinalIgnoreCase)));
-        }
-    }
+    internal void Remove(string folder) =>
+        Save(FolderPaths.Where(f => !f.Equals(folder, StringComparison.OrdinalIgnoreCase)), $"Removed {folder}");
 
-    private IEnumerable<string> Current() => Folders.Items.Cast<string>().ToList();
-
-    private void Save(IEnumerable<string> folders)
+    private void Save(IEnumerable<string> folders, string done)
     {
         var settings = ManaSettingsStore.Load(settingsPath);
         settings.DesktopActionFolders = folders.ToList();
         settings.Save(settingsPath);
         Reload();
-        status.Text = "Saved.";
+        status.Text = done;
     }
 
+    // Each folder by its name, its full path beside it.
     private void Reload()
     {
-        Folders.Items.Clear();
-        Folders.Items.AddRange(DesktopActions.AllowedFolders(ManaSettingsStore.Load(settingsPath).DesktopActionFolders).ToArray<object>());
+        FolderPaths = DesktopActions.AllowedFolders(ManaSettingsStore.Load(settingsPath).DesktopActionFolders).ToList();
+        Folders.ShowEntries(FolderPaths.Select(f => new RowList.Entry(f, System.IO.Path.GetFileName(f) is { Length: > 0 } name ? name : f, f)),
+            null, "No folders: she won't move files anywhere");
     }
 
     private string? PickWithDialog()
     {
         using var dialog = new FolderBrowserDialog { Description = "A folder Mana may move files in", UseDescriptionForTitle = true };
-        return dialog.ShowDialog(FindForm()) == DialogResult.OK ? dialog.SelectedPath : null;
+        return dialog.ShowDialog(Folders.FindForm()) == DialogResult.OK ? dialog.SelectedPath : null;
     }
 }

@@ -37,14 +37,14 @@ public class SettingsPanelLayoutTests
             Assert.Equal("Check-ins", Pages("checkins"));
             Assert.Equal("Memory", Pages("memory"));
             Assert.Equal("Models", Pages("models"));
-            Assert.Equal("Approvals, Desktop folders, Pending edits", Pages("permissions"));
+            Assert.Equal("Permissions", Pages("permissions"));
             Assert.Equal("Local-only, Your data", Pages("privacy"));
             Assert.Equal("Calendar & Email, Mobile Devices, Accounts, Plugins, MCP Clients", Pages("connections"));
             Assert.Equal("Backend, Hooks, Logs, Timings, Developer", Pages("advanced"));
             // Every page that used to be a tab is still somewhere: 27, as Connection and Performance split into five,
             // plus what came from the tray: Coding mode, Dictation, Group mode, Avatar and the tool windows' pages --
-            // less General's five, Voice's two, Check-ins' three, Memory's six and Models' four, each now one page.
-            Assert.Equal(20, panel.Groups.Sum(g => g.Tabs.TabCount));
+            // less General's five, Voice's two, Check-ins' three, Memory's six, Models' four and Permissions' three, each now one page.
+            Assert.Equal(18, panel.Groups.Sum(g => g.Tabs.TabCount));
         });
     }
 
@@ -65,8 +65,8 @@ public class SettingsPanelLayoutTests
             // Pills pick the page, so no group shows a tab strip; a one-page group shows no pills either.
             Assert.All(panel.Groups, g => Assert.Equal(1, g.Tabs.ItemSize.Height));
             Assert.Empty(panel.PagePills.Controls); // Models is one page now
-            panel.ShowGroup("permissions");
-            Assert.Equal(new[] { "Approvals", "Desktop folders", "Pending edits" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
+            panel.ShowGroup("privacy");
+            Assert.Equal(new[] { "Local-only", "Your data" }, panel.PagePills.Controls.Cast<Control>().Select(c => c.Text));
             panel.ShowGroup("privacy");
             panel.PagePills.Controls.Cast<Button>().Single(b => b.Text == "Your data").PerformClick();
             Assert.Equal("Your data", panel.Groups.Single(g => g.Id == "privacy").Tabs.SelectedTab!.Text);
