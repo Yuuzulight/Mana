@@ -267,7 +267,10 @@ async function main(argv) {
     for (let k = 1; k <= repeat; k += 1) {
       for (const s of scenarios) {
         if (model.aborted()) break;
-        git(wt, "checkout", "-q", "--", "node-bot/data");
+        // node-bot/data is back to the commit before each run: its tracked
+        // files restored (git refuses the checkout when it has none, as on
+        // main now), everything else removed.
+        if (git(wt, "ls-files", "--", "node-bot/data")) git(wt, "checkout", "-q", "--", "node-bot/data");
         git(wt, "clean", "-fdxq", "--", "node-bot/data");
         const started = Date.now();
         const flags = [...(arg("--model") ? ["--model", arg("--model")] : []), ...(context ? ["--context", String(context)] : [])];
