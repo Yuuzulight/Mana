@@ -206,8 +206,12 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
       if (inGameBreak && !next.explicit) breakUsed = true;
       lastSentAt = t;
       lastSent = { reason: next.reason, title: next.payload.title ?? null, text: next.payload.text ?? null, at: t };
+      // A reminder held past its lateAfter (no launcher listening, say) is
+      // said as a late one: judged when it's said, not when it fired.
+      const { lateAfter, ...payload } = next.payload;
+      if (payload.kind === "reminder" && Number.isFinite(lateAfter) && t > lateAfter) payload.kind = "reminder-late";
       Promise.resolve()
-        .then(() => deliver(next.payload))
+        .then(() => deliver(payload))
         .catch(() => {});
     }
     if (held.length !== count || settled) save();

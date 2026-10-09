@@ -129,6 +129,8 @@ function getScheduler(deps = {}) {
           // #1024: picks how the launcher says it. Late: it fired well after
           // its time (the PC was asleep or Mana was off).
           payload.kind = error ? "failed" : lateMs > LATE_REMINDER_MS ? "reminder-late" : "reminder";
+          // Held before it's said (no launcher listening): late from then on.
+          if (payload.kind === "reminder") payload.lateAfter = job.nextRunAt + LATE_REMINDER_MS;
           // Tier 3 #2: after downtime only the last day's missed reminders
           // come back, MAX_REPLAYED of them one by one and the rest as one
           // "and N more". Older ones stay in the chat log below.

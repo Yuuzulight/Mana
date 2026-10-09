@@ -471,3 +471,24 @@ test("#697 resetReason and resetAllLearned clear learned scores", () => {
   assert.deepEqual(s.p.getSettings().learned, {});
 });
 
+
+// A reminder held while no launcher listens is said as late once it's past
+// its lateAfter; on time, it stays a plain reminder. lateAfter never reaches
+// the launcher.
+test("a held reminder is judged late when it's said, not when it fired", async () => {
+  const sent = [];
+  let t = new Date(2026, 8, 29, 12, 0).getTime();
+  let listening = false;
+  const p = createProactive({ deliver: (payload) => sent.push(payload), canDeliver: () => listening, now: () => t });
+  const remind = (text) => p.offer({ reason: "reminder", explicit: true, payload: { text, kind: "reminder", lateAfter: t + 5 * MINUTE } });
+  assert.equal(remind("stretch"), "held");
+  t += 20 * MINUTE;
+  listening = true;
+  p.flush();
+  await tick();
+  assert.deepEqual(sent, [{ text: "stretch", kind: "reminder-late" }]);
+  t += 10 * MINUTE;
+  assert.equal(remind("drink water"), "delivered");
+  await tick();
+  assert.deepEqual(sent[1], { text: "drink water", kind: "reminder" });
+});
