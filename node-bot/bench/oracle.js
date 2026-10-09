@@ -40,7 +40,7 @@ function oracleLoop(repoRoot) {
     for (const f of changes.filter((f) => f.status !== "A")) await call("self_work__read", { path: f.path, start_line: 1, end_line: 1 });
     await call("self_work__plan", {
       steps: ["Make the change the issue asks for", "Run the tests for it"],
-      files: changes.map((f) => `${f.path}: part of the merged fix`),
+      files: changes.map((f) => `${f.path}: ${f.status === "A" ? "new, " : ""}part of the merged fix`),
     });
     for (const f of code) await call("coding__propose_edit", { path: f.path, new_text: git(repoRoot, "show", `${c.fix}:${f.path}`) });
     for (const f of changes.filter((f) => f.status === "D")) problems.push(`${f.path}: the fix deletes it, and no tool can`);
