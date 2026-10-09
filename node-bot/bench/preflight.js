@@ -7,7 +7,8 @@
 //   - a sandboxed test really runs in a bench worktree, through the link;
 //   - the model file and --server-args flags exist;
 //   - every case is sound: its hidden tests fail at the base and pass with
-//     the fix (cached per case); unsound cases are left out, with why;
+//     the fix (cached per case), and its fix touches none of her guardrails
+//     (she can't change those herself); others are left out, with why;
 //   - once the model is up, it makes a tool call the loop can parse.
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -76,14 +77,17 @@ function serverArgsProblem(serverArgs, bin, { help = () => execFileSync(bin, ["-
 
 // What a case's verdict depends on: the case, its hidden tests, Node.
 function caseKey(c) {
-  const h = crypto.createHash("sha256").update(JSON.stringify(c)).update(process.version);
+  // Only what the verdict depends on: the wording, interface and budgets can change without a new check.
+  const { id, base, fix, fixFiles, hiddenTests, testCommand, mutation } = c;
+  const h = crypto.createHash("sha256").update(JSON.stringify({ id, base, fix, fixFiles, hiddenTests, testCommand, mutation })).update(process.version);
   if (c.hiddenFrom) for (const rel of c.hiddenTests || []) h.update(fs.readFileSync(path.join(c.hiddenFrom, rel)));
   return h.digest("hex");
 }
 
 // Sound cases, and the ones left out with why. verify(c) is the bench's
 // verifyCase; verdicts are cached so a case is checked once.
-async function soundCases(cases, verify, { file = VERIFIED_FILE, log = console.log } = {}) {
+// guarded(c): why the case can't be hers to do (its fix changes one of her guardrails), or null.
+async function soundCases(cases, verify, { file = VERIFIED_FILE, log = console.log, guarded = () => null } = {}) {
   let cache = {};
   try {
     cache = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -91,6 +95,11 @@ async function soundCases(cases, verify, { file = VERIFIED_FILE, log = console.l
   const sound = [];
   const skipped = [];
   for (const c of cases) {
+    const why = guarded(c);
+    if (why) {
+      skipped.push({ id: c.id, why });
+      continue;
+    }
     const key = caseKey(c);
     let v = cache[c.id]?.key === key ? cache[c.id] : null;
     if (!v) {

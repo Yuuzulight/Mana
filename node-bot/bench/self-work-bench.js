@@ -57,6 +57,8 @@ const BACKEND_LLAMA_PORT = 8090;
 // The bench's own limit for starting a case (self-work's 85% inside her
 // run is unchanged).
 const BENCH_MAX_RAM_PERCENT = 90;
+// #1467: rounds to look around and test on top of the least a case takes.
+const EXPLORE_ROUNDS = 20;
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -217,7 +219,7 @@ async function blocker({ isGaming, ramPercent, backendModelUp }) {
 // counter the model's fetch adds to).
 async function runCase(c, deps) {
   const { repoRoot, worktreesDir } = deps;
-  const wt = path.join(worktreesDir, `bench-${c.id}`);
+  const wt = path.join(worktreesDir, `${deps.prefix || "bench-"}${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
   const tokens = deps.tokens || { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   tokens.peak = 0;
@@ -253,7 +255,7 @@ async function runCase(c, deps) {
       worktreesDir,
       // A wall-clock cap per run (goal mode ends gracefully at it), so one
       // run of full-suite test runs can't hold the batch for an hour.
-      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), deps.maxMs ? { ...opts, maxMs: deps.maxMs } : opts),
+      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), { ...opts, ...(deps.maxMs ? { maxMs: deps.maxMs } : {}), benchCase: c }),
       reviewEdit: deps.reviewEdit,
       isGaming: deps.isGaming,
       ramPercent: deps.ramPercent,
@@ -265,7 +267,9 @@ async function runCase(c, deps) {
     // the issue leaves it open, so a sound fix isn't failed on naming.
     const body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
     const started = Date.now();
-    const issue = { number: c.issue, title: c.title, body };
+    // #1467: a case's minRounds is what its merged fix takes through her tools (the oracle); every run gets
+    // that and EXPLORE_ROUNDS more, so a budget never decides a case on its own.
+    const issue = { number: c.issue, title: c.title, body, ...(c.minRounds ? { maxRounds: c.minRounds + EXPLORE_ROUNDS } : {}) };
     // #1247: --attempts N is her best-of-N (where self-work has it).
     const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
@@ -695,7 +699,12 @@ async function main(argv) {
     return;
   }
 
-  const { sound, skipped } = await pre.soundCases(cases, (c) => verifyCase(c, { repoRoot, worktreesDir }));
+  const { protectedPathFor } = require("../protected-paths");
+  const guarded = (c) => {
+    const hit = (c.fixFiles || []).find((f) => protectedPathFor(path.join(repoRoot, f)));
+    return hit ? `its fix changes ${hit}, one of her guardrails, which only a PR I approve may change` : null;
+  };
+  const { sound, skipped } = await pre.soundCases(cases, (c) => verifyCase(c, { repoRoot, worktreesDir }), { guarded });
   for (const s of skipped) console.log(`Leaving out ${s.id}: ${s.why}.`);
   if (!sound.length) throw new Error("no sound cases to run");
   if (argv.includes("--check")) {
@@ -704,8 +713,10 @@ async function main(argv) {
   }
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  const model = remote ? remoteModel(repoRoot, tokens, spend, { model: remote, thinking }, config) : realModel(repoRoot, tokens, config);
-  if (!remote) {
+  // #1467: --oracle replays each case's merged fix through her tools: a case it can't pass is the harness's or the case's fault.
+  const oracle = argv.includes("--oracle");
+  const model = oracle ? require("./oracle").oracleModel(repoRoot) : remote ? remoteModel(repoRoot, tokens, spend, { model: remote, thinking }, config) : realModel(repoRoot, tokens, config);
+  if (!remote && !oracle) {
     const bad = pre.serverArgsProblem(config.serverArgs, model.runtime.findLlamaServerBin());
     if (bad) throw new Error(`The bench's preflight failed: ${bad}`);
   }
@@ -715,7 +726,7 @@ async function main(argv) {
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of sound) runs.push({ c, repeat });
   try {
     await model.start();
-    const noCall = await pre.toolCallProblem(model.runLoop);
+    const noCall = oracle ? null : await pre.toolCallProblem(model.runLoop);
     if (noCall) throw new Error(`The bench's preflight failed: ${noCall}`);
     for (const { c, repeat } of runs) {
       // A run a game or RAM paused isn't her result: wait it out, run it again.
@@ -724,7 +735,7 @@ async function main(argv) {
       for (let tries = 0; tries < 3 && !result; tries += 1) {
         why = await waitOut(c, gate, model);
         if (why) break;
-        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate });
+        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate, ...(oracle ? { prefix: "bench-oracle-" } : {}) });
         if (result.ended === "paused") {
           console.log(`${c.id} was paused; running it again.`);
           result = null;

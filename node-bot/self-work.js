@@ -246,7 +246,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__search",
-      description: "Search the worktree's tracked files for an exact text, or a regular expression with regex: true. Returns path:line: text matches (at most 60).",
+      description: "Search the worktree's tracked files for an exact text, or a regular expression with regex: true (a text that looks like one, such as a|b or a.*b, is tried as one when it has no exact match). Returns path:line: text matches (at most 60).",
       parameters: {
         type: "object",
         properties: {
@@ -937,7 +937,8 @@ function createSelfWork(options = {}) {
   // PR. A loop that throws (where a real run would end "failed") comes
   // back as error, with the run as far as it got.
   async function bench(issue, worktree, { attempts = 1 } = {}) {
-    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: roundBudget(issue.body) });
+    // #1467: the bench may give more rounds (a case whose merged fix alone takes most of the budget).
+    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: Math.max(roundBudget(issue.body), Number(issue.maxRounds) || 0) });
     try {
       if (nativeTests && !options.approvalGate) throw new Error('Windows benchmark tests require a human approval gate; no unrestricted benchmark fallback');
       return { reply: (await bestOf(r, issue, attempts)).reply, run: r };
@@ -1503,12 +1504,20 @@ Before it can be a PR:
       if (!text) throw new Error("text is required");
       const args = ["grep", "-n", "-I", regex === true ? "-E" : "-F", "-e", String(text)];
       if (where) args.push("--", posix(inside(where)));
-      const r2 = await exec("git", args, { cwd: root, env: gitEnv });
+      let r2 = await exec("git", args, { cwd: root, env: gitEnv });
+      // #1467: models write grep patterns (a|b, a.*b, \.run\() without regex: true; a literal search
+      // for one finds nothing, so it's tried as a pattern before saying so.
+      let asPattern = false;
+      if (r2.code === 1 && regex !== true && /\||\.\*|\\[.(\[)\]sbdw]/.test(String(text))) {
+        args[3] = "-E";
+        const again = await exec("git", args, { cwd: root, env: gitEnv });
+        if (again.code === 0) [r2, asPattern] = [again, true];
+      }
       if (r2.code === 1) return "No matches.";
       if (r2.code !== 0) throw new Error(r2.stderr.trim());
       const lines = r2.stdout.split(/\r?\n/).filter(Boolean);
       for (const l of lines.slice(0, 60)) found.add(l.split(":")[0]);
-      return lines.slice(0, 60).map((l) => l.slice(0, 300)).join("\n") + (lines.length > 60 ? `\n...${lines.length - 60} more` : "");
+      return (asPattern ? "(No literal match; matched as a pattern.)\n" : "") + lines.slice(0, 60).map((l) => l.slice(0, 300)).join("\n") + (lines.length > 60 ? `\n...${lines.length - 60} more` : "");
     }
 
     function read({ path: rel, start_line, end_line }) {
@@ -1547,7 +1556,11 @@ Before it can be a PR:
         if (fs.existsSync(path.join(root, relPath))) {
           if (!found.has(relPath)) throw new Error(`find ${relPath} first with self_work__search or self_work__files, so you know it's the right place`);
         } else if (!fs.existsSync(path.dirname(path.join(root, relPath)))) {
-          throw new Error(`${relPath} doesn't exist and neither does its folder: find where this code really lives with self_work__search`);
+          // #1467: a new feature can need a new folder: one level, in a folder that exists, when she says it's new.
+          const parent = path.dirname(path.dirname(path.join(root, relPath)));
+          if (!/\bnew\b/i.test(why) || !fs.existsSync(parent)) {
+            throw new Error(`${relPath} doesn't exist and neither does its folder: find where this code really lives with self_work__search, or if it's a new folder say so ("${rel}: new ...")`);
+          }
         }
         named.push(relPath);
       }

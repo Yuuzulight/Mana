@@ -1,5 +1,6 @@
 {
   "id": "1349-repair-tool-call",
+  "minRounds": 14,
   "kind": "multi-file",
   "pr": 1349,
   "issue": 621,
@@ -18,6 +19,6 @@
     "node-bot/test/llama-server-runtime.test.js"
   ],
   "testCommand": "node --test test/repair-tool-call.test.js test/llama-server-runtime.test.js",
-  "interface": "repairToolCallText repairs malformed JSON-like tool-call text and both local reply pipelines use it.",
+  "interface": "repairToolCallText repairs malformed JSON-like tool-call text and both local reply pipelines use it. The tests call: `node-bot/utils/repair-tool-call.js` (new) exports `repairJsonString(raw)` and `parseRepairedJson(raw)`.",
   "why": "Bad tool-call syntax is one of the self-work benchmark's recurring failure modes."
 }

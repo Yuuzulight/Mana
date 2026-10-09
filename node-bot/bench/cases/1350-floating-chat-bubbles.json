@@ -1,5 +1,6 @@
 {
   "id": "1350-floating-chat-bubbles",
+  "minRounds": 18,
   "kind": "launcher",
   "pr": 1350,
   "issue": 844,

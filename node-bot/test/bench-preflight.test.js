@@ -85,6 +85,9 @@ test("cases: an unsound one is left out with why, and a verdict is cached until 
   assert.equal(checks, 3, "cached");
   await pre.soundCases([{ ...cases[0], base: "9" }], verify, { file, log });
   assert.equal(checks, 4, "a changed case is checked again");
+  const guarded = await pre.soundCases(cases, verify, { file, log, guarded: (c) => (c.id === "a" ? "its fix changes self-work.js" : null) });
+  assert.deepEqual(guarded.skipped[0], { id: "a", why: "its fix changes self-work.js" });
+  assert.equal(checks, 4, "a guarded case isn't even checked");
 });
 
 test("the model: a parsed tool call passes; none, or a failed loop, is a problem", async () => {

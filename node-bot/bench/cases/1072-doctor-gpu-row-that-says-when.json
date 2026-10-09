@@ -1,5 +1,6 @@
 {
   "id": "1072-doctor-gpu-row-that-says-when",
+  "minRounds": 9,
   "kind": "node-feature",
   "pr": 1072,
   "issue": 1065,

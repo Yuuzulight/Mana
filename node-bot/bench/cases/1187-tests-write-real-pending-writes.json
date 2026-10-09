@@ -1,5 +1,6 @@
 {
   "id": "1187-tests-write-real-pending-writes",
+  "minRounds": 36,
   "kind": "live",
   "pr": 1271,
   "issue": 1187,

@@ -1,5 +1,6 @@
 {
   "id": "1170-discord-bot-can-t-find-discord",
+  "minRounds": 9,
   "kind": "node-bug",
   "pr": 1170,
   "issue": 1167,

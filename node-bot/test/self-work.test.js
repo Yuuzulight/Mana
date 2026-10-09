@@ -1529,3 +1529,43 @@ test("#1420: a run starts on a clean worktree, whatever a dead run left there", 
   assert.match(String(seen.find((s) => s.name === "self_work__read").result), /return a - b;/);
   assert.equal(fs.existsSync(path.join(worktree, "node-bot", "leftover.js")), false);
 });
+
+// #1467: a pattern written without regex: true (a|b, a.*b) is tried as one when it has no exact match.
+test("#1467: search tries a grep-style pattern when the exact text isn't there", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const calls = [
+    ["self_work__search", { text: "function add|function sub" }],
+    ["self_work__search", { text: "add.*b\)" }],
+    ["self_work__search", { text: "function nothing|nowhere" }],
+    ["self_work__search", { text: "return a - b" }],
+  ];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name === "self_work__search").map((s) => s.result ?? s.error);
+  assert.match(results[0], /^\(No literal match; matched as a pattern\.\)\nnode-bot\/util\.js:1:function add/);
+  assert.match(results[1], /matched as a pattern[\s\S]*util\.js:1:/);
+  assert.equal(results[2], "No matches.");
+  assert.match(results[3], /^node-bot\/util\.js:2:/, "an exact match stays as it was");
+});
+
+// #1467: a new feature can need a new folder: one level in a folder that exists, when the plan says it's new.
+test("#1467: a plan may name a file in a new folder when it says it's new", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const steps = ["Add the helper", "Test it"];
+  const calls = [
+    ["self_work__search", { text: "function add" }],
+    ["self_work__plan", { steps, files: ["node-bot/util.js: add() lives here", "node-bot/helpers/sum.js: a guess"], no_test: "scripted" }],
+    ["self_work__plan", { steps, files: ["node-bot/util.js: add() lives here", "node-bot/a/b/sum.js: new folders for it"], no_test: "scripted" }],
+    ["self_work__plan", { steps, files: ["node-bot/util.js: add() lives here", "node-bot/helpers/sum.js: new helper folder for sum()"], no_test: "scripted" }],
+  ];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name === "self_work__plan").map((s) => s.result ?? s.error);
+  assert.match(results[0], /neither does its folder.*if it's a new folder say so/);
+  assert.match(results[1], /neither does its folder/, "only one new level");
+  assert.match(results[2], /node-bot\/helpers\/sum\.js/);
+});

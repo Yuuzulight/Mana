@@ -1,5 +1,6 @@
 {
   "id": "1360-conversation-branching",
+  "minRounds": 27,
   "kind": "multi-file",
   "pr": 1360,
   "issue": 1322,
@@ -25,6 +26,6 @@
     "node-bot/test/sessions-capability.test.js"
   ],
   "testCommand": "node --test test/acp-memory-store.test.js test/session-export.test.js test/sessions-capability.test.js",
-  "interface": "session capability exposes edit/regenerate/branch/version actions and preserves export/search consistency.",
+  "interface": "session capability exposes edit/regenerate/branch/version actions and preserves export/search consistency. The tests call: the store from `createAcpMemoryStore` (`node-bot/acp-memory-store.js`) has `truncateTurns(sessionId, keepTurnCount)` and `setTurnVersion(sessionId, turnIndex, versionIndex)`; `node-bot/session-export.js` exports `exportSessionAsMarkdown`.",
   "why": "Large cross-module state changes are one of the hardest self-work classes."
 }

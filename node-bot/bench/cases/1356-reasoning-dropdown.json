@@ -1,5 +1,6 @@
 {
   "id": "1356-reasoning-dropdown",
+  "minRounds": 25,
   "kind": "multi-file",
   "pr": 1356,
   "issue": 1354,
@@ -24,6 +25,6 @@
     "node-bot/test/reply-stream-route.test.js"
   ],
   "testCommand": "node --test test/think-filter.test.js test/sse-sentence-stream.test.js && node --test --test-name-pattern \"#1354\" test/reply-stream-route.test.js",
-  "interface": "think-filter extracts reasoning, reply streaming emits thought/reasoning fields, and visible speech excludes them.",
+  "interface": "think-filter extracts reasoning, reply streaming emits thought/reasoning fields, and visible speech excludes them. The tests call: the filter from `createThinkFilter` in `node-bot/utils/think-filter.js` has `getThought()`, returning the thought text captured so far.",
   "why": "Streaming prompt/reply plumbing is a common cross-cutting failure surface."
 }
