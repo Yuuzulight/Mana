@@ -2988,6 +2988,7 @@ function registerRoutes(app, upload, deps = {}) {
         whisperLanguage: whisperLanguage(),
         gamingWatch,
         stickyCodingSession: codingSessionManager,
+        selfWorkSandbox: {}, // #1467
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {

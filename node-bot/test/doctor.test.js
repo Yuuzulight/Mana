@@ -10,6 +10,7 @@ const {
   runDoctorChecksAsync,
   checkVramBudgets,
   checkCodingSession,
+  checkSelfWorkSandbox,
 } = require("../doctor");
 const { withServer, withRawServer, useTestAdminToken } = require("./helpers");
 
@@ -898,4 +899,28 @@ test("doctor memory vault row warns per finding kind with paths, reason and reco
   assert.match(check.message, /Fact notes Mana can't see: Facts\/A\/x\.md, Facts\/A\/y\.md\. Why\. Do this\./);
   assert.match(check.message, /Your files in Views\/: Views\/Mine\.md/);
   assert.match(check.message, /never overwritten/);
+});
+
+// #1467: her self-work tests need the sandbox's helper and her packages approved.
+test("doctor self-work tests row: helper, copy-source approval and her packages", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sandbox-"));
+  const helper = path.join(dir, "Mana.AnalysisSandbox.exe");
+  const modulesDir = path.join(dir, "node_modules");
+  fs.mkdirSync(modulesDir);
+  const row = (over) => checkSelfWorkSandbox({ platform: "win32", helper, modulesDir, loadCopySources: () => ({ dependencyRoots: [modulesDir] }), ...over });
+
+  assert.equal(checkSelfWorkSandbox(undefined), null, "only when asked");
+  assert.equal(row({ platform: "linux" }).status, "pass");
+  assert.match(row({}).message, /helper is missing/);
+  fs.writeFileSync(helper, "");
+  assert.equal(row({}).status, "pass");
+  const broken = row({ loadCopySources: () => { throw new Error("Invalid sandbox copy-source configuration"); } });
+  assert.equal(broken.status, "fail");
+  assert.match(broken.message, /is invalid \(Invalid sandbox copy-source configuration\)/);
+  const uncovered = row({ loadCopySources: () => ({ dependencyRoots: [] }) });
+  assert.equal(uncovered.status, "fail");
+  assert.match(uncovered.message, /can't copy her packages.*Add .*node_modules to dependencyRoots/);
 });

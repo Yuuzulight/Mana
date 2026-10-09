@@ -249,6 +249,50 @@ function checkCodingSession(stickyCodingSession) {
   );
 }
 
+// #1467: her self-work tests run in the sandbox (#352), which copies her
+// worktree; its node_modules is a link to the live one, which the sandbox
+// only follows into folders approved in native-sandbox-copy-sources.json,
+// and the sandbox's helper is built, not in git. Either missing and every
+// test she runs fails, quietly. Only on Windows, and only when asked.
+function checkSelfWorkSandbox(sandbox) {
+  if (!sandbox) return null;
+  const {
+    platform = process.platform,
+    modulesDir = path.join(__dirname, "node_modules"),
+    helper = require("./tools/analysis-sandbox").HELPER_PATH,
+    loadCopySources = () => require("./tools/native-execution").approvedCopySources(),
+  } = sandbox;
+  const label = "Self-work tests";
+  if (platform !== "win32") return makeCheck("self-work-sandbox", label, "pass", "Not sandboxed on this platform.");
+  if (!checkPathExists(helper)) {
+    return makeCheck("self-work-sandbox", label, "fail", "The sandbox helper is missing, so every test she runs on her own code fails. Build tools/analysis-sandbox.", { helper });
+  }
+  const file = path.join(__dirname, "data", "native-sandbox-copy-sources.json");
+  let sources;
+  try {
+    sources = loadCopySources();
+  } catch (e) {
+    return makeCheck("self-work-sandbox", label, "fail", `${file} is invalid (${e.message}), so every test she runs on her own code fails.`, { file });
+  }
+  if (checkPathExists(modulesDir)) {
+    const real = fs.realpathSync(modulesDir).toLowerCase();
+    const covered = sources.dependencyRoots.some((root) => {
+      const r = (checkPathExists(root) ? fs.realpathSync(root) : String(root)).toLowerCase();
+      return real === r || real.startsWith(r + path.sep);
+    });
+    if (!covered) {
+      return makeCheck(
+        "self-work-sandbox",
+        label,
+        "fail",
+        `The sandbox can't copy her packages, so every test she runs on her own code fails. Add ${modulesDir} to dependencyRoots in ${file}.`,
+        { file, modulesDir },
+      );
+    }
+  }
+  return makeCheck("self-work-sandbox", label, "pass", "Sandbox ready: helper built, packages approved.", { helper });
+}
+
 function checkRequiredFile(id, label, filePath, missingConfigMessage) {
   if (!filePath) {
     return makeCheck(id, label, "warn", missingConfigMessage);
@@ -1014,6 +1058,7 @@ function runDoctorChecks(options = {}) {
       gamingWatch: options.gamingWatch,
     }),
     checkCodingSession(options.stickyCodingSession),
+    checkSelfWorkSandbox(options.selfWorkSandbox),
     checkMobileAuth(env),
     checkMobile2fa(env),
     checkRemoteExposure(env),
@@ -1082,7 +1127,7 @@ async function runDoctorChecksAsync(options = {}) {
 }
 
 if (require.main === module) {
-  runDoctorChecksAsync({ plainTextSecrets: require("./load-env").plainTextSecretKeys() })
+  runDoctorChecksAsync({ plainTextSecrets: require("./load-env").plainTextSecretKeys(), selfWorkSandbox: {} })
     .then((result) => {
       process.stdout.write(`${JSON.stringify(result, null, 2)}${os.EOL}`);
       process.exitCode = result.ok ? 0 : 1;
@@ -1097,6 +1142,7 @@ module.exports = {
   DEFAULT_BIND_HOST,
   buildDoctorResult,
   checkCodingSession,
+  checkSelfWorkSandbox,
   checkVramBudgets,
   getBindHost,
   isLoopbackBindHost,
