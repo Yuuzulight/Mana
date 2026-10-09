@@ -67,23 +67,63 @@ test("GET /api/memory returns markdown for a valid key (admin or user role)", as
 
 // With the admin key, so the request gets past the default-deny gate
 // (admin-key.js) to requireAdmin's role check.
+// ADMIN_TOKEN, not the launcher key: the launcher key alone is admin (#1428).
 test("POST /admin/accounts rejects a user-role key with 403", async () => {
+  const prior = process.env.ADMIN_TOKEN;
+  process.env.ADMIN_TOKEN = "test-admin-token-for-role-check";
   const { apiKey } = authStore.createAccount({
     email: "not-admin@example.com",
     role: "user",
   });
   const app = createApp();
-  await withServer(app, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/admin/accounts`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "x-admin-token": LAUNCHER_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email: "new@example.com" }),
+  try {
+    await withServer(app, async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/admin/accounts`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "x-admin-token": "test-admin-token-for-role-check",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: "new@example.com" }),
+      });
+      assert.equal(res.status, 403);
     });
-    assert.equal(res.status, 403);
+  } finally {
+    if (prior === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = prior;
+  }
+});
+
+// #1428: Settings > Accounts from the launcher sends only its per-run key.
+test("the launcher key alone lists, creates and revokes accounts from this PC", async () => {
+  const app = createApp();
+  await withServer(app, async (baseUrl) => {
+    const headers = { "x-admin-token": LAUNCHER_KEY, "Content-Type": "application/json" };
+    const created = await fetch(`${baseUrl}/admin/accounts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ email: "from-launcher@example.com" }),
+    });
+    assert.equal(created.status, 201);
+    const { userId } = await created.json();
+    const listed = await fetch(`${baseUrl}/admin/accounts`, { headers });
+    assert.equal(listed.status, 200);
+    assert.ok((await listed.json()).some((a) => a.userId === userId));
+    const revoked = await fetch(`${baseUrl}/admin/accounts/${userId}`, { method: "DELETE", headers });
+    assert.equal(revoked.status, 200);
+  });
+});
+
+test("the launcher key alone doesn't count from another device, or when wrong", async () => {
+  const app = createApp();
+  await withServer(app, async (baseUrl) => {
+    const forwarded = await fetch(`${baseUrl}/admin/accounts`, {
+      headers: { "x-admin-token": LAUNCHER_KEY, "X-Forwarded-For": "203.0.113.5" },
+    });
+    assert.equal(forwarded.status, 401);
+    const wrong = await fetch(`${baseUrl}/admin/accounts`, { headers: { "x-admin-token": `${LAUNCHER_KEY}x` } });
+    assert.equal(wrong.status, 401);
   });
 });
 
