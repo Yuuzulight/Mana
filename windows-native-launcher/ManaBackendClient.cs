@@ -2272,11 +2272,9 @@ internal sealed class ManaBackendClient
     // #568: GET /admin/accounts responds with a bare JSON array (unlike
     // every other list route in this file, which wraps its array under a
     // named key) -- see auth-store.js's listAccounts, which returns
-    // res.json(accounts) directly. Requires an admin-role API key sent as
-    // the Connection tab's admin token (server.js's authMiddleware +
-    // requireAdmin) -- requireAdmin's second check is met by #670's per-run
-    // launcher key (x-admin-token), so no separate ADMIN_TOKEN is needed
-    // for a backend this launcher started.
+    // res.json(accounts) directly. #670's per-run launcher key (x-admin-token)
+    // is enough on its own for a backend this launcher started (#1428,
+    // admin-accounts-routes.js's adminAuth); no API key or ADMIN_TOKEN needed.
     public async Task<IReadOnlyList<ManaAccount>> GetAccountsAsync()
     {
         using var response = await http.GetAsync("/admin/accounts");

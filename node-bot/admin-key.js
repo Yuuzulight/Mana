@@ -62,6 +62,11 @@ function hasAdminKey(req, { local = false, adminToken = process.env.ADMIN_TOKEN 
   );
 }
 
+// #1428: the launcher that started this backend, on its own key from this PC.
+function hasLauncherKey(req) {
+  return isLocalRestartRequest(req) && presentedKeys(req).some((key) => keyMatches(key, LAUNCHER_KEY));
+}
+
 const ADMIN_KEY_REQUIRED_ERROR =
   "admin-only: send ADMIN_TOKEN (node-bot/.env) as the x-admin-token header, or use the Mana launcher that started this backend";
 
@@ -145,6 +150,7 @@ module.exports = {
   ADMIN_KEY_REQUIRED_ERROR,
   checkAdminSecret,
   hasAdminKey,
+  hasLauncherKey,
   isLocalRestartRequest,
   isPublicRoute,
   presentsAdminKey,
