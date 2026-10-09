@@ -699,11 +699,9 @@ async function main(argv) {
     return;
   }
 
-  const { protectedPathFor } = require("../protected-paths");
-  const guarded = (c) => {
-    const hit = (c.fixFiles || []).find((f) => protectedPathFor(path.join(repoRoot, f)));
-    return hit ? `its fix changes ${hit}, one of her guardrails, which only a PR I approve may change` : null;
-  };
+  // A case the oracle showed can't pass without changing her guardrails says so in its "guarded" (a fix that
+  // also touches one, but passes without it, stays in).
+  const guarded = (c) => (c.guarded ? `it needs a change to ${c.guarded}, one of her guardrails, which only a PR I approve may change` : null);
   const { sound, skipped } = await pre.soundCases(cases, (c) => verifyCase(c, { repoRoot, worktreesDir }), { guarded });
   for (const s of skipped) console.log(`Leaving out ${s.id}: ${s.why}.`);
   if (!sound.length) throw new Error("no sound cases to run");

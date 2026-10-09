@@ -1,5 +1,6 @@
 {
   "id": "1361-privacy-data-export-delete",
+  "guarded": "node-bot/tool-call-log.js",
   "kind": "multi-file",
   "pr": 1361,
   "issue": 1336,
