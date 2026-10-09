@@ -332,9 +332,15 @@ test("#1278: a pause unloads the bench's model, and it's loaded again once the g
   assert.equal(await waitOut(c, gate([true, true, false]), model, sleep), null);
   assert.deepEqual(calls, ["stop", "sleep", "sleep", "start"]);
 
+  // #1467: a game longer than 20 minutes is still waited out.
   calls.length = 0;
-  const why = await waitOut(c, gate(Array(30).fill(true)), model, sleep);
-  assert.equal(why, "a game is running");
+  assert.equal(await waitOut(c, gate(Array(30).fill(true)), model, sleep), null);
+  assert.deepEqual(calls, ["stop", ...Array(30).fill("sleep"), "start"]);
+
+  // High RAM that never clears still stops the run after 20.
+  calls.length = 0;
+  const why = await waitOut(c, { isGaming: () => false, ramPercent: () => 99, backendModelUp: async () => false }, model, sleep);
+  assert.match(why, /RAM is at 99%/);
   assert.deepEqual(calls, ["stop", ...Array(20).fill("sleep")], "never cleared: stays unloaded, the run stops");
 });
 

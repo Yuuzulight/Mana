@@ -191,8 +191,9 @@ function isGamingNow(repoRoot) {
 // Why a case shouldn't start now, or null. The backend's own chat model
 // being up means she's in use: the bench's model would take the VRAM her
 // next reply needs.
+const GAMING = "a game is running";
 async function blocker({ isGaming, ramPercent, backendModelUp }) {
-  if (isGaming()) return "a game is running";
+  if (isGaming()) return GAMING;
   const ram = ramPercent();
   if (ram > BENCH_MAX_RAM_PERCENT) return `RAM is at ${ram}%`;
   if (await backendModelUp()) return "the backend's chat model is loaded";
@@ -606,7 +607,9 @@ async function waitOut(c, gate, model, sleep = (ms) => new Promise((resolve) => 
   let why = await blocker(gate);
   if (!why) return null;
   await model.stop();
-  for (let waited = 0; why && waited < 20; waited += 1) {
+  // #1467: a game is waited out however long it lasts (a match runs past
+  // 20 minutes); RAM and her chat model still stop the run after 20.
+  for (let waited = 0; why && (waited < 20 || why === GAMING); waited += 1) {
     console.log(`Waiting before ${c.id}: ${why}.`);
     await sleep(60000);
     why = await blocker(gate);
