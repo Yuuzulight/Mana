@@ -501,16 +501,84 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
-    public void RestartFishSpeech_WithMissingNativeSetup_LeavesItUnavailableWithoutThrowing()
+    public async Task RestartFishSpeech_WithMissingNativeSetup_LeavesItUnavailableWithoutThrowing()
     {
         // #479 review: the manual "Restart Fish Speech" tray action, tested
         // directly (not via StartAsync) -- same missing-setup degrade path,
         // must not throw and must update IsFishSpeechAvailable.
         using var manager = new ManaProcessManager(@"C:\does-not-exist");
 
-        manager.RestartFishSpeech();
+        await manager.RestartFishSpeech();
 
         Assert.False(manager.IsFishSpeechAvailable);
+    }
+
+    [Fact]
+    public async Task CoordinatedModel_DoesNotSpawnWhenReservationIsRefused()
+    {
+        var called = false;
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Conflict)
+        {
+            Content = new StringContent("{\"error\":\"not enough VRAM\"}"),
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        var child = await manager.StartCoordinatedModelAsync("fish-speech", () =>
+        {
+            called = true;
+            return Task.FromResult<System.Diagnostics.Process?>(null);
+        });
+        Assert.Null(child);
+        Assert.False(called);
+    }
+
+    [Fact]
+    public async Task CoordinatedModel_ReleasesUnusedReservationWhenSetupCannotStart()
+    {
+        var actions = new List<string>();
+        string? suppliedKey = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            actions.Add(request.RequestUri!.AbsolutePath);
+            suppliedKey = request.Headers.GetValues("X-Admin-Token").Single();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(request.RequestUri.AbsolutePath.EndsWith("/reserve") ? "{\"id\":\"reservation\"}" : "{\"ok\":true}"),
+            };
+        });
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+        Assert.Null(await manager.StartCoordinatedModelAsync("fish-speech", () => Task.FromResult<System.Diagnostics.Process?>(null)));
+        Assert.Equal(manager.LauncherKey, suppliedKey);
+        Assert.Equal(new[] { "/resources/native/reserve", "/resources/native/release" }, actions);
+    }
+
+    [Fact]
+    public async Task CoordinatedModel_AttachesItsProcessAndKillsItWithTheLauncherJob()
+    {
+        var actions = new List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            actions.Add(request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(request.RequestUri.AbsolutePath.EndsWith("/reserve") ? "{\"id\":\"reservation\"}" : "{\"ok\":true}"),
+            };
+        });
+        System.Diagnostics.Process? child;
+        using (var manager = new ManaProcessManager(@"C:\does-not-exist", handler))
+        {
+            child = await manager.StartCoordinatedModelAsync("embedder", () => Task.FromResult(System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "node", Arguments = "-e \"setInterval(()=>{},1000)\"", UseShellExecute = false, CreateNoWindow = true,
+            })));
+            Assert.NotNull(child);
+            Assert.False(child.HasExited);
+            Assert.Equal(new[] { "/resources/native/reserve", "/resources/native/attach" }, actions);
+        }
+        using (child)
+        {
+            await child!.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.True(child.HasExited);
+        }
     }
 
     // #991: a fake node-bot (a real node process), so the test can see the

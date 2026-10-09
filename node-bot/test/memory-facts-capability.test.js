@@ -242,3 +242,34 @@ test("DELETE /admin/memory/facts/:key really removes a live or archived fact and
   });
   assert.ok(store.listFacts().every((f) => f.status === "stale"));
 });
+
+test("POST /admin/memory/facts/:key/restore makes an archived fact live again, and refuses when its name is taken (#1426)", async () => {
+  const { app, store } = realStoreApp();
+  store.rememberFact({ key: "pet", text: "I have a cat", source: "human", origin: { kind: "user_stated" } });
+  store.rememberFact({ key: "pet", action: "archive", source: "human" });
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/missing/restore")).status, 404);
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/PET/restore")).status, 200);
+    assert.equal(store.listFacts().find((f) => f.key === "pet").status, "active");
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/pet/restore")).status, 404); // nothing archived now
+    store.rememberFact({ key: "pet", action: "archive", source: "human" });
+    store.rememberFact({ key: "pet", text: "I have a dog", source: "human", origin: { kind: "user_stated" } });
+    assert.equal((await send(baseUrl, "POST", "/admin/memory/facts/pet/restore")).status, 409);
+  });
+});
+
+test("facts carry a category: given on add, \"other\" otherwise, and moved with PATCH (#1426)", async () => {
+  const { app, store } = realStoreApp();
+  await withServer(app, async (baseUrl) => {
+    await send(baseUrl, "POST", "/admin/memory/facts", { key: "gpu", text: "RTX 5080", category: "about-you" });
+    await send(baseUrl, "POST", "/admin/memory/facts", { key: "raid", text: "Thursday", category: "nonsense" });
+    const fact = (key) => store.listFacts().find((f) => f.key === key);
+    assert.equal(fact("gpu").category, "about-you");
+    assert.equal(fact("raid").category, "other");
+    assert.equal((await send(baseUrl, "PATCH", "/admin/memory/facts/raid", { category: "hobbies" })).status, 200);
+    assert.equal(fact("raid").category, "hobbies");
+    assert.equal(fact("raid").text, "Thursday");
+    const listed = await (await fetch(`${baseUrl}/admin/memory/facts`)).json();
+    assert.deepEqual(listed.facts.map((f) => f.category).sort(), ["about-you", "hobbies"]);
+  });
+});

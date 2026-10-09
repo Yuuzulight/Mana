@@ -255,6 +255,102 @@ test("model status route reports active profile and configured profiles", async 
   });
 });
 
+test("cloud fallback route persists fallback settings through model management", async () => {
+  const calls = [];
+  const app = createApp({
+    modelManagement: {
+      getModelStatus: () => ({ ok: true }),
+      setFallbackSettings: (settings) => {
+        calls.push(settings);
+        return { fallback: { ...settings, hasApiKey: Boolean(settings.apiKey), apiKey: undefined } };
+      },
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/models/cloud-fallback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        model: "gpt-test",
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls[0], {
+      enabled: true,
+      timeoutSeconds: undefined,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      model: "gpt-test",
+      providerId: undefined,
+    });
+    assert.equal(payload.fallback.hasApiKey, true);
+    assert.equal(payload.fallback.apiKey, undefined);
+  });
+});
+test("project routes list, upsert, assign, and clear session projects", async () => {
+  const projects = new Map();
+  const sessions = new Map();
+  const projectStore = {
+    listProjects: () => [...projects.values()],
+    upsertProject: (input) => {
+      const project = { id: input.id || "mana-core", name: input.name, instructions: input.instructions || "", references: input.references || [] };
+      projects.set(project.id, project);
+      return project;
+    },
+    deleteProject: (id) => projects.delete(id),
+    assignSession: (sessionId, projectId) => {
+      if (!projectId) {
+        sessions.delete(sessionId);
+        return null;
+      }
+      const project = projects.get(projectId);
+      if (!project) throw new Error("project not found");
+      sessions.set(sessionId, projectId);
+      return project;
+    },
+    projectForSession: (sessionId) => projects.get(sessions.get(sessionId)) || null,
+    promptBlockForSession: () => "",
+  };
+  const app = createApp({ projectsStore: projectStore });
+
+  await withServer(app, async (baseUrl) => {
+    const created = await fetch(`${baseUrl}/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "mana-core", name: "Mana Core", instructions: "Use repo rules." }),
+    });
+    assert.equal(created.status, 200);
+    assert.equal((await created.json()).id, "mana-core");
+
+    const listed = await (await fetch(`${baseUrl}/projects`)).json();
+    assert.equal(listed.projects.length, 1);
+
+    const assigned = await fetch(`${baseUrl}/sessions/chat-1/project`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: "mana-core" }),
+    });
+    assert.equal(assigned.status, 200);
+    assert.equal((await assigned.json()).project.name, "Mana Core");
+
+    const readBack = await (await fetch(`${baseUrl}/sessions/chat-1/project`)).json();
+    assert.equal(readBack.project.id, "mana-core");
+
+    const cleared = await fetch(`${baseUrl}/sessions/chat-1/project`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: null }),
+    });
+    assert.equal((await cleared.json()).project, null);
+  });
+});
+
 test("gguf-metadata route rejects a missing or invalid path before ever parsing", async () => {
   const app = createApp({
     modelManagement: { isValidGgufFile: () => false },
@@ -823,6 +919,44 @@ test("a selected preset's instructions reach the local model's system prompt", a
     assert.equal(response.status, 200);
     assert.equal(payload.reply, "ok");
     assert.match(capturedSystemPrompt, /Keep every reply under two sentences\./);
+  });
+});
+
+test("an assigned project's standing instructions reach the local model's system prompt", async () => {
+  let capturedSystemPrompt = null;
+  const project = {
+    id: "mana-core",
+    name: "Mana Core",
+    instructions: "Use the Mana repo testing notes before changing code.",
+    references: [],
+  };
+  const projectsStore = {
+    promptBlockForSession: (sessionId) =>
+      sessionId === "chat-project" ? `Project: ${project.name}\n\nStanding instructions:\n${project.instructions}` : "",
+    projectForSession: (sessionId) => (sessionId === "chat-project" ? project : null),
+    listProjects: () => [project],
+    upsertProject: () => project,
+    deleteProject: () => true,
+    assignSession: () => project,
+  };
+  const app = createApp({
+    projectsStore,
+    runLocalAssistantReply: async (prompt, maxTokens, profile, overrideSystemPrompt) => {
+      capturedSystemPrompt = overrideSystemPrompt;
+      return "ok";
+    },
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { response, payload } = await postJson(`${baseUrl}/reply`, {
+      text: "hello",
+      sessionId: "chat-project",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.reply, "ok");
+    assert.match(capturedSystemPrompt, /Project: Mana Core/);
+    assert.match(capturedSystemPrompt, /Use the Mana repo testing notes before changing code\./);
   });
 });
 
@@ -1710,7 +1844,7 @@ test("buildVaultViews gives the summary, a mood view in level words and the enti
   const byRel = Object.fromEntries(views.map((v) => [v.rel, v.body]));
   assert.ok("Views/Summary.md" in byRel);
   assert.match(byRel["Views/Mood.md"], /Right now: tired, chatty\.\n\n- Energy: low\n- Sociability: high\n- Stress: moderate/);
-  assert.ok(views.every((v) => /^Views\/(Summary|Mood|Entities\/[a-z0-9-]+)\.md$/.test(v.rel)));
+  assert.ok(views.every((v) => /^Views\/(Summary|Mood|Facts Index|Pending Review|Entities Index|Entities\/[a-z0-9-]+)\.md$/.test(v.rel)));
 });
 
 test("formatMemoryMarkdown omits the Connections section when there are none (issue #75)", () => {
@@ -1773,6 +1907,8 @@ test("buildMemoryNotes creates a Key Facts note linking to mentioned entities", 
     { "ffxiv": [{ sessionId: "s1", at: "t1", display: "FFXIV" }] },
     ["Plays FFXIV on weekends", "Prefers concise replies"],
     [],
+    // #1387: typed, so one mention is enough for a note.
+    { ffxiv: { type: "project" } },
   );
   const facts = notes.find((n) => n.slug === "key-facts");
   assert.ok(facts);
@@ -1897,5 +2033,53 @@ test("POST snapshots/:id/restore still returns 200 with the normal shape when th
     const { response, payload } = await postJson(`${baseUrl}/editors/workspace/snapshots/snap-1/restore`, {}, ADMIN);
     assert.equal(response.status, 200);
     assert.deepEqual(payload, { restored: { restoredPath: "/repo/a.txt" } });
+  });
+});
+
+test("provider routes: added and checked from this PC only, keys never back out, kept while in use (#1426)", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { createModelSettingsStore } = require("../model-settings-store");
+  const { createModelManagement } = require("../model-management");
+  const store = createModelSettingsStore({
+    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-providers-")),
+    secrets: { protect: (v) => `enc:${v}`, unprotect: (b) => b.slice(4) },
+  });
+  const checked = [];
+  const modelManagement = createModelManagement({
+    env: {},
+    localGgufs: [],
+    modelSettingsStore: store,
+    checkToolLoop: async ({ baseUrl, apiKey }) => {
+      checked.push([baseUrl, apiKey]);
+      return { ok: true, model: "llama", chat: true, tools: true, stream: true };
+    },
+  });
+  const app = createApp({ modelManagement });
+  await withServer(app, async (baseUrl) => {
+    const listed = await (await fetch(`${baseUrl}/models/providers`, { headers: ADMIN })).json();
+    assert.ok(listed.presets.some((p) => p.id === "deepseek"));
+    assert.deepEqual(listed.providers, []);
+
+    const remote = await postJson(`${baseUrl}/models/providers`, { preset: "groq", apiKey: "gsk-1234" }, { ...ADMIN, "X-Forwarded-For": "192.168.1.50" });
+    assert.equal(remote.response.status, 403);
+
+    const added = await postJson(`${baseUrl}/models/providers`, { preset: "groq", apiKey: "gsk-1234" }, ADMIN);
+    assert.equal(added.response.status, 200);
+    assert.equal(added.payload.provider.keyHint, "…1234");
+    assert.equal(added.payload.provider.lastCheck.ok, true);
+    assert.equal(added.payload.provider.lastCheck.tools, true);
+    assert.ok(!JSON.stringify(added.payload).includes("gsk-1234"));
+    assert.deepEqual(checked, [["https://api.groq.com/openai/v1", "gsk-1234"]]);
+
+    const twice = await postJson(`${baseUrl}/models/providers`, { preset: "groq", apiKey: "x" }, ADMIN);
+    assert.equal(twice.response.status, 400);
+    assert.match(twice.payload.error, /already added/);
+
+    store.setFallbackSettings({ enabled: true, providerId: "groq", model: "llama" });
+    const busy = await fetch(`${baseUrl}/models/providers/groq`, { method: "DELETE", headers: ADMIN });
+    assert.equal(busy.status, 409);
+    assert.match((await busy.json()).error, /Cloud fallback/);
   });
 });

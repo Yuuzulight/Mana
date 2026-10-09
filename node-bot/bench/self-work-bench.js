@@ -22,19 +22,21 @@
 // --verify checks the cases themselves instead: the hidden tests fail at
 // the base commit and pass with the fix's files. A live case (no merged
 // fix yet, fix: null) keeps its hidden tests in bench/hidden/<id>/ and
-// only has to fail at the base.
+// only has to fail at the base. A case with a fix can keep its hidden tests
+// there too, when the fix's own tests don't check the behaviour.
 //
-// #1269: --gemini runs only her Gemini CLI fallback on each case (no local
-// model, nothing of hers after it), to measure Gemini on its own. It needs
-// Gemini CLI installed and signed in, and spends real quota: each case is
-// one run of many requests. MANA_SELF_WORK_GEMINI_MODEL picks the model;
-// --model, --context, --server-args and --attempts don't apply.
+// #1406/#1411: --remote <model> [--thinking on|off] runs her loop on that
+// DeepSeek model instead of her local one, with her local reviewer on the
+// bench's own llama-server (so --model, --context and --server-args still
+// pick that). It needs the DeepSeek key in Settings and spends real money:
+// each run's tokens and dollars go in the report and in API spending (use:
+// bench). Off-peak is half price.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { createSelfWork, testEnv, systemRamPercent } = require("../self-work");
-const { createGeminiFallback } = require("../gemini-fallback");
+const { tokensOf, costOf, isPeak, createApiSpending } = require("../api-spending");
 
 const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_DIR = path.join(__dirname, "hidden");
@@ -65,12 +67,37 @@ function loadCases(dir = CASES_DIR) {
       if (!/^[\w.-]+$/.test(String(c.id)) || String(c.id).includes("..")) throw new Error(`${f}: bad case id ${JSON.stringify(c.id)}`);
       const bad = (c.hiddenTests || []).find(badPath);
       if (bad !== undefined) throw new Error(`${f}: hidden test ${JSON.stringify(bad)} must be a relative path inside the repo`);
-      // A live case's hidden tests live in the bench folder.
-      return c.fix ? c : { hiddenFrom: path.join(HIDDEN_DIR, c.id), ...c };
+      // A live case's hidden tests live in the bench folder; so do a fixed
+      // case's when that folder exists.
+      const hiddenFrom = path.join(HIDDEN_DIR, c.id);
+      return c.fix && !fs.existsSync(hiddenFrom) ? c : { hiddenFrom, ...c };
     });
 }
 
 // A detached worktree at the base commit, with node-bot's packages linked in.
+// #1452: on Windows her test runs wait for an approval (#352). The bench
+// approves its own, within one scope: the sandboxed run (AppContainer,
+// disposable workspace) of tests in one of its throwaway bench worktrees.
+// An unrestricted rerun, any other request or another folder is refused
+// and fails that run, as a denial would.
+function benchTestGate(worktreesDir) {
+  const executors = new Map();
+  const inBench = (cwd) => {
+    const rel = path.relative(worktreesDir, path.resolve(String(cwd || "")));
+    return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel) && rel.split(path.sep)[0].startsWith("bench-");
+  };
+  return {
+    registerExecutor: (type, fn) => executors.set(type, fn),
+    async requestApproval(type, { payload } = {}) {
+      if (type !== "self-work-sandbox-tests" || !executors.has(type)) return { status: "blocked", reason: `the bench approves only its sandboxed tests, not ${type}` };
+      if (payload?.unrestricted) return { status: "blocked", reason: "the bench never approves an unrestricted test run" };
+      if (!inBench(payload?.cwd)) return { status: "blocked", reason: `tests outside the bench's own worktrees: ${payload?.cwd}` };
+      return { status: "approved", result: await executors.get(type)(payload) };
+    },
+    listPending: () => [],
+  };
+}
+
 function makeWorktree(repoRoot, wt, base) {
   if (fs.existsSync(wt)) removeWorktree(repoRoot, wt);
   git(repoRoot, "worktree", "add", "--detach", wt, base);
@@ -113,12 +140,12 @@ function applyMutation(wt, c) {
   return git(wt, "rev-parse", "HEAD");
 }
 
-// From the fix's commit, or for a live case from its hiddenFrom folder.
+// From its hiddenFrom folder when it has one, else the fix's commit.
 function copyHiddenTests(repoRoot, wt, c) {
   for (const rel of c.hiddenTests) {
     const full = path.join(wt, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
-    const text = c.fix ? git(repoRoot, "show", `${c.fix}:${rel}`) + "\n" : fs.readFileSync(path.join(c.hiddenFrom, rel), "utf8");
+    const text = c.hiddenFrom ? fs.readFileSync(path.join(c.hiddenFrom, rel), "utf8") : git(repoRoot, "show", `${c.fix}:${rel}`) + "\n";
     fs.writeFileSync(full, text);
   }
 }
@@ -175,8 +202,7 @@ async function blocker({ isGaming, ramPercent, backendModelUp }) {
 // One case. deps: repoRoot, worktreesDir, runLoop, and optionally
 // reviewEdit, isGaming, ramPercent, runTests, tokens (a {prompt, completion,
 // peak, textCalls}
-// counter the model's fetch adds to), gemini (#1269: her Gemini fallback,
-// run on the case instead of her loop).
+// counter the model's fetch adds to).
 async function runCase(c, deps) {
   const { repoRoot, worktreesDir } = deps;
   const wt = path.join(worktreesDir, `bench-${c.id}`);
@@ -214,7 +240,7 @@ async function runCase(c, deps) {
       isGaming: deps.isGaming,
       ramPercent: deps.ramPercent,
       runTests: deps.runTests,
-      gemini: deps.gemini || null,
+      approvalGate: deps.approvalGate,
       onEvent: deps.onEvent || ((run, text) => console.log(`[bench ${c.id}] ${text}`)),
     });
     // The interface the hidden tests call (names, options, messages), when
@@ -223,9 +249,7 @@ async function runCase(c, deps) {
     const started = Date.now();
     const issue = { number: c.issue, title: c.title, body };
     // #1247: --attempts N is her best-of-N (where self-work has it).
-    const { reply, run, error, gemini } = deps.gemini
-      ? await selfWork.benchGemini(issue, wt)
-      : await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
+    const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
     const peak = await peaks.stop();
     const contextSize = deps.contextSize ? await deps.contextSize() : null;
@@ -263,14 +287,9 @@ async function runCase(c, deps) {
       diff: { files: diff.files, added: diff.added, removed: diff.removed },
       outside: diff.files.filter((f) => !allowed.has(f)),
       // How her loop ended: finished, or why not.
-      ended: gemini
-        ? gemini.refused.length
-          ? "refused"
-          : gemini.outcome
-        : error
-          ? "error"
-          : run.halt?.state ||
-            (run.refuted ? "refuted" : run.finished && !/^Not done yet/i.test(reply?.content || "") ? "finished" : "not-finished"),
+      ended: error
+        ? "error"
+        : run.halt?.state || (run.refuted ? "refuted" : run.finished && !/^Not done yet/i.test(reply?.content || "") ? "finished" : "not-finished"),
       lastTestPassed: run.lastTestPassed,
       error: error ? error.slice(0, 300) : undefined,
       summary: String(reply?.content || "").slice(0, 600),
@@ -294,9 +313,6 @@ function failureKind(r, c) {
   if (r.ended === "refuted") return "no valid edit: reviewer refusal";
   if (/parse tool call/i.test(r.error || "")) return "no valid edit: parse failure";
   if (r.ended === "error") return "error";
-  // #1269: a Gemini run that ended without its change being scored.
-  if (r.ended === "refused") return "refused: outside her write rules";
-  if (["quota", "timeout", "turn-limit", "missing"].includes(r.ended)) return `gemini: ${r.ended}`;
   if (!r.diff.files.length) {
     if (r.editErrors) return "no valid edit: bad arguments";
     // The forced final answer after the last round often holds one more
@@ -453,12 +469,23 @@ function benchEnv(repoRoot) {
   return { ...process.env, ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {}) };
 }
 
-// #1269: Gemini CLI in place of her model, when it's installed and signed in.
-async function geminiModel(repoRoot) {
-  const gemini = createGeminiFallback({ env: benchEnv(repoRoot) });
-  const s = await gemini.state();
-  if (!s.installed || !s.signedIn) throw new Error(s.why);
-  return { model: `Gemini CLI ${s.version} (${s.model})`, gemini, start: async () => {}, aborted: () => null, stop: async () => {} };
+// #1406/#1411: her loop on a DeepSeek model, with her local reviewer (the
+// bench's own llama-server) and the key from Settings. spend adds up this
+// run's tokens and dollars; API spending gets each reply too (use: bench).
+function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
+  const { createModelSettingsStore } = require("../model-settings-store");
+  const settings = createModelSettingsStore({ dataDir: path.join(repoRoot, "node-bot", "data") }).getEscalationSettings();
+  if (!settings.apiKey) throw new Error("there's no DeepSeek key in Settings");
+  const ledger = createApiSpending({ file: path.join(process.env.MANA_ACP_MEMORY_DIR || path.join(repoRoot, "node-bot", "data", "acp-memory"), "api-spending.json") });
+  const base = realModel(repoRoot, tokens, local);
+  const onResponse = (json) => {
+    const t = tokensOf(json?.usage || {});
+    for (const k of Object.keys(t)) spend[k] = (spend[k] || 0) + t[k];
+    spend.usd = (spend.usd || 0) + (costOf(model, t, isPeak()) || 0);
+    ledger.record({ model, use: "bench", usage: json?.usage || {} });
+  };
+  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse });
+  return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, runLoop: loop };
 }
 
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
@@ -469,7 +496,7 @@ async function geminiModel(repoRoot) {
 // #1221: --server-args starts the bench's llama-server itself with those
 // extra flags (a MoE model with its experts in RAM: "-ngl 99 --n-cpu-moe
 // 20"); the runtime then adopts it as the server for that model.
-function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
+function realModel(repoRoot, tokens, { model, context, serverArgs, adopt } = {}) {
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
   const { refuteEdit } = require("../ai/adversarial-verifier");
   const env = benchEnv(repoRoot);
@@ -486,7 +513,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   }
   const fetch = async (url, init) => {
     const resp = await globalThis.fetch(url, init);
-    if (resp.ok && /\/v1\/chat\/completions$/.test(url)) {
+    if (resp.ok && /\/chat\/completions$/.test(url)) {
       const json = await resp.clone().json().catch(() => null);
       const prompt = Number(json?.usage?.prompt_tokens) || 0;
       tokens.prompt += prompt;
@@ -508,8 +535,9 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
     throw new Error("the bench's own llama-server isn't running");
   };
   // Its VRAM check would only see the bench's own server holding the card.
-  if (serverArgs) env.LLAMA_SERVER_VRAM_GUARD = "0";
-  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs ? { spawn: refuse } : {}) });
+  // #1381: `adopt` uses a server another process of the bench started.
+  if (serverArgs || adopt) env.LLAMA_SERVER_VRAM_GUARD = "0";
+  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs || adopt ? { spawn: refuse } : {}) });
   let server = null;
   // A server the bench starts itself (a model whose experts sit in RAM)
   // is killed the moment RAM passes the bench's limit; the run then stops.
@@ -534,6 +562,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   return {
     start,
     model: path.basename(runtime.findLlamaModel("default") || env.LLAMA_MODEL || "?"),
+    runtime,
     runLoop: (...args) => runtime.runToolAwareReply(...args),
     reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: runtime.runLocalReplyIfSafelyLoaded, env }),
     contextSize: () => runtime.getContextSize(),
@@ -605,13 +634,14 @@ async function main(argv) {
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
-  const useGemini = argv.includes("--gemini");
+  const remote = opt("--remote")[0];
+  const thinking = opt("--thinking")[0] !== "off";
+  const spend = {};
+  const approvalGate = benchTestGate(worktreesDir);
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
-    // Gemini runs in the cloud: her chat model's VRAM isn't in its way.
     backendModelUp: () =>
-      !useGemini &&
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
 
@@ -625,8 +655,8 @@ async function main(argv) {
   }
 
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  const model = useGemini ? await geminiModel(repoRoot) : realModel(repoRoot, tokens, config);
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000 };
+  const model = remote ? remoteModel(repoRoot, tokens, spend, { model: remote, thinking }, config) : realModel(repoRoot, tokens, config);
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
@@ -638,7 +668,7 @@ async function main(argv) {
         console.log(`Stopping before ${c.id}: ${why}.`);
         break;
       }
-      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts });
+      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate });
       if (model.aborted()) {
         console.log(`Stopping at ${c.id}: ${model.aborted()}.`);
         break;
@@ -650,10 +680,6 @@ async function main(argv) {
         break;
       }
       results.push(result);
-      if (result.ended === "quota") {
-        console.log(`Stopping at ${c.id}: Gemini CLI is out of quota.`);
-        break;
-      }
       writeReport(results, outDir, meta);
     }
   } finally {
@@ -670,4 +696,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp };
+module.exports = { benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Mana Browser Connection</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <h1>Mana Browser Connection</h1>
+  <p id="status" role="status">Disconnected</p>
+  <form id="connect">
+    <label for="code">Connection code</label><input id="code" autocomplete="off" required>
+    <fieldset><legend>Tabs for this session</legend><div id="tabs"></div></fieldset>
+    <button type="submit">Connect selected tabs</button>
+  </form>
+  <button id="disconnect" type="button" hidden>Disconnect Mana</button>
+  <script src="popup.js"></script>
+</body></html>

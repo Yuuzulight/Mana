@@ -7,6 +7,21 @@ namespace Mana.NativeLauncher;
 // (/approvals/pending), pending edit proposals (#658) and the ACP agent's
 // pending writes (#838) -- for the avatar's Waiting pose, the tray badge
 // and the "waiting for you" toast.
+// #1426 stage 3: everything waiting on me, as last fetched -- every 5s and
+// right after each answer -- for the chat window's "Waiting for you" tool,
+// its badge and the cards in the chat.
+internal sealed record WaitingSnapshot(
+    IReadOnlyList<ManaPendingApproval> Approvals,
+    IReadOnlyList<ManaProposalSummary> Edits,
+    IReadOnlyList<ManaPendingWrite> Writes)
+{
+    public static readonly WaitingSnapshot Empty = new([], [], []);
+
+    public IReadOnlyList<ManaProposalSummary> PendingEdits => Edits.Where(p => p.Status == "pending").ToList();
+
+    public int Count => Approvals.Count + Writes.Count + PendingEdits.Count;
+}
+
 internal static class WaitingForYou
 {
     public static IReadOnlyList<(string Id, string What)> Items(

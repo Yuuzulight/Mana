@@ -138,7 +138,7 @@ internal sealed class VTubeStudioForm : Form
             if (!IsDisposed)
             {
                 hotkeysList.Items.Clear();
-                hotkeysList.Items.Add(new ListViewItem($"Failed to load hotkeys: {ex.Message}") { ForeColor = Color.Firebrick });
+                hotkeysList.Items.Add(new ListViewItem($"Failed to load hotkeys: {BackendError.Describe(ex)}") { ForeColor = Color.Firebrick });
             }
             return;
         }

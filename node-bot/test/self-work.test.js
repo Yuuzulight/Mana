@@ -491,8 +491,11 @@ test("20 minutes idle tries an idle start once per idle period", async () => {
   const fetch = useTestAdminToken();
   let idleStarts = 0;
   const fake = { startIdle: async () => (idleStarts++, { ok: false }), status: () => ({ state: "idle" }) };
+  // #1407: a deployed merge's evals go first; while they run, her own pick waits.
+  let evaluating = false;
   const app = createApp({
     selfWork: fake,
+    postDeployEval: { maybeRun: async () => evaluating },
     getGamingStatus: () => ({ gamingAppRunning: false }),
     triggerIdleConsolidation: async () => {},
   });
@@ -503,6 +506,10 @@ test("20 minutes idle tries an idle start once per idle period", async () => {
     await report(1300);
     await report(1400);
     assert.equal(idleStarts, 1);
+    await report(10);
+    await report(1300);
+    assert.equal(idleStarts, 2);
+    evaluating = true;
     await report(10);
     await report(1300);
     assert.equal(idleStarts, 2);
@@ -1319,4 +1326,88 @@ test("#1287: a passing PR from her local model is kept as a training record", as
   assert.match(rec.diff, /\+\s*return a \+ b;/);
   assert.equal(rec.tests.command, "node --test test/util.test.js");
   assert.deepEqual(rec.outcome, { testsPassed: true, reviewPassed: true, merged: false, reverted: false });
+});
+
+test("#1385: a failed run leaves a lesson, the next run on the issue is told, and a failing lessons store never stops a run", async () => {
+  const { createLessons } = require("../self-work-lessons");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-lessons-run-"));
+  const lessons = createLessons({ file: path.join(dir, "lessons.json"), env: {} });
+  const first = selfWork(makeRepos(), { calls: [fix, runTests, finish], passed: false, lessons });
+  await first.sw.start(7);
+  await first.sw._current().done;
+  assert.equal(first.sw.status().state, "tests-failing");
+  const [lesson] = lessons.list();
+  assert.equal(lesson.issue, 7);
+  assert.ok(lesson.observed.includes("No PR was opened."));
+  assert.equal(lesson.occurrences[0].state, "tests-failing");
+  const seen = [];
+  const second = selfWork(makeRepos(), { calls: [fix, runTests, finish], passed: false, lessons, seen });
+  await second.sw.start(7);
+  await second.sw._current().done;
+  assert.match(seen[0].prompt, /What earlier runs on this left behind[\s\S]*No PR was opened/);
+  assert.equal(lessons.list().length, 1);
+  assert.equal(lessons.list()[0].occurrences.length, 2);
+  const throwing = () => { throw new Error("disk full"); };
+  const broken = selfWork(makeRepos(), { calls: [fix, runTests, finish], passed: false, lessons: { record: throwing, forIssue: throwing, standingRules: throwing } });
+  await broken.sw.start(7);
+  await broken.sw._current().done;
+  assert.equal(broken.sw.status().state, "tests-failing");
+});
+
+test("#1420: re-reviewing after a fix is progress, so it can't make her stuck", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  // Each repeat of a review is a call she's made before; with 6 repeat reads after it that was 9 steps without progress.
+  const calls = [plan, read, fix, ...reviews, addTest, ...reviews, ...Array(6).fill(read), finish];
+  const { sw } = selfWork(repos, { calls, plans: false, seen, reviewEdit: async () => ({ verdict: "holds" }) });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  assert.notEqual(sw.status().state, "stuck");
+  assert.match(results[5], /That's every pass\. If your tests pass and there's nothing left to fix, call session_goal__finish now\./);
+  assert.equal(JSON.parse(results.at(-1)).finished, true);
+});
+
+test("#1420: test/x.test.js without node-bot/ runs her test, unless the repo root has that file", async () => {
+  const repos = makeRepos();
+  const bare = ["coding__run_tests", { path: "test/util.test.js" }];
+  const rootTest = ["coding__propose_edit", { path: "test/util.test.js", new_text: "// a root test\n" }];
+  const herTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
+  const { sw, testRuns } = selfWork(repos, { calls: [fix, herTest, bare, rootTest, bare, finish] });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(testRuns[0].command, "node --test test/util.test.js");
+  assert.equal(testRuns[0].cwd, path.join(repos.worktrees, "mana-7", "node-bot"));
+  assert.notEqual(testRuns[1].command, "node --test test/util.test.js");
+});
+
+test("#1420: her prompt lists the review passes that are on", async () => {
+  for (const [passes, list] of [["3", "correctness, edge cases, scope)"], ["5", "correctness, edge cases, scope, tests, regressions)"]]) {
+    const seen = [];
+    const { sw } = selfWork(makeRepos(), {
+      calls: [fix, finish],
+      seen,
+      env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_ATTEMPTS: "1", MANA_SELF_WORK_REVIEW_PASSES: passes },
+    });
+    await sw.start(7);
+    await sw._current().done;
+    assert.ok(seen[0].prompt.includes(`review your diff with self_work__review (${list}`), passes);
+  }
+});
+
+test("#1420: a run starts on a clean worktree, whatever a dead run left there", async () => {
+  const repos = makeRepos();
+  const worktree = path.join(repos.worktrees, "mana-7");
+  const first = selfWork(repos, { calls: [] });
+  await first.sw.start(7);
+  await first.sw._current().done;
+  fs.writeFileSync(path.join(worktree, "node-bot", "util.js"), "half an edit\n");
+  fs.writeFileSync(path.join(worktree, "node-bot", "leftover.js"), "junk\n");
+  const seen = [];
+  const again = selfWork(repos, { calls: [read, finish], seen });
+  await again.sw.start(7);
+  await again.sw._current().done;
+  assert.match(String(seen.find((s) => s.name === "self_work__read").result), /return a - b;/);
+  assert.equal(fs.existsSync(path.join(worktree, "node-bot", "leftover.js")), false);
 });

@@ -20,7 +20,7 @@ public class StartWithWindowsTests
             ToolPanelHostTests.RunSta(() =>
             {
                 using var row = SettingsPanel.BuildStartWithWindowsRow(keyPath);
-                var check = row.Controls.OfType<CheckBox>().Single();
+                var check = row.Controls.Cast<Control>().SelectMany(c => c.Controls.Cast<Control>()).OfType<CheckBox>().Single();
                 Assert.False(check.Checked); // off by default
 
                 check.Checked = true;

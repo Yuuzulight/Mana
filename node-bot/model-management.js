@@ -22,14 +22,9 @@ const { assertLocalUrl, isLocalOnly } = require("./local-only");
 // that actually speak that shape. "custom" leaves baseUrl for the user to
 // fill in -- any other OpenAI-compatible server (a different local
 // runtime, a proxy, another host on the LAN) works the same way.
-const BRAIN_PROVIDER_PRESETS = {
-  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", needsKey: true },
-  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", needsKey: true },
-  groq: { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", needsKey: true },
-  ollama: { label: "Ollama (local)", baseUrl: "http://127.0.0.1:11434/v1", needsKey: false },
-  lmstudio: { label: "LM Studio (local)", baseUrl: "http://127.0.0.1:1234/v1", needsKey: false },
-  custom: { label: "Custom", baseUrl: "", needsKey: false },
-};
+// #1426: the providers Settings knows by name (provider-presets.js).
+const { PROVIDER_PRESETS: BRAIN_PROVIDER_PRESETS } = require("./provider-presets");
+const { checkToolLoop, listChatModels } = require("./provider-check");
 
 // Directory names skipped during a full-storage scan for .gguf files: OS
 // internals and huge dev-tool caches that are never where a downloaded model
@@ -476,6 +471,18 @@ function createModelManagement(options = {}) {
     };
   }
 
+  function effectiveFallbackConfig() {
+    const fallback = modelSettingsStore.getFallbackSettings();
+    return {
+      enabled: fallback.enabled === true,
+      timeoutSeconds: fallback.timeoutSeconds,
+      allowRemoteAi: fallback.enabled ? '1' : '',
+      apiKey: fallback.apiKey || env.OPENAI_API_KEY || null,
+      baseUrl: fallback.baseUrl || env.OPENAI_BASE_URL || "https://api.openai.com",
+      model: fallback.model || env.OPENAI_MODEL || '',
+    };
+  }
+
   function getModelStatus() {
     const localGgufs = collectLocalGgufs();
     const profiles = {};
@@ -489,14 +496,26 @@ function createModelManagement(options = {}) {
       allowRemoteAi: env.MANA_ALLOW_REMOTE_AI || "",
       baseUrl,
     });
+    const fallback = effectiveFallbackConfig();
+    const cloudFallbackEnabled =
+      !(isLocalOnly(env) || isLocalOnly()) && fallback.enabled && Boolean(fallback.model) &&
+      shouldUseRemoteAi({
+        apiKey: fallback.apiKey,
+        allowRemoteAi: fallback.allowRemoteAi,
+        baseUrl: fallback.baseUrl,
+      });
 
     const liveVramUsage = getLiveVramUsage();
     return {
       activeProfile,
+      localOnly: isLocalOnly(env) || isLocalOnly(),
       remoteAiEnabled,
       remoteAiWarning: remoteAiEnabled
         ? "Remote AI is enabled. Mana may use paid or proxy chat replies."
+        : cloudFallbackEnabled
+          ? "Cloud fallback is enabled. Mana stays local first and may escalate failed replies to a paid or proxy model."
         : null,
+      cloudFallbackEnabled,
       profiles,
       recommendation: getRecommendedModelProfile(),
       // Issue #320: live usage (changes constantly), separate from
@@ -511,6 +530,10 @@ function createModelManagement(options = {}) {
       brain: (() => {
         const { apiKey, ...rest } = modelSettingsStore.getBrainSettings();
         return { ...rest, hasApiKey: Boolean(apiKey) };
+      })(),
+      fallback: (() => {
+        const { apiKey, ...rest } = modelSettingsStore.getFallbackSettings();
+        return { ...rest, hasApiKey: Boolean(apiKey), active: cloudFallbackEnabled };
       })(),
       vision: modelSettingsStore.getVisionSettings(),
       loadIntoVram: modelSettingsStore.isLoadIntoVram(env),
@@ -614,9 +637,39 @@ function createModelManagement(options = {}) {
     // #670: no cloud "brain" while local-only mode is on.
     if (isLocalOnly()) {
       const next = { ...modelSettingsStore.getBrainSettings(), ...partial };
+      // #1426: a provider picked brings its own address.
+      const provider = partial.providerId ? modelSettingsStore.getProvider(partial.providerId) : null;
+      if (provider) next.baseUrl = provider.baseUrl;
       if (next.type === "openai_compatible") assertLocalUrl(next.baseUrl, "remote AI at");
     }
     modelSettingsStore.setBrainSettings(partial);
+    return getModelStatus();
+  }
+
+  function setFallbackSettings(partial = {}) {
+    for (const key of ['baseUrl', 'apiKey', 'model']) {
+      if (partial[key] !== undefined && typeof partial[key] !== 'string') throw new Error(`${key} must be a string`);
+    }
+    if (partial.timeoutSeconds !== undefined && ![0, 10, 30, 60].includes(partial.timeoutSeconds)) throw new Error('timeoutSeconds must be 0, 10, 30 or 60');
+    if (partial.baseUrl) {
+      let parsed;
+      try {
+        parsed = new URL(partial.baseUrl);
+      } catch (e) {
+        throw new Error(`baseUrl is not a valid URL: ${partial.baseUrl}`);
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`baseUrl must be http:// or https://: ${partial.baseUrl}`);
+      }
+      if (parsed.username || parsed.password) throw new Error('Use the API key field, not credentials in the endpoint URL');
+    }
+    if (partial.enabled !== undefined && typeof partial.enabled !== "boolean") {
+      throw new Error("enabled must be true or false");
+    }
+    if ((isLocalOnly(env) || isLocalOnly()) && partial.enabled === true) throw new Error('Cloud fallback is disabled in local-only mode');
+    const next = { ...modelSettingsStore.getFallbackSettings(), ...Object.fromEntries(Object.entries(partial).filter(([, value]) => value !== undefined)) };
+    if (next.enabled && !(next.model || env.OPENAI_MODEL)) throw new Error('Configure a fallback model before enabling it');
+    modelSettingsStore.setFallbackSettings(partial);
     return getModelStatus();
   }
 
@@ -692,7 +745,70 @@ function createModelManagement(options = {}) {
     }
   }
 
+  function resolveChatModel(id, { fallbackToLocal = false } = {}) {
+    if (!id || id === 'automatic') return null;
+    if (id.startsWith('local:') && getKnownLlamaModelProfiles().includes(id.slice(6))) return { profile: id.slice(6) };
+    if (!['cloud:brain', 'cloud:fallback'].includes(id)) throw new Error('Unknown chat model');
+    try {
+      if (isLocalOnly(env) || isLocalOnly()) throw new Error('Cloud chat models are disabled in local-only mode');
+      let config;
+      if (id === 'cloud:brain') config = effectiveOpenAiConfig();
+      else {
+        config = effectiveFallbackConfig();
+        if (!config.enabled) throw new Error('Cloud fallback is not enabled');
+      }
+      const model = id === 'cloud:brain' ? modelSettingsStore.getBrainSettings().model || env.OPENAI_MODEL : config.model;
+      if (!model || !shouldUseRemoteAi({ ...config, allowRemoteAi: config.allowRemoteAi ?? env.MANA_ALLOW_REMOTE_AI ?? '' })) throw new Error('Cloud chat model is not configured or permitted');
+      return { remoteConfig: { ...config, model } };
+    } catch (error) {
+      if (!fallbackToLocal) throw error;
+      return { profile: getActiveProfile(), localOnly: true };
+    }
+  }
+
+  // #1426: providers, through the settings store. Checking one runs her tool
+  // loop's three steps against it (#1441, provider-check.js) and remembers
+  // how that went.
+  const listProviders = () => modelSettingsStore.listProviders();
+  const addProvider = (fields) => modelSettingsStore.addProvider(fields);
+  const updateProvider = (id, fields = {}) =>
+    modelSettingsStore.updateProvider(id, { baseUrl: fields.baseUrl, apiKey: fields.apiKey, label: fields.label });
+  const removeProvider = (id) => modelSettingsStore.removeProvider(id);
+  async function checkProvider(id) {
+    const provider = modelSettingsStore.getProvider(id);
+    if (!provider) return null;
+    const r = await (options.checkToolLoop || checkToolLoop)(provider);
+    return modelSettingsStore.updateProvider(id, {
+      lastCheck: {
+        at: new Date().toISOString(),
+        ok: r.ok === true,
+        model: r.model || null,
+        chat: r.chat === true,
+        tools: r.tools === true,
+        stream: r.stream === true,
+        ...(r.error ? { error: String(r.error).slice(0, 200) } : {}),
+      },
+    });
+  }
+
+  // #1441: a provider's chat models; null if it isn't added.
+  async function listProviderModels(id) {
+    const provider = modelSettingsStore.getProvider(id);
+    return provider ? (options.listChatModels || listChatModels)(provider) : null;
+  }
+
+  function getChatModels() {
+    const models = [{ id: 'automatic', label: 'Automatic' }];
+    for (const profile of getKnownLlamaModelProfiles()) models.push({ id: `local:${profile}`, label: `Local: ${profile}` });
+    for (const id of ['cloud:brain', 'cloud:fallback']) {
+      try { const selected = resolveChatModel(id); models.push({ id, label: `Cloud: ${selected.remoteConfig.model}` }); } catch {}
+    }
+    return models;
+  }
+
   return {
+    resolveChatModel,
+    getChatModels,
     getActiveProfile,
     getKnownBrainProviders,
     getModelStatus,
@@ -701,10 +817,17 @@ function createModelManagement(options = {}) {
     scanForModels,
     setActiveProfile,
     setBrainSettings,
+    setFallbackSettings,
     setLoadIntoVram,
     setModelPath,
     setVisionSettings,
     testBrainConnection,
+    listProviders,
+    addProvider,
+    updateProvider,
+    removeProvider,
+    checkProvider,
+    listProviderModels,
   };
 }
 

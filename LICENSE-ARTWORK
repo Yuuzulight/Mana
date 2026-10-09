@@ -1,4 +1,4 @@
-Copyright (c) 2026 ManaAI
+Copyright (c) 2026 Mashiron Labs
 All rights reserved.
 
 The artwork and images included in or used with this repository (for
@@ -8,12 +8,12 @@ model files under `windows-launcher/avatar/model/` or
 repository's code license (Apache License, Version 2.0). Note: the model
 currently used for testing in `desktop-client` is itself a third-party
 placeholder (see `desktop-client/AVATAR_NOTICE.md`) — this file's
-proprietary/all-rights-reserved terms apply to ManaAI's own artwork, not
+proprietary/all-rights-reserved terms apply to Mashiron Labs' own artwork, not
 to that placeholder's underlying character design, which remains the
 property of its original rights holder.
 They are provided for use with this project only and may NOT be copied,
 redistributed, or reused in whole or in part without express written
-permission from ManaAI.
+permission from Mashiron Labs.
 
 If you wish to request permission to reuse any artwork, please contact
-ManaAI and provide details about the intended use.
+Mashiron Labs and provide details about the intended use.

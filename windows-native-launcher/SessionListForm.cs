@@ -51,6 +51,10 @@ internal sealed partial class SessionListForm : Form
     private readonly Label avatarStatusLabel = new();
     private readonly Label contextMeterLabel = new();
     private readonly Label chatTitleLabel = new();
+    private readonly ComboBox chatModelPicker = new() { Dock = DockStyle.Right, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Chat model" };
+    private bool loadingChatModels;
+    private string? modelsForSession;
+    private int modelLoadVersion;
     private readonly Font chatTitleFont = new("Segoe UI Semibold", 10.5f);
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
@@ -174,7 +178,7 @@ internal sealed partial class SessionListForm : Form
         newChatButton.Height = 36;
         newChatButton.TextAlign = ContentAlignment.MiddleLeft; // the #652 mockup's
         newChatButton.Padding = new Padding(6, 0, 0, 0);
-        newChatButton.Click += (_, _) => StartNewChat();
+        newChatButton.Click += async (_, _) => await StartNewChatAsync();
         // #538's own new-chat button is a solid accent CTA, not the
         // muted flat style DarkTheme.ApplyButton gives every other button
         // in this window -- matched here instead of through that shared
@@ -223,6 +227,7 @@ internal sealed partial class SessionListForm : Form
         list.AfterLabelEdit += OnAfterLabelEdit;
 
         var contextMenu = new ContextMenuStrip();
+        AddMoveToProjectMenu(contextMenu);
         contextMenu.Items.Add("Switch to session", null, (_, _) => SwitchToSelected());
         contextMenu.Items.Add("Rename", null, (_, _) =>
         {
@@ -364,6 +369,7 @@ internal sealed partial class SessionListForm : Form
         sidebar.Controls.Add(searchField);
         sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(newChatButton);
+        sidebar.Controls.Add(BuildProjectControls());
         sidebar.Controls.Add(Gap(DockStyle.Bottom));
         sidebar.Controls.Add(avatarCard);
 
@@ -388,8 +394,12 @@ internal sealed partial class SessionListForm : Form
 
         // #538's rail: Artifacts, Background tasks, Terminal and Browser on top,
         // Settings docked at the bottom.
-        // #1119: Settings opens in the tool panel.
-        RegisterRailTool("settings", "settings", "Settings", CreateSettingsTool).Dock = DockStyle.Bottom;
+        // #1426: Settings is its own window again, so its cog opens that
+        // rather than a tool in the panel.
+        var settingsButton = MakeRailButton("settings", "Settings");
+        settingsButton.Dock = DockStyle.Bottom;
+        settingsButton.Click += (_, _) => OpenSettings();
+        toolRail.Controls.Add(settingsButton);
         // #1127: Mana's docs, opened from Settings (OpenDoc); no rail icon.
         toolPanel.Add("docs", "Docs", null, () => docsPanel = new DocsPanel(ManaApplicationContext.FindRootDirectory()));
         // #1120: the Artifacts panel. A new artifact in the chat selects
@@ -407,7 +417,16 @@ internal sealed partial class SessionListForm : Form
         RegisterRailTool("terminal", "terminal", "Terminal",
             () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
         // #1122: her browser automation, docked.
-        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient));
+        RegisterRailTool("browser", "browser", "Browser", () => new BrowserTool(backendClient, () => voiceLoop.CurrentSessionId));
+        // #1426 stage 3: everything waiting on my OK, just above Settings,
+        // with how many on its icon.
+        waitingButton = RegisterRailTool("waiting", "waiting", "Waiting for you", () =>
+        {
+            waitingPanel = new WaitingPanel(AnswerAsync, edit => new ProposalsForm(backendClient, edit.Id).Show(this), () => OpenSettings("permissions"));
+            waitingPanel.Show(waiting, voiceLoop.CurrentSessionId);
+            return waitingPanel;
+        }, badge: () => waiting.Count);
+        waitingButton.Dock = DockStyle.Bottom;
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
         // #1118: clicking back into the chat closes an unpinned tool panel.
@@ -424,6 +443,7 @@ internal sealed partial class SessionListForm : Form
         chatArea.Controls.Add(attachments);
         chatArea.Controls.Add(BuildMessageBox());
         chatLog.ReplyEnded += () => _ = OfferPendingEditsAsync(chatLog);
+        chatLog.ReplyEnded += () => _ = RefreshWaiting?.Invoke(); // #1426: this turn's requests as cards now, not on the next poll
         // Q62: VoiceLoop started a session on its own (launch, or 4 h idle);
         // its row exists once this first reply is saved, so list and bold it.
         chatLog.ReplyEnded += () =>
@@ -501,6 +521,19 @@ internal sealed partial class SessionListForm : Form
         };
         // Last added docks first: toggle left, listen toggle outermost right.
         chatHeader.Controls.Add(chatTitleLabel);
+        chatHeader.Controls.Add(chatModelPicker);
+        chatModelPicker.BackColor = DarkTheme.Panel2;
+        chatModelPicker.ForeColor = DarkTheme.Text;
+        chatModelPicker.DropDown += async (_, _) => await RefreshChatModelsAsync();
+        chatModelPicker.SelectedIndexChanged += async (_, _) =>
+        {
+            if (loadingChatModels || chatModelPicker.SelectedItem is not ManaChatModel model) return;
+            var sessionId = voiceLoop.EnsureSessionId();
+            chatModelPicker.Enabled = false;
+            try { await backendClient.SetChatModelAsync(sessionId, model.Id); }
+            catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, ex.Message, "Chat model", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            finally { if (!IsDisposed) { chatModelPicker.Enabled = true; await RefreshChatModelsAsync(); } }
+        };
         chatHeader.Controls.Add(contextMeterLabel);
         chatHeader.Controls.Add(listenButton);
         chatHeader.Controls.Add(sidebarToggleButton);
@@ -574,45 +607,29 @@ internal sealed partial class SessionListForm : Form
         var send = new Button
         {
             Text = "Send",
-            Dock = DockStyle.Right,
-            Width = 72,
+            Size = new Size(34, 34),
             FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Accent,
+            BackColor = box.BackColor,
             ForeColor = DarkTheme.OnAccent,
+            AccessibleName = "Send message",
+            Cursor = Cursors.Hand,
         };
         send.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(send, gloss: true);
+        send.FlatAppearance.MouseOverBackColor = box.BackColor;
+        send.FlatAppearance.MouseDownBackColor = box.BackColor;
+        send.Paint += (_, e) => DrawSendButton(e.Graphics, send, box.BackColor);
+        railToolTip.SetToolTip(send, MessageBoxHint);
 
         // The #652 mockup's push-to-talk button: counts as saying her name,
         // like clicking her on the overlay (listening comes on if it was off).
-        var mic = new Button
-        {
-            Dock = DockStyle.Right,
-            Width = 44,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Accent,
-            AccessibleName = "Push to talk",
-        };
-        mic.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(mic);
-        mic.Paint += (_, e) => DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor);
+        var mic = ToolbarIconButton("Push to talk");
+        mic.Paint += (_, e) => { ShrinkToolbarIcon(e.Graphics, mic); DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor); };
         mic.Click += (_, _) => voiceLoop.Wake();
         railToolTip.SetToolTip(mic, "Talk to Mana: the next thing you say is for her");
 
         // #1325: Attach button (paperclip) for documents and images
-        var attach = new Button
-        {
-            Dock = DockStyle.Right,
-            Width = 44,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Accent,
-            AccessibleName = "Attach files",
-        };
-        attach.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(attach);
-        attach.Paint += (_, e) => DrawPaperclipIcon(e.Graphics, attach.ClientRectangle, attach.ForeColor);
+        var attach = ToolbarIconButton("Attach files");
+        attach.Paint += (_, e) => { ShrinkToolbarIcon(e.Graphics, attach); DrawPaperclipIcon(e.Graphics, attach.ClientRectangle, attach.ForeColor); };
         attach.Click += (_, _) =>
         {
             using var dialog = new OpenFileDialog
@@ -631,48 +648,49 @@ internal sealed partial class SessionListForm : Form
         };
         railToolTip.SetToolTip(attach, "Attach documents or images (PDF, Word, Excel, PowerPoint, CSV, text, images)");
 
-        // #675: deep thinking, sticky until clicked off. While on, every
-        // turn (typed or spoken) asks node-bot to think harder. A toggle
-        // (CheckBox drawn as a button) so its on/off state is also exposed to
-        // screen readers; not saved -- off at each launch, like the tool
-        // panel's pin, since a forgotten "on" makes every reply slow.
-        var think = new CheckBox
+        // #1426: the thinking level, like Claude's effort control: a chip
+        // saying the level, opening a card with a Faster <-> Smarter slider
+        // (Off, Low, Medium, High, Max; Medium recommended). Not saved --
+        // Medium at each launch, so a forgotten Max doesn't slow every reply.
+        // Q12b: while Mana's own deep thinking is on (she turned it on when
+        // asked) the chip says High; picking a level below that ends hers.
+        var thinkingLevel = ThinkingLevelPicker.Recommended;
+        var manaThinkingOn = false;
+        var think = ToolbarChip("Thinking level");
+        void ShowThinkingChip()
         {
-            Appearance = Appearance.Button,
-            Text = "Think",
-            TextAlign = ContentAlignment.MiddleCenter,
-            Dock = DockStyle.Right,
-            Width = 72,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Panel2,
-            ForeColor = DarkTheme.Muted,
-            AccessibleName = "Deep thinking",
-        };
-        think.FlatAppearance.BorderSize = 0;
-        think.FlatAppearance.CheckedBackColor = DarkTheme.Accent;
-        GlassSurface.MakeGlassButton(think);
-        railToolTip.SetToolTip(think, DeepThinkingOffTooltip);
-        // Q12b: it also lights while Mana's own deep thinking is on (she
-        // turned it on when asked); clicking it then turns hers off too.
-        var userThinking = false;
-        var syncing = false;
-        think.CheckedChanged += (_, _) =>
+            var shown = manaThinkingOn && ThinkingLevelPicker.IndexOf(thinkingLevel) < ThinkingLevelPicker.IndexOf("high") ? "high" : thinkingLevel;
+            think.Text = $"Thinking: {ThinkingLevelPicker.LabelOf(shown)}";
+            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 28;
+            railToolTip.SetToolTip(think, manaThinkingOn ? "Mana turned deep thinking on; pick a lower level to end it" : "How hard she thinks before answering");
+        }
+        ShowThinkingChip();
+        think.Click += (_, _) =>
         {
-            if (!syncing)
+            var picker = new ThinkingLevelPicker(thinkingLevel);
+            picker.LevelChanged += level =>
             {
-                userThinking = think.Checked;
-                voiceLoop.SetDeepThinking(think.Checked);
-            }
-            think.ForeColor = think.Checked ? DarkTheme.OnAccent : DarkTheme.Muted;
-            railToolTip.SetToolTip(think, think.Checked ? DeepThinkingOnTooltip : DeepThinkingOffTooltip);
+                thinkingLevel = level;
+                voiceLoop.SetThinkingLevel(level);
+                if (ThinkingLevelPicker.IndexOf(level) < ThinkingLevelPicker.IndexOf("high"))
+                {
+                    manaThinkingOn = false;
+                }
+                ShowThinkingChip();
+            };
+            var host = new ToolStripControlHost(picker) { Margin = Padding.Empty, Padding = Padding.Empty, AutoSize = false, Size = picker.Size };
+            var card = new ToolStripDropDown { Padding = new Padding(1), BackColor = DarkTheme.Border };
+            card.Items.Add(host);
+            card.Closed += (_, _) => card.Dispose();
+            card.Show(think, new Point(0, -picker.Height - 6));
+            picker.Focus();
         };
         voiceLoop.ManaDeepThinkingChanged += on =>
         {
             void Apply()
             {
-                syncing = true;
-                think.Checked = userThinking || on;
-                syncing = false;
+                manaThinkingOn = on;
+                ShowThinkingChip();
             }
             // The form's handle exists from construction (see the ctor), so
             // this also works while the window is hidden.
@@ -688,6 +706,56 @@ internal sealed partial class SessionListForm : Form
             Apply();
         };
 
+        // #1426: Deep research, moved here from the tray. While it's on, a
+        // message starts a research job in this chat instead of a reply;
+        // its progress shows beside the toggle, the round button stops it,
+        // and the report arrives as her message. Not saved, like Think.
+        var research = ToolbarToggle("Deep research", "Deep research");
+        railToolTip.SetToolTip(research, "Deep research: your next message becomes a research job -- she reads the web and comes back with a cited report");
+        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 3, 0, 0), BackColor = Color.Transparent, Font = ToolbarFont };
+        string? researchJobId = null;
+        async Task ResearchAsync(string question)
+        {
+            chatView.AppendUserMessage(question);
+            researchStatus.Text = "Starting research…";
+            try
+            {
+                researchJobId = await backendClient.StartResearchAsync(question, voiceLoop.EnsureSessionId());
+                while (true)
+                {
+                    var job = await backendClient.GetResearchJobAsync(researchJobId);
+                    if (IsDisposed)
+                    {
+                        return;
+                    }
+                    if (job.Status == "done" && job.Result is not null)
+                    {
+                        chatView.AppendManaMessage(ResearchFormatter.FormatReply(job.Result));
+                        break;
+                    }
+                    if (job.Status is "cancelled" or "error")
+                    {
+                        chatView.AppendManaMessage(job.Status == "cancelled" ? "Research stopped." : $"Research failed: {job.Error ?? "something went wrong"}.");
+                        break;
+                    }
+                    researchStatus.Text = string.IsNullOrEmpty(job.ProgressLabel) ? "Researching…" : job.ProgressLabel;
+                    await Task.Delay(600);
+                }
+            }
+            catch (Exception ex)
+            {
+                chatView.AppendManaMessage($"Research failed: {BackendError.Describe(ex)}");
+            }
+            finally
+            {
+                researchJobId = null;
+                if (!IsDisposed)
+                {
+                    researchStatus.Text = "";
+                }
+            }
+        }
+
         async Task SendAsync()
         {
             var text = box.Text;
@@ -700,6 +768,16 @@ internal sealed partial class SessionListForm : Form
                     await backendClient.TruncateSessionTurnsAsync(activeSessionId, editTurn);
                     await LoadHistoryAsync(activeSessionId);
                 }
+            }
+            if (research.Checked && attachments.Count == 0)
+            {
+                if (text.Trim().Length == 0 || researchJobId is not null)
+                {
+                    return;
+                }
+                box.Clear();
+                await ResearchAsync(text.Trim());
+                return;
             }
             if (attachments.Count > 0)
             {
@@ -801,7 +879,12 @@ internal sealed partial class SessionListForm : Form
         };
         send.Click += async (_, _) =>
         {
-            if (IsStopButton(send))
+            if (researchJobId is { } job)
+            {
+                researchStatus.Text = "Stopping…";
+                await backendClient.CancelResearchJobAsync(job);
+            }
+            else if (IsStopButton(send))
             {
                 voiceLoop.InterruptSpeech();
             }
@@ -812,7 +895,7 @@ internal sealed partial class SessionListForm : Form
         };
         sendButtonTimer.Tick += (_, _) =>
         {
-            ShowSendOrStop(send, replying: !voiceLoop.IsIdle);
+            ShowSendOrStop(send, replying: !voiceLoop.IsIdle || researchJobId is not null);
             // #687: the status line follows VoiceLoop between avatar state changes.
             var status = StatusLine(avatarOverlay.CurrentState);
             if (avatarStatusLabel.Text != status)
@@ -847,11 +930,39 @@ internal sealed partial class SessionListForm : Form
             await sending;
         };
 
-        // The #652 mockup's composer: a 44px field, then the buttons, 8px apart.
-        Panel Gap() => new() { Dock = DockStyle.Right, Width = 8, BackColor = Color.Transparent };
-        var field = GlassSurface.Field(box, new Padding(12, 11, 12, 4));
-        field.Dock = DockStyle.Fill;
-        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(32, 12, 32, 18), BackColor = DarkTheme.Background };
+        // #1426: like Claude's composer -- a rounded field holding the text
+        // and the round send button, then a row of small controls under it.
+        box.BorderStyle = BorderStyle.None;
+        var sendHost = new Panel { Dock = DockStyle.Right, Width = 40, BackColor = Color.Transparent };
+        sendHost.Controls.Add(send);
+        sendHost.Resize += (_, _) => send.Location = new Point(sendHost.Width - send.Width, sendHost.Height - send.Height);
+        var field = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 8, 8), BackColor = Color.Transparent };
+        field.Paint += (_, e) =>
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var shape = RoundedRect(new RectangleF(0.5f, 0.5f, field.Width - 1.5f, field.Height - 1.5f), 14);
+            using var fill = new SolidBrush(box.BackColor);
+            e.Graphics.FillPath(fill, shape);
+            using var edge = new Pen(DarkTheme.IsGlass ? Color.FromArgb(70, 106, 95, 184) : DarkTheme.Border);
+            e.Graphics.DrawPath(edge, shape);
+        };
+        field.Resize += (_, _) => field.Invalidate();
+        field.MouseDown += (_, _) => box.Focus();
+        field.Controls.Add(box);
+        field.Controls.Add(sendHost);
+        box.BackColorChanged += (_, _) => field.Invalidate();
+
+        Panel Gap() => new() { Dock = DockStyle.Left, Width = 6, BackColor = Color.Transparent };
+        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(4, 4, 4, 0), BackColor = Color.Transparent };
+        // Docked last-added first: attach on the left, then mic, Think, Deep research and its progress.
+        toolbar.Controls.Add(researchStatus);
+        toolbar.Controls.Add(research);
+        toolbar.Controls.Add(Gap());
+        toolbar.Controls.Add(think);
+        toolbar.Controls.Add(Gap());
+        toolbar.Controls.Add(mic);
+        toolbar.Controls.Add(attach);
+        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(32, 10, 32, 10), BackColor = DarkTheme.Background };
         // Grows with what's typed up to MaxComposerLines, then scrolls.
         // (Changing ScrollBars recreates the box's handle, so only on a change.)
         void FitComposer()
@@ -866,28 +977,188 @@ internal sealed partial class SessionListForm : Form
         }
         box.TextChanged += (_, _) => FitComposer();
         box.SizeChanged += (_, _) => FitComposer(); // wrapping follows the width
-        // Docked last-added first: Send at the far right, then Think, mic, attach, then the box.
         panel.Controls.Add(field);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(attach);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(mic);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(think);
-        panel.Controls.Add(Gap());
-        panel.Controls.Add(send);
+        panel.Controls.Add(toolbar);
         return panel;
+    }
+
+    // #1426: the round send button -- an up arrow on the accent, or a square
+    // while she's replying (Text says which, for the logic and screen readers).
+    private static void DrawSendButton(Graphics g, Button button, Color background)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var clear = new SolidBrush(background))
+        {
+            g.FillRectangle(clear, button.ClientRectangle);
+        }
+        var circle = new RectangleF(1, 1, button.Width - 3, button.Height - 3);
+        using (var fill = new SolidBrush(DarkTheme.Accent))
+        {
+            g.FillEllipse(fill, circle);
+        }
+        var cx = circle.X + circle.Width / 2;
+        var cy = circle.Y + circle.Height / 2;
+        if (IsStopButton(button))
+        {
+            using var square = new SolidBrush(DarkTheme.OnAccent);
+            g.FillRectangle(square, cx - 5, cy - 5, 10, 10);
+            return;
+        }
+        using var pen = new Pen(DarkTheme.OnAccent, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        g.DrawLine(pen, cx, cy + 6, cx, cy - 6);
+        g.DrawLines(pen, new[] { new PointF(cx - 5, cy - 1), new PointF(cx, cy - 6), new PointF(cx + 5, cy - 1) });
+    }
+
+    // #1426: the row under the field, a size smaller than the message box.
+    private static readonly Font ToolbarFont = new("Segoe UI", 7.5f);
+
+    // The mic and paperclip are drawn 18px; the row draws them 16px.
+    private static void ShrinkToolbarIcon(Graphics g, Control button)
+    {
+        var cx = button.Width / 2f;
+        var cy = button.Height / 2f;
+        g.TranslateTransform(cx, cy);
+        g.ScaleTransform(16f / 18, 16f / 18);
+        g.TranslateTransform(-cx, -cy);
+    }
+
+    // ... small icon buttons, muted until hovered.
+    private static Button ToolbarIconButton(string name)
+    {
+        var button = new Button
+        {
+            Dock = DockStyle.Left,
+            Width = 24,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Background,
+            ForeColor = DarkTheme.Muted,
+            AccessibleName = name,
+            Cursor = Cursors.Hand,
+        };
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = DarkTheme.Panel2;
+        return button;
+    }
+
+    // ... a chip that opens something: the toggles' pill with a chevron.
+    private static CheckBox ToolbarChip(string name)
+    {
+        // A CheckBox that never checks: Button draws its own frame over this one.
+        var chip = new CheckBox
+        {
+            Appearance = Appearance.Button,
+            AutoCheck = false,
+            AccessibleRole = AccessibleRole.PushButton,
+            Dock = DockStyle.Left,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Background,
+            ForeColor = DarkTheme.Text,
+            AccessibleName = name,
+            Cursor = Cursors.Hand,
+            UseMnemonic = false,
+            Font = ToolbarFont,
+        };
+        chip.FlatAppearance.BorderSize = 0;
+        var hovered = false;
+        chip.MouseEnter += (_, _) => { hovered = true; chip.Invalidate(); };
+        chip.MouseLeave += (_, _) => { hovered = false; chip.Invalidate(); };
+        chip.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, chip, chip.ClientRectangle);
+            }
+            else
+            {
+                using var clear = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(clear, chip.ClientRectangle);
+            }
+            var pill = new RectangleF(0.5f, 2.5f, chip.Width - 1.5f, chip.Height - 5.5f);
+            using var shape = RoundedRect(pill, pill.Height / 2);
+            if (hovered)
+            {
+                using var fill = new SolidBrush(DarkTheme.Panel2);
+                g.FillPath(fill, shape);
+            }
+            using var edge = new Pen(DarkTheme.Border);
+            g.DrawPath(edge, shape);
+            var text = Rectangle.Round(pill) with { Width = (int)pill.Width - 14 };
+            TextRenderer.DrawText(g, chip.Text, chip.Font, text, DarkTheme.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            using var pen = new Pen(DarkTheme.Muted, 1.4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            var cx = pill.Right - 14;
+            var cy = pill.Top + pill.Height / 2;
+            g.DrawLines(pen, new[] { new PointF(cx - 3, cy + 1.5f), new PointF(cx, cy - 1.5f), new PointF(cx + 3, cy + 1.5f) });
+            if (chip.Focused && GlassSurface.ShowsFocusCues(chip))
+            {
+                ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
+            }
+        };
+        return chip;
+    }
+
+    // ... and its toggles: an outlined pill sized to its words, filled with
+    // the accent while on.
+    private static CheckBox ToolbarToggle(string text, string name)
+    {
+        var toggle = new CheckBox
+        {
+            Appearance = Appearance.Button,
+            Text = text,
+            Dock = DockStyle.Left,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Background,
+            ForeColor = DarkTheme.Muted,
+            AccessibleName = name,
+            Cursor = Cursors.Hand,
+            Font = ToolbarFont,
+        };
+        toggle.FlatAppearance.BorderSize = 0;
+        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 16;
+        var hovered = false;
+        toggle.MouseEnter += (_, _) => { hovered = true; toggle.Invalidate(); };
+        toggle.MouseLeave += (_, _) => { hovered = false; toggle.Invalidate(); };
+        toggle.CheckedChanged += (_, _) => toggle.Invalidate();
+        toggle.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, toggle, toggle.ClientRectangle);
+            }
+            else
+            {
+                using var clear = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(clear, toggle.ClientRectangle);
+            }
+            var pill = new RectangleF(0.5f, 2.5f, toggle.Width - 1.5f, toggle.Height - 5.5f);
+            using var shape = RoundedRect(pill, pill.Height / 2);
+            if (toggle.Checked || hovered)
+            {
+                using var fill = new SolidBrush(toggle.Checked ? DarkTheme.Accent : DarkTheme.Panel2);
+                g.FillPath(fill, shape);
+            }
+            using var edge = new Pen(toggle.Checked ? DarkTheme.Accent : DarkTheme.Border);
+            g.DrawPath(edge, shape);
+            TextRenderer.DrawText(g, toggle.Text, toggle.Font, Rectangle.Round(pill), toggle.Checked ? DarkTheme.OnAccent : DarkTheme.Text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            if (toggle.Focused && GlassSurface.ShowsFocusCues(toggle))
+            {
+                ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
+            }
+        };
+        return toggle;
     }
 
     private const int MaxComposerLines = 8;
 
-    // The #652 mockup's 74px composer for one line, a line taller per
-    // wrapped or typed line up to MaxComposerLines.
+    // #1426: 100px for one line (the field, the row under it and the
+    // margins), a line taller per wrapped or typed line up to MaxComposerLines.
     internal static int ComposerHeight(int lines, int lineHeight) =>
-        74 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
+        100 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
-    private const string DeepThinkingOnTooltip = "Deep thinking: on -- slower, more careful replies. Click to turn off.";
-    private const string DeepThinkingOffTooltip = "Deep thinking: off -- click for slower, more careful replies";
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during
     // that turn get Approve / Review buttons on her message. "During that
@@ -1040,12 +1311,98 @@ internal sealed partial class SessionListForm : Form
     // #1122: the floating browser window stays away while this is on screen.
     internal bool BrowserToolShowing => Visible && WindowState != FormWindowState.Minimized && toolPanel.IsOpen("browser");
 
+    // #1426 stage 3: what's waiting on my OK (ManaApplicationContext's 5s
+    // poll, and RefreshWaiting after each answer), shown in Waiting for you,
+    // on its icon, and as cards in the chat it was asked from.
+    private WaitingSnapshot waiting = WaitingSnapshot.Empty;
+    private readonly Button waitingButton;
+    private WaitingPanel? waitingPanel;
+    // What I answered each request, for its card when it ends.
+    private readonly Dictionary<string, string> answered = new();
+
+    internal Func<Task>? RefreshWaiting { get; set; }
+
+    internal int WaitingCount => waiting.Count; // tests
+
+    internal void ShowWaiting(WaitingSnapshot snapshot)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => ShowWaiting(snapshot));
+            return;
+        }
+        waiting = snapshot;
+        var label = snapshot.Count > 0 ? $"Waiting for you ({snapshot.Count})" : "Waiting for you";
+        railToolTip.SetToolTip(waitingButton, label);
+        waitingButton.AccessibleName = label;
+        waitingButton.Invalidate();
+        waitingPanel?.Show(snapshot, voiceLoop.CurrentSessionId);
+        SyncApprovalCards(voiceLoop.CurrentSessionId);
+    }
+
+    // A card for each of this chat's requests; one answered elsewhere (or
+    // gone) ends with what was said.
+    private void SyncApprovalCards(string? sessionId)
+    {
+        var open = waiting.Approvals.Select(a => a.Id).ToHashSet();
+        foreach (var gone in chatView.OpenApprovalCards.Where(id => !open.Contains(id)))
+        {
+            chatView.EndApprovalCard(gone, answered.GetValueOrDefault(gone) ?? "No longer waiting");
+        }
+        if (sessionId is null)
+        {
+            return;
+        }
+        foreach (var approval in waiting.Approvals.Where(a => a.SessionId == sessionId))
+        {
+            chatView.ShowApprovalCard(approval.Id, $"**Needs your OK** · {WaitingPanel.Kind(approval.ActionType)}\n\n{approval.Summary}", CardActions(approval));
+        }
+    }
+
+    // Allow (its arrow: for this session, always) and Deny (its arrow: never).
+    private IReadOnlyList<ChatView.ChatAction> CardActions(ManaPendingApproval approval)
+    {
+        ChatView.ChatAction Answer(string label, bool primary, string decision, params string[] more) =>
+            new(label, primary, () => AnswerAsync(approval, decision),
+                Menu: more.Length == 0 ? null : more.Select(d => new ChatView.ChatMenuItem(
+                    WaitingPanel.ApprovalChoices.First(c => c.Decision == d).Name, true, () => AnswerAsync(approval, d))).ToList());
+        return [Answer("Allow", true, "allow-once", "allow-session", "always-allow"), Answer("Deny", false, "deny", "never")];
+    }
+
+    // Answers an approval or the coding agent's write, then fetches what's
+    // waiting again so both places clear. Gives back what happened.
+    internal async Task<string?> AnswerAsync(object request, string decision)
+    {
+        switch (request)
+        {
+            case ManaPendingApproval approval:
+                await backendClient.DecideApprovalAsync(approval.Id, decision);
+                answered[approval.Id] = WaitingPanel.Answered(decision);
+                break;
+            case ManaPendingWrite write:
+                await backendClient.DecidePendingWriteAsync(write.Id, decision == "allow-once");
+                break;
+            default:
+                return null;
+        }
+        if (RefreshWaiting is { } refresh)
+        {
+            await refresh();
+        }
+        return WaitingPanel.Answered(decision);
+    }
+
     // #1118: the host API every rail tool uses (see ToolPanelHost): adds its
     // icon below the ones before it and opens createContent's control in the
     // tool panel. Returns the icon, e.g. to dock it at the bottom.
-    internal Button RegisterRailTool(string id, string icon, string label, Func<Control> createContent)
+    // badge: a count on the icon while it's above 0.
+    internal Button RegisterRailTool(string id, string icon, string label, Func<Control> createContent, Func<int>? badge = null)
     {
-        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id), () => toolPanel.IsHighlighted(id));
+        var button = MakeRailButton(icon, label, () => toolPanel.IsOpen(id), () => toolPanel.IsHighlighted(id), badge);
         toolRail.Controls.Add(button);
         button.BringToFront(); // docked last-added-first, so this keeps registration order
         toolPanel.Add(id, label, button, createContent);
@@ -1063,7 +1420,7 @@ internal sealed partial class SessionListForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null, Func<bool>? highlighted = null)
+    private Button MakeRailButton(string icon, string tooltip, Func<bool>? active = null, Func<bool>? highlighted = null, Func<int>? badge = null)
     {
         var button = new Button
         {
@@ -1094,10 +1451,33 @@ internal sealed partial class SessionListForm : Form
                 using var dot = new SolidBrush(DarkTheme.Accent);
                 e.Graphics.FillEllipse(dot, (button.Width / 2f) + 6, (button.Height / 2f) - 11, 7, 7);
             }
+            if (badge?.Invoke() is > 0 and var count)
+            {
+                DrawRailBadge(e.Graphics, button.ClientRectangle, count);
+            }
         };
         railToolTip.SetToolTip(button, tooltip);
         button.AccessibleName = tooltip;
         return button;
+    }
+
+    // #1426: a count at the icon's top right, a pill in the accent.
+    private static void DrawRailBadge(Graphics g, Rectangle bounds, int count)
+    {
+        var text = count > 9 ? "9+" : count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        using var font = new Font("Segoe UI", 7f, FontStyle.Bold);
+        var width = Math.Max(14, TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.NoPadding).Width + 7);
+        var pill = new RectangleF(bounds.X + (bounds.Width / 2f) + 2, bounds.Y + (bounds.Height / 2f) - 15, width, 14);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var shape = SettingsRows.Rounded(pill, 7))
+        {
+            using var fill = new SolidBrush(DarkTheme.Accent);
+            using var ring = new Pen(DarkTheme.Panel, 2f);
+            g.DrawPath(ring, shape);
+            g.FillPath(fill, shape);
+        }
+        TextRenderer.DrawText(g, text, font, Rectangle.Round(pill), DarkTheme.OnAccent,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
     }
 
     // The #652 mockup's rail icons: 18px, 1.6px strokes, round caps,
@@ -1132,6 +1512,18 @@ internal sealed partial class SessionListForm : Form
             case "sidebar": // the mockup's toggle: a panel on the left
                 Frame();
                 g.DrawLine(pen, x + 6.5f, y + 2.5f, x + 6.5f, y + 15.5f);
+                break;
+
+            case "waiting": // a bell: a dome flaring to its rim, the clapper under it
+                using (var bell = new GraphicsPath())
+                {
+                    bell.AddArc(x + 4.5f, y + 2, 9, 9, 180, 180);
+                    bell.AddLine(x + 13.5f, y + 6.5f, x + 14.5f, y + 12.5f);
+                    bell.AddLine(x + 14.5f, y + 12.5f, x + 3.5f, y + 12.5f);
+                    bell.AddLine(x + 3.5f, y + 12.5f, x + 4.5f, y + 6.5f);
+                    g.DrawPath(pen, bell);
+                }
+                g.DrawArc(pen, x + 7, y + 13, 4, 3.5f, 0, 180);
                 break;
 
             case "tasks":
@@ -1321,9 +1713,14 @@ internal sealed partial class SessionListForm : Form
     // couldn't, or null. Set by ManaApplicationContext, which owns the hotkeys.
     public Func<HotkeyAction, Keys?, string?>? BindHotkey { get; set; }
 
-    // #1119: the tray's Settings… -- the tool panel on Settings, with focus
-    // in it (so the chat getting focus as the window activates doesn't
-    // close it). Call after showing the window.
+    // #1426: Settings > Voice > Dictation, applied live. Set by ManaApplicationContext.
+    public Action<bool>? DictateAnywhereChanged { get; set; }
+    public Action? AvatarSettingsChanged { get; set; }
+
+    // #1426: Settings > Memory > Characters' "Switch to her".
+    public Func<string, Task>? SwitchCharacter { get; set; }
+    public Action? RevertMergedPr { get; set; }
+
     // #1127: a Mana doc (a Markdown file in the repo) in the tool panel,
     // bringing this window up if it's hidden (Settings' own window).
     private DocsPanel? docsPanel;
@@ -1340,15 +1737,28 @@ internal sealed partial class SessionListForm : Form
         toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
     }
 
-    internal void OpenSettings()
-    {
-        toolPanel.Open("settings");
-        toolPanel.SelectNextControl(null, forward: true, tabStopOnly: true, nested: true, wrap: false);
-    }
-
-    // The same Settings, non-modal: the tool panel's, and its "Open in its
-    // own window" (a second open just brings that window forward).
+    // #1426: the rail's cog and the tray's Settings… -- one Settings window;
+    // opening it again brings that window forward, on the group asked for.
     private SettingsDialog? settingsWindow;
+
+    internal void OpenSettings(string? group = null)
+    {
+        if (settingsWindow is { IsDisposed: false })
+        {
+            if (group is not null)
+            {
+                settingsWindow.Panel.ShowGroup(group);
+            }
+            if (settingsWindow.WindowState == FormWindowState.Minimized)
+            {
+                settingsWindow.WindowState = FormWindowState.Normal;
+            }
+            settingsWindow.Activate();
+            return;
+        }
+        settingsWindow = new SettingsDialog(NewSettingsPanel(), group);
+        settingsWindow.Show();
+    }
 
     private SettingsPanel NewSettingsPanel()
     {
@@ -1360,43 +1770,11 @@ internal sealed partial class SessionListForm : Form
         // #681: the active preset reaches the next reply as soon as it's chosen.
         panel.ActivePresetChanged = voiceLoop.SetPresetId;
         panel.OpenDoc = OpenDoc;
+        panel.DictateAnywhereChanged = on => DictateAnywhereChanged?.Invoke(on);
+        panel.AvatarSettingsChanged = () => AvatarSettingsChanged?.Invoke();
+        panel.SwitchCharacter = id => SwitchCharacter?.Invoke(id) ?? Task.CompletedTask;
+        panel.RevertMergedPr = () => RevertMergedPr?.Invoke();
         return panel;
-    }
-
-    private Control CreateSettingsTool()
-    {
-        var panel = NewSettingsPanel();
-        // Fresh data whenever it comes into view, as each dialog open did.
-        Task? refresh = null;
-        panel.VisibleChanged += async (_, _) =>
-        {
-            if (panel.Visible && refresh is not { IsCompleted: false })
-            {
-                refresh = panel.RefreshAllAsync();
-                await refresh;
-            }
-        };
-        var ownWindow = new Button { Text = "Open in its own window", Dock = DockStyle.Right, AutoSize = true };
-        DarkTheme.ApplyButton(ownWindow);
-        ownWindow.Click += (_, _) => OpenSettingsWindow();
-        var row = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(4) };
-        row.Controls.Add(ownWindow);
-        var tool = new Panel();
-        tool.Controls.Add(panel);
-        tool.Controls.Add(row);
-        return tool;
-    }
-
-    private void OpenSettingsWindow()
-    {
-        toolPanel.Close();
-        if (settingsWindow is { IsDisposed: false })
-        {
-            settingsWindow.Activate();
-            return;
-        }
-        settingsWindow = new SettingsDialog(NewSettingsPanel());
-        settingsWindow.Show(this);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -1418,12 +1796,20 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
-    private void StartNewChat()
+    private async Task StartNewChatAsync()
     {
         // No explicit "create session" call -- matches the reference:
         // node-bot's ensureSession lazily creates the row on the first
         // real turn sent with this id, not when the id is merely minted.
-        SwitchTo(Guid.NewGuid().ToString());
+        var sessionId = Guid.NewGuid().ToString();
+        newChatButton.Enabled = false;
+        try
+        {
+            if (SelectedProject is { } project) await backendClient.SetSessionProjectAsync(sessionId, project.Id);
+            if (!IsDisposed) SwitchTo(sessionId);
+        }
+        catch (Exception ex) { if (!IsDisposed) SetListError(ex.Message); }
+        finally { if (!IsDisposed) newChatButton.Enabled = true; }
     }
 
     private void SwitchTo(string sessionId)
@@ -1463,6 +1849,7 @@ internal sealed partial class SessionListForm : Form
             return null; // switched again meanwhile
         }
         chatView.ShowHistory(detail?.RecentTurns ?? Array.Empty<ManaSessionTurn>());
+        SyncApprovalCards(sessionId); // #1426: this chat's requests, as cards again
         return detail;
     }
 
@@ -1777,6 +2164,8 @@ internal sealed partial class SessionListForm : Form
         try
         {
             sessions = await backendClient.GetSessionsAsync();
+            var loadedProjects = await backendClient.GetProjectsAsync();
+            if (!IsDisposed) UpdateProjects(loadedProjects);
         }
         catch (Exception ex)
         {
@@ -1862,7 +2251,8 @@ internal sealed partial class SessionListForm : Form
     {
         list.BeginUpdate();
         list.Items.Clear();
-        foreach (var session in sessions.Where(s => SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId)))
+        list.Groups.Clear();
+        foreach (var session in sessions.Where(s => MatchesProject(s) && (SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId))))
         {
             var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
             {
@@ -1870,6 +2260,10 @@ internal sealed partial class SessionListForm : Form
                 ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
             };
             item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, DateTimeOffset.Now));
+            var groupKey = session.ProjectId is { } id ? $"project:{id}" : "ungrouped";
+            var group = list.Groups[groupKey];
+            if (group is null) { group = new ListViewGroup(groupKey, session.ProjectName ?? "Ungrouped"); list.Groups.Add(group); }
+            item.Group = group;
             list.Items.Add(item);
         }
         list.EndUpdate();
@@ -1878,7 +2272,29 @@ internal sealed partial class SessionListForm : Form
         ShowChatTitle();
     }
 
-    private void ShowChatTitle() => chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+    private void ShowChatTitle()
+    {
+        chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+        if (modelsForSession != activeSessionId || chatModelPicker.Items.Count == 0) _ = RefreshChatModelsAsync();
+    }
+
+    private async Task RefreshChatModelsAsync()
+    {
+        var version = ++modelLoadVersion;
+        var sessionId = voiceLoop.CurrentSessionId;
+        try
+        {
+            var result = await backendClient.GetChatModelsAsync(sessionId);
+            if (IsDisposed || version != modelLoadVersion || sessionId != voiceLoop.CurrentSessionId) return;
+            loadingChatModels = true;
+            chatModelPicker.Items.Clear();
+            foreach (var model in result.Models) chatModelPicker.Items.Add(model);
+            chatModelPicker.SelectedItem = result.Models.FirstOrDefault(m => m.Id == result.Selected);
+            modelsForSession = sessionId;
+        }
+        catch { if (!IsDisposed && version == modelLoadVersion) chatModelPicker.SelectedIndex = -1; }
+        finally { loadingChatModels = false; }
+    }
 
     // The open chat's name for the header; a chat not saved yet is "New chat".
     internal static string ChatTitle(System.Collections.Generic.IReadOnlyList<ManaSession> sessions, string? activeSessionId) =>

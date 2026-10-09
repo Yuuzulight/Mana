@@ -162,3 +162,21 @@ test("runToolScript caps total buffered log output instead of growing unbounded"
   // stopped well short of that.
   assert.ok(totalChars < 25000, `expected capped log output, got ${totalChars} chars`);
 });
+
+test('runToolScript bounds generated tool-call concurrency', async () => {
+  let called = 0;
+  await assert.rejects(runToolScript('await Promise.all(Array.from({length:100}, () => tools.wait()));', {
+    tools: { wait: async () => { called++; await new Promise(resolve => setTimeout(resolve, 200)); } },
+  }), /budget exceeded/);
+  assert.ok(called <= 16);
+});
+
+test('runToolScript refuses oversized tool responses and cleans up', async () => {
+  if (process.platform !== 'win32') return;
+  await assert.rejects(runToolScript('return await tools.large();', { tools: { large: () => 'x'.repeat(1048576) } }), /size limit exceeded/);
+});
+
+test('runToolScript contains an oversized tool error instead of rejecting its message handler', async () => {
+  if (process.platform !== 'win32') return;
+  await assert.rejects(runToolScript('await tools.fail();', { tools: { fail: () => { throw new Error('x'.repeat(1048576)); } } }), /size limit exceeded/);
+});

@@ -7,6 +7,7 @@ const { detectTextValence } = require("./utils/text-mood");
 const { parseTemporalWindow } = require("./utils/temporal-query");
 const { redactSensitive } = require("./utils/sensitive-text");
 const { artifactOf } = require("./artifact-history");
+const { normalizeAnalysisOutputs } = require('./tools/analysis-results');
 const { UNTRUSTED_RULE, wrapUntrustedInline } = require("./ai/untrusted-content");
 
 function ensureDir(dir) {
@@ -264,6 +265,14 @@ function factsBlockFor(pinned, matched) {
 // Facts written before this simply have no schemaVersion, and that absence
 // is exactly what a migration needs in order to recognize them.
 const FACT_SCHEMA_VERSION = 1;
+
+// #1426: what a fact is about, for grouping it in Settings and the vault.
+// Mana picks one when she saves a fact; anything else (or none) is "other".
+const FACT_CATEGORIES = ["about-you", "projects", "hobbies", "people", "other"];
+function normalizeCategory(value) {
+  const clean = String(value || "").trim().toLowerCase();
+  return FACT_CATEGORIES.includes(clean) ? clean : null;
+}
 
 // Issue #336: what kind of claim a fact is. Sits alongside unverifiedSource
 // (#317) rather than replacing it -- "not traceable to anything the user
@@ -902,15 +911,25 @@ function createAcpMemoryStore(options = {}) {
   // snapshot restorer and its approval.
   function getFactHistory(key) {
     const lowerKey = cleanText(key, 200).toLowerCase();
-    if (!lowerKey || !fs.existsSync(factsLogPath)) return [];
+    if (!lowerKey) return [];
     const entries = [];
-    for (const line of fs.readFileSync(factsLogPath, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (String(entry.key).toLowerCase() === lowerKey) entries.push(entry);
-      } catch (e) {
-        // A torn last line from a crash mid-append; skip it.
+    // #1390: memory maintenance moves old lines to archive/facts-log-<year>.jsonl;
+    // those predate anything live, so they're read first.
+    const archiveDir = path.join(dataDir, "archive");
+    const files = fs.existsSync(archiveDir)
+      ? fs.readdirSync(archiveDir).filter((f) => /^facts-log-.*\.jsonl$/.test(f)).sort().map((f) => path.join(archiveDir, f))
+      : [];
+    files.push(factsLogPath);
+    for (const file of files) {
+      if (!fs.existsSync(file)) continue;
+      for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (String(entry.key).toLowerCase() === lowerKey) entries.push(entry);
+        } catch (e) {
+          // A torn last line from a crash mid-append; skip it.
+        }
       }
     }
     return entries;
@@ -970,6 +989,7 @@ function createAcpMemoryStore(options = {}) {
     trigger,
     triggerUserWords,
     expiresAt,
+    category,
   } = {}) {
     const cleanKey = cleanText(key, 200);
     if (!cleanKey) {
@@ -1079,6 +1099,8 @@ function createAcpMemoryStore(options = {}) {
     const cleanTrigger = cleanText(trigger, 200);
     const cleanTriggerUserWords = cleanText(triggerUserWords, 200);
     const cleanExpiresAt = cleanText(expiresAt, 40);
+    // #1426: only written when supplied, like epistemic.
+    const cleanCategory = normalizeCategory(category);
 
     // Issue #673: the write decision. "insert" on a key that already has a
     // live fact updates that fact instead of adding a second one with the
@@ -1095,7 +1117,8 @@ function createAcpMemoryStore(options = {}) {
         (cleanTrigger && cleanTrigger !== existing.trigger) ||
         (cleanTriggerUserWords && cleanTriggerUserWords !== existing.triggerUserWords) ||
         (cleanExpiresAt && cleanExpiresAt !== existing.expiresAt);
-      if (sameText && !supersedes && !upgrades && !intentChanged) {
+      const categoryChanged = Boolean(cleanCategory && cleanCategory !== (existing.category || "other"));
+      if (sameText && !supersedes && !upgrades && !intentChanged && !categoryChanged) {
         return { ok: true, action: "patch", decision: "none", key: cleanKey, text: cleanTextValue };
       }
       snapshot();
@@ -1146,6 +1169,7 @@ function createAcpMemoryStore(options = {}) {
       if (cleanTrigger) existing.trigger = cleanTrigger;
       if (cleanTriggerUserWords) existing.triggerUserWords = cleanTriggerUserWords;
       if (cleanExpiresAt) existing.expiresAt = cleanExpiresAt;
+      if (cleanCategory) existing.category = cleanCategory;
       const supersededPatch = applySupersedes(facts, cleanKey, supersedes, timestamp);
       saveFacts(facts, { op: "update", key: cleanKey, origin: cleanOrigin });
       return {
@@ -1179,6 +1203,7 @@ function createAcpMemoryStore(options = {}) {
       ...(cleanTrigger ? { trigger: cleanTrigger } : {}),
       ...(cleanTrigger && cleanTriggerUserWords ? { triggerUserWords: cleanTriggerUserWords } : {}),
       ...(cleanExpiresAt ? { expiresAt: cleanExpiresAt } : {}),
+      category: cleanCategory || "other",
     });
     const supersededInsert = applySupersedes(facts, cleanKey, supersedes, timestamp);
     saveFacts(trimFacts(facts), { op: "add", key: cleanKey, origin: cleanOrigin });
@@ -1854,6 +1879,13 @@ function createAcpMemoryStore(options = {}) {
   // never inferred by the model, so it's set the same way a name is (one
   // string, replace-in-place). An empty string clears it, same as
   // renameSession's own empty-name-becomes-null behavior.
+  function setSessionChatModel(sessionId, chatModel) {
+    if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 240) throw new Error('Invalid chat session ID');
+    if (typeof chatModel !== 'string' || !/^(automatic|local:[a-z0-9_-]+|cloud:(brain|fallback))$/.test(chatModel)) throw new Error('Invalid chat model');
+    const existing = ensureSession({ sessionId });
+    return saveSession({ ...existing, chatModel, updatedAt: now() });
+  }
+
   function setSessionGoal(sessionId, goal) {
     const existing = getSession(cleanText(sessionId, 240));
     if (!existing) {
@@ -2015,6 +2047,9 @@ function createAcpMemoryStore(options = {}) {
     turn.versionIndex = vIdx;
     const v = turn.versions[vIdx];
     turn.assistant = v.assistant;
+    turn.answerModel = v.answerModel;
+    turn.cloudFallback = Boolean(v.cloudFallback);
+    turn.analysisOutputs = normalizeAnalysisOutputs(v.analysisOutputs);
     if (v.thought !== undefined) turn.thought = v.thought;
     if (v.toolCalls !== undefined) turn.toolCalls = v.toolCalls;
     if (v.steps !== undefined) turn.steps = v.steps;
@@ -2037,6 +2072,9 @@ function createAcpMemoryStore(options = {}) {
           toolCalls: turn.toolCalls,
           steps: turn.steps,
           sources: turn.sources,
+          answerModel: turn.answerModel,
+          cloudFallback: Boolean(turn.cloudFallback),
+          analysisOutputs: normalizeAnalysisOutputs(turn.analysisOutputs),
           at: turn.at,
         },
       ];
@@ -2047,11 +2085,17 @@ function createAcpMemoryStore(options = {}) {
       toolCalls: versionData.toolCalls,
       steps: versionData.steps,
       sources: versionData.sources,
+      answerModel: cleanText(versionData.answerModel, 160) || undefined,
+      cloudFallback: Boolean(versionData.cloudFallback),
+      analysisOutputs: normalizeAnalysisOutputs(versionData.analysisOutputs),
       at: now(),
     };
     turn.versions.push(newVersion);
     turn.versionIndex = turn.versions.length - 1;
     turn.assistant = newVersion.assistant;
+    turn.answerModel = newVersion.answerModel;
+    turn.cloudFallback = newVersion.cloudFallback;
+    turn.analysisOutputs = newVersion.analysisOutputs;
     turn.thought = newVersion.thought;
     turn.toolCalls = newVersion.toolCalls;
     turn.steps = newVersion.steps;
@@ -2135,8 +2179,17 @@ function createAcpMemoryStore(options = {}) {
   function appendEvent({ sessionId, ...event } = {}) {
     const session = sessionId ? getSession(cleanText(sessionId, 240)) : null;
     if (!session) return null;
-    const at = now();
+    const at = nextTurnTimestamp(session);
     return saveSession({ ...session, turns: [...session.turns, { role: "event", ...event, at }], updatedAt: at });
+  }
+
+  function nextTurnTimestamp(session) {
+    const timestamp = now();
+    const current = Date.parse(timestamp);
+    const previous = Date.parse(session.turns?.at(-1)?.at);
+    // Fact provenance uses turn timestamps; collisions must not merge branch boundaries.
+    return Number.isFinite(current) && Number.isFinite(previous) && current <= previous
+      ? new Date(previous + 1).toISOString() : timestamp;
   }
 
   async function appendTurn(input = {}) {
@@ -2145,18 +2198,22 @@ function createAcpMemoryStore(options = {}) {
       const turnIdx = typeof input.turnIndex === "number" ? input.turnIndex : session.turns.length - 1;
       return addTurnVersion(session.sessionId, turnIdx, input);
     }
-    const timestamp = now();
+    const timestamp = nextTurnTimestamp(session);
     const turn = {
       at: timestamp,
       user: cleanText(redactSensitive(input.user), 4000),
       assistant: cleanText(redactSensitive(input.assistant), 4000),
     };
+    const analysisOutputs = normalizeAnalysisOutputs(input.analysisOutputs);
+    if (analysisOutputs.charts.length || analysisOutputs.files.length || analysisOutputs.tables.length) turn.analysisOutputs = analysisOutputs;
     // #1354: reasoning tokens / thought deliberation.
     if (input.thought) turn.thought = cleanText(input.thought, 10000);
     // #914: which character said it (group mode, switching), for the
     // history's labels; turns from before carry none.
     const speaker = cleanText(input.speaker, 60);
     if (speaker) turn.speaker = speaker;
+    if (input.answerModel) turn.answerModel = cleanText(input.answerModel, 160);
+    if (input.cloudFallback === true) turn.cloudFallback = true;
     // #1142: the reply's artifact verbatim, for the Artifacts panel after a
     // restart (artifact-history.js); the text above loses its line breaks.
     const artifact = artifactOf(redactSensitive(input.assistant));
@@ -2184,6 +2241,9 @@ function createAcpMemoryStore(options = {}) {
         thought: turn.thought,
         toolCalls: turn.toolCalls,
         steps: turn.steps,
+        answerModel: turn.answerModel,
+        cloudFallback: Boolean(turn.cloudFallback),
+        analysisOutputs: turn.analysisOutputs,
         at: turn.at,
       },
     ];
@@ -2719,6 +2779,7 @@ function createAcpMemoryStore(options = {}) {
     listSessions,
     renameSession,
     setSessionGoal,
+    setSessionChatModel,
     forkSession,
     truncateTurns,
     setTurnVersion,
@@ -2757,6 +2818,8 @@ function createAcpMemoryStore(options = {}) {
 }
 
 module.exports = {
+  FACT_CATEGORIES,
+  normalizeCategory,
   createAcpMemoryStore,
   extractEntities,
   factRecallCandidates,

@@ -63,7 +63,7 @@ test("every route rejects a non-loopback forwarded request without touching the 
   });
 
   await withServer(app, async (baseUrl) => {
-    for (const route of ["navigate", "snapshot", "click", "type", "close"]) {
+    for (const route of ["navigate", "snapshot", "click", "type", "close", "manual/start", "manual/input", "manual/done", "personal/start"]) {
       const { response, payload } = await postJson(`${baseUrl}/browser/${route}`, {
         url: "https://example.com",
       });
@@ -72,6 +72,38 @@ test("every route rejects a non-loopback forwarded request without touching the 
     }
   });
   assert.equal(sessionCalls, 0);
+});
+
+test('#704: authenticated UI is required for manual input and personal-browser consent', async () => {
+  const app = buildApp({ isLocalRestartRequest: () => true, checkAdminAuth: (_req, res) => { res.status(401).json({ error: 'not authorized' }); return false; } });
+  await withServer(app, async baseUrl => {
+    for (const route of ['manual/start', 'manual/input', 'manual/done', 'personal/start']) {
+      const { response } = await postJson(`${baseUrl}/browser/${route}`, { sessionId: 'chat' });
+      assert.equal(response.status, 401);
+    }
+    for (const route of ['manual/frame', 'personal/status']) assert.equal((await fetch(`${baseUrl}/browser/${route}`)).status, 401);
+  });
+});
+
+test('#704: manual takeover permits page media without dropping ownership or launching another browser', async () => {
+  const fake = createFakeChromium();
+  const deps = { chromium: fake.chromium, env: { MANA_BROWSER_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
+  const app = buildApp(deps);
+  try {
+    await browserAutomationPlugin.getSession(deps);
+    const actions = [];
+    const route = { request: () => ({ url: () => 'https://assets.test/image.png', resourceType: () => 'image' }), abort: () => actions.push('blocked'), continue: () => actions.push('loaded') };
+    await fake.page.routeHandler(route);
+    await withServer(app, async baseUrl => {
+      const { response, payload } = await postJson(`${baseUrl}/browser/manual/start`, {});
+      assert.equal(response.status, 200);
+      assert.ok(payload.token);
+      await fake.page.routeHandler(route);
+      assert.equal(fake.launches.length, 1);
+      assert.equal(fake.launches[0].options.headless, true);
+    });
+    assert.deepEqual(actions, ['blocked', 'loaded']);
+  } finally { await browserAutomationPlugin.closeSession(); }
 });
 
 test("POST /browser/navigate surfaces a clear error when no browser executable is configured", async () => {
@@ -175,6 +207,62 @@ test("#1137: Edge starts lazily, once, on Mana's own profile with no GPU and one
     args: ["--disable-gpu", "--renderer-process-limit=1"],
   });
   await browserAutomationPlugin.closeSession();
+});
+
+test("#704: an explicit profile is shared by automation and take-over", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeEdge();
+  const profileDir = require("node:path").resolve("explicit-browser-profile");
+  const deps = { env: { ...FAKE_ENV, MANA_BROWSER_PROFILE_DIR: profileDir }, chromium, ramPercent: () => 50 };
+  await browserAutomationPlugin.getSession(deps);
+  await browserAutomationPlugin.takeOver(deps);
+  assert.deepEqual(launches.map((launch) => launch.dir), [profileDir, profileDir]);
+  await browserAutomationPlugin.handBack();
+  await browserAutomationPlugin.getSession(deps);
+  assert.equal(launches[2].dir, profileDir);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#704: relative profile paths fail before launching", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeChromium();
+  await assert.rejects(browserAutomationPlugin.getSession({
+    env: { ...FAKE_ENV, MANA_BROWSER_PROFILE_DIR: "relative" }, chromium, ramPercent: () => 50,
+  }), /must be an absolute path/);
+  assert.equal(launches.length, 0);
+});
+
+test("#704: retained handles stop during take-over and stay invalid after hand-back", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches } = createFakeEdge();
+  const deps = { env: FAKE_ENV, chromium, ramPercent: () => 50 };
+  const stale = await browserAutomationPlugin.getSession(deps);
+  await browserAutomationPlugin.takeOver(deps);
+  for (const action of [() => stale.navigate("https://example.test"), () => stale.url(), () => stale.screenshot()]) {
+    await assert.rejects(action, /user has the browser/);
+  }
+  await browserAutomationPlugin.handBack();
+  await browserAutomationPlugin.getSession(deps);
+  await assert.rejects(() => stale.navigate("https://example.test"), /session has closed/);
+  assert.deepEqual(launches[2].ctx.page.gone, []);
+  await browserAutomationPlugin.closeSession();
+});
+
+test("#704: actions refresh idle time and recheck resource gates on a retained handle", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, context } = createFakeChromium();
+  let now = 1_000_000;
+  let gaming = false;
+  const deps = { env: FAKE_ENV, chromium, ramPercent: () => 50, now: () => now, isGaming: () => gaming };
+  const retained = await browserAutomationPlugin.getSession(deps);
+  now += browserAutomationPlugin.IDLE_CLOSE_MS - 1;
+  await retained.snapshot();
+  now += 2;
+  await browserAutomationPlugin.checkSession();
+  assert.equal(context.closed, 0);
+  gaming = true;
+  await assert.rejects(() => retained.navigate("https://example.test"), /game is running/);
+  assert.equal(context.closed, 1);
 });
 
 test("#1137: images, video and fonts are blocked unless the Browser panel is watching", async () => {
@@ -476,17 +564,15 @@ test("#1159: she opens, lists, switches and closes up to three tabs, and extra o
   assert.equal(pages[1].closed, true);
   assert.deepEqual(closed.tabs, ["1. Page 1 -- https://a.test/ (current)", "2. Page 3 -- https://c.test/"]);
 
-  // RAM gate: no new tab above the limit.
-  ram = 86;
-  await assert.rejects(() => session.tab({ do: "open", url: "https://e.test/" }), /no new tab while RAM is at 86%/);
-  ram = 50;
-
   await session.tab({ do: "switch", number: 2 });
   await browserAutomationPlugin.closeExtraTabs();
   assert.equal(pages[0].closed, true);
   assert.equal(pages[2].closed, false);
   assert.equal(await session.url(), "https://c.test/");
   await assert.rejects(() => session.tab({ do: "close", number: 1 }), /her only tab/);
+  ram = 86;
+  await assert.rejects(() => session.tab({ do: "open", url: "https://e.test/" }), /browser stays closed while RAM is at 86%/);
+  await assert.rejects(() => session.snapshot(), /session has closed/);
   await browserAutomationPlugin.closeSession();
 });
 

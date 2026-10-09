@@ -30,9 +30,16 @@ function createWhisperServer(options = {}) {
   let startedLanguage = null;
 
   const server = createOnDemandProcess({
+    resourceCoordinator: options.resourceCoordinator,
+    resourceEstimate: () => {
+      const ramMb = Math.ceil(fs.statSync(findModel()).size / 1048576 * 2);
+      const cuda = fs.existsSync(path.join(path.dirname(serverBin()), 'ggml-cuda.dll'));
+      return { ramMb, vramMb: cuda ? ramMb : 0 };
+    },
+    cpuAlternative: () => ({ ramMb: Math.ceil(fs.statSync(findModel()).size / 1048576 * 2) }),
     name: "whisper-server",
     healthUrl: () => `${baseUrl()}/health`,
-    command: () => {
+    command: (mode) => {
       const bin = serverBin();
       startedThreads = threads();
       startedLanguage = language();
@@ -49,6 +56,7 @@ function createWhisperServer(options = {}) {
           "-bo", "5",
           "-nth", String(noSpeechThreshold),
           "--carry-initial-prompt",
+          ...(mode === 'cpu' ? ['--no-gpu'] : []),
         ],
         options: { cwd: path.dirname(bin) },
       };
@@ -102,11 +110,11 @@ function createWhisperServer(options = {}) {
     if (busy || !isEnabled()) return null;
     busy = true;
     try {
+      await reset;
       // A game started or stopped, or the language changed, since this
       // server was launched: restart it with the right settings (~0.25 s).
       if (startedThreads !== null && (startedThreads !== threads() || startedLanguage !== language())) server.stop();
-      await server.ensure();
-      await reset;
+      return await server.use(async () => {
       server.touch();
       const form = new FormData();
       form.append("file", new Blob([await fs.promises.readFile(filePath)]), path.basename(filePath));
@@ -128,18 +136,24 @@ function createWhisperServer(options = {}) {
       if (reloadsAfterEachRequest()) {
         const load = new FormData();
         load.append("model", findModel());
-        reset = fetchImpl(`${baseUrl()}/load`, {
+        reset = server.use(async () => {
+          const response = await fetchImpl(`${baseUrl()}/load`, {
           method: "POST",
           body: load,
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        }).catch(() => {});
+          });
+          await response.arrayBuffer?.();
+          if (!response.ok) throw new Error('Whisper decoder reload failed');
+        }, { owner: 'Whisper decoder reload', priority: 0, estimate: { cpu: threads() } }).catch(() => {});
       }
       // One line per segment; a segment can end mid-word ("Genki\nami").
       return body.text.replace(/\n/g, "").trim();
+      }, { owner: 'Voice transcription', priority: 0, estimate: { cpu: threads() } });
     } catch (e) {
       // Restarted fresh on next use rather than trusted: it may be wedged,
       // or still working on a request that timed out.
       server.stop();
+      if (e?.code === 'RESOURCE_WAIT_TIMEOUT') throw e;
       console.warn("whisper-server unavailable, using whisper-cli:", e?.message || e);
       return null;
     } finally {

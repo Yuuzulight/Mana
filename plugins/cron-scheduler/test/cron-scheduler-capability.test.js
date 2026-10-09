@@ -229,7 +229,7 @@ test("#1024 a reminder that fires well after its time is marked late", async () 
 test("plugin metadata matches the shape other Mana plugins use", () => {
   assert.equal(cronPlugin.key, "cronScheduler");
   assert.equal(cronPlugin.category, "Automation");
-  assert.equal(cronPlugin.defaultEnabled, false);
+  assert.equal(cronPlugin.defaultEnabled, true);
   assert.equal(typeof cronPlugin.registerRoutes, "function");
   const health = cronPlugin.getHealth({ dataDir: createTempDir() });
   assert.equal(health.status, "available");

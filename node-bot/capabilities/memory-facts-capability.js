@@ -1,5 +1,6 @@
 const rateLimit = require("express-rate-limit");
 const { factTrust } = require("../acp-memory-store");
+const { askMemory, applyMemoryChanges } = require("../memory-ask");
 
 const KEY = "memoryFacts";
 // ponytail: fixed bound so the native view's layout stays readable and
@@ -66,6 +67,8 @@ function registerMemoryFactsRoutes(app, context = {}) {
         source: "human",
         origin: { kind: "user_stated" },
         ...(trigger ? { trigger, triggerUserWords: trigger } : {}),
+        // #1426: what it's about; the store keeps "other" for anything else.
+        ...(typeof req.body?.category === "string" ? { category: req.body.category } : {}),
       });
       return res.json({ ok: true, ...result });
     } catch (e) {
@@ -145,6 +148,49 @@ function registerMemoryFactsRoutes(app, context = {}) {
     }
   });
 
+  // #1426: Settings' Restore on an archived fact makes it live again (the
+  // latest archived one under that key); 409 when another live fact has
+  // taken the key since, 404 when nothing archived has it.
+  app.post("/admin/memory/facts/:key/restore", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const key = String(req.params.key || "").toLowerCase();
+      const fact = acpMemoryStore
+        .listFacts()
+        .filter((f) => f.status === "archived" && f.key.toLowerCase() === key)
+        .pop();
+      if (!fact) return res.status(404).json({ ok: false, error: "nothing archived has that name" });
+      const result = acpMemoryStore.restoreFact(fact, { kind: "user_stated" });
+      if (!result.restored) return res.status(409).json({ ok: false, error: "another fact has that name now" });
+      return res.json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // #1426: Settings' "Tell Mana what to remember or change". Ask: her
+  // suggested change, nothing written ({reply, changes}; 503 when her model
+  // isn't loaded). Apply: Save it, the same changes as my own words.
+  app.post("/admin/memory/ask", adminMemoryRateLimiter, async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      const answer = await askMemory({ store: acpMemoryStore, runModel: context.runLocalReply, request: req.body?.text });
+      if (answer.error) return res.status(answer.status).json({ ok: false, error: answer.error });
+      return res.json({ ok: true, ...answer });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  app.post("/admin/memory/ask/apply", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    try {
+      return res.json({ ok: true, ...applyMemoryChanges({ store: acpMemoryStore, changes: req.body?.changes }) });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
   // Issue #673: every logged change to one fact key (facts-log.jsonl),
   // oldest first -- before/after for the diff, origin for the blame.
   // Rolling back is snapshot__restore on a memory-fact snapshot (approval-
@@ -208,8 +254,37 @@ function registerMemoryFactsRoutes(app, context = {}) {
         source: "human",
         origin: { kind: "user_stated" },
         ...(trigger ? { trigger, triggerUserWords: trigger } : {}),
+        // #1426: moving it to another group, alone or with an edit.
+        ...(typeof req.body?.category === "string" ? { category: req.body.category } : {}),
       });
       return res.json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // #1390: the dry-run plan (what maintenance would do, what it keeps, how
+  // big each store is). Changes nothing.
+  app.get("/admin/memory/maintenance", adminMemoryRateLimiter, (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const maintenance = context.getMemoryMaintenance?.();
+    if (!maintenance) return res.status(503).json({ ok: false, error: "memory maintenance isn't available" });
+    try {
+      return res.json({ ok: true, ...maintenance.plan(), status: maintenance.status() });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // #1390: runs the auto steps plus the needs-approval steps named in the
+  // body {approve: [stepIds]} -- that list is the approval.
+  app.post("/admin/memory/maintenance/run", adminMemoryRateLimiter, async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const maintenance = context.getMemoryMaintenance?.();
+    if (!maintenance) return res.status(503).json({ ok: false, error: "memory maintenance isn't available" });
+    try {
+      const approve = Array.isArray(req.body?.approve) ? req.body.approve.map(String) : [];
+      return res.json({ ok: true, ...(await maintenance.run({ mode: "approved", approve })) });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }

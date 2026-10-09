@@ -1,0 +1,41 @@
+{
+  "id": "mcp-notes-search",
+  "kind": "mcp",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "notes__search",
+        "description": "Search Yuuzu's notes (the 'notes' MCP server).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    }
+  ],
+  "toolResults": {
+    "notes__search": "2026-09-30: Dentist appointment moved to 12 October, 3pm."
+  },
+  "turns": [
+    {
+      "user": "Check my notes for what I wrote about the dentist.",
+      "expect": {
+        "called": [
+          "^notes__search$"
+        ],
+        "said": [
+          "12|twelfth",
+          "3 ?pm|15:00"
+        ]
+      }
+    }
+  ]
+}

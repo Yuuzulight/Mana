@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -287,6 +288,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // conversation shown. Artifacts stay inline here.
     public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
     {
+        foreach (var image in messages.SelectMany(message => message.Images)) image.Dispose();
         messages.Clear();
         polledSteps.Clear(); // #1318: re-added after the history on the next poll
         streamedSteps.Clear();
@@ -319,6 +321,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var reply = new Message(fromUser: false)
                 {
                     FinalText = text,
+                    AnswerModel = turn.AnswerModel,
+                    CloudFallback = turn.CloudFallback,
                     Steps = group,
                     Thought = first && group is null ? turn.Thought : null,
                     TurnIndex = turnIdx,
@@ -336,6 +340,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 }
                 messages.Add(reply);
             }
+            var outputMessage = messages.LastOrDefault(message => !message.FromUser && message.Steps is null && message.TurnIndex == turnIdx);
+            if (outputMessage is not null) AttachAnalysisOutputs(outputMessage, turn.AnalysisOutputs);
         }
         AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
         Relayout(forceScroll: true);
@@ -350,6 +356,76 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // cut mid-line, so Mana's bubble is re-parsed from the real text. As in
     // Electron, the reply's artifact (a big or ```html/```mermaid block)
     public void ReportReply(string replyText) => ReportReply(replyText, null);
+
+    public void SetAnswerModel(string? model, bool fallback) => RunOnUiThread(() =>
+    {
+        var message = messages.LastOrDefault(m => !m.FromUser && m.Steps is null);
+        if (message is null) return;
+        message.AnswerModel = model;
+        message.CloudFallback = fallback;
+        Relayout(forceScroll: false);
+        Invalidate();
+    });
+
+    public void ReportAnalysisOutputs(AnalysisOutputs outputs) => RunOnUiThread(() =>
+    {
+        var lastUser = messages.FindLastIndex(message => message.FromUser);
+        var message = messages.Skip(lastUser + 1).LastOrDefault(message => !message.FromUser && message.Steps is null);
+        if (message is null) return;
+        AttachAnalysisOutputs(message, outputs);
+        message.Invalidate();
+        Relayout(forceScroll: false);
+    });
+
+    private void AttachAnalysisOutputs(Message message, AnalysisOutputs outputs)
+    {
+        foreach (var image in message.Images) image.Dispose();
+        message.Images.Clear();
+        foreach (var action in message.AnalysisActions) message.Actions.Remove(action);
+        message.AnalysisActions.Clear();
+        foreach (var block in message.AnalysisBlocks) message.Blocks.Remove(block);
+        message.AnalysisBlocks.Clear();
+        foreach (var table in outputs.Tables)
+        {
+            var rows = new List<IReadOnlyList<IReadOnlyList<MarkdownRun>>>();
+            rows.Add(table.Columns.Select(cell => (IReadOnlyList<MarkdownRun>)new[] { new MarkdownRun(cell, true, false, false) }).ToArray());
+            rows.AddRange(table.Rows.Select(row => (IReadOnlyList<IReadOnlyList<MarkdownRun>>)row.Select(cell => (IReadOnlyList<MarkdownRun>)new[] { new MarkdownRun(cell, false, false, false) }).ToArray()));
+            var block = new MarkdownBlock(MarkdownBlockType.Table, [], Rows: rows);
+            message.Blocks.Add(block);
+            message.AnalysisBlocks.Add(block);
+        }
+        var downloads = new List<ChatMenuItem>();
+        void SaveAction(string name, string data)
+        {
+            downloads.Add(new ChatMenuItem(name, true, async () =>
+            {
+                using var dialog = new SaveFileDialog { FileName = name, OverwritePrompt = true, CheckPathExists = true };
+                if (dialog.ShowDialog(FindForm()) == DialogResult.OK)
+                    await System.IO.File.WriteAllBytesAsync(dialog.FileName, Convert.FromBase64String(data));
+                return null;
+            }));
+        }
+        var chartIndex = 0;
+        foreach (var chart in outputs.Charts)
+        {
+            try
+            {
+                using var stream = new System.IO.MemoryStream(Convert.FromBase64String(chart.DataUrl["data:image/png;base64,".Length..]));
+                using var image = Image.FromStream(stream);
+                if (image.Width > 4096 || image.Height > 4096 || (long)image.Width * image.Height > 4000000) continue;
+                message.Images.Add(new Bitmap(image));
+                SaveAction($"chart{++chartIndex}.png", chart.DataUrl["data:image/png;base64,".Length..]);
+            }
+            catch (Exception error) when (error is FormatException or ArgumentException or OutOfMemoryException) { }
+        }
+        foreach (var file in outputs.Files) SaveAction(file.Name, file.Data);
+        if (downloads.Count > 0)
+        {
+            var action = new ChatAction("Save as...", false, downloads[0].Run, Keep: true, Menu: downloads);
+            message.Actions.Add(action);
+            message.AnalysisActions.Add(action);
+        }
+    }
 
     // #1329: ReportReply with verified web sources citations.
     public void ReportReply(string replyText, IReadOnlyList<WebSourceCitation>? sources) => RunOnUiThread(() =>
@@ -605,6 +681,37 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         Add(message, forceScroll: false);
     });
 
+    // #1426 stage 3: a request from this chat waiting on my OK, as a card
+    // with its answers. Answered here, the answer's note replaces them;
+    // answered in "Waiting for you", EndApprovalCard does.
+    public void ShowApprovalCard(string id, string text, IReadOnlyList<ChatAction> actions) => RunOnUiThread(() =>
+    {
+        if (messages.Any(m => m.ApprovalId == id))
+        {
+            return;
+        }
+        var message = new Message(fromUser: false) { ApprovalId = id, FinalText = text };
+        message.Blocks.AddRange(ChatMarkdownParser.Parse(text));
+        message.Actions.AddRange(actions);
+        Add(message, forceScroll: false);
+    });
+
+    public void EndApprovalCard(string id, string note) => RunOnUiThread(() =>
+    {
+        if (messages.FirstOrDefault(m => m.ApprovalId == id) is not { ActionRunning: false } message || message.Actions.Count == 0)
+        {
+            return;
+        }
+        message.Actions.Clear();
+        message.Note = note;
+        message.Invalidate();
+        Relayout(forceScroll: false);
+    });
+
+    // The cards still waiting for an answer.
+    internal IReadOnlyList<string> OpenApprovalCards =>
+        messages.Where(m => m.ApprovalId is not null && m.Actions.Count > 0).Select(m => m.ApprovalId!).ToList();
+
     // Puts buttons under Mana's latest message (replacing any it had, except
     // kept ones like the artifact button, which move after the new ones).
     public void AttachActions(IReadOnlyList<ChatAction> actions)
@@ -721,7 +828,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             var x = message.FromUser ? ViewportWidth - SideMargin - bubbleWidth : SideMargin;
             // #1318: a step line has no "Mana" label above it.
             var labelHeight = message.Steps is null ? labelFont.Height + LabelGap : 0;
-            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, 60, labelHeight);
+            var labelWidth = message.FromUser ? 60 : Math.Min(Math.Max(40, ViewportWidth - SideMargin * 2 - 200), Math.Max(60, Measure(message.Speaker, labelFont)));
+            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, labelWidth, labelHeight);
             message.Bounds = new Rectangle(x, y + labelHeight, bubbleWidth, message.ContentHeight + PadY * 2);
 
             // #1322: Action and version stepper button layout
@@ -910,7 +1018,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             var rowHeight = 0;
             foreach (var image in message.Images)
             {
-                var size = ScreenCapture.FitWithin(image.Size, Math.Min(ThumbnailSide, maxWidth));
+                var size = ScreenCapture.FitWithin(image.Size, message.FromUser ? Math.Min(ThumbnailSide, maxWidth) : maxWidth);
                 if (x > 0 && x + size.Width > maxWidth)
                 {
                     y += rowHeight + BlockGap;
@@ -1204,6 +1312,28 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         e.Graphics.FillRectangle(brush, ClientRectangle);
     }
 
+    // #1449: the chat's rounded corners, like Settings': bubbles and cards
+    // 10px, buttons 6px, a pill never more than half its height.
+    private const float BubbleRadius = 10;
+    private const float ButtonRadius = 6;
+
+    // An empty path for a rectangle too small to round (a button not laid out yet).
+    private static GraphicsPath Round(Rectangle r, float radius) =>
+        r.Width < 3 || r.Height < 3 ? new GraphicsPath()
+        : SettingsRows.Rounded(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1f, r.Height - 1f), Math.Max(0.5f, Math.Min(radius, (r.Height - 1) / 2f)));
+
+    private static void FillRound(Graphics g, Brush brush, Rectangle r, float radius)
+    {
+        using var shape = Round(r, radius);
+        g.FillPath(brush, shape);
+    }
+
+    private static void DrawRound(Graphics g, Pen pen, Rectangle r, float radius)
+    {
+        using var shape = Round(r, radius);
+        g.DrawPath(pen, shape);
+    }
+
     // A new chat's card: how to start, and a few things she can do.
     internal const string EmptyStateText = "Say \"Mana\" or type below to start.\n\n"
         + "A few things she can do:\n"
@@ -1222,13 +1352,14 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
         var text = TextRenderer.MeasureText(g, EmptyStateText, bodyFont, new Size(width - (PadX * 2), int.MaxValue), flags);
         var card = new Rectangle((ClientSize.Width - width) / 2, Math.Max(24, (ClientSize.Height - text.Height) / 3), width, text.Height + (PadY * 2));
+        g.SmoothingMode = SmoothingMode.AntiAlias;
         using (var fill = new SolidBrush(DarkTheme.ManaBubble))
         {
-            g.FillRectangle(fill, card);
+            FillRound(g, fill, card, BubbleRadius);
         }
         using (var border = new Pen(DarkTheme.Border))
         {
-            g.DrawRectangle(border, card.X, card.Y, card.Width - 1, card.Height - 1);
+            DrawRound(g, border, card, BubbleRadius);
         }
         TextRenderer.DrawText(g, EmptyStateText, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text, flags);
     }
@@ -1236,6 +1367,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias; // #1449: the rounded corners
         if (messages.Count == 0)
         {
             PaintEmptyState(g);
@@ -1256,7 +1388,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             var label = message.LabelBounds with { Y = message.LabelBounds.Y - scroll };
             TextRenderer.DrawText(g, message.Speaker, labelFont, label, DarkTheme.Muted,
-                TextFlags | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
+                TextFlags | TextFormatFlags.EndEllipsis | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
 
             // #1322: Draw version stepper controls if multiple versions exist
             if (message.Versions != null && message.Versions.Count > 1)
@@ -1269,8 +1401,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var nextEnabled = message.VersionIndex < message.Versions.Count - 1;
 
                 using var btnBrush = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 25 : 35, DarkTheme.Muted));
-                g.FillRectangle(btnBrush, prevR);
-                g.FillRectangle(btnBrush, nextR);
+                FillRound(g, btnBrush, prevR, ButtonRadius);
+                FillRound(g, btnBrush, nextR, ButtonRadius);
 
                 TextRenderer.DrawText(g, "<", labelFont, prevR, prevEnabled ? DarkTheme.Text : DarkTheme.Muted, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 TextRenderer.DrawText(g, $"{message.VersionIndex + 1}/{message.Versions.Count}", labelFont, lblR, DarkTheme.Muted, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
@@ -1287,23 +1419,23 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 if (message.FromUser && !message.EditBtnBounds.IsEmpty)
                 {
                     var editR = message.EditBtnBounds with { Y = message.EditBtnBounds.Y - scroll };
-                    g.FillRectangle(btnBrush, editR);
-                    g.DrawRectangle(borderPen, editR.X, editR.Y, editR.Width - 1, editR.Height - 1);
+                    FillRound(g, btnBrush, editR, ButtonRadius);
+                    DrawRound(g, borderPen, editR, ButtonRadius);
                     TextRenderer.DrawText(g, "Edit", labelFont, editR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
                 else if (!message.FromUser && !message.RegenerateBtnBounds.IsEmpty)
                 {
                     var regenR = message.RegenerateBtnBounds with { Y = message.RegenerateBtnBounds.Y - scroll };
-                    g.FillRectangle(btnBrush, regenR);
-                    g.DrawRectangle(borderPen, regenR.X, regenR.Y, regenR.Width - 1, regenR.Height - 1);
+                    FillRound(g, btnBrush, regenR, ButtonRadius);
+                    DrawRound(g, borderPen, regenR, ButtonRadius);
                     TextRenderer.DrawText(g, "Regenerate", labelFont, regenR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
 
                 if (!message.BranchBtnBounds.IsEmpty)
                 {
                     var branchR = message.BranchBtnBounds with { Y = message.BranchBtnBounds.Y - scroll };
-                    g.FillRectangle(btnBrush, branchR);
-                    g.DrawRectangle(borderPen, branchR.X, branchR.Y, branchR.Width - 1, branchR.Height - 1);
+                    FillRound(g, btnBrush, branchR, ButtonRadius);
+                    DrawRound(g, borderPen, branchR, ButtonRadius);
                     TextRenderer.DrawText(g, "Branch", labelFont, branchR, DarkTheme.Text, TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
             }
@@ -1312,15 +1444,33 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (DarkTheme.IsGlass)
             {
                 using var glass = new SolidBrush(Color.FromArgb(175, fill));
-                g.FillRectangle(glass, bubble);
-                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this)); // #652: her bubbles shimmer
+                FillRound(g, glass, bubble, BubbleRadius);
+                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this), BubbleRadius); // #652: her bubbles shimmer
             }
             else
             {
                 using var solid = new SolidBrush(fill);
-                g.FillRectangle(solid, bubble);
+                FillRound(g, solid, bubble, BubbleRadius);
                 using var border = new Pen(DarkTheme.Border);
-                g.DrawRectangle(border, bubble.X, bubble.Y, bubble.Width - 1, bubble.Height - 1);
+                DrawRound(g, border, bubble, BubbleRadius);
+            }
+            if (message.ApprovalId is not null)
+            {
+                // #1426: a request card -- edged in the accent, a bar down its
+                // left while it waits, the plain edge once it's answered.
+                var waiting = message.Actions.Count > 0;
+                using var edge = new Pen(waiting ? DarkTheme.Accent : DarkTheme.Border);
+                DrawRound(g, edge, bubble, BubbleRadius);
+                if (waiting)
+                {
+                    // The bar follows the card's rounded left edge.
+                    using var shape = Round(bubble, BubbleRadius);
+                    var clip = g.Clip;
+                    g.SetClip(shape, CombineMode.Intersect);
+                    using var bar = new SolidBrush(DarkTheme.Accent);
+                    g.FillRectangle(bar, bubble.X, bubble.Y, 4, bubble.Height);
+                    g.Clip = clip;
+                }
             }
 
             var origin = new Point(bubble.X + PadX, bubble.Y + PadY);
@@ -1329,8 +1479,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var headerRect = message.ThoughtHeaderBounds with { X = message.ThoughtHeaderBounds.X + origin.X, Y = message.ThoughtHeaderBounds.Y + origin.Y };
                 using var pillBrush = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 30 : 40, DarkTheme.Muted));
                 using var pillPen = new Pen(Color.FromArgb(DarkTheme.IsLight ? 60 : 70, DarkTheme.Border));
-                g.FillRectangle(pillBrush, headerRect);
-                g.DrawRectangle(pillPen, headerRect.X, headerRect.Y, headerRect.Width - 1, headerRect.Height - 1);
+                FillRound(g, pillBrush, headerRect, headerRect.Height / 2f);
+                DrawRound(g, pillPen, headerRect, headerRect.Height / 2f);
                 var labelText = message.ThoughtOpen ? "▾ 💭 Thought Process" : "▸ 💭 Thought Process";
                 TextRenderer.DrawText(g, labelText, labelFont, new Point(headerRect.X + 8, headerRect.Y + 3), DarkTheme.Muted, TextFlags);
 
@@ -1405,7 +1555,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (i == selected)
             {
                 using var ring = new Pen(DarkTheme.Accent, 2);
-                g.DrawRectangle(ring, bubble.X + 1, bubble.Y + 1, bubble.Width - 3, bubble.Height - 3);
+                DrawRound(g, ring, Rectangle.Inflate(bubble, -1, -1), BubbleRadius - 1);
             }
         }
     }
@@ -1556,11 +1706,13 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         base.OnMouseMove(e);
         var link = LinkAt(e.Location);
+        var label = messages.FirstOrDefault(message => !message.FromUser && message.LabelBounds.Contains(e.X, e.Y + (scrolling ? scrollBar.Value : 0)))?.Speaker;
+        var tip = link ?? label;
         if (link != hoveredLink)
         {
             hoveredLink = link;
-            linkTip.SetToolTip(this, link); // shows where a link really goes before it's clicked
         }
+        if (linkTip.GetToolTip(this) != tip) linkTip.SetToolTip(this, tip);
         var isThoughtHeader = false;
         if (HitTest(e.Location) is var thMoveHit and >= 0 && !string.IsNullOrWhiteSpace(messages[thMoveHit].Thought))
         {
@@ -1824,16 +1976,26 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (action.Primary)
             {
                 using var fill = new SolidBrush(faded ? Color.FromArgb(140, DarkTheme.Accent) : DarkTheme.Accent);
-                g.FillRectangle(fill, rect);
-                TextRenderer.DrawText(g, action.Label, bodyFont, rect, DarkTheme.OnAccent,
+                FillRound(g, fill, rect, ButtonRadius);
+                var labelRect = action.Menu is null ? rect : new Rectangle(rect.X, rect.Y, rect.Width - MenuArrowWidth, rect.Height);
+                TextRenderer.DrawText(g, action.Label, bodyFont, labelRect, DarkTheme.OnAccent,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                if (action.Menu is not null)
+                {
+                    // #1426: a primary split button too (Allow, and its arrow's other answers).
+                    var arrow = new Rectangle(rect.Right - MenuArrowWidth, rect.Y, MenuArrowWidth, rect.Height);
+                    using var divider = new Pen(Color.FromArgb(110, DarkTheme.OnAccent));
+                    g.DrawLine(divider, arrow.X, rect.Y + 5, arrow.X, rect.Bottom - 6);
+                    TextRenderer.DrawText(g, "▾", bodyFont, arrow, DarkTheme.OnAccent,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                }
             }
             else
             {
                 using var fill = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(190, 255, 255, 255) : DarkTheme.Panel2);
-                g.FillRectangle(fill, rect);
+                FillRound(g, fill, rect, ButtonRadius);
                 using var border = new Pen(DarkTheme.Border);
-                g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+                DrawRound(g, border, rect, ButtonRadius);
                 var labelRect = action.Menu is null ? rect : new Rectangle(rect.X, rect.Y, rect.Width - MenuArrowWidth, rect.Height);
                 TextRenderer.DrawText(g, action.Label, bodyFont, labelRect, faded ? DarkTheme.Muted : DarkTheme.Text,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
@@ -2215,7 +2377,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public bool FromUser { get; }
         // #914: the character's name on her messages (null: Mana).
         public string? Name { get; init; }
-        public string Speaker => FromUser ? "You" : Name ?? "Mana";
+        public string? AnswerModel { get; set; }
+        public bool CloudFallback { get; set; }
+        public string Speaker => FromUser ? "You" : (Name ?? "Mana") + (AnswerModel is null ? "" : $" · {AnswerModel}{(CloudFallback ? " (fallback)" : "")}");
         public List<MarkdownBlock> Blocks { get; } = new();
         public List<Line> Lines { get; set; } = new();
         public string Text { get; set; } = "";
@@ -2225,6 +2389,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public Rectangle Bounds { get; set; }
         public Rectangle LabelBounds { get; set; }
         public List<ChatAction> Actions { get; } = new();
+        public List<ChatAction> AnalysisActions { get; } = new();
+        public List<MarkdownBlock> AnalysisBlocks { get; } = new();
         public List<Rectangle> ActionBounds { get; } = new();
         public string? Note { get; set; }
         public Rectangle NoteBounds { get; set; }
@@ -2235,6 +2401,9 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
         // The full reply text once VoiceLoop reported it; later sentences start a new bubble.
         public string? FinalText { get; set; }
+
+        // #1426: set on a request card (ShowApprovalCard): the approval's id.
+        public string? ApprovalId { get; init; }
 
         // #1318: set on a grey step-group line (no bubble, no label) placed
         // after the reply text of its segment; clicking it toggles StepsOpen.

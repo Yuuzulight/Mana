@@ -6,51 +6,36 @@ using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #914: Settings > Characters -- each character's own relationship notes
+// #914: Settings > Memory's notes and milestones -- each character's own relationship notes
 // and milestones (GET /characters/relationships), edited or removed one at
 // a time. She adds them herself in chat (each shows there with an Undo);
 // this is where I look them over later.
-internal sealed class RelationshipPanel : FlowLayoutPanel
+internal sealed class RelationshipPanel : System.ComponentModel.Component
 {
     private readonly ManaBackendClient backendClient;
     private IReadOnlyList<ManaCharacterRelationship> relationships = [];
-    private readonly List<ManaRelationshipItem> shown = [];
-    private readonly Label status = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+    private readonly Label status = SettingsRows.Status();
 
-    internal ComboBox Characters { get; } = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, AccessibleName = "Character", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text };
-    internal ListBox Items { get; } = new() { Width = 560, Height = 200, AccessibleName = "Notes and milestones", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-    internal TextBox EditText { get; } = new() { Width = 420, PlaceholderText = "Note or milestone", AccessibleName = "Text", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-    internal TextBox EditDate { get; } = new() { Width = 110, PlaceholderText = "YYYY-MM-DD", AccessibleName = "Milestone date", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+    internal ComboBox Characters { get; } = new SettingsCombo() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, AccessibleName = "Character", BackColor = DarkTheme.Panel, ForeColor = DarkTheme.Text };
+    internal RowList Items { get; } = new() { MaxVisibleRows = 5, NameWidth = 90, AccessibleName = "Notes and milestones" };
+    internal TextBox EditText { get; } = SettingsRows.Box("Text", 340, "Note or milestone");
+    internal TextBox EditDate { get; } = SettingsRows.Box("Milestone date", 100, "YYYY-MM-DD");
     internal string StatusText => status.Text;
     // Part of #700: the active character's mood, in words only.
-    private readonly Label mood = new() { AutoSize = true, ForeColor = DarkTheme.Muted };
+    private readonly Label mood = SettingsRows.Words("");
     internal string MoodText => mood.Text;
 
-    // loadNow: false in tests, which call ReloadAsync themselves.
+    // #1426: its row on the Memory page.
+    internal Control[] Rows { get; }
+
+    // loadNow: false in tests and Settings, which call ReloadAsync themselves.
     public RelationshipPanel(ManaBackendClient backendClient, bool loadNow = true)
     {
         this.backendClient = backendClient;
-        Dock = DockStyle.Fill;
-        FlowDirection = FlowDirection.TopDown;
-        WrapContents = false;
-        AutoScroll = true;
-        BackColor = DarkTheme.Background;
-
-        Button NewButton(string text, Func<Task> click)
-        {
-            var button = new Button { Text = text, AutoSize = true };
-            DarkTheme.ApplyButton(button);
-            button.Click += async (_, _) => await click();
-            return button;
-        }
-        FlowLayoutPanel Row(params Control[] controls)
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background };
-            row.Controls.AddRange(controls);
-            return row;
-        }
+        Button NewButton(string text, Func<Task> click) => SettingsRows.Action(text, () => _ = click());
 
         Characters.SelectedIndexChanged += (_, _) => ShowItems();
+        Items.ActionsFor = _ => [new("", "Remove", RemoveSelectedAsync)];
         Items.SelectedIndexChanged += (_, _) =>
         {
             var item = Selected;
@@ -58,29 +43,23 @@ internal sealed class RelationshipPanel : FlowLayoutPanel
             EditDate.Text = item?.Date ?? "";
             EditDate.Enabled = item?.Kind == "milestones";
         };
-        Controls.Add(new Label
+        Rows = new Control[]
         {
-            Text = "What each character remembers about the two of you: her notes, and dated milestones she brings up now and then. Facts about you are shared and live under Memory Facts.",
-            AutoSize = true,
-            MaximumSize = new System.Drawing.Size(560, 0),
-            ForeColor = DarkTheme.Text,
-        });
-        Controls.Add(mood);
-        Controls.Add(Row(Characters, NewButton("Refresh", ReloadAsync)));
-        Controls.Add(Items);
-        Controls.Add(Row(EditText, EditDate));
-        Controls.Add(Row(NewButton("Save", SaveSelectedAsync), NewButton("Remove", RemoveSelectedAsync), status));
+            new SettingsRow("Notes and milestones", "What each character remembers about the two of you, and dates she brings up now and then", "relationship notes milestones persona evil mana mood",
+                below: true,
+                SettingsRows.Line(Characters, mood),
+                SettingsRows.RoundPanel(Items),
+                SettingsRows.Line(EditText, EditDate, NewButton("Save", SaveSelectedAsync), status)),
+        };
         if (loadNow)
         {
             _ = ReloadAsync();
         }
     }
 
-    private ManaRelationshipItem? Selected => Items.SelectedIndex >= 0 && Items.SelectedIndex < shown.Count ? shown[Items.SelectedIndex] : null;
+    private ManaRelationshipItem? Selected => Items.SelectedItems.Count > 0 ? Items.SelectedItems[0].Tag as ManaRelationshipItem : null;
     private ManaCharacterRelationship? Character => Characters.SelectedIndex >= 0 && Characters.SelectedIndex < relationships.Count ? relationships[Characters.SelectedIndex] : null;
 
-    internal static string Display(ManaRelationshipItem item) =>
-        item.Kind == "milestones" ? $"Milestone {item.Date}: {item.Text}" : $"Note: {item.Text}";
 
     internal async Task ReloadAsync()
     {
@@ -91,7 +70,7 @@ internal sealed class RelationshipPanel : FlowLayoutPanel
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            status.Text = $"Couldn't load: {ex.Message}";
+            status.Text = $"Couldn't load: {BackendError.Describe(ex)}";
             return;
         }
         Characters.Items.Clear();
@@ -111,13 +90,10 @@ internal sealed class RelationshipPanel : FlowLayoutPanel
 
     private void ShowItems()
     {
-        shown.Clear();
-        Items.Items.Clear();
-        if (Character is { } character)
-        {
-            shown.AddRange(character.Notes.Concat(character.Milestones));
-            Items.Items.AddRange(shown.Select(i => (object)Display(i)).ToArray());
-        }
+        var shown = Character is { } character ? character.Notes.Concat(character.Milestones) : [];
+        Items.ShowEntries(shown.Select(i => i.Kind == "milestones"
+            ? new RowList.Entry(i, "Milestone", i.Text, i.Date ?? "")
+            : new RowList.Entry(i, "Note", i.Text)), null, "Nothing yet");
         EditText.Text = "";
         EditDate.Text = "";
     }

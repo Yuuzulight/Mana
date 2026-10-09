@@ -460,7 +460,7 @@ function createGitToolSource(options = {}) {
         status: "pending",
         requestId: outcome.requestId,
         asked: summary,
-        note: "It runs once the user allows it in Approvals. Tell them what you asked for; don't ask again.",
+        note: "It runs once the user allows it: in Waiting for you, or the card in this chat. Tell them what you asked for; don't ask again.",
       });
     }
     throw new Error(`not allowed: ${outcome.reason || outcome.status}`);

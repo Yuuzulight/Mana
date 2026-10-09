@@ -1857,7 +1857,7 @@ test("truncateTurns removes discarded turns, prunes their memory facts, and rese
       grantsReset = true;
     },
   };
-  const store = createAcpMemoryStore({ dataDir: createTempDir(), approvalGate: fakeApprovalGate });
+  const store = createAcpMemoryStore({ dataDir: createTempDir(), approvalGate: fakeApprovalGate, now: () => "2026-10-04T00:00:00.000Z" });
   await store.appendTurn({ sessionId: "edit-chat", user: "keep me", assistant: "ok" });
   const turn0At = store.getSession("edit-chat").turns[0].at;
 
@@ -1872,6 +1872,7 @@ test("truncateTurns removes discarded turns, prunes their memory facts, and rese
   // Turn 1
   await store.appendTurn({ sessionId: "edit-chat", user: "discard me", assistant: "will be discarded" });
   const turn1At = store.getSession("edit-chat").turns[1].at;
+  assert.ok(turn1At > turn0At);
 
   // Add fact during turn 1
   store.rememberFact({
@@ -1893,6 +1894,20 @@ test("truncateTurns removes discarded turns, prunes their memory facts, and rese
   const facts = store.listFacts();
   assert.equal(facts.length, 1);
   assert.equal(facts[0].key, "favorite_color");
+});
+
+test("turn and event provenance stays ordered across clock rollback and store reload (#1322)", async () => {
+  const dataDir = createTempDir();
+  let clock = "2026-10-04T00:00:00.000Z";
+  const store = createAcpMemoryStore({ dataDir, now: () => clock });
+  await store.appendTurn({ sessionId: "clock-order", user: "first", assistant: "ok" });
+  clock = "2026-10-03T00:00:00.000Z";
+  store.appendEvent({ sessionId: "clock-order", text: "background event" });
+  const reloaded = createAcpMemoryStore({ dataDir, now: () => clock });
+  await reloaded.appendTurn({ sessionId: "clock-order", user: "second", assistant: "ok" });
+  assert.deepEqual(reloaded.getSession("clock-order").turns.map(turn => turn.at), [
+    "2026-10-04T00:00:00.000Z", "2026-10-04T00:00:00.001Z", "2026-10-04T00:00:00.002Z",
+  ]);
 });
 
 test("turn versions support adding and stepping between assistant replies (#1322)", async () => {

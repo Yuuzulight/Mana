@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -25,6 +26,7 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? retrieverProcess;
     private Process? gptSovitsProcess;
     private Process? qwen3TtsProcess;
+    private bool fishRestarting;
 
     public string RootDirectory { get; }
 
@@ -125,9 +127,21 @@ internal sealed class ManaProcessManager : IDisposable
     // in this file to break that.
     public async Task StartAsync(Action<string, bool>? onServiceReady = null)
     {
+        Task<(Process? Process, bool Available)>? backendTask = null;
         async Task<(Process? Process, bool Available)> StartAndReport(string key, string healthUrl, Func<Task<Process?>> start)
         {
-            var result = await StartIfNotRunningAsync(healthUrl, start);
+            var result = await StartIfNotRunningAsync(healthUrl, async () =>
+            {
+                if (!isBackendLocal || key is "backend" or "websearch") return await start();
+                if (!HasModelSetup(key)) return await start();
+                var backend = await backendTask!;
+                if (!backend.Available || (backend.Process is not null && !await WaitForHealthyAsync(true, backendHealthUrl, TimeSpan.FromMinutes(1), null, backend.Process)))
+                {
+                    BackendLog.Add($"{key}: waiting for the resource coordinator; backend is unavailable.");
+                    return null;
+                }
+                return await StartCoordinatedModelAsync(key, start);
+            });
             onServiceReady?.Invoke(key, result.Available);
             return result;
         }
@@ -147,7 +161,7 @@ internal sealed class ManaProcessManager : IDisposable
         // longer serializes an ~100s HttpClient timeout in front of the
         // others.
         var notUsed = Task.FromResult<(Process? Process, bool Available)>((null, false));
-        var backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
+        backendTask = StartAndReport("backend", backendHealthUrl, () => Task.FromResult<Process?>(isBackendLocal ? StartBackend() : null));
         async Task<(Process? Process, bool Available)> StartFishSpeechIfUsedAsync()
         {
             // #1076: TTS_PROVIDER unset -- node-bot picks the voice, so wait
@@ -244,11 +258,98 @@ internal sealed class ManaProcessManager : IDisposable
     // an unattended self-healing loop. Stops whatever's there first (a
     // hung/half-working process, if any) before starting fresh, the same
     // as StartFishSpeech()'s own non-fatal degrade path.
-    public void RestartFishSpeech()
+    public async Task RestartFishSpeech()
     {
+        if (fishRestarting) return;
+        fishRestarting = true;
+        try
+        {
         StopProcess(fishSpeechProcess);
-        fishSpeechProcess = StartFishSpeech();
+        if (fishSpeechProcess is not null)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await fishSpeechProcess.WaitForExitAsync(timeout.Token);
+        }
+        fishSpeechProcess = HasModelSetup("fish-speech")
+            ? await StartCoordinatedModelAsync("fish-speech", () => Task.FromResult(StartFishSpeech()))
+            : StartFishSpeech();
         IsFishSpeechAvailable = fishSpeechProcess is not null;
+        }
+        finally { fishRestarting = false; }
+    }
+
+    internal async Task<Process?> StartCoordinatedModelAsync(string service, Func<Task<Process?>> start)
+    {
+        string? reservation = null;
+        Process? child = null;
+        try
+        {
+            using var reserved = await PostResourceAsync("reserve", new { service });
+            reservation = reserved.RootElement.GetProperty("id").GetString()
+                ?? throw new InvalidOperationException("Resource coordinator returned no reservation.");
+            if (disposed) throw new ObjectDisposedException(nameof(ManaProcessManager));
+            child = await start();
+            if (child is null)
+            {
+                using var released = await PostResourceAsync("release", new { id = reservation, notStarted = true });
+                return null;
+            }
+            if (disposed) throw new ObjectDisposedException(nameof(ManaProcessManager));
+            backendJob ??= KillOnCloseJob.Create();
+            if (!KillOnCloseJob.Assign(backendJob, child.Handle)) throw new Win32Exception();
+            using var attached = await PostResourceAsync("attach", new { id = reservation, pid = child.Id });
+            return child;
+        }
+        catch (Exception error)
+        {
+            BackendLog.Add($"{service}: resource-coordinated startup failed: {error.Message}");
+            var terminated = child is null;
+            if (child is not null)
+            {
+                StopProcess(child);
+                try
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    await child.WaitForExitAsync(timeout.Token);
+                    terminated = true;
+                }
+                catch (Exception cleanupError) { BackendLog.Add($"{service}: cleanup not confirmed; reservation retained: {cleanupError.Message}"); }
+            }
+            if (reservation is not null && terminated)
+            {
+                try { using var released = await PostResourceAsync("release", new { id = reservation, notStarted = true }); }
+                catch (Exception cleanupError) { BackendLog.Add($"{service}: reservation retained for recovery: {cleanupError.Message}"); }
+            }
+            return null;
+        }
+    }
+
+    private bool HasModelSetup(string service) => service switch
+    {
+        "fish-speech" => File.Exists(ResolveVenvPython(Path.Combine(RootDirectory, "tools", "fish-speech"), ".venv-native"))
+            && File.Exists(Path.Combine(RootDirectory, "tools", "fish_speech_native_server.py")),
+        "qwen3-tts" => File.Exists(ResolveVenvPython(Path.Combine(RootDirectory, "tools", "qwen3-tts"), ".venv"))
+            && File.Exists(Path.Combine(RootDirectory, "tools", "qwen3tts_service.py")),
+        "embedder" => Environment.GetEnvironmentVariable("MANA_START_EMBEDDER") != "0"
+            && File.Exists(Path.Combine(RootDirectory, "node-bot", "tools", "local_embedder.py")),
+        "retriever" => File.Exists(Path.Combine(RootDirectory, "tools", "retriever_service.py")),
+        "gpt-sovits" => File.Exists(Path.Combine(RootDirectory, "tools", "gpt-sovits", "runtime", "python.exe"))
+            && File.Exists(Path.Combine(RootDirectory, "tools", "gpt-sovits", "api_v2.py")),
+        _ => false,
+    };
+
+    private async Task<JsonDocument> PostResourceAsync(string action, object payload)
+    {
+        var baseUrl = backendHealthUrl[..^"/health".Length];
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/resources/native/{action}")
+        {
+            Content = JsonContent.Create(payload),
+        };
+        request.Headers.Add("X-Admin-Token", LauncherKey);
+        using var response = await http.SendAsync(request);
+        var text = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Resource coordinator: {text}");
+        return JsonDocument.Parse(text);
     }
 
     // #991: node-bot's /restart and /admin/restart exit with this code for
@@ -291,7 +392,8 @@ internal sealed class ManaProcessManager : IDisposable
             }
             catch (OperationCanceledException)
             {
-                // Still going; the new one fails to bind and gets retried.
+                BackendLog.Add("Backend has not exited; replacement deferred to avoid overlapping owned processes.");
+                return false;
             }
         }
         if (disposed)
@@ -299,7 +401,18 @@ internal sealed class ManaProcessManager : IDisposable
             return false; // Mana exited meanwhile: nothing would stop a new one
         }
         backendProcess = StartBackend();
-        return await WaitForHealthyAsync(true, backendHealthUrl, timeout, pollInterval, backendProcess);
+        var healthy = await WaitForHealthyAsync(true, backendHealthUrl, timeout, pollInterval, backendProcess);
+        if (healthy)
+        {
+            foreach (var (service, child) in new[] { ("fish-speech", fishSpeechProcess), ("embedder", embedderProcess),
+                ("retriever", retrieverProcess), ("gpt-sovits", gptSovitsProcess), ("qwen3-tts", qwen3TtsProcess) })
+            {
+                if (child is null || child.HasExited) continue;
+                try { using var recovered = await PostResourceAsync("recover", new { service, pid = child.Id }); }
+                catch (Exception error) { BackendLog.Add($"{service}: resource recovery failed; existing process remains running: {error.Message}"); }
+            }
+        }
+        return healthy;
     }
 
     // Fish Speech answers its health check only once its model is loaded
@@ -421,7 +534,7 @@ internal sealed class ManaProcessManager : IDisposable
         var fishDir = Path.Combine(RootDirectory, "tools", "fish-speech");
         var python = ResolveVenvPython(fishDir, ".venv-native");
         var serverScript = Path.Combine(RootDirectory, "tools", "fish_speech_native_server.py");
-        if (!File.Exists(python) || !File.Exists(serverScript))
+        if (!HasModelSetup("fish-speech"))
         {
             // Fish Speech missing its native setup is not fatal to app
             // startup -- its native setup (docs/fish_speech_tts.md) is a
@@ -486,7 +599,7 @@ internal sealed class ManaProcessManager : IDisposable
             return null;
         }
         var embedderScript = Path.Combine(RootDirectory, "node-bot", "tools", "local_embedder.py");
-        if (!File.Exists(embedderScript))
+        if (!HasModelSetup("embedder"))
         {
             return null;
         }
@@ -526,7 +639,7 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? StartRetriever()
     {
         var retrieverScript = Path.Combine(RootDirectory, "tools", "retriever_service.py");
-        if (!File.Exists(retrieverScript))
+        if (!HasModelSetup("retriever"))
         {
             return null;
         }
@@ -543,7 +656,7 @@ internal sealed class ManaProcessManager : IDisposable
         var gptSovitsDir = Path.Combine(RootDirectory, "tools", "gpt-sovits");
         var runtimePython = Path.Combine(gptSovitsDir, "runtime", "python.exe");
         var apiScript = Path.Combine(gptSovitsDir, "api_v2.py");
-        if (!File.Exists(runtimePython) || !File.Exists(apiScript))
+        if (!HasModelSetup("gpt-sovits"))
         {
             Console.WriteLine($"GPT-SoVITS not found at {gptSovitsDir}; see docs/gpt_sovits_setup.md.");
             return null;
@@ -563,7 +676,7 @@ internal sealed class ManaProcessManager : IDisposable
         var qwenDir = Path.Combine(RootDirectory, "tools", "qwen3-tts");
         var python = ResolveVenvPython(qwenDir, ".venv");
         var serviceScript = Path.Combine(RootDirectory, "tools", "qwen3tts_service.py");
-        if (!File.Exists(python) || !File.Exists(serviceScript))
+        if (!HasModelSetup("qwen3-tts"))
         {
             Console.WriteLine($"Qwen3-TTS not set up at {qwenDir}; see docs/qwen3_tts.md.");
             return null;
@@ -636,6 +749,7 @@ internal sealed class ManaProcessManager : IDisposable
         startInfo.Environment["USE_EMBEDDINGS"] =
             Environment.GetEnvironmentVariable("USE_EMBEDDINGS") ?? "1";
         startInfo.Environment["MANA_LAUNCHER_KEY"] = LauncherKey;
+        startInfo.Environment["MANA_LAUNCHER_PID"] = Environment.ProcessId.ToString();
         ApplyLocalOnly(startInfo.Environment, localOnly);
         ApplyNoCheckIns(startInfo.Environment, noCheckIns);
 

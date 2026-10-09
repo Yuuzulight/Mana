@@ -565,6 +565,26 @@ function createSkillsStore(options = {}) {
     fs.mkdirSync(skillsDir, { recursive: true });
   }
 
+  // #1420: the skills Mana ships with live in skills-default/ (tracked);
+  // her live folder isn't, since she rewrites use counts and status there.
+  // Each default is copied in once: one she has, archived or deleted
+  // stays as she left it.
+  const defaultsDir = options.defaultsDir ?? (options.skillsDir ? null : path.join(__dirname, "skills-default"));
+  function seedDefaults() {
+    if (!defaultsDir || !fs.existsSync(defaultsDir)) return;
+    ensureDir();
+    const seenFile = path.join(skillsDir, ".defaults-seeded.json");
+    let seen = [];
+    try { seen = JSON.parse(fs.readFileSync(seenFile, "utf8")); } catch {}
+    const fresh = fs.readdirSync(defaultsDir).filter((name) => !name.startsWith(".") && !seen.includes(name));
+    for (const name of fresh) {
+      const target = path.join(skillsDir, name);
+      if (!fs.existsSync(target)) fs.cpSync(path.join(defaultsDir, name), target, { recursive: true });
+    }
+    if (fresh.length) fs.writeFileSync(seenFile, JSON.stringify([...seen, ...fresh], null, 2));
+  }
+  seedDefaults();
+
   // Issue #664: both layouts -- Mana's single `<name>.md` files, and a
   // SKILL.md folder (`<name>/SKILL.md` plus its scripts/, references/,
   // assets/), listed as "<name>/SKILL.md". Dot-folders (.archive) and

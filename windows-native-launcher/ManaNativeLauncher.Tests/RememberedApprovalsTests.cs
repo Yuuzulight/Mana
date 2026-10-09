@@ -67,15 +67,14 @@ public class RememberedApprovalsTests
             var requests = new List<string>();
             using var panel = new SettingsPanel(Backend(requests), new BackendLogBuffer());
             Pump(panel.RefreshRememberedAsync());
-            var list = All<ListView>(panel).Single(l => l.AccessibleName == "Remembered answers");
-            Assert.Equal(["Browser: shop.test|Always", "Browser: bad.test|Never", "memory-write|Always"],
-                list.Items.Cast<ListViewItem>().Select(i => $"{i.Text}|{i.SubItems[1].Text}"));
-            Assert.Contains(All<Button>(panel), b => b.Text == "Never");
+            var list = panel.RememberedList;
+            Assert.Equal(["Always: Browser: shop.test", "Never: Browser: bad.test", "Always: memory-write"],
+                list.Items.Cast<ListViewItem>().Select(i => i.Text));
+            Assert.Contains(WaitingPanel.ApprovalChoices, c => c.Decision == "never"); // a request can be answered "never"
 
             _ = list.Handle; // SelectedItems needs the native list
             list.Items[1].Selected = true;
-            var forget = All<Button>(panel).Single(b => b.Text == "Forget");
-            forget.GetType().GetMethod("OnClick", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(forget, [EventArgs.Empty]);
+            _ = list.SelectedActions.Single(a => a.Name.StartsWith("Forget", StringComparison.Ordinal)).Run();
             Pump(() => requests.Count(r => r == "GET /approvals/remembered") == 2);
             Assert.Contains("""POST /approvals/remembered/forget {"key":"browser-site:bad.test"}""", requests);
         });
@@ -103,15 +102,14 @@ public class RememberedApprovalsTests
             var requests = new List<string>();
             using var panel = new SettingsPanel(Backend(requests), new BackendLogBuffer());
             Pump(panel.RefreshGitApprovalModesAsync());
-            ComboBox Combo(string tier) => All<ComboBox>(panel).Single(c => c.AccessibleName == $"Git approval: {tier}");
-            Assert.Equal("Ask once, then always allow", Combo("local").SelectedItem);
-            Assert.Equal("Ask every time", Combo("github").SelectedItem);
-            var warning = All<Label>(panel).Single(l => l.AccessibleName == "Git danger warning");
+            ComboBox Combo(string name) => All<ComboBox>(panel).Single(c => c.AccessibleName == name);
+            Assert.Equal("Ask once, then allow", Combo("Local changes").SelectedItem);
+            Assert.Equal("Ask every time", Combo("GitHub writes").SelectedItem);
+            var warning = panel.GitDangerWarning; // shown on the merging row's own line
             Assert.Equal("", warning.Text);
 
-            var danger = Combo("danger");
-            danger.SelectedIndex = 2; // No approval
-            danger.GetType().GetMethod("OnSelectionChangeCommitted", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(danger, [EventArgs.Empty]);
+            var danger = Combo("Merging and force-pushing");
+            danger.SelectedIndex = 2; // without asking
             Pump(() => requests.Any(r => r.StartsWith("POST /approvals/git-mode", StringComparison.Ordinal)));
             Assert.Contains("""POST /approvals/git-mode {"tier":"danger","mode":"off"}""", requests);
             Assert.StartsWith("Warning:", warning.Text);

@@ -30,9 +30,9 @@ internal sealed class ManaBackendClient
     // devices, llama.cpp builds, skill import) need it or ADMIN_TOKEN now.
     public ManaBackendClient(HttpMessageHandler? handler = null, string? baseUrl = null, string? adminToken = null, string? launcherKey = null)
     {
-        http = handler is null
-            ? new HttpClient()
-            : new HttpClient(handler);
+        // #1426: an error response's {"error": "..."} becomes its reason
+        // phrase, so a failure says what the backend said.
+        http = new HttpClient(new BackendErrorHandler { InnerHandler = handler ?? new HttpClientHandler() });
         http.BaseAddress = new System.Uri(baseUrl ?? "http://127.0.0.1:5005");
         if (!string.IsNullOrEmpty(adminToken))
         {
@@ -371,7 +371,9 @@ internal sealed class ManaBackendClient
     // actions mid-game) or "typed" (gets the longer mid-game wiki wait).
     // Null sends nothing.
     // #1325: documents is a list of local file paths for document attachments (PDF, DOCX, XLSX, PPTX, CSV, TXT, MD).
-    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, IReadOnlyList<string>? documents = null)
+    // #1426: thinkLevel is the composer's thinking level (off, low, medium,
+    // high, max); null sends nothing and the profile decides.
+    public async IAsyncEnumerable<ReplyStreamEvent> ReplyStreamAsync(string text, string? sessionId = null, string screenText = "", string? image = null, IReadOnlyList<string>? images = null, string? presetId = null, bool? thinkHarder = null, string? source = null, IReadOnlyList<string>? documents = null, string? thinkLevel = null)
     {
         var fields = new Dictionary<string, object?> { ["text"] = text, ["screenText"] = screenText };
         if (sessionId is not null)
@@ -385,6 +387,10 @@ internal sealed class ManaBackendClient
         if (thinkHarder is bool think)
         {
             fields["thinkHarder"] = think;
+        }
+        if (thinkLevel is not null)
+        {
+            fields["thinkLevel"] = thinkLevel;
         }
         if (source is not null)
         {
@@ -552,22 +558,261 @@ internal sealed class ManaBackendClient
         }
 
         var brain = root.TryGetProperty("brain", out var brainEl) ? brainEl : default;
+        var fallback = root.TryGetProperty("fallback", out var fallbackEl) ? fallbackEl : default;
         var vision = root.TryGetProperty("vision", out var visionEl) ? visionEl : default;
         var recommendation = root.TryGetProperty("recommendation", out var recommendationEl) ? recommendationEl : default;
 
         return new ManaModelStatus
         {
             ActiveProfile = activeProfile,
+            LocalOnly = root.TryGetProperty("localOnly", out var localOnlyEl) && localOnlyEl.ValueKind == JsonValueKind.True,
+            Fallback = fallback.ValueKind == JsonValueKind.Object ? JsonSerializer.Deserialize<ManaCloudFallback>(fallback.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new() : new(),
             Profiles = profiles,
             SelectedModelPath = root.TryGetProperty("selectedModelPath", out var selectedEl) ? selectedEl.GetString() : null,
             BrainType = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("type", out var typeEl) ? typeEl.GetString() ?? "local" : "local",
             BrainBaseUrl = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("baseUrl", out var baseUrlEl) ? baseUrlEl.GetString() ?? "" : "",
             BrainModel = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("model", out var brainModelEl) ? brainModelEl.GetString() ?? "" : "",
             BrainHasApiKey = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("hasApiKey", out var hasKeyEl) && hasKeyEl.GetBoolean(),
+            BrainProviderId = brain.ValueKind == JsonValueKind.Object && brain.TryGetProperty("providerId", out var brainProviderEl) && brainProviderEl.ValueKind == JsonValueKind.String ? brainProviderEl.GetString() : null,
             VisionModelPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("modelPath", out var visionModelEl) ? visionModelEl.GetString() ?? "" : "",
             VisionMmprojPath = vision.ValueKind == JsonValueKind.Object && vision.TryGetProperty("mmprojPath", out var mmprojEl) ? mmprojEl.GetString() ?? "" : "",
             RecommendedProfile = recommendation.ValueKind == JsonValueKind.Object && recommendation.TryGetProperty("profile", out var recProfileEl) ? recProfileEl.GetString() : null,
             LoadIntoVram = root.TryGetProperty("loadIntoVram", out var loadIntoVramEl) && loadIntoVramEl.ValueKind == JsonValueKind.True,
+        };
+    }
+
+    public async Task<ManaChatModels> GetChatModelsAsync(string? sessionId)
+    {
+        using var response = await http.GetAsync("/models/chat?sessionId=" + Uri.EscapeDataString(sessionId ?? ""));
+        response.EnsureSuccessStatusCode();
+        return JsonSerializer.Deserialize<ManaChatModels>(await response.Content.ReadAsStringAsync(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+    }
+
+    public async Task SetChatModelAsync(string sessionId, string model)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { sessionId, model }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/chat", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: Settings' providers -- the presets, and the ones added (a key
+    // never comes back, only its last four characters).
+    public async Task<(IReadOnlyList<ManaProviderPreset> Presets, IReadOnlyList<ManaProvider> Providers)> GetProvidersAsync()
+    {
+        using var response = await http.GetAsync("/models/providers");
+        response.EnsureSuccessStatusCode();
+        var payload = JsonSerializer.Deserialize<ManaProviders>(await response.Content.ReadAsStringAsync(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+        return (payload.Presets, payload.Providers);
+    }
+
+    // #1441: a provider's chat models, for the escalation picker.
+    public async Task<IReadOnlyList<string>> GetProviderModelsAsync(string id)
+    {
+        using var response = await http.GetAsync($"/models/providers/{Uri.EscapeDataString(id)}/models");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("models", out var m) && m.ValueKind == JsonValueKind.Array
+            ? m.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+            : [];
+    }
+
+    // Added and checked at once; a refusal's words come back in the exception.
+    public async Task<ManaProvider> AddProviderAsync(string preset, string? baseUrl, string? apiKey)
+    {
+        var fields = new Dictionary<string, string> { ["preset"] = preset };
+        if (!string.IsNullOrWhiteSpace(baseUrl)) fields["baseUrl"] = baseUrl.Trim();
+        if (!string.IsNullOrWhiteSpace(apiKey)) fields["apiKey"] = apiKey.Trim();
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/providers", content);
+        response.EnsureSuccessStatusCode();
+        return await ReadProviderAsync(response);
+    }
+
+    public async Task<ManaProvider> UpdateProviderKeyAsync(string id, string apiKey)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { apiKey }), Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync($"/models/providers/{Uri.EscapeDataString(id)}", content);
+        response.EnsureSuccessStatusCode();
+        return await ReadProviderAsync(response);
+    }
+
+    public async Task<ManaProvider> CheckProviderAsync(string id)
+    {
+        using var response = await http.PostAsync($"/models/providers/{Uri.EscapeDataString(id)}/check", null);
+        response.EnsureSuccessStatusCode();
+        return await ReadProviderAsync(response);
+    }
+
+    // Refused (409, naming the use) while a use picks it.
+    public async Task RemoveProviderAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/models/providers/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task<ManaProvider> ReadProviderAsync(HttpResponseMessage response)
+    {
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.TryGetProperty("provider", out var provider)
+            ? JsonSerializer.Deserialize<ManaProvider>(provider.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new()
+            : new();
+    }
+
+    // #1426: the main model -- this PC's (providerId null) or a provider's.
+    public async Task SetMainModelAsync(string? providerId, string model)
+    {
+        var fields = providerId is null
+            ? (object)new { type = "local" }
+            : new { type = "openai_compatible", providerId, model };
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/brain-provider", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: the cloud fallback through a provider; providerId null switches it off.
+    public async Task SetCloudFallbackProviderAsync(string? providerId, string model, int timeoutSeconds)
+    {
+        var fields = new Dictionary<string, object?> { ["enabled"] = providerId is not null, ["timeoutSeconds"] = timeoutSeconds, ["model"] = model };
+        if (providerId is not null) fields["providerId"] = providerId;
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/cloud-fallback", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task SetCloudFallbackAsync(bool enabled, int timeoutSeconds, string baseUrl, string? apiKey, string model)
+    {
+        var fields = new Dictionary<string, object> { ["enabled"] = enabled, ["timeoutSeconds"] = timeoutSeconds, ["baseUrl"] = baseUrl, ["model"] = model };
+        if (apiKey is not null) fields["apiKey"] = apiKey;
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/models/cloud-fallback", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1406: self-work's DeepSeek escalation. The key goes in and never
+    // comes back: the backend only says whether there is one.
+    public async Task<ManaEscalationSettings> GetEscalationAsync()
+    {
+        using var response = await http.GetAsync("/self-work/escalation");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        bool Flag(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.True;
+        string? Text(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        var models = root.TryGetProperty("models", out var m) && m.ValueKind == JsonValueKind.Array
+            ? m.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+            : new List<string>();
+        var stats = root.TryGetProperty("stats", out var st) && st.ValueKind == JsonValueKind.Array
+            ? JsonSerializer.Deserialize<List<ManaEscalationStat>>(st.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new()
+            : new List<ManaEscalationStat>();
+        return new ManaEscalationSettings(Flag("enabled"), Flag("hasKey"), Flag("localOnly")) { ProviderId = Text("providerId"), Preset = Text("preset"), Models = models, Stats = stats };
+    }
+
+    // providerId (#1426): a provider from Settings' list; null leaves it.
+    // models (#1441): the first tier and an optional second; null leaves them.
+    public async Task SetEscalationAsync(bool enabled, string? apiKey, string? providerId = null, IReadOnlyList<string>? models = null)
+    {
+        var fields = new Dictionary<string, object> { ["enabled"] = enabled };
+        if (apiKey is not null) fields["apiKey"] = apiKey;
+        if (providerId is not null) fields["providerId"] = providerId;
+        if (models is not null) fields["models"] = models;
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/self-work/escalation", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1441: prices I set for models that aren't DeepSeek's, and the models
+    // she used that have none.
+    public async Task<ManaPrices> GetPricesAsync()
+    {
+        using var response = await http.GetAsync("/api-spending/prices");
+        response.EnsureSuccessStatusCode();
+        return JsonSerializer.Deserialize<ManaPrices>(await response.Content.ReadAsStringAsync(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+    }
+
+    // $ per 1M tokens in and out; null removes the model's prices.
+    public async Task SetPriceAsync(string model, double? input, double? output)
+    {
+        var fields = new Dictionary<string, object> { ["model"] = model };
+        if (input is null || output is null) fields["remove"] = true;
+        else
+        {
+            fields["in"] = input.Value;
+            fields["out"] = output.Value;
+        }
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/api-spending/prices", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1406: Settings > API Spending.
+    public async Task<ManaApiSpending> GetApiSpendingAsync()
+    {
+        using var response = await http.GetAsync("/api-spending");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        static double Number(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0;
+        static double? Maybe(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+        static string? Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        static bool Flag(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+        static ManaSpendingTotals Totals(JsonElement e) => new(
+            Number(e, "usd"), (long)Number(e, "requests"), (long)Number(e, "cacheHit"), (long)Number(e, "cacheMiss"),
+            (long)Number(e, "output"), (long)Number(e, "reasoning"), (long)Number(e, "unpricedRequests"),
+            Number(e, "usdCacheHit"), Number(e, "usdCacheMiss"), Number(e, "usdOutput"), Number(e, "usdReasoning"),
+            Number(e, "usdPeakExtra"), Maybe(e, "cacheHitRate"));
+        static IReadOnlyDictionary<string, ManaSpendingTotals> Split(JsonElement e, string name)
+        {
+            var split = new Dictionary<string, ManaSpendingTotals>();
+            if (e.TryGetProperty(name, out var obj) && obj.ValueKind == JsonValueKind.Object)
+                foreach (var p in obj.EnumerateObject()) split[p.Name] = Totals(p.Value);
+            return split;
+        }
+        static IReadOnlyDictionary<string, double> Amounts(JsonElement e, string name)
+        {
+            var amounts = new Dictionary<string, double>();
+            if (e.TryGetProperty(name, out var obj) && obj.ValueKind == JsonValueKind.Object)
+                foreach (var p in obj.EnumerateObject()) amounts[p.Name] = p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : 0;
+            return amounts;
+        }
+        static IReadOnlyList<ManaIssueCost> Issues(JsonElement e, string name)
+        {
+            var list = new List<ManaIssueCost>();
+            if (!e.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+            foreach (var i in arr.EnumerateArray())
+            {
+                var prs = new List<int>();
+                if (i.TryGetProperty("prs", out var p) && p.ValueKind == JsonValueKind.Array)
+                    foreach (var n in p.EnumerateArray()) if (n.ValueKind == JsonValueKind.Number) prs.Add(n.GetInt32());
+                list.Add(new ManaIssueCost((int)Number(i, "issue"), Str(i, "title"), Str(i, "state"), prs, Number(i, "usd"), (long)Number(i, "requests")));
+            }
+            return list;
+        }
+        ManaSpendingPeriod Period(string name) =>
+            root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Object
+                ? new ManaSpendingPeriod(Totals(e), Split(e, "byModel"), Split(e, "byUse"), Maybe(e, "projected"))
+                : new ManaSpendingPeriod(new ManaSpendingTotals(0, 0, 0, 0, 0, 0, 0), new Dictionary<string, ManaSpendingTotals>(), new Dictionary<string, ManaSpendingTotals>());
+        var daily = new List<ManaSpendingDay>();
+        if (root.TryGetProperty("daily", out var days) && days.ValueKind == JsonValueKind.Array)
+            foreach (var d in days.EnumerateArray())
+                daily.Add(new ManaSpendingDay(Str(d, "day") ?? "", Number(d, "usd"), Amounts(d, "byModel"), Amounts(d, "byUse"), Number(d, "peakExtra"), Issues(d, "issues")));
+        ManaSpendingResults? results = null;
+        if (root.TryGetProperty("results", out var r) && r.ValueKind == JsonValueKind.Object)
+            results = new ManaSpendingResults((int)Number(r, "mergedPrs"), Number(r, "usdOnMerged"), Maybe(r, "costPerMergedPr"), Number(r, "usdOnHeld"), Issues(r, "top"));
+        ManaBalance? balance = null;
+        if (root.TryGetProperty("balance", out var b) && b.ValueKind == JsonValueKind.Object)
+            balance = new ManaBalance(Str(b, "currency"), Number(b, "total"), Number(b, "granted"), Number(b, "toppedUp"), !b.TryGetProperty("available", out var av) || av.ValueKind != JsonValueKind.False, Str(b, "error"));
+        ManaRunway? runway = null;
+        if (root.TryGetProperty("runway", out var rw) && rw.ValueKind == JsonValueKind.Object)
+            runway = new ManaRunway(Maybe(rw, "daysLeft"), Flag(rw, "low"));
+        return new ManaApiSpending(Period("total"), Period("today"), Period("month"), Flag(root, "peakNow"), daily)
+        {
+            LastMonth = Period("lastMonth"),
+            Results = results,
+            Balance = balance,
+            Runway = runway,
         };
     }
 
@@ -790,6 +1035,8 @@ internal sealed class ManaBackendClient
                     SessionId = element.TryGetProperty("sessionId", out var idElement) ? idElement.GetString() ?? "" : "",
                     Name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null,
                     Goal = element.TryGetProperty("goal", out var goalElement) ? goalElement.GetString() : null,
+                    ProjectId = element.TryGetProperty("projectId", out var projectElement) ? projectElement.GetString() : null,
+                    ProjectName = element.TryGetProperty("projectName", out var projectNameElement) ? projectNameElement.GetString() : null,
                     UpdatedAt = element.TryGetProperty("updatedAt", out var updatedElement) ? updatedElement.GetString() : null,
                     ForkedFrom = element.TryGetProperty("forkedFrom", out var forkedElement) ? forkedElement.GetString() : null,
                     BranchTurnIndex = element.TryGetProperty("branchTurnIndex", out var btElement) && btElement.ValueKind == JsonValueKind.Number ? btElement.GetInt32() : null,
@@ -797,6 +1044,59 @@ internal sealed class ManaBackendClient
             }
         }
         return sessions;
+    }
+
+    public async Task<IReadOnlyList<ManaProject>> GetProjectsAsync()
+    {
+        using var response = await http.GetAsync("/projects");
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<List<ManaProject>>(document.RootElement.GetProperty("projects").GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? new();
+    }
+
+    public async Task<ManaProject> SaveProjectAsync(string? id, string name, string instructions)
+    {
+        var payload = id is null ? (object)new { name, instructions } : new { id, name, instructions };
+        using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/projects", content);
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<ManaProject>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    }
+
+    public async Task DeleteProjectAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/projects/{Uri.EscapeDataString(id)}");
+        using var document = await ReadProjectResponseAsync(response);
+    }
+
+    public async Task SetSessionProjectAsync(string sessionId, string? projectId)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { projectId }), Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/project", content);
+        using var document = await ReadProjectResponseAsync(response);
+    }
+
+    public async Task<ManaProject> LinkProjectReferenceAsync(string id, string path)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { path }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync($"/projects/{Uri.EscapeDataString(id)}/references/picker", content);
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<ManaProject>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    }
+
+    public async Task<ManaProject> RemoveProjectReferenceAsync(string id, string referenceId)
+    {
+        using var response = await http.DeleteAsync($"/projects/{Uri.EscapeDataString(id)}/references/{Uri.EscapeDataString(referenceId)}");
+        using var document = await ReadProjectResponseAsync(response);
+        return JsonSerializer.Deserialize<ManaProject>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    }
+
+    private static async Task<JsonDocument> ReadProjectResponseAsync(HttpResponseMessage response)
+    {
+        var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        if (response.IsSuccessStatusCode) return document;
+        var error = document.RootElement.TryGetProperty("error", out var message) ? message.GetString() : response.ReasonPhrase;
+        document.Dispose();
+        throw new InvalidOperationException(error ?? "Project request failed");
     }
 
     // #687 part 3: ids of the sessions whose stored messages contain every
@@ -919,6 +1219,9 @@ internal sealed class ManaBackendClient
                     User = turnElement.TryGetProperty("user", out var userElement) ? userElement.GetString() : null,
                     Assistant = turnElement.TryGetProperty("assistant", out var assistantElement) ? assistantElement.GetString() : null,
                     Thought = turnElement.TryGetProperty("thought", out var thoughtElement) ? thoughtElement.GetString() : null,
+                    AnswerModel = turnElement.TryGetProperty("answerModel", out var answerModelEl) ? answerModelEl.GetString() : null,
+                    CloudFallback = turnElement.TryGetProperty("cloudFallback", out var fallbackEl) && fallbackEl.ValueKind == JsonValueKind.True,
+                    AnalysisOutputs = AnalysisOutputs.Parse(turnElement),
                     Steps = ParseAgentSteps(turnElement), // #1337: absent on older turns
                     Versions = versionsList,
                     VersionIndex = versionIndex,
@@ -1130,6 +1433,7 @@ internal sealed class ManaBackendClient
                         Name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
                         Description = entry.TryGetProperty("description", out var descEl) ? descEl.GetString() : null,
                         Enabled = entry.TryGetProperty("enabled", out var enabledEl) && enabledEl.GetBoolean(),
+                        Category = category.Name,
                     });
                 }
             }
@@ -1172,6 +1476,9 @@ internal sealed class ManaBackendClient
                     Trust = entry.TryGetProperty("trust", out var trustEl) ? trustEl.GetString() ?? "" : "",
                     Trigger = entry.TryGetProperty("trigger", out var triggerEl) ? triggerEl.GetString() ?? "" : "",
                     Paused = entry.TryGetProperty("paused", out var pausedEl) && pausedEl.ValueKind == JsonValueKind.True,
+                    Category = entry.TryGetProperty("category", out var categoryEl) && categoryEl.ValueKind == JsonValueKind.String ? categoryEl.GetString() ?? "other" : "other",
+                    UpdatedAt = entry.TryGetProperty("updatedAt", out var updatedEl) && updatedEl.ValueKind == JsonValueKind.String ? updatedEl.GetString()
+                        : entry.TryGetProperty("createdAt", out var createdEl) && createdEl.ValueKind == JsonValueKind.String ? createdEl.GetString() : null,
                 });
             }
         }
@@ -1181,6 +1488,13 @@ internal sealed class ManaBackendClient
     public async Task ArchiveMemoryFactAsync(string key)
     {
         using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/archive", null);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: an archived fact live again (409 when its name is taken since).
+    public async Task RestoreMemoryFactAsync(string key)
+    {
+        using var response = await http.PostAsync($"/admin/memory/facts/{Uri.EscapeDataString(key)}/restore", null);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1225,6 +1539,53 @@ internal sealed class ManaBackendClient
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
         using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: moves a live fact to another group (FactCategories).
+    public async Task SetMemoryFactCategoryAsync(string key, string category)
+    {
+        var payload = JsonSerializer.Serialize(new { category });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"/admin/memory/facts/{Uri.EscapeDataString(key)}") { Content = content };
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: "Tell Mana what to remember or change" -- her suggested change,
+    // nothing written. A refusal (no model loaded, nothing understood) comes
+    // back in words in the exception.
+    public async Task<ManaMemoryAnswer> AskMemoryAsync(string text)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { text }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/memory/ask", content);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        static string Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+        var lines = new List<ManaMemoryChange>();
+        var changes = root.TryGetProperty("changes", out var list) && list.ValueKind == JsonValueKind.Array ? list : default;
+        if (changes.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var change in changes.EnumerateArray())
+            {
+                lines.Add(new ManaMemoryChange(Str(change, "action"), Str(change, "key"), Str(change, "text"), Str(change, "was")));
+            }
+        }
+        return new ManaMemoryAnswer
+        {
+            Reply = Str(root, "reply"),
+            ChangesJson = changes.ValueKind == JsonValueKind.Array ? changes.GetRawText() : "[]",
+            Changes = lines,
+        };
+    }
+
+    // #1426: Save it -- the changes AskMemoryAsync suggested, as my own words.
+    public async Task ApplyMemoryAnswerAsync(ManaMemoryAnswer answer)
+    {
+        using var content = new StringContent($"{{\"changes\":{answer.ChangesJson}}}", Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/admin/memory/ask/apply", content);
         response.EnsureSuccessStatusCode();
     }
 
@@ -1358,7 +1719,7 @@ internal sealed class ManaBackendClient
 
     // #914: node-bot's characters (id, name), the active one's id, and
     // whether group mode is on.
-    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, bool GroupOn)> GetCharactersAsync()
+    public async Task<(string Active, IReadOnlyList<(string Id, string Name)> Characters, ManaGroupState Group)> GetCharactersAsync()
     {
         using var response = await http.GetAsync("/characters");
         response.EnsureSuccessStatusCode();
@@ -1368,9 +1729,10 @@ internal sealed class ManaBackendClient
         var characters = root.GetProperty("characters").EnumerateArray()
             .Select(c => (c.GetProperty("id").GetString() ?? "", c.GetProperty("name").GetString() ?? ""))
             .ToList();
-        var groupOn = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object
-            && group.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True;
-        return (root.GetProperty("active").GetString() ?? "", characters, groupOn);
+        var hasGroup = root.TryGetProperty("group", out var group) && group.ValueKind == JsonValueKind.Object;
+        bool Flag(string name) => hasGroup && group.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+        var partner = hasGroup && group.TryGetProperty("partner", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        return (root.GetProperty("active").GetString() ?? "", characters, new ManaGroupState(Flag("on"), partner, Flag("paused")));
     }
 
     // #914: each character's relationship notes and milestones, for
@@ -1417,11 +1779,11 @@ internal sealed class ManaBackendClient
     private static string RelationshipItemPath(string characterId, string kind, string itemId) =>
         $"/characters/{Uri.EscapeDataString(characterId)}/relationship/{(kind == "milestones" ? "milestones" : "notes")}/{Uri.EscapeDataString(itemId)}";
 
-    // #914: group mode on (with the last partner, else the first other
-    // character) or off.
-    public async Task SetGroupAsync(bool on)
+    // #914: group mode on (with partner, else the last one, else the first
+    // other character) or off.
+    public async Task SetGroupAsync(bool on, string? partner = null)
     {
-        var payload = JsonSerializer.Serialize(new { on });
+        var payload = partner is null ? JsonSerializer.Serialize(new { on }) : JsonSerializer.Serialize(new { on, partner });
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/characters/group", content);
         response.EnsureSuccessStatusCode();
@@ -1439,6 +1801,73 @@ internal sealed class ManaBackendClient
         return document.RootElement.TryGetProperty("handoff", out var handoff) && handoff.ValueKind == JsonValueKind.String
             ? handoff.GetString()
             : null;
+    }
+
+    // #1426: Settings' character editor (admin-only): every character with
+    // her prompt, handoff line, voice clip and model.
+    public async Task<(string Active, IReadOnlyList<ManaCharacterProfile> Characters)> GetCharacterProfilesAsync()
+    {
+        using var response = await http.GetAsync("/admin/characters");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        static string? Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var characters = new List<ManaCharacterProfile>();
+        if (document.RootElement.TryGetProperty("characters", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var c in list.EnumerateArray())
+            {
+                var voice = c.TryGetProperty("voice", out var v) && v.ValueKind == JsonValueKind.Object ? v : (JsonElement?)null;
+                characters.Add(new ManaCharacterProfile
+                {
+                    Id = Str(c, "id") ?? "",
+                    Name = Str(c, "name") ?? "",
+                    Persona = Str(c, "persona") ?? "",
+                    Handoff = Str(c, "handoff") ?? "",
+                    BuiltIn = c.TryGetProperty("builtIn", out var b) && b.ValueKind == JsonValueKind.True,
+                    PromptEdited = c.TryGetProperty("promptEdited", out var p) && p.ValueKind == JsonValueKind.True,
+                    VoiceFile = voice is { } hasVoice ? Str(hasVoice, "file") : null,
+                    VoiceWords = voice is { } withWords ? Str(withWords, "refText") : null,
+                    Live2dModel = Str(c, "live2dModel"),
+                });
+            }
+        }
+        return (Str(document.RootElement, "active") ?? "mana", characters);
+    }
+
+    // #1426: id null adds her. voice: null leaves it, "mana" for Mana's, or
+    // new { clip, refText } for her own clip. live2dModel: null leaves it, ""
+    // for Mana's model. A refusal's words come back in the exception.
+    public async Task SaveCharacterAsync(string? id, string name, string persona, string handoff, object? voice, string? live2dModel)
+    {
+        var body = new Dictionary<string, object?> { ["name"] = name, ["persona"] = persona, ["handoff"] = handoff };
+        if (voice is not null)
+        {
+            body["voice"] = voice;
+        }
+        if (live2dModel is not null)
+        {
+            body["live2dModel"] = live2dModel;
+        }
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = id is null
+            ? await http.PostAsync("/admin/characters", content)
+            : await http.PutAsync($"/admin/characters/{Uri.EscapeDataString(id)}", content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: a built-in character's prompt back to the original.
+    public async Task ResetCharacterPromptAsync(string id)
+    {
+        using var response = await http.PostAsync($"/admin/characters/{Uri.EscapeDataString(id)}/reset", null);
+        response.EnsureSuccessStatusCode();
+    }
+
+    // #1426: a character I added, with her notes and milestones.
+    public async Task DeleteCharacterAsync(string id)
+    {
+        using var response = await http.DeleteAsync($"/admin/characters/{Uri.EscapeDataString(id)}");
+        response.EnsureSuccessStatusCode();
     }
 
     public async Task SetTtsOverrideAsync(string? provider)
@@ -1843,11 +2272,9 @@ internal sealed class ManaBackendClient
     // #568: GET /admin/accounts responds with a bare JSON array (unlike
     // every other list route in this file, which wraps its array under a
     // named key) -- see auth-store.js's listAccounts, which returns
-    // res.json(accounts) directly. Requires an admin-role API key sent as
-    // the Connection tab's admin token (server.js's authMiddleware +
-    // requireAdmin) -- requireAdmin's second check is met by #670's per-run
-    // launcher key (x-admin-token), so no separate ADMIN_TOKEN is needed
-    // for a backend this launcher started.
+    // res.json(accounts) directly. #670's per-run launcher key (x-admin-token)
+    // is enough on its own for a backend this launcher started (#1428,
+    // admin-accounts-routes.js's adminAuth); no API key or ADMIN_TOKEN needed.
     public async Task<IReadOnlyList<ManaAccount>> GetAccountsAsync()
     {
         using var response = await http.GetAsync("/admin/accounts");
@@ -2039,6 +2466,7 @@ internal sealed class ManaBackendClient
                     Id = entry.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
                     ActionType = entry.TryGetProperty("actionType", out var typeEl) ? typeEl.GetString() ?? "" : "",
                     Summary = entry.TryGetProperty("summary", out var summaryEl) ? summaryEl.GetString() ?? "" : "",
+                    SessionId = entry.TryGetProperty("sessionId", out var sessionEl) && sessionEl.ValueKind == JsonValueKind.String ? sessionEl.GetString() : null,
                 });
             }
         }
@@ -2175,7 +2603,7 @@ internal sealed class ManaBackendClient
         {
             "current" => "Folio is up to date.",
             "opened" => Text("text") ?? "Opened a Folio update PR.",
-            "pending" => "Waiting for your OK in Approvals.",
+            "pending" => "Waiting for your OK in Waiting for you.",
             "waiting" => $"Folio update #{Text("pr")} is still open.",
             "tried" => $"The newest Folio was already tried (#{Text("pr")}).",
             "off" => "Keep Folio up to date is off.",
@@ -2565,6 +2993,27 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    public async Task<JsonElement> BrowserManualAsync(string action, string? token = null, object? payload = null)
+    {
+        if (action is not ("start" or "frame" or "input" or "done")) throw new ArgumentException("Unknown browser action", nameof(action));
+        using var request = new HttpRequestMessage(action == "frame" ? HttpMethod.Get : HttpMethod.Post, $"/browser/manual/{action}");
+        if (token is not null) request.Headers.Add("X-Mana-Manual-Token", token);
+        if (action != "frame") request.Content = new StringContent(JsonSerializer.Serialize(payload ?? new { }), Encoding.UTF8, "application/json");
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.Clone();
+    }
+
+    public async Task<string> ConnectPersonalBrowserAsync(string sessionId, string[] origins)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(new { sessionId, origins }), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/browser/personal/start", content);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.GetProperty("connectionCode").GetString() ?? throw new InvalidOperationException("No Chrome connection code returned");
+    }
+
     // #1140: the Browser tool's reader view -- POST /web/read fetches the
     // page behind the backend's SSRF guard and returns its readable part as
     // Markdown (tools/html-extract.js), with its images as data: URLs.
@@ -2752,10 +3201,10 @@ internal sealed class ManaBackendClient
             Step = Text("step"),
             PrUrl = Text("prUrl"),
             Log = log,
-            // #1269: her Gemini fallback, on or why not, as one line.
-            Gemini = root.TryGetProperty("gemini", out var gemini) && gemini.ValueKind == JsonValueKind.Object &&
-                gemini.TryGetProperty("text", out var geminiText) && geminiText.ValueKind == JsonValueKind.String
-                    ? geminiText.GetString()
+            // #1406: her DeepSeek escalation, on or why not, as one line.
+            Escalation = root.TryGetProperty("escalation", out var escalation) && escalation.ValueKind == JsonValueKind.Object &&
+                escalation.TryGetProperty("text", out var escalationText) && escalationText.ValueKind == JsonValueKind.String
+                    ? escalationText.GetString()
                     : null,
         };
     }
@@ -3116,6 +3565,9 @@ internal sealed class ManaBackendClient
             Type = root.GetProperty("type").GetString() ?? "",
             Text = root.TryGetProperty("text", out var textProp) ? textProp.GetString() : null,
             Reply = root.TryGetProperty("reply", out var replyProp) ? replyProp.GetString() : null,
+            AnswerModel = root.TryGetProperty("answerModel", out var answerModelProp) ? answerModelProp.GetString() : null,
+            CloudFallback = root.TryGetProperty("cloudFallback", out var fallbackProp) && fallbackProp.ValueKind == JsonValueKind.True,
+            AnalysisOutputs = AnalysisOutputs.Parse(root),
             Changed = root.TryGetProperty("changed", out var changedProp) && changedProp.GetBoolean(),
             Expression = root.TryGetProperty("expression", out var exprProp) ? exprProp.GetString() : null,
             Emotion = root.TryGetProperty("emotion", out var emotionProp) && emotionProp.ValueKind == JsonValueKind.String ? emotionProp.GetString() : null,
@@ -3185,6 +3637,8 @@ internal sealed class ManaSessionTokenUsage
 // #527/#572: GET /models/status.
 internal sealed class ManaModelStatus
 {
+    public bool LocalOnly { get; init; }
+    public ManaCloudFallback Fallback { get; init; } = new();
     public string? ActiveProfile { get; init; }
     public IReadOnlyDictionary<string, ManaModelProfile> Profiles { get; init; } = new Dictionary<string, ManaModelProfile>();
     public string? SelectedModelPath { get; init; }
@@ -3194,6 +3648,8 @@ internal sealed class ManaModelStatus
     public bool BrainHasApiKey { get; init; }
     public string VisionModelPath { get; init; } = "";
     public string VisionMmprojPath { get; init; } = "";
+    // #1426: the provider the main model uses, when it isn't this PC's.
+    public string? BrainProviderId { get; init; }
     // #625: model-management.js's hardware-based profile suggestion key.
     public string? RecommendedProfile { get; init; }
     // Whether llama-server loads the model straight into VRAM (effective value).
@@ -3201,6 +3657,73 @@ internal sealed class ManaModelStatus
 }
 
 // #572: one entry from GET /models/brain-providers.
+internal sealed class ManaCloudFallback
+{
+    public bool Enabled { get; init; }
+    public bool Active { get; init; }
+    public int TimeoutSeconds { get; init; }
+    public string BaseUrl { get; init; } = "";
+    public string Model { get; init; } = "";
+    public bool HasApiKey { get; init; }
+    public string? ProviderId { get; init; } // #1426
+}
+
+// #1426: GET /models/providers.
+internal sealed class ManaProviders
+{
+    public List<ManaProviderPreset> Presets { get; init; } = new();
+    public List<ManaProvider> Providers { get; init; } = new();
+}
+
+internal sealed class ManaProviderPreset
+{
+    public string Id { get; init; } = "";
+    public string Label { get; init; } = "";
+    public string BaseUrl { get; init; } = "";
+    public bool NeedsKey { get; init; }
+    public bool Local { get; init; }
+
+    public override string ToString() => Label;
+}
+
+internal sealed class ManaProvider
+{
+    public string Id { get; init; } = "";
+    public string Preset { get; init; } = "";
+    public string Label { get; init; } = "";
+    public string BaseUrl { get; init; } = "";
+    public bool HasKey { get; init; }
+    public string? KeyHint { get; init; }
+    public ManaProviderCheck? LastCheck { get; init; }
+    public List<string> UsedBy { get; init; } = new();
+
+    public override string ToString() => Label;
+}
+
+// When it was last checked and how that went: her tool loop's three steps
+// on Model (#1441); null on checks from before them.
+internal sealed class ManaProviderCheck
+{
+    public DateTimeOffset At { get; init; }
+    public bool Ok { get; init; }
+    public string? Error { get; init; }
+    public string? Model { get; init; }
+    public bool? Chat { get; init; }
+    public bool? Tools { get; init; }
+    public bool? Stream { get; init; }
+}
+
+internal sealed class ManaChatModels
+{
+    public List<ManaChatModel> Models { get; init; } = new();
+    public string Selected { get; init; } = "automatic";
+}
+
+internal sealed record ManaChatModel(string Id, string Label)
+{
+    public override string ToString() => Label;
+}
+
 internal sealed class ManaBrainProviderPreset
 {
     public string Id { get; init; } = "";
@@ -3261,6 +3784,8 @@ internal sealed class ManaDoctorCheck
 // session list UI needs.
 internal sealed class ManaSession
 {
+    public string? ProjectId { get; init; }
+    public string? ProjectName { get; init; }
     public string SessionId { get; init; } = "";
     public string? Name { get; init; }
     public string? Goal { get; init; }
@@ -3268,6 +3793,25 @@ internal sealed class ManaSession
     // #1322: branched session metadata
     public string? ForkedFrom { get; init; }
     public int? BranchTurnIndex { get; init; }
+}
+
+internal sealed class ManaProject
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Instructions { get; set; } = "";
+    public List<ManaProjectReference> References { get; set; } = new();
+    public override string ToString() => Name;
+}
+
+internal sealed class ManaProjectReference
+{
+    public string Id { get; set; } = "";
+    public string Label { get; set; } = "";
+    public string Path { get; set; } = "";
+    public string Kind { get; set; } = "file";
+    public bool Authorized { get; set; }
+    public override string ToString() => $"{Label} ({Path})";
 }
 
 // #586: GET /sessions/:id's full stored shape, trimmed to what the
@@ -3306,6 +3850,9 @@ internal sealed record ManaSavedArtifactList(List<ManaSavedArtifact>? Artifacts)
 
 internal sealed class ManaSessionTurn
 {
+    public AnalysisOutputs AnalysisOutputs { get; init; } = AnalysisOutputs.Empty;
+    public string? AnswerModel { get; init; }
+    public bool CloudFallback { get; init; }
     public int TurnIndex { get; init; }
     public string? At { get; init; }
     public string? User { get; init; }
@@ -3333,6 +3880,7 @@ internal sealed class ManaPlugin
     public string Name { get; init; } = "";
     public string? Description { get; init; }
     public bool Enabled { get; init; }
+    public string Category { get; init; } = ""; // #1426: the group it shows under
 }
 
 // #529: GET /admin/memory/facts.
@@ -3347,6 +3895,10 @@ internal sealed class ManaMemoryFact
     // #698: set on a standing intent ("when Trigger comes up, mention Text").
     public string Trigger { get; init; } = "";
     public bool Paused { get; init; }
+    // #1426: when it last changed (or was made), ISO 8601.
+    public string? UpdatedAt { get; init; }
+    // #1426: what it's about, one of FactCategories' ids.
+    public string Category { get; init; } = "other";
 }
 
 // #529: GET /skills (index only -- see GetSkillsAsync's own comment).
@@ -3401,6 +3953,8 @@ internal sealed class ManaPendingApproval
     public string Id { get; init; } = "";
     public string ActionType { get; init; } = "";
     public string Summary { get; init; } = "";
+    // #1426: the chat it was asked from, if any (a card shows there too).
+    public string? SessionId { get; init; }
 }
 
 // #838: one undecided GET /admin/pending-writes entry.
@@ -3412,6 +3966,33 @@ internal sealed class ManaPendingWrite
 }
 
 // #573: GET /presets.
+// #1426: POST /admin/memory/ask: what she'd change, in her words and as lines.
+internal sealed class ManaMemoryAnswer
+{
+    public string Reply { get; init; } = "";
+    public IReadOnlyList<ManaMemoryChange> Changes { get; init; } = [];
+    // Sent back as is by Save it; node-bot checks it again.
+    public string ChangesJson { get; init; } = "[]";
+}
+
+// One suggested change: add, change, archive or forget; Was is the text it replaces.
+internal sealed record ManaMemoryChange(string Action, string Key, string Text, string Was);
+
+// #1426: GET /admin/characters, one character as Settings edits her.
+internal sealed class ManaCharacterProfile
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Persona { get; init; } = "";
+    public string Handoff { get; init; } = "";
+    public bool BuiltIn { get; init; }
+    public bool PromptEdited { get; init; }
+    // Her own clip's file name and the words spoken in it; null for Mana's voice.
+    public string? VoiceFile { get; init; }
+    public string? VoiceWords { get; init; }
+    public string? Live2dModel { get; init; }
+}
+
 internal sealed class ManaPreset
 {
     public string Id { get; init; } = "";
@@ -3485,6 +4066,9 @@ internal sealed class ManaHookRule
 
 internal sealed class ReplyStreamEvent
 {
+    public AnalysisOutputs AnalysisOutputs { get; init; } = AnalysisOutputs.Empty;
+    public string? AnswerModel { get; init; }
+    public bool CloudFallback { get; init; }
     public string Type { get; init; } = "";
     public string? Text { get; init; }
     public string? Reply { get; init; }
@@ -3656,7 +4240,7 @@ internal sealed class ManaSelfWorkStatus
     public string? Step { get; init; }
     public string? PrUrl { get; init; }
     public IReadOnlyList<string> Log { get; init; } = [];
-    public string? Gemini { get; init; }
+    public string? Escalation { get; init; }
 }
 
 // #1125: one entry from GET /background-tasks. Status is running,
@@ -3976,3 +4560,93 @@ internal sealed class ManaLearnedReason
     public double Multiplier { get; init; }
 }
 
+// #1406
+public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool LocalOnly)
+{
+    public string? ProviderId { get; init; } // #1426
+    public string? Preset { get; init; } // #1441
+    public IReadOnlyList<string> Models { get; init; } = []; // #1441: the ones it tries, in order
+    public IReadOnlyList<ManaEscalationStat> Stats { get; init; } = []; // #1441
+}
+
+// #1441: a price I set, $ per 1M tokens (hit: input from cache).
+public sealed record ManaPrice(double Hit, double Miss, double Out);
+
+public sealed class ManaPrices
+{
+    public Dictionary<string, ManaPrice> Set { get; init; } = new();
+    public List<string> Unpriced { get; init; } = new();
+}
+
+// #1441: how a model has done at escalation: runs with an outcome, how many
+// passed, and their cost (null when a run's price wasn't known).
+public sealed record ManaEscalationStat(string Model, int Runs, int Passed, double? Usd);
+public sealed record ManaSpendingTotals(double Usd, long Requests, long CacheHit, long CacheMiss, long Output, long Reasoning, long UnpricedRequests,
+    double UsdCacheHit = 0, double UsdCacheMiss = 0, double UsdOutput = 0, double UsdReasoning = 0, double UsdPeakExtra = 0, double? CacheHitRate = null);
+public sealed record ManaIssueCost(int Issue, string? Title, string? State, IReadOnlyList<int> Prs, double Usd, long Requests);
+public sealed record ManaSpendingDay(string Day, double Usd, IReadOnlyDictionary<string, double> ByModel,
+    IReadOnlyDictionary<string, double>? ByUse = null, double PeakExtra = 0, IReadOnlyList<ManaIssueCost>? Issues = null);
+public sealed record ManaSpendingPeriod(ManaSpendingTotals All, IReadOnlyDictionary<string, ManaSpendingTotals> ByModel, IReadOnlyDictionary<string, ManaSpendingTotals> ByUse, double? Projected = null);
+public sealed record ManaSpendingResults(int MergedPrs, double UsdOnMerged, double? CostPerMergedPr, double UsdOnHeld, IReadOnlyList<ManaIssueCost> Top);
+public sealed record ManaBalance(string? Currency, double Total, double Granted, double ToppedUp, bool Available, string? Error);
+public sealed record ManaRunway(double? DaysLeft, bool Low);
+public sealed record ManaApiSpending(ManaSpendingPeriod Total, ManaSpendingPeriod Today, ManaSpendingPeriod Month, bool PeakNow, IReadOnlyList<ManaSpendingDay>? Daily = null)
+{
+    public ManaSpendingPeriod? LastMonth { get; init; }
+    public ManaSpendingResults? Results { get; init; }
+    public ManaBalance? Balance { get; init; }
+    public ManaRunway? Runway { get; init; }
+}
+
+// #1426: puts the backend's own error message where EnsureSuccessStatusCode
+// reads it. The body is buffered, so callers can still read it themselves.
+internal sealed class BackendErrorHandler : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var response = await base.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == "application/json")
+        {
+            try
+            {
+                await response.Content.LoadIntoBufferAsync();
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("error", out var error)
+                    && error.ValueKind == JsonValueKind.String
+                    && error.GetString() is { Length: > 0 } message)
+                {
+                    response.ReasonPhrase = message.ReplaceLineEndings(" ").Trim();
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+        return response;
+    }
+}
+
+internal static class BackendError
+{
+    private static readonly System.Text.RegularExpressions.Regex StatusMessage =
+        new(@"^Response status code does not indicate success: (\d+) \((.*)\)\.$");
+
+    // What to show for a failed call: the backend's sentence when it sent
+    // one, or the status ("Forbidden (403)") when it didn't.
+    internal static string Describe(Exception ex)
+    {
+        var match = StatusMessage.Match(ex.Message);
+        if (!match.Success)
+        {
+            return ex.Message;
+        }
+        var code = int.Parse(match.Groups[1].Value);
+        var reason = match.Groups[2].Value;
+        using var plain = new HttpResponseMessage((System.Net.HttpStatusCode)code);
+        return reason == plain.ReasonPhrase ? $"{reason} ({code})" : reason;
+    }
+}
+
+// #914: group mode -- on, with whom (her id), and paused by a game.
+internal sealed record ManaGroupState(bool On, string? Partner, bool Paused);

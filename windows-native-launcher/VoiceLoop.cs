@@ -264,7 +264,8 @@ internal sealed class VoiceLoop : IDisposable
 
     // #675: the main window's deep-thinking toggle -- while on, every reply
     // (spoken or typed) asks node-bot to think harder. Same threading story.
-    private volatile bool deepThinking;
+    // #1426: the composer's thinking level (ThinkingLevelPicker), sent with every reply.
+    private volatile string thinkLevel = ThinkingLevelPicker.Recommended;
 
     // #675 Q12b: Mana's own deep thinking (she turns it on when asked, for
     // the task), from each reply's final event; lights the Think button via
@@ -648,10 +649,11 @@ internal sealed class VoiceLoop : IDisposable
 
     public void SetPresetId(string? presetId) => currentPresetId = presetId;
 
-    public void SetDeepThinking(bool on)
+    // Picking a level below High also ends Mana's own deep thinking (Q12b).
+    public void SetThinkingLevel(string level)
     {
-        deepThinking = on;
-        if (!on && manaDeepThinking)
+        thinkLevel = level;
+        if (ThinkingLevelPicker.IndexOf(level) < ThinkingLevelPicker.IndexOf("high") && manaDeepThinking)
         {
             manaDeepThinking = false;
             stopManaThinking = true;
@@ -1952,7 +1954,7 @@ internal sealed class VoiceLoop : IDisposable
         try
         {
             var stopMana = stopManaThinking;
-            bool? thinkHarder = deepThinking ? true : stopMana ? false : null;
+            bool? thinkHarder = stopMana ? false : null;
             (reply, changed, preferredExpression, interrupted, pending) = await streamingReplyPlayer.StreamReplyAndPlayAsync(
                 commandText,
                 EnsureSessionId(),
@@ -1965,7 +1967,8 @@ internal sealed class VoiceLoop : IDisposable
                 source,
                 ShowNoted,
                 documents,
-                onThought: text => chatLog?.AppendReplyThought(text));
+                onThought: text => chatLog?.AppendReplyThought(text),
+                thinkLevel: thinkLevel);
             if (!interrupted && !string.IsNullOrEmpty(streamingReplyPlayer.FinalThought))
             {
                 chatLog?.SetReplyThought(streamingReplyPlayer.FinalThought);
@@ -2028,6 +2031,8 @@ internal sealed class VoiceLoop : IDisposable
         // non-streamed path below -- reply is the true final text
         // either way by this point. #1329: FinalSources carries verified web sources.
         artifactSink?.ReportReply(reply ?? "", streamingReplyPlayer.FinalSources);
+        artifactSink?.ReportAnalysisOutputs(streamingReplyPlayer.FinalAnalysisOutputs);
+        if (chatLog is ChatView view) view.SetAnswerModel(streamingReplyPlayer.FinalAnswerModel, streamingReplyPlayer.FinalCloudFallback);
 
         if (!changed)
         {

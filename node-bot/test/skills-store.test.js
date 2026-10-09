@@ -753,3 +753,24 @@ test("pruneStaleSkills archives a SKILL.md folder whole", () => {
   assert.ok(fs.existsSync(path.join(skillsDir, ".archive", "nano-pdf", "scripts", "edit.sh")));
   assert.deepEqual(store.listSkills(), []);
 });
+
+test("#1420: shipped defaults are copied into her folder once, never over hers", () => {
+  const defaultsDir = tempDir();
+  const skillsDir = tempDir();
+  const skill = (name, body) => `---\nname: ${name}\ndescription: ${body}\n---\n${body}\n`;
+  fs.writeFileSync(path.join(defaultsDir, "greeting.md"), skill("greeting", "Say hi."));
+  fs.writeFileSync(path.join(defaultsDir, "notes.md"), skill("notes", "Shipped notes."));
+  fs.writeFileSync(path.join(skillsDir, "notes.md"), skill("notes", "Her own notes."));
+
+  const names = () => createSkillsStore({ skillsDir, defaultsDir }).listSkills().map((s) => s.name).sort();
+  assert.deepEqual(names(), ["greeting", "notes"]);
+  assert.match(fs.readFileSync(path.join(skillsDir, "notes.md"), "utf8"), /Her own notes/);
+
+  // Archived or deleted, a default stays gone.
+  fs.rmSync(path.join(skillsDir, "greeting.md"));
+  assert.deepEqual(names(), ["notes"]);
+
+  // A default added later still arrives.
+  fs.writeFileSync(path.join(defaultsDir, "later.md"), skill("later", "New default."));
+  assert.deepEqual(names(), ["later", "notes"]);
+});

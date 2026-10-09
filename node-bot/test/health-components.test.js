@@ -48,6 +48,7 @@ test("health includes component readiness while preserving top-level fields", as
       // a missing configuration.
       "personality",
       "presets",
+      "privacy-data",
       "prompt-composition",
       "pronunciationLexicon",
       "retrieverAdmin",

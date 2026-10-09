@@ -1,0 +1,23 @@
+{
+  "id": "1349-repair-tool-call",
+  "kind": "multi-file",
+  "pr": 1349,
+  "issue": 621,
+  "base": "68a06e8c52f444c0c99076241a5bd959a49bb166",
+  "fix": "b5ae18240594446c154fdb3f10ed20a1d9311bf0",
+  "title": "Local model tool-call repair should recover malformed JSON before re-asking",
+  "body": "Add a deterministic repair utility for malformed local-model tool calls and share it between Pipeline A and Pipeline B. It should recover common failures such as markdown fences, doubled braces, trailing commas, and unescaped Windows path backslashes before falling back to a re-ask.",
+  "fixFiles": [
+    "node-bot/acp-autonomous-loop.js",
+    "node-bot/ai/llama-server-runtime.js",
+    "node-bot/utils/json-extract.js",
+    "node-bot/utils/repair-tool-call.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/repair-tool-call.test.js",
+    "node-bot/test/llama-server-runtime.test.js"
+  ],
+  "testCommand": "node --test test/repair-tool-call.test.js test/llama-server-runtime.test.js",
+  "interface": "repairToolCallText repairs malformed JSON-like tool-call text and both local reply pipelines use it.",
+  "why": "Bad tool-call syntax is one of the self-work benchmark's recurring failure modes."
+}

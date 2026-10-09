@@ -10,8 +10,7 @@
 //
 // #787: coding__run_tests runs the workspace's own test command. That
 // executes the user's code, so it always asks first (approval gate,
-// "coding-run-tests"), unless the user allowed that exact command in that
-// folder for the session.
+// "coding-run-tests"), with a fresh resource-profile approval for every run.
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -20,12 +19,17 @@ const { protectedPathFor, protectedPathMessage } = require("../protected-paths")
 const { formatReviewHeader } = require("./adversarial-verifier");
 const { killProcessTree } = require("../utils/kill-process-tree");
 const { terminalFeed } = require("../terminal-feed");
+const { recommendTestProfile } = require('../tools/test-resource-profile');
 
 const CODING_TOOL_PREFIX = "coding__";
 const CODING_EDIT_TOOL_NAME = `${CODING_TOOL_PREFIX}propose_edit`;
 const CODING_TEST_TOOL_NAME = `${CODING_TOOL_PREFIX}run_tests`;
 const TEST_TIMEOUT_MS = 120000;
 const MAX_TEST_OUTPUT_CHARS = 4000;
+const testPolicies = new WeakMap();
+const TEST_ESTIMATE_SCHEMA = { type: 'object', description: 'Estimate this test workload and explain the recommendation; approved limits are fixed, never arbitrary.', properties: {
+  minutes: { type: 'number', exclusiveMinimum: 0 }, memoryMb: { type: 'number', exclusiveMinimum: 0 }, processes: { type: 'number', exclusiveMinimum: 0 }, reason: { type: 'string' },
+} };
 
 const TOOL_SCHEMAS = [
   {
@@ -59,7 +63,7 @@ const TOOL_SCHEMAS = [
     function: {
       name: CODING_TEST_TOOL_NAME,
       description:
-        "Run the active workspace's tests (npm test, dotnet test, pytest or unittest -- picked from the project files) and get the exit code and output. Asks the user first unless they've allowed it for this session.",
+        "Run the active workspace's tests and get the exit code and output. Every run requires fresh approval of Mana's 15- or 30-minute resource recommendation. Windows uses AppContainer and a disposable workspace copy; unsupported commands fail without an unrestricted fallback.",
       parameters: {
         type: "object",
         properties: {
@@ -68,6 +72,8 @@ const TOOL_SCHEMAS = [
             description:
               "Optional test file or folder inside the workspace. A test file runs just that file where the runner allows it (npm test, pytest); a folder runs its project's tests. Defaults to the whole workspace.",
           },
+          estimate: TEST_ESTIMATE_SCHEMA,
+          execution: { type: 'string', enum: ['sandbox', 'unrestricted'], description: 'Default sandbox. After this exact sandboxed command fails, request a separately approved unrestricted rerun; it can access host files and network.' },
         },
       },
     },
@@ -140,13 +146,13 @@ function runTestCommand(
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
-      done(null);
+      if (!child.cleanupRequired) done(null);
     }, timeoutMs);
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
     child.on("error", (e) => {
       append(e.message || String(e));
-      done(null);
+      if (!child.cleanupRequired) done(null);
     });
     child.on("close", (code) => done(code));
   });
@@ -171,12 +177,19 @@ function createCodingToolSource(options = {}) {
     path.join(__dirname, "..", "data", "coding-diffs");
   const approvalGate = options.approvalGate || null;
   const env = options.env || process.env;
-  const runTests = options.runTests || runTestCommand;
+  let executionPolicy = approvalGate && testPolicies.get(approvalGate);
+  if (!executionPolicy) {
+    executionPolicy = require('../tools/test-execution-policy').createTestExecutionPolicy();
+    if (approvalGate) testPolicies.set(approvalGate, executionPolicy);
+  }
+  const runTests = options.runTests || (process.platform === 'win32' ? require('../tools/native-execution').runSandboxedTestCommand : runTestCommand);
 
   if (approvalGate) {
-    approvalGate.registerExecutor("coding-run-tests", async ({ command, cwd }) => {
-      const run = await runTests(command, cwd);
-      return JSON.stringify({ status: "ok", command, cwd, passed: run.exitCode === 0 && !run.timedOut, ...run });
+    approvalGate.registerExecutor("coding-run-tests", async ({ command, cwd, workspaceRoot, recommendation, execution, copySources }) => {
+      const unrestricted = executionPolicy.unrestricted(command, cwd, workspaceRoot, execution);
+      const run = await runTests(command, cwd, { workspaceRoot, unrestricted, copySources, resourceProfile: recommendation?.id, timeoutMs: recommendation?.timeoutMs });
+      if (!unrestricted) executionPolicy.record(command, cwd, workspaceRoot, run);
+      return JSON.stringify({ status: "ok", command, cwd, execution: unrestricted ? 'unrestricted' : 'sandbox', unrestrictedRetryAvailable: !unrestricted && (run.exitCode !== 0 || run.timedOut), passed: run.exitCode === 0 && !run.timedOut, ...run });
     });
   }
 
@@ -238,12 +251,19 @@ function createCodingToolSource(options = {}) {
       }
       command = command === "npm test" ? `npm test -- "${name}"` : `${command} "${name}"`;
     }
+    const recommendation = recommendTestProfile({ command, estimate: args?.estimate });
+    const copySources = require('../tools/native-execution').approvedCopySources();
+    let unrestricted;
+    try { unrestricted = executionPolicy.unrestricted(command, cwd, root, args?.execution); }
+    catch (error) { return JSON.stringify({ status: 'error', error: error.message }); }
+    if (recommendation.exceedsAvailableProfiles) return JSON.stringify({ status: 'error', error: 'Estimated tests exceed both available profiles; narrow the tests or ask the user how to proceed', recommendation });
     const outcome = await approvalGate.requestApproval("coding-run-tests", {
-      summary: `Run tests: ${command} (in ${cwd})`,
-      payload: { command, cwd },
+      summary: `${unrestricted ? 'UNRESTRICTED rerun: host files and network accessible' : 'Sandboxed tests'}: ${command} (in ${cwd}); recommend ${recommendation.minutes} minutes, ${recommendation.memoryMb} MB, ${recommendation.processes} processes: ${recommendation.reason}`,
+      payload: { command, cwd, workspaceRoot: root, recommendation, copySources, execution: unrestricted ? 'unrestricted' : 'sandbox' },
+      forceReview: true,
       scanText: command,
       grantKey: `coding-run-tests:${cwd}|${command}`,
-      details: { command, cwd },
+      details: { command, cwd, recommendation, copySources, execution: unrestricted ? 'UNRESTRICTED: host files and network accessible; disposable workspace, fixed Job Object limits, cleanup' : process.platform === 'win32' ? 'AppContainer; disposable workspace and dependency copies' : 'Host test runner (Windows AppContainer unavailable)' },
     });
     return outcome.status === "approved" ? outcome.result : JSON.stringify(outcome);
   }
@@ -309,4 +329,5 @@ module.exports = {
   detectTestCommand,
   runTestCommand,
   createCodingToolSource,
+  TEST_ESTIMATE_SCHEMA,
 };

@@ -62,15 +62,17 @@ public class ManaBackendClientTests
         });
         var client = new ManaBackendClient(handler);
 
-        var (active, characters, groupOn) = await client.GetCharactersAsync();
+        var (active, characters, group) = await client.GetCharactersAsync();
         Assert.Equal("mana", active);
         Assert.Equal(new[] { ("mana", "Mana"), ("evil-mana", "Evil Mana") }, characters);
-        Assert.True(groupOn);
+        Assert.Equal(new ManaGroupState(true, "evil-mana", false), group);
         Assert.Equal("Evil Mana here.", await client.SetCharacterAsync("evil-mana"));
         Assert.Equal("POST /characters/active {\"id\":\"evil-mana\"}", requests[^1]);
-        // #914: the tray's group mode toggle.
+        // #914: group mode, from Settings > Memory > Group mode.
         await client.SetGroupAsync(false);
         Assert.Equal("POST /characters/group {\"on\":false}", requests[^1]);
+        await client.SetGroupAsync(true, "evil-mana");
+        Assert.Equal("POST /characters/group {\"on\":true,\"partner\":\"evil-mana\"}", requests[^1]);
     }
 
     // #1343: Tri-mode coding session status and control

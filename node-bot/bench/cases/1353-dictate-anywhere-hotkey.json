@@ -1,0 +1,29 @@
+{
+  "id": "1353-dictate-anywhere-hotkey",
+  "kind": "launcher",
+  "pr": 1353,
+  "issue": 849,
+  "base": "ad26d133ffd98727dc479282d81ad153837a4a84",
+  "fix": "00a28b5ad8bf48af970c035fd656e12f02f9263d",
+  "title": "Hold-to-talk dictation should reject taps and clean filler text",
+  "body": "Add system-wide hold-to-talk dictation with a 300ms hold threshold, tap rejection, recording/transcription flow, filler-word cleanup, and a lightweight indicator.",
+  "fixFiles": [
+    "windows-native-launcher/Dictation/DictationAudioRecorder.cs",
+    "windows-native-launcher/Dictation/DictationCleaner.cs",
+    "windows-native-launcher/Dictation/DictationIndicatorForm.cs",
+    "windows-native-launcher/Dictation/DictationService.cs",
+    "windows-native-launcher/Dictation/HoldToTalkStateMachine.cs",
+    "windows-native-launcher/Dictation/LowLevelKeyboardHook.cs",
+    "windows-native-launcher/ManaApplicationContext.cs",
+    "windows-native-launcher/ManaSettingsStore.cs",
+    "windows-native-launcher/TextActions.cs",
+    "windows-native-launcher/VoiceLoop.cs"
+  ],
+  "hiddenTests": [
+    "windows-native-launcher/ManaNativeLauncher.Tests/DictationCleanerTests.cs",
+    "windows-native-launcher/ManaNativeLauncher.Tests/HoldToTalkStateMachineTests.cs"
+  ],
+  "testCommand": "cd ..\\windows-native-launcher && dotnet test ManaNativeLauncher.Tests\\ManaNativeLauncher.Tests.csproj --filter \"FullyQualifiedName~DictationCleanerTests|FullyQualifiedName~HoldToTalkStateMachineTests\" --nologo",
+  "interface": "HoldToTalkStateMachine distinguishes taps from held dictation, and DictationCleaner normalizes transcribed text.",
+  "why": "A pure native-launcher task gives the benchmark coverage outside Node."
+}

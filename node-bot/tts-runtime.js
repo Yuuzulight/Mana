@@ -155,6 +155,7 @@ function createTtsRuntime(options = {}) {
   // Starts Kokoro on demand before it's used (kokoro-runtime.js); a no-op
   // unless server.js wires it in.
   const ensureKokoro = options.ensureKokoro || (async () => {});
+  const useKokoro = options.useKokoro || (fn => fn());
   // #914: the active character's Qwen3-TTS voice ({ refAudio, refText }),
   // or null for the service's own (Mana's).
   const getVoice = options.getVoice || (() => null);
@@ -469,7 +470,14 @@ function createTtsRuntime(options = {}) {
     url.searchParams.set("target", target);
     const transport = url.protocol === "https:" ? https : http;
 
-    fishDeviceSwapInFlight = new Promise((resolve, reject) => {
+    const coordinator = options.resourceCoordinator;
+    const previous = fishDeviceSwapInFlight;
+    fishDeviceSwapInFlight = (async () => {
+      await previous?.catch(() => {});
+      const lease = await coordinator?.acquire({ owner: `Fish voice device transfer: ${target}`, priority: 0,
+        estimate: { ramMb: target === 'cpu' ? FISH_VRAM_MB : 0, vramMb: target === 'cuda' ? FISH_VRAM_MB : 0 } });
+      let success = false;
+      try { await new Promise((resolve, reject) => {
       const req = transport.request(
         {
           hostname: url.hostname,
@@ -496,7 +504,12 @@ function createTtsRuntime(options = {}) {
         );
       });
       req.end();
-    }).catch((error) => {
+    }); success = true;
+    } finally {
+      try { if (lease) options.finishFishResourceTransfer?.(lease, target, success); }
+      finally { lease?.release(); }
+    }
+    })().catch((error) => {
       // Let the next check retry instead of getting stuck on a failed target.
       fishDeviceSwapTarget = null;
       throw error;
@@ -558,10 +571,10 @@ function createTtsRuntime(options = {}) {
       await ensureKokoro();
       const startedAt = nowMs();
       const kokoroProfile = pickKokoroLanguageProfile(text);
-      audio = await postJson(`${kokoroTtsUrl}/synthesize`, {
+      audio = await useKokoro(() => postJson(`${kokoroTtsUrl}/synthesize`, {
         text,
         ...kokoroProfile,
-      });
+      }));
       logPerf("tts kokoro", startedAt);
     } else if (provider === "gpt_sovits") {
       if (!gptSovitsRefAudio || !gptSovitsPromptText) {

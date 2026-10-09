@@ -660,3 +660,133 @@ test(
     }
   },
 );
+
+// #1389: read-only hygiene findings in getStatus(), surfaced by Doctor.
+const FACT_NOTE = "---\nstatus: active\npinned: false\nsince: 2026-01-01\n---\n\nLikes tea.\n";
+const doctorVault = (t) => runDoctorChecks({ memoryVault: t.vault.getStatus() }).checks.find((c) => c.id === "memory-vault");
+const kinds = (t) => t.vault.getStatus().findings.map((f) => `${f.kind}:${f.path}`).sort();
+
+test("a fact note in a category subfolder is reported, never imported or moved", () => {
+  const t = setup();
+  t.vault.sync();
+  fs.mkdirSync(t.note("Facts/Health"), { recursive: true });
+  t.write("Facts/Health/tea.md", FACT_NOTE);
+  t.write("Facts/Health/plain.md", "# Just my note\n\nNo header here.\n");
+  t.write("Projects.md", "---\nstatus: draft\n---\n\nnot a Mana status\n");
+
+  assert.deepEqual(kinds(t), ["misplaced-fact:Facts/Health/tea.md"]);
+  const check = doctorVault(t);
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /Facts\/Health\/tea\.md/);
+  assert.match(check.message, /Move it into Facts\//);
+  t.vault.sync();
+  assert.equal(t.fact("tea"), undefined);
+  assert.ok(fs.existsSync(t.note("Facts/Health/tea.md")));
+
+  fs.renameSync(t.note("Facts/Health/tea.md"), t.note("Facts/tea.md"));
+  t.vault.sync();
+  assert.equal(t.fact("tea").text, "Likes tea.");
+  assert.deepEqual(kinds(t), []);
+  assert.equal(doctorVault(t).status, "pass");
+});
+
+test("missing Facts folders and Views/ are reported once the vault has synced", () => {
+  const t = setup();
+  t.vault.sync();
+  const withViews = createMemoryVault({ store: t.store, vaultDir: t.vaultDir, watch: false, log() {}, buildViews: () => [] });
+  assert.deepEqual(withViews.getStatus().findings, []);
+  withViews.sync();
+  assert.deepEqual(withViews.getStatus().findings.map((f) => f.path), ["Views"]);
+  fs.rmSync(t.note("Facts/Pending"), { recursive: true });
+  assert.deepEqual(withViews.getStatus().findings.map((f) => f.path).sort(), ["Facts/Pending", "Views"]);
+  assert.match(doctorVault({ vault: withViews }).message, /Missing folders: Facts\/Pending, Views/);
+  // Without a views builder, Views/ isn't expected.
+  assert.deepEqual(kinds(t), ["missing-structure:Facts/Pending"]);
+});
+
+test("an old Mana Memory.md and a Views file without Mana's marker are reported with ownership", () => {
+  const t = setup();
+  t.vault.sync();
+  t.write("Mana Memory.md", "# old export\n");
+  fs.mkdirSync(t.note("Views"), { recursive: true });
+  t.write("Views/Mine.md", "My own dashboard.\n");
+  t.write("Views/Hers.md", `${VIEWS_MARKER}\n\nbody\n`);
+  assert.deepEqual(kinds(t), ["competing-output:Mana Memory.md", "unowned-view:Views/Mine.md"]);
+  const check = doctorVault(t);
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /files without it are yours and are never overwritten/);
+  assert.match(check.message, /nothing is imported, moved or deleted/);
+  assert.equal(t.read("Mana Memory.md"), "# old export\n");
+  // A Mana Memory.md inside a folder isn't the old top-level output.
+  fs.mkdirSync(t.note("Notes"));
+  t.write("Notes/Mana Memory.md", "# about the project\n");
+  assert.equal(kinds(t).length, 2);
+});
+
+test("Legacy and Reference folders are intentional history and are never flagged", () => {
+  const t = setup();
+  t.vault.sync();
+  for (const dir of ["legacy/old/deep", "REFERENCE", "Facts/Legacy", "Views/Reference"]) fs.mkdirSync(t.note(dir), { recursive: true });
+  t.write("legacy/old/deep/tea.md", FACT_NOTE);
+  t.write("legacy/Mana Memory.md", "# kept\n");
+  t.write("REFERENCE/tea.md", FACT_NOTE);
+  t.write("Facts/Legacy/tea.md", FACT_NOTE);
+  t.write("Views/Reference/mine.md", "mine\n");
+  assert.deepEqual(kinds(t), []);
+  assert.equal(doctorVault(t).status, "pass");
+});
+
+test("a reorganised vault with extra user folders stays healthy", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "RTX 5080.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  fs.mkdirSync(t.note("Projects/Mana"), { recursive: true });
+  fs.mkdirSync(t.note("Journal"), { recursive: true });
+  t.write("Projects/Mana/plan.md", "# Plan\n\n- ship it\n");
+  t.write("Journal/2026-01-01.md", "Dear diary.\n");
+  t.write("Inbox.md", "---\ntags: [todo]\n---\n\nthings\n");
+  assert.deepEqual(t.vault.getStatus().findings, []);
+  assert.equal(doctorVault(t).status, "pass");
+});
+
+test("the hygiene walk is bounded in entries and depth", () => {
+  const t = setup();
+  t.vault.sync();
+  fs.mkdirSync(t.note("Facts/a/b/c/d"), { recursive: true });
+  t.write("Facts/a/b/c/ok.md", FACT_NOTE);
+  t.write("Facts/a/b/c/d/too-deep.md", FACT_NOTE);
+  assert.deepEqual(kinds(t), ["misplaced-fact:Facts/a/b/c/ok.md"]);
+  assert.equal(t.vault.getStatus().findingsTruncated, false);
+
+  fs.mkdirSync(t.note("Bulk"));
+  for (let i = 0; i < 1100; i += 1) t.write(`Bulk/n${i}.md`, "x\n");
+  const status = t.vault.getStatus();
+  assert.equal(status.findingsTruncated, true);
+  assert.match(doctorVault(t).message, /Only part of a big vault was checked\./);
+
+  // Findings are capped too.
+  fs.rmSync(t.note("Bulk"), { recursive: true });
+  fs.mkdirSync(t.note("Many"));
+  for (let i = 0; i < 80; i += 1) t.write(`Many/t${i}.md`, FACT_NOTE);
+  assert.equal(t.vault.getStatus().findings.length, 50);
+  assert.match(doctorVault(t).message, /and 45 more/);
+});
+
+test("a fact's category is in its note, and editing that line moves the fact (#1426)", () => {
+  const t = setup();
+  t.store.rememberFact({ key: "gpu", text: "The user has an RTX 5080.", origin: { kind: "user_stated" }, category: "about-you" });
+  t.store.rememberFact({ key: "raid", text: "Raid is Thursday.", origin: { kind: "user_stated" } });
+  t.vault.sync();
+  assert.equal(parseNote(t.read("Facts/gpu.md")).header.category, "about-you");
+  assert.equal(parseNote(t.read("Facts/raid.md")).header.category, "other");
+
+  t.write("Facts/raid.md", t.read("Facts/raid.md").replace("category: other", "category: hobbies"));
+  t.vault.sync();
+  assert.equal(t.fact("raid").category, "hobbies");
+  assert.equal(t.fact("raid").text, "Raid is Thursday.");
+
+  // Not one of hers: left as it was, and the next write puts the line back.
+  t.write("Facts/raid.md", t.read("Facts/raid.md").replace("category: hobbies", "category: stuff"));
+  t.vault.sync();
+  assert.equal(t.fact("raid").category, "hobbies");
+});

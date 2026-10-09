@@ -154,6 +154,9 @@ internal sealed class ManaSettingsStore
     // Settings > Desktop (#997) edits it; read again on every move.
     public List<string>? DesktopActionFolders { get; set; }
 
+    // #1426: the add-ons (plugins I installed) I've said yes to running.
+    public List<string>? AddOnsAllowed { get; set; }
+
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.
     public string? AvatarFraming { get; set; }
@@ -174,6 +177,11 @@ internal sealed class ManaSettingsStore
     public string? RailTool { get; set; }
     public bool RailToolPinned { get; set; }
     public int? RailToolWidth { get; set; }
+
+    // #1426: the Settings window -- where it was ("x,y,width,height") and
+    // the group last open. See SettingsDialog.
+    public string? SettingsWindowBounds { get; set; }
+    public string? SettingsGroup { get; set; }
 
     // filePath: null (every real call site) uses the real per-user
     // settings file. Tests pass a temp file path to exercise

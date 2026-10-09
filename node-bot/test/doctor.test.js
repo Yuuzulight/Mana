@@ -883,3 +883,19 @@ test("checkCodingSession reports everyday mode and active sticky coding mode", (
   assert.match(active.message, /12m remaining/);
 });
 
+
+test("doctor memory vault row warns per finding kind with paths, reason and recovery (#1389)", () => {
+  const finding = (kind, p) => ({ kind, path: p, why: "Why.", fix: "Do this." });
+  const base = { vaultDir: "V", writable: true, notes: 3, skipped: [], error: null, mode: "watching" };
+  const find = (vault) => runDoctorChecks({ memoryVault: vault }).checks.find((c) => c.id === "memory-vault");
+
+  assert.equal(find({ ...base, findings: [] }).status, "pass");
+  const check = find({
+    ...base,
+    findings: [finding("misplaced-fact", "Facts/A/x.md"), finding("misplaced-fact", "Facts/A/y.md"), finding("unowned-view", "Views/Mine.md")],
+  });
+  assert.equal(check.status, "warn");
+  assert.match(check.message, /Fact notes Mana can't see: Facts\/A\/x\.md, Facts\/A\/y\.md\. Why\. Do this\./);
+  assert.match(check.message, /Your files in Views\/: Views\/Mine\.md/);
+  assert.match(check.message, /never overwritten/);
+});

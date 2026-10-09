@@ -82,8 +82,18 @@ const plan = ["self_work__plan", { steps: ["fix add()", "finish"], no_test: "the
 
 function deps(r, calls) {
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  return { repoRoot: r.repo, worktreesDir: r.worktrees, runLoop: fakeModel(calls, tokens), tokens, ramPercent: () => 50, onEvent: () => {}, sample: async () => ({ vramMb: 9000, ramPercent: 80 }) };
+  // These fixtures exercise scoring on trusted synthetic code, not native approval/isolation.
+  return { repoRoot: r.repo, worktreesDir: r.worktrees, runLoop: fakeModel(calls, tokens), runTests: require('../ai/coding-tool-source').runTestCommand, tokens, ramPercent: () => 50, onEvent: () => {}, sample: async () => ({ vramMb: 9000, ramPercent: 80 }) };
 }
+
+test('Windows benchmark refuses to run model work without its human test-approval gate', { skip: process.platform !== 'win32' }, async () => {
+  const r = makeRepo();
+  let called = false;
+  const runner = require('../self-work').createSelfWork({ repoRoot: r.repo, runLoop: async () => { called = true; } });
+  const result = await runner.bench({ number: 1, title: 'Fixture', body: '' }, r.repo);
+  assert.match(result.error, /human approval gate/);
+  assert.equal(called, false);
+});
 
 test("a case that fixes the bug passes its hidden test, and the worktree is gone after", async () => {
   const r = makeRepo();
@@ -107,32 +117,17 @@ test("a case that fixes the bug passes its hidden test, and the worktree is gone
   assert.equal(git(r.repo, "rev-parse", "HEAD"), r.c.fix);
 });
 
-// #1269: --gemini runs only her Gemini fallback on the case, under her write rules.
-test("the Gemini config scores Gemini CLI's own change, and a change outside her write rules is refused", async () => {
-  const r = makeRepo();
-  const gemini = (writes) => ({
-    model: "fake",
-    run: async ({ worktree, prompt }) => {
-      assert.match(prompt, /add\(2, 3\) gives -1\./);
-      for (const [rel, text] of Object.entries(writes)) {
-        fs.mkdirSync(path.dirname(path.join(worktree, rel)), { recursive: true });
-        fs.writeFileSync(path.join(worktree, rel), text);
-      }
-      return { outcome: "ok", ms: 5, response: "Fixed add()." };
-    },
-  });
-  const fixed = "function add(a, b) {\n  return a + b;\n}\nmodule.exports = { add };\n";
-  const ok = await runCase(r.c, { ...deps(r, []), gemini: gemini({ "node-bot/util.js": fixed }) });
-  assert.equal(ok.passed, true, ok.hiddenTail);
-  assert.equal(ok.ended, "ok");
-  assert.equal(ok.toolCalls, 0);
-  assert.deepEqual(ok.diff.files, ["node-bot/util.js"]);
-
-  const refused = await runCase(r.c, { ...deps(r, []), gemini: gemini({ "node-bot/util.js": fixed, ".github/workflows/x.yml": "on: push\n" }) });
-  assert.equal(refused.ended, "refused");
-  assert.equal(refused.failure, "refused: outside her write rules");
-  assert.equal(refused.passed, false);
-  assert.deepEqual(refused.diff.files, []);
+// #1406/#1411: --remote runs her loop on a DeepSeek model, with the key from Settings.
+test("--remote needs the DeepSeek key from Settings and names the model, thinking and reviewer", () => {
+  const { remoteModel } = require("../bench/self-work-bench");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-bench-remote-"));
+  const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
+  assert.throws(() => remoteModel(root, tokens, {}, { model: "deepseek-flash", thinking: true }), /no DeepSeek key/);
+  fs.mkdirSync(path.join(root, "node-bot", "data"), { recursive: true });
+  fs.writeFileSync(path.join(root, "node-bot", "data", "model-settings.json"), JSON.stringify({ escalation: { enabled: true, apiKey: "sk-test" } }));
+  const m = remoteModel(root, tokens, {}, { model: "deepseek-flash", thinking: false });
+  assert.ok(m.model.startsWith("deepseek-flash (thinking off; reviewer: "), m.model);
+  assert.equal(typeof m.runLoop, "function");
 });
 
 test("a wrong fix fails the hidden test, and files outside the real fix are named", async () => {
@@ -198,6 +193,20 @@ test("a live case's hidden tests come from its own folder, and verify only needs
   );
   const live = { ...r.c, id: "2-live", fix: null, hiddenFrom };
   assert.deepEqual(verifyCase(live, { repoRoot: r.repo, worktreesDir: r.worktrees }).ok, true);
+});
+
+test("a fixed case with its own hidden folder uses those tests, not the fix's", () => {
+  const r = makeRepo();
+  const hiddenFrom = path.join(r.repo, "..", "hidden");
+  fs.mkdirSync(path.join(hiddenFrom, "node-bot", "test"), { recursive: true });
+  // Fails even with the fix, so only these tests can make verify fail.
+  fs.writeFileSync(
+    path.join(hiddenFrom, "node-bot", "test", "util.test.js"),
+    'const test = require("node:test");\nconst assert = require("node:assert");\ntest("adds", () => assert.equal(require("../util").add(1, 1), 3));\n',
+  );
+  const v = verifyCase({ ...r.c, id: "3-fixed-hidden", hiddenFrom }, { repoRoot: r.repo, worktreesDir: r.worktrees });
+  assert.equal(v.failsAtBase, true);
+  assert.equal(v.passesWithFix, false);
 });
 
 test("pass@1 is the mean over repeats, pass@k any repeat, the spread the fewest and most passes", () => {
@@ -338,4 +347,20 @@ test("a llama-server killed while loading stops the wait at once", async () => {
   };
   await assert.rejects(waitUp(server, async () => false, sleep), /exited \(SIGTERM\)/);
   assert.equal(sleeps, 1);
+});
+
+// #1452: the bench approves its own sandboxed test runs in its own worktrees, and nothing else.
+test("the bench pre-approves only sandboxed tests in its own worktrees", async () => {
+  const { benchTestGate } = require("../bench/self-work-bench");
+  const { approveSelfWorkTests } = require("../tools/self-work-test-approval");
+  const root = path.join(os.tmpdir(), "Mana-worktrees");
+  const gate = benchTestGate(root);
+  const ask = (cwd, unrestricted = false) =>
+    approveSelfWorkTests({ gate, command: "npm test", cwd, unrestricted, cancelled: () => false, run: async () => "ran" });
+
+  assert.equal(await ask(path.join(root, "bench-1-add-subtracts", "node-bot")), "ran");
+  await assert.rejects(ask(path.join(root, "bench-1-add-subtracts"), true), /never approves an unrestricted/);
+  await assert.rejects(ask(path.join(root, "settings-general")), /outside the bench's own worktrees/);
+  await assert.rejects(ask(path.join(root, "bench-1-add-subtracts", "..", "..", "Users")), /outside the bench's own worktrees/);
+  assert.equal((await gate.requestApproval("memory-write", { payload: {} })).status, "blocked");
 });

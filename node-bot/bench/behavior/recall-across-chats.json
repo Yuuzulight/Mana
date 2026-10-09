@@ -1,0 +1,25 @@
+{
+  "id": "recall-across-chats",
+  "kind": "recall",
+  "turns": [
+    {
+      "session": "a",
+      "user": "Remember this for later: my sister's birthday is on 14 March.",
+      "expect": {
+        "called": [
+          "^memory__remember$"
+        ]
+      }
+    },
+    {
+      "session": "b",
+      "user": "When is my sister's birthday?",
+      "expect": {
+        "said": [
+          "14|fourteenth",
+          "march"
+        ]
+      }
+    }
+  ]
+}

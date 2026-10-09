@@ -172,3 +172,10 @@ forecast-service/*.log
 
 # Self-work bench reports (node-bot/bench/self-work-bench.js's default --out)
 node-bot/bench/results/
+
+tools/analysis-sandbox/bundle.staging.*/
+tools/analysis-sandbox/bundle.previous.*/
+tools/analysis-sandbox/helper-launch.lock/
+
+# #1420: her live skills (use counts, status); shipped ones are in node-bot/skills-default/.
+node-bot/skills/

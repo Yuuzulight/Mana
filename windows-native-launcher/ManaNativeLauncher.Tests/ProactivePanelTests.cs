@@ -63,7 +63,7 @@ public sealed class ProactivePanelTests
 
             // Muted list
             Assert.Single(panel.MutedList.Items);
-            Assert.Equal("briefing", panel.MutedList.Items[0].ToString());
+            Assert.Equal("briefing", panel.MutedList.Items[0].Text);
 
             // Audio awareness checkbox
             var originalState = ManaSettingsStore.Load().HoldSpeechDuringAudio;

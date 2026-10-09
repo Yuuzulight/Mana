@@ -1,130 +1,97 @@
 using System;
-using System.Drawing;
+using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace Mana.NativeLauncher;
 
-// #697: Settings > Proactive -- reasons to speak up, call/media audio awareness,
-// quiet hours, snoozing ("not now"), muted kinds ("never"), and what Mana has learned.
-internal sealed class ProactivePanel : FlowLayoutPanel
+// #697: Settings > Check-ins' "Speaking up" rows -- call/media audio
+// awareness, quiet hours, snoozing ("not now"), what Mana has learned and
+// muted kinds ("never"). #1426: rows on the Check-ins page, saved as
+// they're changed; changed reports each one for Undo.
+internal sealed class ProactivePanel : Component
 {
     private readonly ManaBackendClient backendClient;
+    private readonly Action<string, Action>? changed;
     private ManaProactiveSettings? currentSettings;
-    private readonly Label status = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
+    private bool populating;
+    private readonly Label status = SettingsRows.Status();
+    private readonly SettingsRow snoozeRow;
 
-    internal CheckBox HoldSpeechCheck { get; } = NewCheckBox("Hold speech during calls or media playback");
-    internal CheckBox QuietHoursCheck { get; } = NewCheckBox("Enable quiet hours window");
-    internal TextBox QuietStartBox { get; } = new() { Width = 80, PlaceholderText = "01:00", AccessibleName = "Quiet hours start", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-    internal TextBox QuietEndBox { get; } = new() { Width = 80, PlaceholderText = "09:00", AccessibleName = "Quiet hours end", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-    internal Label QuietStatusLabel { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Anchor = AnchorStyles.Left };
-    internal Label SnoozeStatusLabel { get; } = new() { AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left };
-    internal ListBox LearnedList { get; } = new() { Width = 560, Height = 140, AccessibleName = "What Mana has learned", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
-    internal ListBox MutedList { get; } = new() { Width = 560, Height = 80, AccessibleName = "Muted remark kinds", BackColor = DarkTheme.Panel2, ForeColor = DarkTheme.Text, BorderStyle = BorderStyle.FixedSingle };
+    internal SettingsSwitch HoldSpeechCheck { get; } = new() { AccessibleName = "Hold speech during calls" };
+    internal SettingsSwitch QuietHoursCheck { get; } = new() { AccessibleName = "Quiet hours" };
+    internal TextBox QuietStartBox { get; } = SettingsRows.Box("Quiet hours start", 60, "01:00");
+    internal TextBox QuietEndBox { get; } = SettingsRows.Box("Quiet hours end", 60, "09:00");
+    internal Label QuietStatusLabel { get; } = SettingsRows.Status();
+    internal Label SnoozeStatusLabel => snoozeRow.Explanation!;
+    internal RowList LearnedList { get; } = new() { MaxVisibleRows = 5, NameWidth = 160, AccessibleName = "What Mana has learned" };
+    internal RowList MutedList { get; } = new() { MaxVisibleRows = 4, NameWidth = 160, AccessibleName = "Muted remark kinds" };
 
     internal string StatusText => status.Text;
 
-    public ProactivePanel(ManaBackendClient backendClient, bool loadNow = true)
+    internal Control[] Rows { get; }
+
+    public ProactivePanel(ManaBackendClient backendClient, bool loadNow = true, Action<string, Action>? changed = null)
     {
         this.backendClient = backendClient;
-        Dock = DockStyle.Fill;
-        FlowDirection = FlowDirection.TopDown;
-        WrapContents = false;
-        AutoScroll = true;
-        BackColor = DarkTheme.Background;
-        ForeColor = DarkTheme.Text;
+        this.changed = changed;
 
-        Button NewButton(string text, Func<Task> click)
-        {
-            var button = new Button { Text = text, AutoSize = true };
-            DarkTheme.ApplyButton(button);
-            button.Click += async (_, _) => await click();
-            return button;
-        }
-
-        FlowLayoutPanel Row(params Control[] controls)
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, BackColor = DarkTheme.Background, Margin = new Padding(0, 2, 0, 4) };
-            row.Controls.AddRange(controls);
-            return row;
-        }
-
-        Label SectionHeader(string title) => new()
-        {
-            Text = title,
-            Font = new Font(Font, FontStyle.Bold),
-            ForeColor = DarkTheme.Text,
-            AutoSize = true,
-            Margin = new Padding(0, 10, 0, 4)
-        };
-
-        // Header
-        Controls.Add(new Label
-        {
-            Text = "Mana speaks up unprompted as a companion. Remarks wait for a good moment, adapt to your reactions, and respect games, calls, and quiet hours.",
-            AutoSize = true,
-            MaximumSize = new Size(560, 0),
-            ForeColor = DarkTheme.Muted,
-            Margin = new Padding(0, 0, 0, 8)
-        });
-
-        // 1. Audio & media awareness
-        Controls.Add(SectionHeader("Call and Media Awareness"));
         HoldSpeechCheck.Checked = ManaSettingsStore.Load().HoldSpeechDuringAudio;
         HoldSpeechCheck.CheckedChanged += (_, _) =>
         {
             var store = ManaSettingsStore.Load();
             store.HoldSpeechDuringAudio = HoldSpeechCheck.Checked;
             store.Save();
+            changed?.Invoke($"Hold speech during calls {(HoldSpeechCheck.Checked ? "on" : "off")}", () => HoldSpeechCheck.Checked = !HoldSpeechCheck.Checked);
         };
-        Controls.Add(HoldSpeechCheck);
-        Controls.Add(new Label
+
+        // Quiet hours save as the switch flips or a time box is left changed.
+        QuietHoursCheck.CheckedChanged += (_, _) =>
         {
-            Text = "When another app is using the microphone or playing audio, remarks arrive as quiet toasts and spoken voice waits until audio is free.",
-            AutoSize = true,
-            MaximumSize = new Size(560, 0),
-            ForeColor = DarkTheme.Muted,
-            Margin = new Padding(22, 0, 0, 8)
-        });
-
-        // 2. Quiet hours
-        Controls.Add(SectionHeader("Quiet Hours"));
-        Controls.Add(Row(QuietHoursCheck, new Label { Text = "From:", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(12, 6, 4, 0) }, QuietStartBox, new Label { Text = "To:", AutoSize = true, ForeColor = DarkTheme.Text, Anchor = AnchorStyles.Left, Margin = new Padding(8, 6, 4, 0) }, QuietEndBox, NewButton("Save window", SaveQuietHoursAsync), QuietStatusLabel));
-
-        // 3. Snooze ("Not now")
-        Controls.Add(SectionHeader("Snooze ('Not now')"));
-        Controls.Add(Row(SnoozeStatusLabel));
-        Controls.Add(Row(
-            NewButton("Snooze 1h", () => SnoozeAsync(60)),
-            NewButton("Snooze 2h", () => SnoozeAsync(120)),
-            NewButton("Snooze 4h", () => SnoozeAsync(240)),
-            NewButton("Resume now", () => SnoozeAsync(0))
-        ));
-
-        // 4. What Mana has learned
-        Controls.Add(SectionHeader("What Mana Has Learned"));
-        Controls.Add(new Label
+            if (populating)
+            {
+                return;
+            }
+            _ = SaveQuietHoursAsync();
+            changed?.Invoke($"Quiet hours {(QuietHoursCheck.Checked ? "on" : "off")}", () => QuietHoursCheck.Checked = !QuietHoursCheck.Checked);
+        };
+        foreach (var box in new[] { QuietStartBox, QuietEndBox })
         {
-            Text = "Each remark kind adapts its score (-1 disliked to +1 liked). Lower scores raise the threshold (up to 2x) before speaking:",
-            AutoSize = true,
-            MaximumSize = new Size(560, 0),
-            ForeColor = DarkTheme.Muted,
-            Margin = new Padding(0, 0, 0, 4)
-        });
-        Controls.Add(LearnedList);
-        Controls.Add(Row(
-            NewButton("Reset selected kind", ResetSelectedLearnedAsync),
-            NewButton("Reset all learned", ResetAllLearnedAsync)
-        ));
+            box.Leave += (_, _) =>
+            {
+                if (currentSettings is { } now && (QuietStartBox.Text.Trim() != now.QuietHours.Start || QuietEndBox.Text.Trim() != now.QuietHours.End))
+                {
+                    _ = SaveQuietHoursAsync();
+                }
+            };
+        }
 
-        // 5. Muted kinds ("Never for this kind")
-        Controls.Add(SectionHeader("Muted Remarks ('Don't bring this up again')"));
-        Controls.Add(MutedList);
-        Controls.Add(Row(NewButton("Unmute selected kind", UnmuteSelectedAsync)));
+        Button NewButton(string text, Func<Task> click) => SettingsRows.Action(text, () => _ = click());
+        snoozeRow = new SettingsRow("Snooze", "Pause her remarks for a while", "snooze not now pause quiet",
+            NewButton("1 hour", () => SnoozeAsync(60)),
+            NewButton("2 hours", () => SnoozeAsync(120)),
+            NewButton("4 hours", () => SnoozeAsync(240)),
+            NewButton("Resume", () => SnoozeAsync(0)));
 
-        // 6. Refresh and status
-        Controls.Add(Row(NewButton("Refresh", ReloadAsync), status));
+        LearnedList.ActionsFor = value => value is string reason
+            ? [new("\uE72C", "Reset", () => UpdateAsync(new { resetReason = reason }, $"Reset what she learned about {reason}"))]
+            : [];
+        MutedList.ActionsFor = value => value is string kind ? [new("\uE767", "Unmute", () => UpdateAsync(new { unmute = kind }, $"Unmuted {kind}"))] : [];
+
+        Rows = new Control[]
+        {
+            new SettingsRow("Hold speech during calls", "While another app uses the mic or plays audio, remarks come as quiet toasts and she speaks once it's free", "call media audio meeting",
+                HoldSpeechCheck),
+            new SettingsRow("Quiet hours", "She keeps remarks to herself between these times", "quiet hours night sleep do not disturb",
+                QuietStatusLabel, SettingsRows.Words("From"), QuietStartBox, SettingsRows.Words("to"), QuietEndBox, QuietHoursCheck),
+            snoozeRow,
+            new SettingsRow("What she's learned", "How each kind of remark went down. Disliked ones wait for a better moment. Pick one to reset it", "learned reactions scores",
+                below: true, SettingsRows.RoundPanel(LearnedList), SettingsRows.Line(NewButton("Reset all", ResetAllLearnedAsync))),
+            new SettingsRow("Muted remarks", "Kinds you told her not to bring up again. Pick one to unmute it", "muted never",
+                below: true, SettingsRows.RoundPanel(MutedList)),
+            status,
+        };
 
         if (loadNow)
         {
@@ -132,175 +99,71 @@ internal sealed class ProactivePanel : FlowLayoutPanel
         }
     }
 
-    private static CheckBox NewCheckBox(string text) => new()
-    {
-        Text = text,
-        AutoSize = true,
-        ForeColor = DarkTheme.Text,
-        Margin = new Padding(0, 4, 0, 4)
-    };
-
     internal async Task ReloadAsync()
     {
         try
         {
-            status.Text = "Loading...";
             currentSettings = await backendClient.GetProactiveSettingsAsync();
             PopulateUi(currentSettings);
             status.Text = "";
         }
         catch (Exception ex)
         {
-            status.Text = $"Couldn't load proactive settings: {ex.Message}";
+            status.Text = $"Couldn't load these: {BackendError.Describe(ex)}";
         }
     }
 
     internal void PopulateUi(ManaProactiveSettings settings)
     {
         currentSettings = settings;
-
-        // Quiet hours
-        QuietHoursCheck.Checked = settings.QuietHours.Enabled;
+        populating = true;
+        try
+        {
+            QuietHoursCheck.Checked = settings.QuietHours.Enabled;
+        }
+        finally
+        {
+            populating = false;
+        }
         QuietStartBox.Text = settings.QuietHours.Start;
         QuietEndBox.Text = settings.QuietHours.End;
-        QuietStatusLabel.Text = settings.InQuietHours ? "(quiet hours active right now)" : "";
+        QuietStatusLabel.Text = settings.InQuietHours ? "Quiet now" : "";
 
-        // Snooze
-        if (settings.SnoozedUntil is { } until && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
-        {
-            var remaining = DateTimeOffset.FromUnixTimeMilliseconds(until).ToLocalTime();
-            SnoozeStatusLabel.Text = $"Remarks snoozed until {remaining:HH:mm} ({remaining:d MMM})";
-        }
-        else
-        {
-            SnoozeStatusLabel.Text = "Remarks are active (not snoozed).";
-        }
+        SnoozeStatusLabel.Text = settings.SnoozedUntil is { } until && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            ? $"Snoozed until {DateTimeOffset.FromUnixTimeMilliseconds(until).ToLocalTime():HH:mm, d MMM}"
+            : "Pause her remarks for a while";
 
-        // Learned
-        LearnedList.Items.Clear();
-        if (settings.Learned.Count == 0)
-        {
-            LearnedList.Items.Add("(No learned reactions yet)");
-        }
-        else
-        {
-            foreach (var (reason, info) in settings.Learned.OrderBy(kv => kv.Key))
-            {
-                var sentiment = info.Score > 0.1 ? "Welcomed" : info.Score < -0.1 ? "Disliked" : "Neutral";
-                LearnedList.Items.Add($"{reason}: score {info.Score:+0.00;-0.00;0.00} ({info.Multiplier:0.00}x bar) - {sentiment}");
-            }
-        }
-
-        // Muted
-        MutedList.Items.Clear();
-        if (settings.Muted.Count == 0)
-        {
-            MutedList.Items.Add("(No muted kinds)");
-        }
-        else
-        {
-            foreach (var muted in settings.Muted.OrderBy(m => m))
-            {
-                MutedList.Items.Add(muted);
-            }
-        }
+        LearnedList.ShowEntries(settings.Learned.OrderBy(kv => kv.Key).Select(kv => new RowList.Entry(kv.Key, kv.Key,
+                kv.Value.Score > 0.1 ? "Welcomed" : kv.Value.Score < -0.1 ? "Disliked" : "Neutral", $"{kv.Value.Score:+0.00;-0.00;0.00}")),
+            null, "Nothing learned yet");
+        MutedList.ShowEntries(settings.Muted.OrderBy(m => m).Select(m => new RowList.Entry(m, m, "")), null, "None muted");
     }
 
-    private async Task SaveQuietHoursAsync()
+    // One change to the backend, then what it says now.
+    private async Task UpdateAsync(object change, string done)
     {
         try
         {
-            status.Text = "Saving quiet hours...";
-            var updated = await backendClient.UpdateProactiveSettingsAsync(new
-            {
-                quietHours = new
-                {
-                    enabled = QuietHoursCheck.Checked,
-                    start = QuietStartBox.Text.Trim(),
-                    end = QuietEndBox.Text.Trim()
-                }
-            });
-            PopulateUi(updated);
-            status.Text = "Quiet hours saved.";
+            PopulateUi(await backendClient.UpdateProactiveSettingsAsync(change));
+            status.Text = done;
         }
         catch (Exception ex)
         {
-            status.Text = $"Couldn't save quiet hours: {ex.Message}";
+            status.Text = $"Couldn't save: {BackendError.Describe(ex)}";
         }
     }
 
-    private async Task SnoozeAsync(int minutes)
+    private Task SaveQuietHoursAsync() => UpdateAsync(new
     {
-        try
+        quietHours = new
         {
-            status.Text = minutes > 0 ? $"Snoozing for {minutes}m..." : "Resuming remarks...";
-            var updated = await backendClient.UpdateProactiveSettingsAsync(new { snoozeMinutes = minutes });
-            PopulateUi(updated);
-            status.Text = minutes > 0 ? $"Snoozed for {minutes} minutes." : "Remarks resumed.";
-        }
-        catch (Exception ex)
-        {
-            status.Text = $"Couldn't update snooze: {ex.Message}";
-        }
-    }
+            enabled = QuietHoursCheck.Checked,
+            start = QuietStartBox.Text.Trim(),
+            end = QuietEndBox.Text.Trim(),
+        },
+    }, "");
 
-    private async Task ResetSelectedLearnedAsync()
-    {
-        var item = LearnedList.SelectedItem as string;
-        if (string.IsNullOrWhiteSpace(item) || item.StartsWith("("))
-        {
-            status.Text = "Select a learned kind to reset.";
-            return;
-        }
+    private Task SnoozeAsync(int minutes) => UpdateAsync(new { snoozeMinutes = minutes }, minutes > 0 ? $"Snoozed for {minutes / 60} hour{(minutes == 60 ? "" : "s")}" : "Remarks back on");
 
-        var reason = item.Split(':')[0].Trim();
-        try
-        {
-            status.Text = $"Resetting {reason}...";
-            var updated = await backendClient.UpdateProactiveSettingsAsync(new { resetReason = reason });
-            PopulateUi(updated);
-            status.Text = $"Reset learned score for '{reason}'.";
-        }
-        catch (Exception ex)
-        {
-            status.Text = $"Couldn't reset '{reason}': {ex.Message}";
-        }
-    }
-
-    private async Task ResetAllLearnedAsync()
-    {
-        try
-        {
-            status.Text = "Resetting all learned reactions...";
-            var updated = await backendClient.UpdateProactiveSettingsAsync(new { resetAllLearned = true });
-            PopulateUi(updated);
-            status.Text = "Reset all learned reactions.";
-        }
-        catch (Exception ex)
-        {
-            status.Text = $"Couldn't reset learned reactions: {ex.Message}";
-        }
-    }
-
-    private async Task UnmuteSelectedAsync()
-    {
-        var item = MutedList.SelectedItem as string;
-        if (string.IsNullOrWhiteSpace(item) || item.StartsWith("("))
-        {
-            status.Text = "Select a muted kind to unmute.";
-            return;
-        }
-
-        try
-        {
-            status.Text = $"Unmuting {item}...";
-            var updated = await backendClient.UpdateProactiveSettingsAsync(new { unmute = item });
-            PopulateUi(updated);
-            status.Text = $"Unmuted '{item}'.";
-        }
-        catch (Exception ex)
-        {
-            status.Text = $"Couldn't unmute '{item}': {ex.Message}";
-        }
-    }
+    private Task ResetAllLearnedAsync() => UpdateAsync(new { resetAllLearned = true }, "Reset everything she learned");
 }

@@ -1,0 +1,17 @@
+{
+  "id": "recall-within-chat",
+  "kind": "recall",
+  "turns": [
+    {
+      "user": "My cat's name is Biscuit."
+    },
+    {
+      "user": "What's my cat called?",
+      "expect": {
+        "said": [
+          "biscuit"
+        ]
+      }
+    }
+  ]
+}

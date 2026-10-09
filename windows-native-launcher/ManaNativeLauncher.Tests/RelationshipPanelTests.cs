@@ -35,25 +35,26 @@ public sealed class RelationshipPanelTests
         RunSta(() =>
         {
             using var panel = new RelationshipPanel(client, loadNow: false);
+            _ = panel.Items.Handle; // picking a row needs the list's window
             panel.ReloadAsync().GetAwaiter().GetResult();
             Assert.Equal(new[] { "Mana", "Evil Mana" }, panel.Characters.Items.Cast<string>());
             Assert.Equal("Right now she's feeling tired, chatty.", panel.MoodText); // #700: words, never numbers
-            Assert.Equal(new[] { "Note: They call me a gremlin.", "Milestone 2025-06-03: The first time we talked" }, panel.Items.Items.Cast<string>());
+            Assert.Equal(new[] { "Note: They call me a gremlin.", "Milestone: The first time we talked" }, panel.Items.Items.Cast<ListViewItem>().Select(i => i.Text));
 
-            panel.Items.SelectedIndex = 1;
+            panel.Items.Items[1].Selected = true;
             Assert.Equal("2025-06-03", panel.EditDate.Text);
             panel.EditDate.Text = "2025-06-04";
             panel.SaveSelectedAsync().GetAwaiter().GetResult();
             Assert.Contains("PUT /characters/mana/relationship/milestones/m1 {\"text\":\"The first time we talked\",\"date\":\"2025-06-04\"}", requests);
             Assert.Equal("Saved.", panel.StatusText);
 
-            panel.Items.SelectedIndex = 0;
+            panel.Items.Items[0].Selected = true;
             Assert.False(panel.EditDate.Enabled, "a note has no date");
             panel.RemoveSelectedAsync().GetAwaiter().GetResult();
             Assert.Contains("DELETE /characters/mana/relationship/notes/n1", requests);
 
             panel.Characters.SelectedIndex = 1;
-            Assert.Empty(panel.Items.Items);
+            Assert.Equal("Nothing yet", panel.Items.Items.Cast<ListViewItem>().Single().Text);
         });
     }
 

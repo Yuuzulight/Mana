@@ -1,3 +1,6 @@
+const { registerPluginRoutes } = require('./routes/plugins');
+const { createChatReply } = require('./ai/chat-reply');
+const { createSpeechRuntime } = require('./ai/speech-runtime');
 /*
 Node backend server (server.js)
 - POST /transcribe : accepts multipart 'file' audio, runs whisper.cpp to transcribe, then llama.cpp to generate a reply.
@@ -105,6 +108,7 @@ const { createVTubeRuntime } = require("./vtube-runtime");
 	const { ADMIN_KEY_REQUIRED_ERROR, checkAdminSecret, requireAdminKeyByDefault } = require("./admin-key");
 	const { registerOpenAiCompatRoutes } = require("./openai-compat-routes");
 	const { registerAdminAccountsRoutes } = require("./admin-accounts-routes");
+	const { registerAdminTokenCacheRoutes } = require("./admin-token-cache-routes");
 	const { registerPluginStoreRoutes } = require("./plugin-store-routes");
 	const {
 	  buildCapabilityHealth,
@@ -201,6 +205,7 @@ const { PluginStore, pluginStore } = require("./plugin-store");
 const { createTtsRuntime, resolveTtsProvider } = require("./tts-runtime");
 const { createKokoroRuntime } = require("./kokoro-runtime");
 const { createAcpMemoryStore } = require("./acp-memory-store");
+const { createMemoryMaintenance } = require("./memory-maintenance");
 const { createSnapshotStore } = require("./snapshot-store");
 const { createSessionSearchIndex } = require("./session-search-index");
 const { createMemoryGraph } = require("./memory-graph");
@@ -232,6 +237,8 @@ const { createRelationshipCapability } = require("./capabilities/relationship-ca
 const { createPluginSettingsStore } = require("./plugin-settings-store");
 const { createAuthStore } = require("./auth-store");
 const { createToolPolicy } = require("./ai/tool-policy");
+const { createLifecycle } = require("./self-improvement");
+const { visibleEntities, buildFactsIndex, buildPendingReview, buildEntitiesIndex } = require("./memory-views");
 // Issue #267: one generic composer instead of a buildToolPolicyWithX per
 // tool source -- see ai/tool-source.js. Each create*ToolSource() factory
 // below already returns the {listToolSchemas, executeTool, isKnownToolName}
@@ -269,9 +276,14 @@ const { createCodingToolSource } = require("./ai/coding-tool-source");
 const { createTryPrToolSource } = require("./ai/try-pr-tool-source");
 const { createReverter } = require("./revert-pr");
 const { createFolioUpdater, JOB_ACTION: FOLIO_UPDATE_ACTION } = require("./folio-update");
-const { createSelfWork } = require("./self-work");
+const { createSelfWork, systemRamPercent } = require("./self-work");
+const { createPostDeployEval } = require("./post-deploy-eval");
+const { createApiSpending, createBalanceReader, runway } = require("./api-spending");
+const { createEscalation } = require("./self-work-escalation");
+const { createLessons } = require("./self-work-lessons");
 const { createTraceStore } = require("./self-work-traces");
 const { createGitToolSource } = require("./ai/git-tool-source");
+const { createImprovementToolSource, createIssueProposals } = require("./issue-proposals");
 const { refuteEdit } = require("./ai/adversarial-verifier");
 const { createMcpClientRegistry } = require("./mcp-client-registry");
 const { mcpClientCapability } = require("./capabilities/mcp-client-capability");
@@ -294,6 +306,7 @@ const { createEditorIntegrations } = require("./zed-integration");
 const { createModelManagement } = require("./model-management");
 const { createLlamaBuildManager } = require("./llama-builds");
 const { createModelSettingsStore } = require("./model-settings-store");
+const { createProjectsStore } = require("./projects-store");
 const whisperDiscovery = require("./whisper-discovery");
 const { createWhisperPromptProvider } = require("./whisper-prompt");
 const { createSpeechVocabulary, resolveWhisperLanguage } = require("./speech-vocabulary");
@@ -449,6 +462,25 @@ function openAiModel() {
   if (override && override.model) return override.model;
   return process.env.OPENAI_MODEL || "codex-gpt-5.5";
 }
+function openAiFallbackConfig() {
+  if (require('./local-only').isLocalOnly()) return null;
+  const fallback = modelSettingsStore.getFallbackSettings();
+  if (!fallback.enabled) return null;
+  const config = {
+    apiKey: fallback.apiKey || process.env.OPENAI_API_KEY || null,
+    baseUrl: fallback.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com",
+    model: fallback.model || process.env.OPENAI_MODEL || '',
+    timeoutSeconds: fallback.timeoutSeconds,
+    allowRemoteAi: '1',
+  };
+  return config.model && shouldUseRemoteAiCore({
+    apiKey: config.apiKey,
+    allowRemoteAi: config.allowRemoteAi,
+    baseUrl: config.baseUrl,
+  })
+    ? config
+    : null;
+}
 const MANA_ALLOW_REMOTE_AI = process.env.MANA_ALLOW_REMOTE_AI || "";
 
 // Threads the dynamic Settings-driven apiKey/baseUrl through to every
@@ -583,8 +615,12 @@ const localLlamaRuntime = createLocalLlamaRuntime({
 // wizard) is what llama-server actually loads next -- not just what
 // /models/status reports.
 const modelSettingsStore = createModelSettingsStore({});
+const resourceCoordinator = process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT ? null
+  : require('./utils/resource-service').initializeResourceService();
+let nativeResourceBridge = null;
 
 const llamaServerRuntime = createLlamaServerRuntime({
+  resourceCoordinator,
   env: process.env,
   systemPrompt: activeDefaultPrompt,
   threads: LLAMA_THREADS,
@@ -668,6 +704,7 @@ const reranker = createReranker({
 // unless MANA_EMBEDDER_MODEL names a local .gguf file, in which case it
 // replaces the RETRIEVER_EMBEDDER_URL (local_embedder.py) service.
 const embedder = createEmbedder({
+  resourceCoordinator,
   env: process.env,
   findServerBin: llamaServerRuntime.findLlamaServerBin,
   supportsLoadMode: llamaServerRuntime.supportsLoadMode,
@@ -715,6 +752,8 @@ async function runLocalLlamaReply(
   // #675: true forces thinking on for this reply (a "think harder" turn).
   thinking = undefined,
 ) {
+  extraMessages?.signal?.throwIfAborted();
+  if (extraMessages?.requireCancellable && !llamaServerRuntime.isEnabled()) throw new Error('Timed fallback requires the cancellable llama-server runtime');
   if (llamaServerRuntime.isEnabled()) {
     try {
       return await llamaServerRuntime.runLocalAssistantReply(
@@ -727,6 +766,9 @@ async function runLocalLlamaReply(
         thinking,
       );
     } catch (e) {
+      if (e?.code === 'LOCAL_CLEANUP_FAILED' || e?.code?.startsWith('RESOURCE_')) throw e;
+      extraMessages?.signal?.throwIfAborted();
+      if (extraMessages?.requireCancellable) throw e;
       if (onEmptyReply && /returned an empty reply/.test(e && e.message)) {
         const backupReply = await onEmptyReply();
         if (backupReply) return backupReply;
@@ -739,12 +781,20 @@ async function runLocalLlamaReply(
       );
     }
   }
-  return localLlamaRuntime.runLocalAssistantReply(
+  let lease;
+  if (resourceCoordinator) {
+  const model = localLlamaRuntime.findLlamaModel(profile);
+  const memory = Math.ceil(fs.statSync(model).size / 1048576 * 1.2 + Number(process.env.LLAMA_CONTEXT || process.env.LLAMA_CONTEXT_CAP || 4096) / 1024 * 128);
+  lease = await resourceCoordinator.acquire({ owner: 'One-shot chat inference',
+    estimate: { ramMb: memory, vramMb: process.env.LLAMA_NGL === '0' ? 0 : memory, cpu: Number(process.env.LLAMA_THREADS || 4) },
+    signal: extraMessages?.signal });
+  }
+  try { return localLlamaRuntime.runLocalAssistantReply(
     prompt,
     maxTokens,
     profile,
     overrideSystemPrompt,
-  );
+  ); } finally { lease?.release(); }
 }
 
 function localLlamaReplyAvailable() {
@@ -786,6 +836,20 @@ const characterStore = createCharacterStore({
       ? null
       : path.join(__dirname, "data", "active-character.json"),
   onSwitch: (character) => notifyTray(characterEvent(character)),
+  // #1426: a character deleted in Settings takes her own files with her
+  // (her personality, mood, notes and milestones). Read when it happens,
+  // after they're all set up below.
+  onRemoved: (id) => {
+    relationshipStores.delete(id);
+    const files = [
+      characterFilePath(DEFAULT_PERSONALITY_FILE, id),
+      characterFilePath(moodFilePath, id),
+      characterFilePath(moodFilePath && path.join(acpMemoryStore.dataDir, "relationship.json"), id),
+    ];
+    for (const file of files) {
+      if (file) fs.rmSync(file, { force: true });
+    }
+  },
   // Group mode: the launcher shows (or hides, id null) the partner's avatar.
   isGaming: () => gamingWatch.isGaming(),
   onGroupChange: (partner) =>
@@ -798,6 +862,8 @@ const characterStore = createCharacterStore({
 });
 
 const ttsRuntime = createTtsRuntime({
+  resourceCoordinator,
+  finishFishResourceTransfer: (...args) => nativeResourceBridge?.finishFishTransfer(...args),
   env: process.env,
   ttsProvider: TTS_PROVIDER,
   getVoice: () => characterStore.active().voice,
@@ -806,6 +872,7 @@ const ttsRuntime = createTtsRuntime({
   logPerf,
   pronunciationLexiconStore,
   ensureKokoro: kokoroRuntime.ensure,
+  useKokoro: kokoroRuntime.use,
 });
 
 // Full-text search over past conversation turns -- an independent SQLite
@@ -1020,6 +1087,7 @@ function whisperThreads() {
 }
 
 const whisperServer = createWhisperServer({
+  resourceCoordinator,
   env: process.env,
   findCliBin: () => whisperDiscovery.findWhisperBin({ env: process.env }),
   findModel: () => whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() }),
@@ -1330,18 +1398,27 @@ function slugifyEntityName(name) {
 // the clustering. No new clustering algorithm: this is entirely a reshape of
 // data Mana already computes (entity-index.json, important_facts,
 // connections).
-function buildMemoryNotes(entityIndex, facts, connections) {
+// #1387: only entities memory-views.js keeps get a note (aliases folded into
+// their canonical one), so nothing links to a note that isn't there.
+function buildMemoryNotes(rawIndex, facts, connections, types = {}) {
   const notes = [];
-  const entityNames = Object.keys(entityIndex || {});
+  const { entities } = visibleEntities(rawIndex, types);
+  const entityIndex = Object.fromEntries(Object.entries(entities).map(([k, e]) => [k, e.mentions]));
+  const entityNames = Object.keys(entityIndex);
   const slugFor = {};
   for (const key of entityNames) {
     slugFor[key] = slugifyEntityName(key);
+  }
+  // A fact names an entity by its canonical key or any of its aliases.
+  const namesFor = Object.fromEntries(entityNames.map((k) => [k, [k]]));
+  for (const [alias, meta] of Object.entries(types)) {
+    if (meta?.canonicalKey && namesFor[meta.canonicalKey]) namesFor[meta.canonicalKey].push(alias);
   }
 
   for (const key of entityNames) {
     const mentions = entityIndex[key] || [];
     if (!mentions.length) continue;
-    const display = mentions[mentions.length - 1].display || key;
+    const display = entities[key].display || key;
     const sessionIds = new Set(mentions.map((m) => m.sessionId));
 
     const linkedKeys = entityNames.filter(
@@ -1380,7 +1457,7 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   if (facts && facts.length) {
     const factLines = facts.map((f) => {
       const mentioned = entityNames.filter((key) =>
-        String(f).toLowerCase().includes(key),
+        namesFor[key].some((name) => String(f).toLowerCase().includes(name)),
       );
       const linkSuffix = mentioned.length
         ? ` (${mentioned.map((k) => `[[${slugFor[k]}]]`).join(", ")})`
@@ -1409,15 +1486,20 @@ function buildMemoryNotes(entityIndex, facts, connections) {
   return notes;
 }
 
+function readMemoryJson(name) {
+  const file = path.join(acpMemoryStore.dataDir, name);
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8") || "{}") : {};
+}
+
 function currentMemoryNotes() {
-  const entityIndexPath = path.join(acpMemoryStore.dataDir, "entity-index.json");
-  let entityIndex = {};
-  if (fs.existsSync(entityIndexPath)) {
-    entityIndex = JSON.parse(fs.readFileSync(entityIndexPath, "utf8") || "{}");
-  }
   const facts = BACKGROUND_MEMORY_META.important_facts || [];
   const connections = BACKGROUND_MEMORY_META.connections || [];
-  return buildMemoryNotes(entityIndex, facts, connections);
+  return buildMemoryNotes(readMemoryJson("entity-index.json"), facts, connections, readMemoryJson("entity-types.json"));
+}
+
+// #1387: what didn't get a note, and why.
+function excludedMemoryEntities() {
+  return visibleEntities(readMemoryJson("entity-index.json"), readMemoryJson("entity-types.json")).excluded;
 }
 
 // #935: the vault's read-only Views/ -- the MEMORY.md summary, Mana's mood
@@ -1440,9 +1522,16 @@ function buildVaultViews(mood) {
     `- Stress: ${levelWord(mood.stress)}`,
     "",
   ].join("\n");
+  // #1388: indexes of the facts, the pending ones and the entities above.
+  const types = readMemoryJson("entity-types.json");
+  const { entities } = visibleEntities(readMemoryJson("entity-index.json"), types);
+  const facts = acpMemoryStore.listFacts();
   return [
     { rel: "Views/Summary.md", body: summary },
     { rel: "Views/Mood.md", body: moodBody },
+    { rel: "Views/Facts Index.md", body: buildFactsIndex(facts) },
+    { rel: "Views/Pending Review.md", body: buildPendingReview(facts) },
+    { rel: "Views/Entities Index.md", body: buildEntitiesIndex(entities, types, slugifyEntityName) },
     ...currentMemoryNotes().map((note) => ({ rel: `Views/Entities/${note.slug}.md`, body: note.body })),
   ];
 }
@@ -2263,12 +2352,16 @@ ensureDirectory(path.join(__dirname, "tmp"));
 // Both multer instances (here and mobile-routes.js) write to node-bot/tmp
 // (or MANA_UPLOAD_TMP_DIR).
 function deleteUploadFiles(uploadPath) {
-  const dir = path.dirname(uploadPath);
-  const name = path.basename(uploadPath);
-  if (!/^[0-9a-f]{32}$/.test(name)) return;
+  if (typeof uploadPath !== "string") return;
+  const dir = path.resolve(uploadTmpDir());
+  const resolved = path.resolve(uploadPath);
+  const name = path.basename(resolved);
+  if (!/^[0-9a-f]{32}$/.test(name) || resolved !== path.join(dir, name)) return;
   try {
     for (const entry of fs.readdirSync(dir)) {
-      if (entry.startsWith(name)) fs.rmSync(path.join(dir, entry), { force: true });
+      if (entry === name || entry.startsWith(`${name}.`)) {
+        fs.rmSync(path.join(dir, entry), { force: true });
+      }
     }
   } catch (e) {
     console.warn(`[Mana] Couldn't delete voice upload ${name}: ${e.message}`);
@@ -2304,6 +2397,18 @@ function registerRoutes(app, upload, deps = {}) {
   // idle signal (issue #69). Deliberately per-registerRoutes-call state (not
   // module-level) so each app instance -- and each test -- starts fresh.
   let idleConsolidationFiredForCurrentIdlePeriod = false;
+  // #1390: retention and compaction across the memory stores. Not built in
+  // tests unless one is injected: the real one works on node-bot/data.
+  const memoryMaintenance =
+    deps.memoryMaintenance ||
+    (process.env.NODE_ENV === "test" || process.env.NODE_TEST_CONTEXT
+      ? null
+      : createMemoryMaintenance({
+          store: deps.acpMemoryStore || acpMemoryStore,
+          searchIndex: sessionSearchIndex,
+          memoryGraph: (deps.acpMemoryStore || acpMemoryStore).memoryGraph,
+          isGaming: () => gamingWatch.isGaming(),
+        }));
   const idleGamingStatusCheck = deps.getGamingStatus || getGamingStatus;
   const triggerIdleConsolidation =
     deps.triggerIdleConsolidation ||
@@ -2372,6 +2477,24 @@ function registerRoutes(app, upload, deps = {}) {
           err && err.message ? err.message : err,
         );
       }
+      // #1390: the permitted (auto) maintenance steps, at most once a day;
+      // anything destructive waits for approval in /admin/memory/maintenance.
+      if (memoryMaintenance) {
+        try {
+          const lastRun = Date.parse(memoryMaintenance.status().lastRunAt) || 0;
+          if (Date.now() - lastRun >= 24 * 60 * 60 * 1000) {
+            const job = () => memoryMaintenance.run({ mode: "auto" });
+            await (resourceCoordinator
+              ? resourceCoordinator.run({ owner: "Memory maintenance", background: true, estimate: {} }, job)
+              : job());
+          }
+        } catch (err) {
+          console.warn(
+            "Idle-triggered memory maintenance failed:",
+            err && err.message ? err.message : err,
+          );
+        }
+      }
       // Deterministic, no-LLM skill pruning (issue #140) -- same idle
       // signal as the memory consolidation above, but this pass never
       // calls the model: it just flags/archives skills nobody's used in
@@ -2436,7 +2559,12 @@ function registerRoutes(app, upload, deps = {}) {
     // issues. Not in tests, unless they bring their own runner: the real
     // one asks gh about the real repo.
     if (deps.selfWork || (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT)) {
-      selfWork.startIdle().catch(() => {});
+      // #1407: a deployed merge's evals go first; her own work waits for them.
+      postDeployEval
+        .maybeRun()
+        .catch(() => false)
+        .then((evaluating) => evaluating || selfWork.startIdle())
+        .catch(() => {});
     }
     triggerIdleConsolidation().catch((err) =>
       console.warn(
@@ -2470,6 +2598,11 @@ function registerRoutes(app, upload, deps = {}) {
       // #1086: the recommendation subtracts what these hold in VRAM.
       ttsProvider: TTS_PROVIDER,
       whisperModel: whisperDiscovery.findWhisperModel({ env: deps.env || process.env }),
+    });
+  const activeProjectsStore =
+    deps.projectsStore || createProjectsStore({
+      dataDir: (deps.env || process.env).MANA_PROJECTS_DIR || path.join((deps.acpMemoryStore || acpMemoryStore).dataDir || path.join(__dirname, 'data'), 'projects'),
+      getSession: id => (deps.acpMemoryStore || acpMemoryStore).getSession?.(id),
     });
 
   // llama-server normally starts lazily on the first chat reply. Desktop
@@ -2579,6 +2712,8 @@ function registerRoutes(app, upload, deps = {}) {
   // module load time against the module-level skillsStore would silently
   // bypass a test's deps.skillsStore override.
   const activeApprovalGate = deps.approvalGate || approvalGate;
+  const documentAccess = deps.documentAccess || require('./document-access').createDocumentAccess({ approvalGate: activeApprovalGate });
+  const projectReferences = require('./project-references').createProjectReferences({ projectsStore: activeProjectsStore, approvalGate: activeApprovalGate });
   activeApprovalGate.registerExecutor("skill-write", (payload) => activeSkillsStore.createSkill(payload));
   // Distinct action type for the idle-triggered autonomous pass (issue
   // #262/skill-proposal.js) -- same executor, but kept separate from
@@ -2669,6 +2804,8 @@ function registerRoutes(app, upload, deps = {}) {
     (deps.notifyTray || notifyTray)({ type: "background_task_done", sessionId, ...event });
   }
   const capabilityContext = {
+    documentAccess,
+    projectsStore: activeProjectsStore,
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
     jobs: researchJobs,
     onBackgroundTaskDone: backgroundTaskDone,
@@ -2804,6 +2941,7 @@ function registerRoutes(app, upload, deps = {}) {
     wikiLookup: deps.wikiLookup || wikiLookup,
     checkAdminAuth,
     getMemoryVault: () => memoryVault,
+    getMemoryMaintenance: () => memoryMaintenance,
     runBackgroundReviewerPublic: deps.runBackgroundReviewerPublic || runBackgroundReviewerPublic,
     runSkillProposalPublic: deps.runSkillProposalPublic || runSkillProposalPublic,
     asyncLoadBackgroundMemory: deps.asyncLoadBackgroundMemory || asyncLoadBackgroundMemory,
@@ -2843,6 +2981,7 @@ function registerRoutes(app, upload, deps = {}) {
         // Q18 (#645): named here, not warned about on every start.
         plainTextSecrets: (deps.plainTextSecretKeys || plainTextSecretKeys)(),
         memoryGraphHistory,
+        memoryMaintenance: memoryMaintenance?.status(),
         memoryVault: memoryVaultStatus(),
         chatModel: chatModelLabel(),
         findLlamaServerBin: llamaServerRuntime.findLlamaServerBin,
@@ -2895,6 +3034,8 @@ function registerRoutes(app, upload, deps = {}) {
     checkAdminAuth,
   });
 
+  require('./routes/projects').registerProjectRoutes(app, { projectsStore: activeProjectsStore, projectReferences, checkAdminAuth, isLocalAdminRequest: deps.isLocalAdminRequest || isLocalAdminRequest });
+
   // Issue #418: transient, human-facing "what's browser automation doing
   // right now" feed for the launcher to poll -- no auth, same as
   // /models/status (a read-only status readout, not a file-system-touching
@@ -2935,6 +3076,9 @@ function registerRoutes(app, upload, deps = {}) {
     if (result.ok) {
       try {
         selfWork.traces?.mark(Number(req.body?.pr), { reverted: true });
+        // #1385: a lesson on the issue that PR was for (only a PR with a training record is hers).
+        const mine = selfWork.traces?.list().find((t) => t.pr === Number(req.body?.pr));
+        if (mine) selfWork.lessons?.record({ issue: mine.issue.number, title: mine.issue.title }, "reverted", String(req.body?.reason || "no reason given"), { kind: "revert", pr: Number(req.body.pr), baseCommit: result.mergeCommit });
       } catch {}
     }
     return res.json(result);
@@ -2945,23 +3089,50 @@ function registerRoutes(app, upload, deps = {}) {
   const gitTools =
     deps.gitTools ||
     createGitToolSource({ approvalGate: activeApprovalGate, isGaming: deps.isGaming || gamingWatch.isGaming });
+  // #1406: what her API use costs (DeepSeek and others), for Settings and her chat.
+  const apiSpending = deps.apiSpending || createApiSpending({ file: path.join(acpMemoryStore.dataDir, "api-spending.json") });
+  // #1385: her failed runs' lessons; promoting one to a rule goes through my approval.
+  const lessons = createLessons({ file: path.join(acpMemoryStore.dataDir, "self-work-lessons.json"), approvalGate: activeApprovalGate });
+  // #1386: her improvement lifecycle, kept across restarts; an issue out of tries quotes its lesson (#1407).
+  const selfImprovement = deps.selfImprovement || createLifecycle({ file: path.join(acpMemoryStore.dataDir, "self-improvement.json"), lessons });
+  // #1384: her improvement issues: duplicate check (her open lessons too), evidence, approval bound to the reviewed text.
+  const improvementTools =
+    deps.improvementTools ||
+    createImprovementToolSource(
+      createIssueProposals({ approvalGate: activeApprovalGate, lessons: { listOpen: () => lessons.list().filter((l) => l.status === "open") } }),
+    );
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =
     deps.selfWork ||
     createSelfWork({
+      lifecycle: selfImprovement,
+      resourceCoordinator,
+      approvalGate: activeApprovalGate,
       runLoop: (...args) => llamaServerRuntime.runToolAwareReply(...args),
       reviewEdit,
       gitTools,
-      // #1269: Gemini CLI when every local attempt failed (MANA_SELF_WORK_GEMINI*).
-      gemini: true,
+      // #1398: she watches CI on her own PR and fixes red checks (twice at most).
+      watchCi: true,
       // #1287: her successful local runs, kept for a later fine-tune (MANA_SELF_WORK_TRACES=0 turns it off).
       traces: createTraceStore({ dir: path.join(acpMemoryStore.dataDir, "self-work-traces") }),
+      lessons,
+      // #1406: DeepSeek when her own attempts fail; off until I switch it on with a key.
+      escalation: createEscalation({
+        file: path.join(acpMemoryStore.dataDir, "self-work-escalation.json"),
+        settings: () => modelSettingsStore.getEscalationSettings(),
+        env: deps.env || process.env,
+      }),
+      remoteLoop: (config) => llamaServerRuntime.remoteToolReply(config),
+      spending: apiSpending,
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.
       onEvent: (run, text, notice) => {
         console.log(`[self-work #${run.issue}] ${text}`);
         if (notice) notifyTray({ type: "self-work", title: "Mana's own code", text, url: run.prUrl || undefined });
         if (notice && run.endedAt) {
+          try {
+            selfImprovement.onRunEnd(run);
+          } catch {}
           backgroundTaskDone({
             sessionId: run.sessionId,
             taskId: "self-work",
@@ -2969,6 +3140,27 @@ function registerRoutes(app, upload, deps = {}) {
             status: ["pr-open", "pr-updated", "up-to-date", "no-change", "stopped"].includes(run.state) ? "done" : "failed",
           });
         }
+      },
+    });
+  // #1407: her behaviour evals once per deployed merge of hers, in an idle
+  // period when she isn't working, no game, RAM under 90% and her chat model
+  // unloaded. A failed gate holds the issue and tells me; nothing reverts.
+  const postDeployEval =
+    deps.postDeployEval ||
+    createPostDeployEval({
+      lifecycle: selfImprovement,
+      repoRoot: path.join(__dirname, ".."),
+      stateFile: path.join(acpMemoryStore.dataDir, "post-deploy-eval.json"),
+      blocked: async () => {
+        if (selfWork.status().state === "running") return "she's working";
+        if ((deps.isGaming || gamingWatch.isGaming)()) return "a game is running";
+        if (systemRamPercent() > 90) return "RAM is high";
+        if (llamaServerRuntime.getStatus().running) return "her chat model is loaded";
+        return null;
+      },
+      notify: (text) => {
+        console.log(`[post-deploy eval] ${text}`);
+        notifyTray({ type: "self-work", title: "Mana's own code", text });
       },
     });
   // #1265: Mana keeps Folio up to date: an hourly job (Folio looked at
@@ -3003,6 +3195,28 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     return res.json(selfWork.status());
   });
+  app.get('/resources/status', (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    res.json(resourceCoordinator?.status() || { active: [], queued: [], history: [] });
+  });
+  nativeResourceBridge = require('./utils/native-resource-bridge').registerNativeResourceRoutes({ app, coordinator: resourceCoordinator,
+    checkAuth: checkAdminAuth, launcherPid: Number(process.env.MANA_LAUNCHER_PID) });
+  if (resourceCoordinator) {
+    activeApprovalGate.registerExecutor('resource-cpu-execution', async ({ requestId }) => {
+      resourceCoordinator.chooseCpu(requestId);
+      return { ok: true, execution: 'cpu', requestId };
+    });
+    const offered = new Set();
+    resourceCoordinator.subscribe(event => {
+      if (event.state === 'released' || event.state === 'refused') { offered.delete(event.id); return; }
+      if (event.state !== 'queued' || !event.cpuAlternative || !/GPU-memory|vramMb/.test(event.reason) || offered.has(event.id)) return;
+      offered.add(event.id);
+      activeApprovalGate.requestApproval('resource-cpu-execution', {
+        forceReview: true, summary: `${event.owner}: GPU execution is queued. Run on CPU instead? This can be slower and uses RAM and CPU.`,
+        payload: { requestId: event.id }, details: { reason: event.reason, cpuEstimate: event.cpuAlternative },
+      }).catch(error => console.warn('CPU alternative approval unavailable:', error.message));
+    });
+  }
   app.post("/self-work/start", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     // #1009: "Allow guardrail changes" is only ever this route's, with my admin key.
@@ -3016,6 +3230,118 @@ function registerRoutes(app, upload, deps = {}) {
   app.post("/self-work/stop", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json({ stopped: selfWork.stop() });
+  });
+  // #1385: her lessons from failed runs; a rule only after my approval.
+  // #1406: API spending for Settings, and self-work's DeepSeek escalation.
+  // The key goes in and never comes back out: only whether there is one.
+  app.get("/api-spending", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(await spendingReport({ days: 90 }));
+  });
+  // #1441: prices I set for models that aren't DeepSeek's ($ per 1M tokens),
+  // and the models she used that have none.
+  app.get("/api-spending/prices", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(apiSpending.prices());
+  });
+  // { model, in, out, cachedIn? } sets one; { model, remove: true } removes it.
+  app.post("/api-spending/prices", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const { model, remove, ...price } = req.body || {};
+    try {
+      return res.json(apiSpending.setPrice(model, remove === true ? null : price));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+  // #1406: Settings' and her chat's spending report: the ledger with each
+  // issue's outcome from her lifecycle, the DeepSeek balance and how long it lasts.
+  const readBalance = deps.readBalance || createBalanceReader({ settings: () => modelSettingsStore.getEscalationSettings(), env: deps.env || process.env });
+  async function spendingReport({ days }) {
+    const outcomeOf = (n) => {
+      const r = selfImprovement.get(n);
+      return r ? { title: r.title, state: r.state, prs: r.prs } : {};
+    };
+    const summary = apiSpending.summary({ days, outcomeOf });
+    const balance = await readBalance().catch((e) => ({ error: e.message }));
+    return { ...summary, balance, runway: runway(balance, summary.avgDaily) };
+  }
+  // #1441: the models it tries (picked, or DeepSeek's two), and how each has done.
+  const escalationView = () => {
+    const s = modelSettingsStore.getEscalationSettings();
+    const { tiersFor } = require("./self-work-escalation");
+    return {
+      enabled: s.enabled,
+      providerId: s.providerId,
+      preset: s.preset,
+      baseUrl: s.baseUrl,
+      hasKey: Boolean(s.apiKey),
+      models: tiersFor(s).map((t) => t.model),
+      stats: selfWork.escalation?.stats?.() || [],
+      localOnly: require("./local-only").isLocalOnly(deps.env || process.env),
+    };
+  };
+  app.get("/self-work/escalation", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(escalationView());
+  });
+  app.post("/self-work/escalation", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const { enabled, apiKey, providerId, models } = req.body || {};
+    if (enabled !== undefined && typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
+    if (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.length > 512)) return res.status(400).json({ error: "apiKey must be a string" });
+    // #1441: the first tier and an optional second, from its model list.
+    if (models !== undefined && (!Array.isArray(models) || models.length > 2 || models.some((m) => typeof m !== "string" || m.length > 200))) {
+      return res.status(400).json({ error: "models must be up to two model names" });
+    }
+    // #1426: a provider from Settings' list (#1441: any of them).
+    if (providerId && !modelSettingsStore.getProvider(providerId)) return res.status(400).json({ error: "That provider isn't added" });
+    modelSettingsStore.setEscalationSettings({ enabled, apiKey, providerId, models });
+    return res.json(escalationView());
+  });
+  app.get("/self-work/lessons", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return selfWork.lessons ? res.json({ lessons: selfWork.lessons.list() }) : res.status(404).json({ error: "lessons are off" });
+  });
+  app.post("/self-work/lessons/:id/promote", async (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    if (!selfWork.lessons) return res.status(404).json({ error: "lessons are off" });
+    return res.json(await selfWork.lessons.promote(req.params.id, req.body?.rule));
+  });
+  app.post("/self-work/lessons/:id/supersede", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    if (!selfWork.lessons) return res.status(404).json({ error: "lessons are off" });
+    return res.json(selfWork.lessons.supersede(req.params.id, String(req.body?.by ?? "")));
+  });
+
+  // #1386: her improvement lifecycle -- every issue's state and why.
+  app.get("/self-improvement", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json({ records: selfImprovement.list() });
+  });
+  // "Try that again": clears a hold and the retry budget.
+  app.post("/self-improvement/:issue/retry", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const record = selfImprovement.retry(req.params.issue);
+    // #1406: a fresh try gets DeepSeek's tiers back too.
+    if (record) selfWork.escalation?.reset(req.params.issue);
+    return record ? res.json({ record }) : res.status(404).json({ error: "No record for that issue." });
+  });
+  // A merged change checked by an eval/bench report (bench/results/<label>).
+  app.post("/self-improvement/:issue/verify", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const label = String(req.body?.label || "");
+    if (!/^[\w.-]+$/.test(label) || label.includes("..")) return res.status(400).json({ error: "label must be a bench/results folder name" });
+    const file = path.join(__dirname, "bench", "results", label, "report.json");
+    if (!fs.existsSync(file)) return res.status(404).json({ error: "No report.json in that folder." });
+    let report;
+    try {
+      report = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (e) {
+      return res.status(400).json({ error: `report.json didn't parse: ${e.message}` });
+    }
+    const record = selfImprovement.verify(req.params.issue, { ...report, label });
+    return record ? res.json({ record }) : res.status(404).json({ error: "No record for that issue." });
   });
 
   // A one-off, session-scoped mode switch layered on top of Mana's base
@@ -3149,13 +3475,15 @@ function registerRoutes(app, upload, deps = {}) {
   // handler (registered for the POSIX case) never runs. desktop-client's
   // shutdown-manager.js calls this instead, then waits for this process to
   // actually exit.
-  app.post("/admin/shutdown", (req, res) => {
+  app.post("/admin/shutdown", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     try {
       llamaServerRuntime.stop();
     } catch (e) {
       console.error("Error stopping llama-server during shutdown:", e?.message || e);
     }
+    try { await browserAutomationPlugin.closeSession(); }
+    catch (e) { console.error("Error closing browser during shutdown:", e?.message || e); }
     res.json({ ok: true });
     setTimeout(() => process.exit(0), 150);
   });
@@ -3305,84 +3633,8 @@ function registerRoutes(app, upload, deps = {}) {
   // inline here) moved to server-routes.js's registerPendingWritesRoutes.
   registerPendingWritesRoutes(app, { checkAdminAuth });
 
-  // Admin token-cache endpoints
-  app.get("/admin/token-cache", async (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    try {
-      const cachePath = path.join(
-        __dirname,
-        "data",
-        "token_count_cache.json",
-      );
-      if (!fs.existsSync(cachePath))
-        return res.json({ ok: true, keys: [], count: 0 });
-      const txt = await fs.promises.readFile(cachePath, "utf8");
-      const obj = JSON.parse(txt || "{}");
-      const keys = Object.keys(obj);
-      return res.json({ ok: true, keys, count: keys.length });
-    } catch (e) {
-      return res.status(500).json({ ok: false, error: String(e) });
-    }
-  });
-
-  app.post("/admin/token-cache/evict", async (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    try {
-      const p = typeof req.body?.path === "string" ? req.body.path : null;
-      if (!p)
-        return res.status(400).json({ ok: false, error: "path required" });
-      const cachePath = path.join(
-        __dirname,
-        "data",
-        "token_count_cache.json",
-      );
-      let cache = {};
-      try {
-        if (fs.existsSync(cachePath))
-          cache = JSON.parse(
-            (await fs.promises.readFile(cachePath, "utf8")) || "{}",
-          );
-      } catch (e) {
-        cache = {};
-      }
-      const key = path.resolve(p);
-      if (cache[key]) delete cache[key];
-      await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });
-      await fs.promises.writeFile(
-        cachePath,
-        JSON.stringify(cache, null, 2),
-        "utf8",
-      );
-      return res.json({ ok: true, evicted: key });
-    } catch (e) {
-      return res.status(500).json({ ok: false, error: String(e) });
-    }
-  });
-
-  // proxy metrics from Python token HTTP server if available
-  app.get("/admin/token-cache-metrics", async (req, res) => {
-    if (!checkAdminAuth(req, res)) return;
-    try {
-      const pyPort = Number(process.env.PY_TOKEN_SERVER_PORT || 9000);
-      const pySecret = process.env.PY_TOKEN_SERVER_SECRET || null;
-      const url = `http://127.0.0.1:${pyPort}/metrics`;
-      const headers = {};
-      if (pySecret) headers["Authorization"] = `Bearer ${pySecret}`;
-      const fetch = require("node-fetch");
-      const resp = await fetch(url, { headers, method: "GET" });
-      const body = await resp.text();
-      try {
-        const parsed = JSON.parse(body);
-        return res.json({ ok: true, metrics: parsed.metrics || parsed });
-      } catch (e) {
-        return res
-          .status(502)
-          .json({ ok: false, error: "invalid_metrics_response" });
-      }
-    } catch (e) {
-      return res.status(500).json({ ok: false, error: String(e) });
-    }
-  });
+  // Issue #500: admin token-cache routes moved out of server.js.
+  registerAdminTokenCacheRoutes(app, { checkAdminAuth });
 
   // Admin endpoint: send a tray notification (protected)
   app.post("/admin/notify/tray", async (req, res) => {
@@ -3535,6 +3787,29 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
+  // #1382: what she's measured, for her planner and for me. Admin-key
+  // protected like every non-public route. Recommendations are advice:
+  // cloud models are never eligible here (no approved fallbacks passed).
+  app.get("/telemetry", (req, res) => {
+    const { buildTelemetry, recommendRoute, plannerSummary, loadReports } = require("./telemetry");
+    const telemetry = buildTelemetry({
+      toolCalls: activeToolCallLog.readRecent(5000),
+      reports: loadReports(path.join(__dirname, "bench", "results")),
+      operations: perfMetrics.operations,
+    });
+    const current = String(activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\\/]/).pop() || null;
+    const kinds = [...new Set(telemetry.models.map((m) => m.kind))];
+    const recommendations = kinds.map((kind) =>
+      recommendRoute(telemetry, {
+        kind,
+        current,
+        candidates: [...new Set(telemetry.models.filter((m) => m.kind === kind).map((m) => m.model))].map((model) => ({ model, local: !/gemini|deepseek/i.test(model) })),
+        localOnly: require("./local-only").isLocalOnly(),
+      }),
+    );
+    res.json({ ...telemetry, recommendations, planner: plannerSummary(telemetry) });
+  });
+
   app.get("/perf/status", (req, res) => {
     try {
       const gaming = getGamingStatus();
@@ -3583,136 +3858,51 @@ function registerRoutes(app, upload, deps = {}) {
   // under ../plugins/), grouped by category. Built-in capabilities without
   // a category (sessions, presets, etc.) aren't "plugins" in this sense and
   // don't appear here -- see /health for the full component list.
-  app.get("/plugins", (req, res) => {
-    const grouped = {};
-    for (const capability of capabilities) {
-      if (!capability.category) continue;
-      const bucket = grouped[capability.category] || (grouped[capability.category] = []);
-      bucket.push({
-        key: capability.key,
-        name: capability.name || capability.key,
-        description: capability.description || null,
-        enabled: activePluginSettingsStore.isEnabled(
-          capability.key,
-          capability.defaultEnabled !== false,
-        ),
-      });
-    }
-    return res.json({ ok: true, plugins: grouped });
+  registerPluginRoutes({
+    get activePluginSettingsStore() { return activePluginSettingsStore; },
+    get app() { return app; },
+    get capabilities() { return capabilities; },
   });
 
-  app.post("/plugins/:key/enabled", (req, res) => {
-    const capability = capabilities.find(
-      (c) => c.category && c.key === req.params.key,
-    );
-    if (!capability) {
-      return res.status(404).json({ ok: false, error: "no such plugin" });
-    }
-    const { enabled } = req.body || {};
-    if (typeof enabled !== "boolean") {
-      return res.status(400).json({ ok: false, error: "enabled must be a boolean" });
-    }
-    const resolved = activePluginSettingsStore.setEnabled(capability.key, enabled);
-    return res.json({ ok: true, key: capability.key, enabled: resolved });
-  });
+
 
   const turnArbiter = require("./utils/turn_arbiter");
 
-  async function synthesizeReply(text, opts = {}) {
-    // S1-mini needs the GPU largely to itself -- under real VRAM contention
-    // from a running game it doesn't fail, it just gets slow enough (10-50x)
-    // to be unusable for real-time chat. Switch to Kokoro automatically
-    // whenever a watched game is running, and back once it closes. Kokoro
-    // is started on demand by that switch (kokoro-runtime.js) and stops
-    // again after MANA_KOKORO_IDLE_MS without use. Qwen3-TTS has no such
-    // switch: it stays loaded and keeps speaking while a game runs.
-    if (ttsRuntime.ttsProvider === "fish") {
-      try {
-        const gaming = getGamingStatus();
-        ttsRuntime.setProviderOverride(gaming.gamingAppRunning ? "kokoro" : null);
-        // Fire-and-forget: also park S1-mini's weights in system RAM while
-        // the game holds the GPU, and pull them back once it closes. Swaps
-        // take 30-100s+ under contention, so this must never block the
-        // reply that's about to go out over Kokoro.
-        ttsRuntime
-          .swapFishDevice(gaming.gamingAppRunning ? "cpu" : "cuda")
-          .catch((err) =>
-            console.warn("Fish device swap failed:", err.message),
-          );
-      } catch (e) {
-        // Best-effort; fall through with whatever provider is configured.
-      }
-    }
-
-    // Acquire a voice turn (priority 0 = highest for direct voice turns)
-    const release = await turnArbiter.acquireTurn(0, {
-      timeoutMs: 2 * 60 * 1000,
-    });
-
-    let captionServer = null;
-    try {
-      try {
-        captionServer = require("./caption-server");
-      } catch (e) {
-        captionServer = null;
-      }
-
-      // prefer a provider method that returns timings
-      if (typeof ttsRuntime.synthesizeWithTimings === "function") {
-        const res = await ttsRuntime.synthesizeWithTimings(text);
-        const audio = res && res.audio ? res.audio : res;
-        const timings = res && res.timings ? res.timings : null;
-        // broadcast captions if we have timings and a caption server
-        if (
-          timings &&
-          captionServer &&
-          typeof captionServer.broadcastCaption === "function"
-        ) {
-          try {
-            captionServer.broadcastCaption({
-              text,
-              words: timings,
-              source: "tts",
-            });
-          } catch (e) {}
-        }
-        return audio;
-      }
-
-      // fallback: synthesize audio and estimate timings locally
-      const audio = await ttsRuntime.synthesizeReply(text, opts.emotion);
-      if (
-        captionServer &&
-        typeof captionServer.broadcastCaption === "function"
-      ) {
-        try {
-          // estimate timings using TTS runtime helper if available
-          const timings =
-            typeof ttsRuntime.estimateWordTimings === "function"
-              ? ttsRuntime.estimateWordTimings(text)
-              : String(text)
-                  .split(/\s+/)
-                  .filter(Boolean)
-                  .map((w, i) => ({
-                    word: w,
-                    startMs: i * 120,
-                    endMs: (i + 1) * 120,
-                  }));
-          captionServer.broadcastCaption({
-            text,
-            words: timings,
-            source: "tts",
-          });
-        } catch (e) {}
-      }
-
-      return audio;
-    } finally {
-      try {
-        release();
-      } catch (e) {}
-    }
-  }
+  const speechRuntime = createSpeechRuntime({
+    get resourceCoordinator() { return resourceCoordinator; },
+    get Atomics() { return Atomics; },
+    get belowNormal() { return belowNormal; },
+    get clampText() { return clampText; },
+    get createWorker() { return createWorker; },
+    get fs() { return fs; },
+    get getGamingStatus() { return getGamingStatus; },
+    get getWhisperPrompt() { return getWhisperPrompt; },
+    get Int32Array() { return Int32Array; },
+    get localLlamaRuntime() { return localLlamaRuntime; },
+    get logPerf() { return logPerf; },
+    get nowMs() { return nowMs; },
+    get path() { return path; },
+    get SCREEN_CONTEXT_ENABLED() { return SCREEN_CONTEXT_ENABLED; },
+    get SCREEN_CONTEXT_MAX_CHARS() { return SCREEN_CONTEXT_MAX_CHARS; },
+    get SCREEN_OCR_CACHE_PATH() { return SCREEN_OCR_CACHE_PATH; },
+    get screenOcrWorkerPromise() { return screenOcrWorkerPromise; },
+    set screenOcrWorkerPromise(value) { screenOcrWorkerPromise = value; },
+    get SharedArrayBuffer() { return SharedArrayBuffer; },
+    get spawn() { return spawn; },
+    get spawnSync() { return spawnSync; },
+    get speechVocabulary() { return speechVocabulary; },
+    get STT_PROVIDER() { return STT_PROVIDER; },
+    get transcribeWithWhisperServer() { return transcribeWithWhisperServer; },
+    get ttsRuntime() { return ttsRuntime; },
+    get turnArbiter() { return turnArbiter; },
+    get WHISPER_BEAM_SIZE() { return WHISPER_BEAM_SIZE; },
+    get WHISPER_NO_SPEECH_THRESHOLD() { return WHISPER_NO_SPEECH_THRESHOLD; },
+    get WHISPER_TEMPERATURE() { return WHISPER_TEMPERATURE; },
+    get whisperDiscovery() { return whisperDiscovery; },
+    get whisperLanguage() { return whisperLanguage; },
+    get whisperThreads() { return whisperThreads; },
+  });
+  function synthesizeReply(...args) { return speechRuntime.synthesizeReply(...args); }
 
   function parseVTubeReactions() {
     return vtubeRuntime.parseVTubeReactions();
@@ -3729,204 +3919,28 @@ function registerRoutes(app, upload, deps = {}) {
   function queueVTubeReaction(reply) {
     return vtubeRuntime.queueVTubeReaction(reply);
   }
-  function findWhisperBin() {
-    const found = whisperDiscovery.findWhisperBin({ env: process.env });
-    if (found) {
-      return found;
-    }
-    throw new Error(
-      "Whisper executable not found under tools/whisper. Set WHISPER_BIN to a valid whisper-cli.exe path.",
-    );
-  }
+  function findWhisperBin(...args) { return speechRuntime.findWhisperBin(...args); }
 
-  function findLlamaBin() {
-    return localLlamaRuntime.findLlamaBin();
-  }
+  function findLlamaBin(...args) { return speechRuntime.findLlamaBin(...args); }
 
-  function findLlamaModel(profile = "default") {
-    return localLlamaRuntime.findLlamaModel(profile);
-  }
+  function findLlamaModel(...args) { return speechRuntime.findLlamaModel(...args); }
 
-  function getLlamaStatus() {
-    return localLlamaRuntime.getLlamaStatus();
-  }
+  function getLlamaStatus(...args) { return speechRuntime.getLlamaStatus(...args); }
 
   // #925: heard is what whisper wrote, transcript the same with my
   // mishearing fixes applied -- what every caller uses. #1107: model and
   // language go into a kept voice clip's sidecar.
-  async function runWhisperHeard(filePath) {
-    const parakeet = STT_PROVIDER === "parakeet";
-    const heard = parakeet
-      ? await runParakeet(filePath)
-      : ((await transcribeWithWhisperServer(filePath)) ?? runWhisperCli(filePath));
-    const model = parakeet
-      ? whisperDiscovery.findParakeetModel({ env: process.env })
-      : whisperDiscovery.findWhisperModel({ env: process.env });
-    return {
-      heard,
-      transcript: speechVocabulary.correct(heard),
-      model: model ? path.basename(model) : null,
-      language: whisperLanguage(),
-    };
-  }
+  function runWhisperHeard(...args) { return speechRuntime.runWhisperHeard(...args); }
 
-  async function runWhisper(filePath) {
-    return (await runWhisperHeard(filePath)).transcript;
-  }
+  function runWhisper(...args) { return speechRuntime.runWhisper(...args); }
 
-  async function runWhisperPartial(filePath) {
-    return speechVocabulary.correct(
-      (await transcribeWithWhisperServer(filePath)) ?? (await runWhisperCliPartial(filePath)),
-    );
-  }
+  function runWhisperPartial(...args) { return speechRuntime.runWhisperPartial(...args); }
 
-  function findParakeetBin() {
-    const found = whisperDiscovery.findParakeetBin({ env: process.env });
-    if (found) {
-      return found;
-    }
-    throw new Error(
-      "Parakeet executable not found under tools/whisper. Set PARAKEET_BIN to a valid parakeet-cli.exe path.",
-    );
-  }
+  function findParakeetBin(...args) { return speechRuntime.findParakeetBin(...args); }
 
-  function runParakeet(filePath) {
-    const parakeetModel = whisperDiscovery.findParakeetModel({ env: process.env });
-    if (!parakeetModel) {
-      throw new Error(
-        "Parakeet model not found under tools/whisper. Set PARAKEET_MODEL to a valid ggml-parakeet-*.bin path.",
-      );
-    }
-    const parakeetBin = findParakeetBin();
-    const startedAt = nowMs();
-    const outBase = filePath + ".out";
-    const outTxt = outBase + ".txt";
-    const args = [
-      "-m",
-      parakeetModel,
-      "-f",
-      filePath,
-      "-t",
-      String(whisperThreads()),
-      "-otxt",
-      "-of",
-      outBase,
-      "-np",
-    ];
-    console.log("Running parakeet:", parakeetBin, args.join(" "));
-    const r = spawnSync(parakeetBin, args, {
-      encoding: "utf8",
-      windowsHide: true,
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    if (r.error) throw r.error;
-    if (r.status !== 0) {
-      console.error("parakeet stderr:", r.stderr);
-      throw new Error("parakeet failed: " + r.stderr);
-    }
-    logPerf("parakeet", startedAt);
-    let attempts = 0;
-    while (!fs.existsSync(outTxt) && attempts < 5) {
-      attempts += 1;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    }
-    if (!fs.existsSync(outTxt)) {
-      return r.stdout ? r.stdout.trim() : "";
-    }
-    const text = fs.readFileSync(outTxt, "utf8").trim();
-    try {
-      fs.unlinkSync(outTxt);
-    } catch (e) {}
-    return text;
-  }
+  function runParakeet(...args) { return speechRuntime.runParakeet(...args); }
 
-  function runWhisperCli(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
-    if (!whisperModel) {
-      throw new Error(
-        "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
-      );
-    }
-    const whisperBin = findWhisperBin();
-    const startedAt = nowMs();
-    // I ask whisper-cli for JSON output so transcription parsing does not depend on stdout formatting.
-    const outBase = filePath + ".out";
-    const outJson = outBase + ".json";
-    const args = [
-      "-m",
-      whisperModel,
-      "-f",
-      filePath,
-      "-t",
-      String(whisperThreads()),
-      "-l",
-      whisperLanguage(),
-      "-bs",
-      WHISPER_BEAM_SIZE,
-      "-nth",
-      WHISPER_NO_SPEECH_THRESHOLD,
-      "-tp",
-      WHISPER_TEMPERATURE,
-      "--output-json",
-      "-of",
-      outBase,
-    ];
-    args.push("--prompt", getWhisperPrompt(), "--carry-initial-prompt");
-    console.log("Running whisper:", whisperBin, args.join(" "));
-    const r = spawnSync(whisperBin, args, {
-      encoding: "utf8",
-      // Issue #388: runs on every spoken utterance -- a console flash here
-      // would be constant.
-      windowsHide: true,
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    if (r.error) throw r.error;
-    console.log(
-      "whisper exit code",
-      r.status,
-      "stdout_len",
-      r.stdout ? r.stdout.length : 0,
-      "stderr_len",
-      r.stderr ? r.stderr.length : 0,
-    );
-    if (r.status !== 0) {
-      console.error("whisper stderr:", r.stderr);
-      throw new Error("whisper failed: " + r.stderr);
-    }
-    logPerf("whisper", startedAt);
-    // Wait briefly for the JSON file to appear
-    let attempts = 0;
-    while (!fs.existsSync(outJson) && attempts < 5) {
-      attempts += 1;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    }
-    if (!fs.existsSync(outJson)) {
-      // fallback: try to return stdout
-      const textOut = r.stdout ? r.stdout.trim() : "";
-      return textOut;
-    }
-    try {
-      const j = JSON.parse(fs.readFileSync(outJson, "utf8"));
-      if (j && j.transcription && j.transcription.length > 0) {
-        const t = j.transcription
-          .map((s) => s.text)
-          .join(" ")
-          .trim();
-        // cleanup json
-        try {
-          fs.unlinkSync(outJson);
-        } catch (e) {}
-        try {
-          fs.unlinkSync(outBase + ".txt");
-        } catch (e) {}
-        return t;
-      }
-    } catch (e) {
-      console.warn("failed to parse whisper json", e);
-    }
-    // fallback to stdout
-    return r.stdout ? r.stdout.trim() : "";
-  }
+  function runWhisperCli(...args) { return speechRuntime.runWhisperCli(...args); }
 
   // Runs whisper-cli asynchronously (spawn, not spawnSync) so it doesn't
   // block the event loop -- unlike runWhisperCli above, this is called
@@ -3935,101 +3949,9 @@ function registerRoutes(app, upload, deps = {}) {
   // runWhisperCli in place: several existing callers (memory-inbox.js
   // explicitly documents "whisper.cpp is sync") assume the synchronous
   // contract, and converting it would risk silently breaking them.
-  function spawnWhisperCliAsync(whisperBin, args) {
-    return new Promise((resolve, reject) => {
-      const child = belowNormal(spawn(whisperBin, args, { windowsHide: true }));
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.on("error", reject);
-      child.on("close", (code) => {
-        resolve({ status: code, stdout, stderr });
-      });
-    });
-  }
+  function spawnWhisperCliAsync(...args) { return speechRuntime.spawnWhisperCliAsync(...args); }
 
-  async function runWhisperCliPartial(filePath) {
-    const whisperModel = whisperDiscovery.findWhisperModel({ env: process.env, language: whisperLanguage() });
-    if (!whisperModel) {
-      throw new Error(
-        "Whisper model not found under tools/whisper. Set WHISPER_MODEL to a valid ggml *.bin path.",
-      );
-    }
-    const whisperBin = findWhisperBin();
-    const startedAt = nowMs();
-    // A distinct suffix from runWhisperCli's ".out" -- self-documents this
-    // as the partial-transcription artifact, even though a filename
-    // collision isn't actually possible (each upload gets its own tmp path).
-    const outBase = filePath + ".partial-out";
-    const outJson = outBase + ".json";
-    const args = [
-      "-m",
-      whisperModel,
-      "-f",
-      filePath,
-      "-t",
-      String(whisperThreads()),
-      "-l",
-      whisperLanguage(),
-      "-bs",
-      WHISPER_BEAM_SIZE,
-      "-nth",
-      WHISPER_NO_SPEECH_THRESHOLD,
-      "-tp",
-      WHISPER_TEMPERATURE,
-      "--output-json",
-      "-of",
-      outBase,
-    ];
-    args.push("--prompt", getWhisperPrompt(), "--carry-initial-prompt");
-    const r = await spawnWhisperCliAsync(whisperBin, args);
-    if (r.status !== 0) {
-      console.error("whisper (partial) stderr:", r.stderr);
-      throw new Error("whisper (partial) failed: " + r.stderr);
-    }
-    logPerf("whisper-partial", startedAt);
-    // Wait briefly for the JSON file to appear -- async setTimeout, not
-    // runWhisperCli's blocking Atomics.wait, since blocking here would
-    // defeat the entire point of using spawn over spawnSync.
-    let attempts = 0;
-    while (!fs.existsSync(outJson) && attempts < 5) {
-      attempts += 1;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (!fs.existsSync(outJson)) {
-      return r.stdout ? r.stdout.trim() : "";
-    }
-    try {
-      const j = JSON.parse(fs.readFileSync(outJson, "utf8"));
-      if (j && j.transcription && j.transcription.length > 0) {
-        return j.transcription
-          .map((s) => s.text)
-          .join(" ")
-          .trim();
-      }
-      return r.stdout ? r.stdout.trim() : "";
-    } catch (e) {
-      console.warn("failed to parse whisper (partial) json", e);
-      return r.stdout ? r.stdout.trim() : "";
-    } finally {
-      // Runs on every path once outJson exists -- an empty transcription
-      // (routine on early, mostly-silent polls) or a parse failure must not
-      // leak the temp file; this endpoint is polled ~every 1.2s per
-      // recording, so a leak here compounds much faster than
-      // runWhisperCli's one-shot equivalent.
-      try {
-        fs.unlinkSync(outJson);
-      } catch (e) {}
-      try {
-        fs.unlinkSync(outBase + ".txt");
-      } catch (e) {}
-    }
-  }
+  function runWhisperCliPartial(...args) { return speechRuntime.runWhisperCliPartial(...args); }
 
   // Async counterpart to normalizeUploadedAudio -- that function
   // unconditionally spawnSync's ffmpeg on every call (no format
@@ -4039,42 +3961,7 @@ function registerRoutes(app, upload, deps = {}) {
   // normalizeUploadedAudio itself and its other callers (/transcribe-only,
   // /transcribe) are untouched, same reasoning as spawnWhisperCliAsync
   // above.
-  function normalizeUploadedAudioAsync(file) {
-    return new Promise((resolve) => {
-      if (!file) {
-        throw new Error("no file");
-      }
-      const tmpPath = file.path;
-      const ext = path.extname(file.originalname).toLowerCase();
-      const wavPath = tmpPath + ".wav";
-
-      const child = spawn("ffmpeg", ["-y", "-i", tmpPath, wavPath], {
-        windowsHide: true,
-      });
-      child.on("error", () => resolve(fallbackToCopy()));
-      child.on("close", (code) => {
-        if (code === 0) {
-          resolve({ tmpPath, audioPath: wavPath });
-        } else {
-          resolve(fallbackToCopy());
-        }
-      });
-
-      function fallbackToCopy() {
-        let audioPath = tmpPath;
-        if (ext) {
-          const copyPath = tmpPath + ext;
-          try {
-            fs.copyFileSync(tmpPath, copyPath);
-            audioPath = copyPath;
-          } catch (error) {
-            console.warn("could not copy file to preserve extension", error);
-          }
-        }
-        return { tmpPath, audioPath };
-      }
-    });
-  }
+  function normalizeUploadedAudioAsync(...args) { return speechRuntime.normalizeUploadedAudioAsync(...args); }
 
   const runLocalAssistantReply =
     deps.runLocalAssistantReply ||
@@ -4117,1842 +4004,175 @@ function registerRoutes(app, upload, deps = {}) {
       return llamaServerRuntime.runBestOfNReply(prompt, options);
     });
 
-  function normalizeUploadedAudio(file) {
-    if (!file) {
-      throw new Error("no file");
-    }
+  function normalizeUploadedAudio(...args) { return speechRuntime.normalizeUploadedAudio(...args); }
 
-    const tmpPath = file.path;
-    const ext = path.extname(file.originalname).toLowerCase();
-    let audioPath = tmpPath;
-    const wavPath = tmpPath + ".wav";
-
-    try {
-      const conv = spawnSync("ffmpeg", ["-y", "-i", tmpPath, wavPath], {
-        encoding: "utf8",
-        // Issue #388: no console flash on audio conversion.
-        windowsHide: true,
-        maxBuffer: 20 * 1024 * 1024,
-      });
-      if (conv.status === 0) {
-        audioPath = wavPath;
-        return { tmpPath, audioPath };
-      }
-    } catch (error) {
-      console.warn(
-        "ffmpeg conversion attempt failed with error, falling back",
-        error,
-      );
-    }
-
-    if (ext) {
-      const copyPath = tmpPath + ext;
-      try {
-        fs.copyFileSync(tmpPath, copyPath);
-        audioPath = copyPath;
-      } catch (error) {
-        console.warn("could not copy file to preserve extension", error);
-      }
-    }
-
-    return { tmpPath, audioPath };
-  }
-
-  function cleanupUploadedAudio(tmpPath, audioPath) {
-    setTimeout(() => {
-      try {
-        fs.unlinkSync(tmpPath);
-      } catch (error) {}
-      try {
-        if (audioPath !== tmpPath) fs.unlinkSync(audioPath);
-      } catch (error) {}
-    }, 10000);
-  }
+  function cleanupUploadedAudio(...args) { return speechRuntime.cleanupUploadedAudio(...args); }
 
   let screenOcrWorkerPromise = null;
 
-  function getScreenOcrWorker() {
-    if (!screenOcrWorkerPromise) {
-      // Quick rundown: keep one OCR worker warm so screen reading is not restarted every reply.
-      screenOcrWorkerPromise = createWorker("eng", 1, {
-        cachePath: SCREEN_OCR_CACHE_PATH,
-        errorHandler: (error) => {
-          console.warn("Screen OCR worker error:", error);
-        },
-      }).catch((error) => {
-        screenOcrWorkerPromise = null;
-        throw error;
-      });
-    }
+  function getScreenOcrWorker(...args) { return speechRuntime.getScreenOcrWorker(...args); }
 
-    return screenOcrWorkerPromise;
-  }
+  function dataUrlToBuffer(...args) { return speechRuntime.dataUrlToBuffer(...args); }
 
-  function dataUrlToBuffer(dataUrl) {
-    const match = String(dataUrl || "").match(
-      /^data:image\/(?:png|jpeg|jpg);base64,(.+)$/i,
-    );
-    if (!match) {
-      throw new Error("screen image must be a PNG or JPEG data URL");
-    }
+  function readScreenText(...args) { return speechRuntime.readScreenText(...args); }
 
-    return Buffer.from(match[1], "base64");
-  }
-
-  async function readScreenText(imageDataUrl) {
-    if (!SCREEN_CONTEXT_ENABLED) {
-      return "";
-    }
-
-    const startedAt = nowMs();
-    const imageBuffer = dataUrlToBuffer(imageDataUrl);
-    try {
-      const worker = await getScreenOcrWorker();
-      const result = await worker.recognize(imageBuffer);
-      logPerf("screen ocr", startedAt);
-      return clampText(result?.data?.text || "", SCREEN_CONTEXT_MAX_CHARS);
-    } catch (error) {
-      // Quick rundown: if OCR chokes on one capture, reset it and keep Mana alive.
-      screenOcrWorkerPromise = null;
-      throw error;
-    }
-  }
-
-  function buildScreenAwarePrompt(transcript, screenText, marketText = "") {
-    if (!screenText && !marketText) {
-      return transcript;
-    }
-
-    // Quick rundown: Mana sees this as extra context, not as something the user said.
-    const parts = ["User said:", transcript];
-
-    if (marketText) {
-      parts.push("", marketText);
-    }
-
-    if (screenText) {
-      parts.push("", "Visible screen text:", screenText);
-    }
-
-    parts.push(
-      "",
-      "Answer the user using the extra context only when it helps.",
-    );
-    return parts.join("\n");
-  }
+  const chatReply = createChatReply({
+    get resourceCoordinator() { return resourceCoordinator; },
+    get acpMemoryStore() { return deps.acpMemoryStore || acpMemoryStore; },
+    get activeApprovalGate() { return activeApprovalGate; },
+    get activeBrowserAutomationToolSource() { return activeBrowserAutomationToolSource; },
+    get activeDefaultPrompt() { return activeDefaultPrompt; },
+    get activeHooksStore() { return activeHooksStore; },
+    get activeLlamaServerRuntime() { return activeLlamaServerRuntime; },
+    get activeMcpClientRegistry() { return activeMcpClientRegistry; },
+    get activeMoodStore() { return activeMoodStore; },
+    get activePluginSettingsStore() { return activePluginSettingsStore; },
+    get activePresetsStore() { return activePresetsStore; },
+    get activeProjectsStore() { return activeProjectsStore; },
+    get projectReferences() { return projectReferences; },
+    get activeSkillsStore() { return activeSkillsStore; },
+    get activeToolCallLog() { return activeToolCallLog; },
+    get activeToolPolicy() { return activeToolPolicy; },
+    get agentActivity() { return agentActivity; },
+    get BACKGROUND_MEMORY_BLOCK() { return BACKGROUND_MEMORY_BLOCK; },
+    get briefing() { return briefing; },
+    get browserAutomationPlugin() { return browserAutomationPlugin; },
+    get buildSkillsIndexBlock() { return buildSkillsIndexBlock; },
+    get buildToolPolicy() { return buildToolPolicy; },
+    get characterStore() { return characterStore; },
+    get classifyIntent() { return classifyIntent; },
+    get cleanLlamaOutput() { return cleanLlamaOutput; },
+    get codingSessionManager() { return codingSessionManager; },
+    get compressExcerpts() { return compressExcerpts; },
+    get contextFullNote() { return contextFullNote; },
+    get createCodingToolSource() { return createCodingToolSource; },
+    get createDeepThinkingToolSource() { return createDeepThinkingToolSource; },
+    get createDesktopToolSource() { return createDesktopToolSource; },
+    // #1383: what her self-inventory reads, live on each call.
+    get inventorySources() {
+      return {
+        capabilities: () => capabilities,
+        health: () => buildCapabilityHealth(capabilities, capabilityContext),
+        isEnabled: (c) => isPluginEnabled(c, activePluginSettingsStore),
+      };
+    },
+    get createExpressionToolSource() { return createExpressionToolSource; },
+    get createMailCalendarToolSource() { return createMailCalendarToolSource; },
+    get createMemoryToolSource() { return createMemoryToolSource; },
+    get createProactiveToolSource() { return createProactiveToolSource; },
+    get createRelationshipToolSource() { return createRelationshipToolSource; },
+    get createReminderToolSource() { return createReminderToolSource; },
+    get createSentenceChunker() { return createSentenceChunker; },
+    get createSessionGoalToolSource() { return createSessionGoalToolSource; },
+    get createSessionSearchToolSource() { return createSessionSearchToolSource; },
+    get createSkillToolSource() { return createSkillToolSource; },
+    get createSnapshotToolSource() { return createSnapshotToolSource; },
+    get createSpeechToolSource() { return createSpeechToolSource; },
+    get createTryPrToolSource() { return createTryPrToolSource; },
+    get createVisionToolSource() { return createVisionToolSource; },
+    get crisisInstruction() { return crisisInstruction; },
+    get cronSchedulerPlugin() { return cronSchedulerPlugin; },
+    get deepThinking() { return deepThinking; },
+    get DEFAULT_CHARACTER_ID() { return DEFAULT_CHARACTER_ID; },
+    get deps() { return deps; },
+    get EMOTION_TAG_PROMPT() { return EMOTION_TAG_PROMPT; },
+    get filterRelevantTools() { return filterRelevantTools; },
+    get finalizePromptComposition() { return finalizePromptComposition; },
+    get fs() { return fs; },
+    get gamingWatch() { return gamingWatch; },
+    get gentleHint() { return gentleHint; },
+    get getEditorIntegrations() { return getEditorIntegrations; },
+    get gitTools() { return gitTools; },
+    get improvementTools() { return improvementTools; },
+    get apiSpending() { return apiSpending; },
+    get spendingReport() { return spendingReport; },
+    get modelSettingsStore() { return modelSettingsStore; },
+    get GROUP_REACTION_MAX_TOKENS() { return GROUP_REACTION_MAX_TOKENS; },
+    get http() { return http; },
+    get https() { return https; },
+    get isExpressionToolName() { return isExpressionToolName; },
+    get isLlamaServerAvailable() { return isLlamaServerAvailable; },
+    get isPluginEnabled() { return isPluginEnabled; },
+    get launchedTask() { return launchedTask; },
+    get LLAMA_MAX_TOKENS() { return LLAMA_MAX_TOKENS; },
+    get LLAMA_MAX_TOKENS_CODING() { return LLAMA_MAX_TOKENS_CODING; },
+    get llamaServerRuntime() { return llamaServerRuntime; },
+    get mailCalendarSettings() { return mailCalendarSettings; },
+    get modelManagement() { return modelManagement; },
+    get moodPromptBlock() { return moodPromptBlock; },
+    get oldestSessionAt() { return oldestSessionAt; },
+    get openAiApiKey() { return openAiApiKey; },
+    get openAiBaseUrl() { return openAiBaseUrl; },
+    get openAiModel() { return openAiModel; },
+    get openAiFallbackConfig() { return deps.openAiFallbackConfig || openAiFallbackConfig; },
+    get createChatAttempt() { return deps.createChatAttempt; },
+    get path() { return path; },
+    get perfMetrics() { return perfMetrics; },
+    get persona() { return persona; },
+    get personalityStore() { return personalityStore; },
+    get personaOf() { return personaOf; },
+    get phrasingVariator() { return phrasingVariator; },
+    get Proxy() { return Proxy; },
+    get queueVTubeReaction() { return queueVTubeReaction; },
+    get recordPromptComposition() { return recordPromptComposition; },
+    get Reflect() { return Reflect; },
+    get relationshipPromptBlock() { return relationshipPromptBlock; },
+    get relationshipStore() { return relationshipStore; },
+    get replyEmotion() { return replyEmotion; },
+    get resolveToolApprovalMode() { return resolveToolApprovalMode; },
+    get retrieverService() { return retrieverService; },
+    get reverter() { return reverter; },
+    get reviewEdit() { return reviewEdit; },
+    get rewritePhrase() { return rewritePhrase; },
+    get runBestOfNReply() { return runBestOfNReply; },
+    get runLocalAssistantReply() { return runLocalAssistantReply; },
+    get runLocalLlamaReply() { return runLocalLlamaReply; },
+    get runToolAwareReply() { return runToolAwareReply; },
+    get rutDetector() { return rutDetector; },
+    get screenSensingPlugin() { return screenSensingPlugin; },
+    get selectLlamaModelProfileForPrompt() { return selectLlamaModelProfileForPrompt; },
+    get selfWork() { return selfWork; },
+    get sessionTokenUsage() { return sessionTokenUsage; },
+    get shouldUseRemoteAi() { return shouldUseRemoteAi; },
+    get snapshotStore() { return snapshotStore; },
+    get spawnSync() { return spawnSync; },
+    get speechVocabulary() { return speechVocabulary; },
+    get stepInfo() { return stepInfo; },
+    get streamedMatchesFinal() { return streamedMatchesFinal; },
+    get stripEmotionTags() { return stripEmotionTags; },
+    get terminalFeed() { return terminalFeed; },
+    get TOOL_NARRATION_PROMPT() { return TOOL_NARRATION_PROMPT; },
+    get trimResult() { return trimResult; },
+    get untrustedLinks() { return untrustedLinks; },
+    get untrustedSources() { return untrustedSources; },
+    get visionCaptureBridge() { return visionCaptureBridge; },
+    get wantsThinkHarder() { return wantsThinkHarder; },
+    get withStepDescriptions() { return withStepDescriptions; },
+    // #1381: only the behaviour eval passes this.
+    get evalTools() { return deps.evalTools; },
+    get wrapWithHooks() { return wrapWithHooks; },
+    get wrapWithInputHooks() { return wrapWithInputHooks; },
+    get wrapWithResultDigest() { return wrapWithResultDigest; },
+    get wrapWithRiskGate() { return wrapWithRiskGate; },
+    get wrapWithToolCallLog() { return wrapWithToolCallLog; },
+  });
+  function buildScreenAwarePrompt(...args) { return chatReply.buildScreenAwarePrompt(...args); }
 
   // ---------------------------------------------------------------------------
   // OpenAI / proxy API inference
   // ---------------------------------------------------------------------------
-  async function runOpenAIReply(
-    prompt,
-    maxTokens = LLAMA_MAX_TOKENS,
-    systemPromptOverride = null,
-    // Issue #421: only passed by call sites that have a REAL per-user
-    // session in scope -- the main chat-turn reply path, and
-    // acp-memory-store.js's automatic per-session summarization. The
-    // background reviewer/connections jobs fold every session's summaries
-    // together with no single session in scope, so they're left untracked
-    // rather than polluting a "default" bucket with unrelated global usage.
-    sessionId = null,
-  ) {
-    if (!shouldUseRemoteAi()) {
-      return null; // no key configured; fall back to local
-    }
-
-    if (sessionId) {
-      const stopThreshold = Number(process.env.MANA_SESSION_TOKEN_STOP);
-      if (
-        Number.isFinite(stopThreshold) &&
-        stopThreshold > 0 &&
-        sessionTokenUsage.getUsage(sessionId).totalTokens >= stopThreshold
-      ) {
-        console.warn(
-          `Remote AI call blocked for session ${sessionId}: token stop threshold (${stopThreshold}) reached.`,
-        );
-        return null; // falls back to local, same as remote AI being disabled
-      }
-    }
-
-    const systemPrompt = systemPromptOverride || activeDefaultPrompt();
-
-    const baseUrl = openAiBaseUrl().replace(/\/+$/, "");
-    const url = new URL(baseUrl + "/v1/chat/completions");
-    const transport = url.protocol === "https:" ? https : http;
-
-    const body = JSON.stringify({
-      model: openAiModel(),
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.7,
-    });
-
-    return new Promise((resolve) => {
-      const options = {
-        hostname: url.hostname,
-        port: url.port || (url.protocol === "https:" ? 443 : 80),
-        path: url.pathname + url.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-          // Many self-hosted OpenAI-compatible servers (Ollama, llama.cpp's
-          // own llama-server, etc.) don't require auth at all -- only send
-          // the header when there's actually a key configured, rather than
-          // sending a literal "Bearer null" to a server that might choke on it.
-          ...(openAiApiKey() ? { Authorization: `Bearer ${openAiApiKey()}` } : {}),
-        },
-      };
-
-      const req = transport.request(options, (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          try {
-            const raw = Buffer.concat(chunks).toString("utf8");
-            const j = JSON.parse(raw);
-            const text =
-              j?.choices?.[0]?.message?.content ||
-              j?.choices?.[0]?.text ||
-              null;
-            if (sessionId && j?.usage) {
-              sessionTokenUsage.recordUsage(sessionId, j.usage);
-            }
-            if (text) {
-              resolve(text.trim());
-            } else {
-              console.warn(
-                "OpenAI proxy returned unexpected shape:",
-                raw.slice(0, 300),
-              );
-              resolve(null);
-            }
-          } catch (e) {
-            console.warn("OpenAI proxy parse error:", e.message);
-            resolve(null);
-          }
-        });
-      });
-
-      req.on("error", (e) => {
-        console.warn("OpenAI proxy request error:", e.message);
-        resolve(null);
-      });
-
-      req.write(body);
-      req.end();
-    });
-  }
+  function runOpenAIReply(...args) { return chatReply.runOpenAIReply(...args); }
 
   // Assistant mode picker: use the local intent classifier when available
   const { classifyIntent } = require("./utils/intent-classifier");
 
   // Returns an object: { mode: 'casual'|'everyday'|'coding', reason: string }
-  function pickAssistantMode(transcript, normalizedModelProfile) {
-    try {
-      const result = classifyIntent(transcript, normalizedModelProfile);
-      if (result && result.mode) return result;
-      return {
-        mode: normalizedModelProfile === "coding" ? "coding" : "everyday",
-        reason: "fallback_model_profile",
-      };
-    } catch (e) {
-      return {
-        mode: normalizedModelProfile === "coding" ? "coding" : "everyday",
-        reason: "error_classifier",
-      };
-    }
-  }
+  function pickAssistantMode(...args) { return chatReply.pickAssistantMode(...args); }
 
-  async function buildAssistantReply(
-    transcript,
-    screenText = "",
-    marketText = "",
-    modelProfile = "default",
-    sessionId = null,
-    assistantMode = null,
-    presetId = null,
-    // Issue #253: optional out-parameter -- a caller that cares about the
-    // model's own expression__set tool call passes a fresh {} and reads
-    // `.expression` back off it after the await, instead of this function's
-    // return type (a plain string, unchanged, everywhere else) needing to
-    // grow a second shape for the one caller that wants it.
-    replyMeta = null,
-    // Issue #331: optional streaming callback, called with each completed
-    // sentence during the first plain local-completion attempt only. See
-    // the firstPassStreamed comment below for why it's first-attempt-only.
-    onSentence = null,
-  ) {
-    const prompt = buildScreenAwarePrompt(transcript, screenText, marketText);
-    // let: #666's wait below may switch this turn to the fallback profile.
-    let normalizedModelProfile = selectLlamaModelProfileForPrompt(
-      transcript,
-      modelProfile,
-    );
-
-    // #1343 Phase 3: Sticky coding session handling and gaming guard
-    if (codingSessionManager.isExitCommand(transcript)) {
-      codingSessionManager.stop(sessionId, "user_exit");
-      if (replyMeta) replyMeta.codingSessionExited = true;
-    }
-    const inStickyCoding = codingSessionManager.isActive(sessionId);
-    if (!inStickyCoding && (codingSessionManager.isEnterCommand(transcript) || normalizedModelProfile === "coding")) {
-      if (gamingWatch.isGaming()) {
-        normalizedModelProfile = "default";
-        if (replyMeta) replyMeta.gamingHeld = true;
-      } else {
-        const startRes = codingSessionManager.start(sessionId);
-        if (startRes.ok) {
-          normalizedModelProfile = "coding";
-          if (replyMeta) {
-            replyMeta.codingSessionStarted = true;
-            replyMeta.maskingPhrase = startRes.maskingPhrase;
-          }
-        }
-      }
-    } else if (inStickyCoding) {
-      if (gamingWatch.isGaming()) {
-        codingSessionManager.stop(sessionId, "game_started");
-        normalizedModelProfile = "default";
-      } else {
-        codingSessionManager.touch(sessionId);
-        normalizedModelProfile = "coding";
-      }
-    }
-    // #675: "think harder" turns thinking on for this turn's replies (tool
-    // loop, streamed or plain, and regenerations) with its own bigger
-    // budget -- asked for in words, or by the client's thinkHarder request
-    // field (the native launcher's deep-thinking toggle). Best-of-N never
-    // thinks, so such a turn skips it. undefined (not false) otherwise:
-    // the profile's own default then decides.
-    // Q12b: or Mana's own deep thinking (deep_thinking__set) is on for this
-    // session; a literal thinkHarder: false (the user clicked the lit Think
-    // button off) ends it first. Only for callers with a replyMeta (the
-    // user's own chat routes), never cron/Discord or other scheduled jobs
-    // (#780's replyMeta.scheduled). let: her tool call can switch it
-    // mid-reply.
-    const userChat = Boolean(replyMeta && !replyMeta.scheduled);
-    let manaThinking = false;
-    if (userChat) {
-      // #697: a reply soon after an unprompted remark counts as engaging with it.
-      require("./proactive").react("engaged");
-      if (replyMeta.thinkHarder === false) deepThinking.set(sessionId, false);
-      manaThinking = deepThinking.takeReply(sessionId);
-      replyMeta.deepThinking = deepThinking.isOn(sessionId);
-    }
-    const askedThinkHarder = (replyMeta && replyMeta.thinkHarder === true) || wantsThinkHarder(transcript);
-    let thinkHarder = askedThinkHarder || manaThinking || undefined;
-
-    // Determine assistant mode and system prompt
-    const inferred = pickAssistantMode(transcript, normalizedModelProfile); // { mode, reason }
-    // Use explicit assistantMode if provided; otherwise use inferred.mode
-    const mode =
-      assistantMode ||
-      (inferred && inferred.mode) ||
-      (normalizedModelProfile === "coding" ? "coding" : "everyday");
-    // Same coding/developer check the system-prompt selection below uses --
-    // every actual reply-generation call site in this function should use
-    // this instead of LLAMA_MAX_TOKENS directly, so coding replies stop
-    // getting cut off mid-example.
-    const effectiveMaxTokens =
-      mode === "coding" || mode === "developer"
-        ? LLAMA_MAX_TOKENS_CODING
-        : LLAMA_MAX_TOKENS;
-    // #914: group mode adds a second reply only to casual turns.
-    if (replyMeta) replyMeta.mode = mode;
-
-    // Optional lightweight intent telemetry (enable with MANA_INTENT_TELEMETRY=1)
-    try {
-      const intentTelemetry =
-        process.env.MANA_INTENT_TELEMETRY === "1" ||
-        process.env.MANA_INTENT_TELEMETRY === "true";
-      if (intentTelemetry) {
-        console.log(
-          `[Mana Router] 🧭 Routing to mode [${mode}] | Reason: ${inferred && inferred.reason ? inferred.reason : "none"} | Session: ${sessionId || "none"}`,
-        );
-      }
-    } catch (e) {
-      // don't block on telemetry
-    }
-
-    // Identity ("who Mana is") comes from persona.js, layered with each
-    // mode's own task-specific operational instructions -- these three
-    // used to each redefine Mana's personality from scratch, drifting
-    // slightly from one another and from persona.js's other consumers.
-    let selectedSystemPrompt = persona.buildPersonaPrompt(
-      sessionId,
-      personalityStore.get().traits,
-      personaOf(characterStore.active()),
-    );
-    // Issue #623: per-sentence emotion tags for the avatar. Static text, so
-    // it sits in the cached prefix; every reply path below strips the tags.
-    selectedSystemPrompt = `${selectedSystemPrompt}\n\n${EMOTION_TAG_PROMPT}`;
-    // Issue #660: the mode is picked per message, so its text is appended
-    // last (after the session goal below) -- spliced in right after the
-    // persona, a mode switch changed the prompt prefix and cost
-    // llama-server its prompt cache for everything after it.
-    const CASUAL_MODE_TEXT = `Use short paragraphs and natural conversational phrasing; include occasional friendly flourishes (e.g. "You got this!"). Ask one clarifying question only when necessary. If the user requests professional or safety-sensitive information, politely indicate you cannot provide it and offer to look up resources or recommend professionals.`;
-    const EVERYDAY_MODE_TEXT = `Provide clear, concise, and practical guidance. When giving instructions, present them as short numbered steps and include expected outcomes or simple checks when helpful. Use plain language accessible to non-technical users. Offer follow-up actions and ask clarifying questions only when required. For health, legal, or hazardous topics, recommend professional resources.`;
-    const CODING_MODE_TEXT = `In this mode, be focused, precise, and technical: start with a one-line summary of intent, then provide minimal, runnable code examples in fenced blocks, followed by a short explanation and a suggested test or verification step. Avoid small talk entirely. Ask only necessary clarifying questions. When the user requests structured output (JSON, patch, or commands), return exactly the machine-readable block unless commentary is explicitly requested. Include assumptions and environment notes when relevant.`;
-
-    let modeText;
-    if (mode === "casual" || mode === "chat") {
-      modeText = CASUAL_MODE_TEXT;
-    } else if (mode === "coding" || mode === "developer") {
-      modeText = CODING_MODE_TEXT;
-    } else {
-      modeText = EVERYDAY_MODE_TEXT;
-    }
-
-    // A saved preset layers its instructions on top of the base persona
-    // prompt rather than replacing it -- Mana stays Mana, just tuned. No
-    // preset selected (the common case) leaves this untouched.
-    if (presetId) {
-      try {
-        const preset = activePresetsStore.getPreset(presetId);
-        if (preset && preset.instructions) {
-          selectedSystemPrompt = `${selectedSystemPrompt}\n\n${preset.instructions}`;
-        }
-      } catch (presetErr) {
-        console.warn("Failed to apply preset:", presetErr.message || presetErr);
-      }
-    }
-
-    // Small server log for selected mode
-    try {
-      console.log(
-        `Mana mode=${mode} session=${sessionId || "none"} system_prompt_snippet="${selectedSystemPrompt.slice(0, 160).replace(/\n/g, " ")}..."`,
-      );
-    } catch (e) {
-      // don't block on logging
-    }
-
-    // Inject global BACKGROUND_MEMORY_BLOCK (loaded at startup) directly under the system instructions
-    try {
-      if (BACKGROUND_MEMORY_BLOCK) {
-        selectedSystemPrompt = `${selectedSystemPrompt}\n\n${BACKGROUND_MEMORY_BLOCK}`;
-      }
-    } catch (e) {
-      // ignore failures here
-    }
-
-    // Foundational tool-calling (issue #51), on by default (opt out with
-    // MANA_TOOL_CALLING_ENABLED=0) and scoped to the "default" profile, the
-    // one verified to emit reliable tool_calls (see
-    // docs/roadmap/issue-51-tool-calling.md).
-    // Hoisted above the skills-index block below: that block must not
-    // advertise skill__view unless this same condition lets the model
-    // actually call it (see the block's own comment for why).
-    const toolCallingEnabled =
-      String(process.env.MANA_TOOL_CALLING_ENABLED || "1") !== "0";
-
-    // Always-visible skill index (see buildSkillsIndexBlock above) -- but
-    // only when tool-calling can actually act on it. The index advertises
-    // skill__view; outside the exact condition replyMaybeWithTools checks
-    // below, no reply path can invoke it, and a model told about a tool it
-    // can't call tends to narrate the call as plain text instead of either
-    // answering normally or invoking nothing (observed: "Skill needed:
-    // X\nCalling skill__view with name: X" leaking into a plain reply).
-    // activeSkillsStore, not the module-level skillsStore singleton --
-    // otherwise this would silently bypass a test's (or any future caller's)
-    // deps.skillsStore override, the exact trap already called out where
-    // activeSkillsStore is defined above.
-    // Issue #401: the session's user-stated goal (if any) -- read
-    // unconditionally here since the tool-array construction further
-    // below also needs it, but only actually surfaced to the model (as
-    // system-prompt text, and as the session_goal__finish tool) when
-    // tool-calling is enabled for this reply. Outside that path (a plain
-    // conversational reply, remote AI, etc.) there's no way for the model
-    // to act on a goal at all, so mentioning it would just be misleading.
-    // See ai/session-goal-tool-source.js's own header comment for why the
-    // goal itself is never model-writable, only user-settable.
-    let sessionGoal = null;
-    if (sessionId) {
-      try {
-        const session = acpMemoryStore.getSession(sessionId);
-        sessionGoal = session && session.goal ? session.goal : null;
-      } catch (e) {
-        // ignore -- goal context is best-effort, never blocks a reply
-      }
-    }
-    // Issue #676: goal mode (opt in with MANA_GOAL_MODE=1) keeps the tool
-    // loop going until the goal is done. It needs tools, which coding-routed
-    // turns never get, so a goal-mode turn stays on the default profile.
-    const goalMode =
-      Boolean(sessionGoal) &&
-      String((deps.env || process.env).MANA_GOAL_MODE || "0") === "1" &&
-      toolCallingEnabled &&
-      isLlamaServerAvailable();
-    if (goalMode) normalizedModelProfile = "default";
-
-    // Issue #400: buildSkillsIndexBlock already computes how many skills it
-    // left out, but only as a line of text baked into the block -- read
-    // back out here rather than changing that function's return shape,
-    // which other callers/tests still depend on as a bare string.
-    let skillsOmittedCount = 0;
-    let skillsIndexText = "";
-    if (
-      toolCallingEnabled &&
-      normalizedModelProfile === "default" &&
-      isLlamaServerAvailable()
-    ) {
-      // #1337: she narrates her tool rounds. Static, so ahead of the skills
-      // index in the cached prefix; only where tools are offered.
-      selectedSystemPrompt = `${selectedSystemPrompt}\n\n${TOOL_NARRATION_PROMPT}`;
-      try {
-        const skillsIndexBlock = buildSkillsIndexBlock(activeSkillsStore.listSkills());
-        if (skillsIndexBlock) {
-          skillsIndexText = skillsIndexBlock;
-          selectedSystemPrompt = `${selectedSystemPrompt}\n\n${skillsIndexBlock}`;
-          const omittedMatch = skillsIndexBlock.match(/\((\d+) more skill\(s\) omitted for length\)/);
-          if (omittedMatch) skillsOmittedCount = Number(omittedMatch[1]) || 0;
-        }
-      } catch (e) {
-        // ignore failures here
-      }
-      if (sessionGoal) {
-        selectedSystemPrompt = `${selectedSystemPrompt}\n\nSession goal: ${sessionGoal}\nIf you believe this goal has been fully achieved, call session_goal__finish instead of continuing to use more tools.`;
-      }
-    }
-    selectedSystemPrompt = `${selectedSystemPrompt}\n\n${modeText}`;
-    // Issue #677: plugin onUserInput system patches are per turn, so they go
-    // after the mode text for the same prompt-cache reason (#660).
-    if (replyMeta && replyMeta.systemPatch) {
-      selectedSystemPrompt = `${selectedSystemPrompt}\n\n${replyMeta.systemPatch}`;
-    }
-    // A message about suicide or self-harm gets a care-and-hotlines note for
-    // this turn -- per turn, so last, like the mode text. Every chat path
-    // (typed, voice, stream, mobile) builds its prompt here.
-    const crisisNote = crisisInstruction(transcript, deps.env || process.env);
-    if (crisisNote) selectedSystemPrompt = `${selectedSystemPrompt}\n\n${crisisNote}`;
-
-    // Issue #282: memory (session summary/recent-turns, cross-session
-    // facts) becomes its own positionable system-role messages -- "early"
-    // (right after the persona) or "late" (right before the live user
-    // turn, the higher-salience slot) -- for the two reply paths that can
-    // take a real messages array (runToolAwareReply, runLocalAssistantReply
-    // below). Paths that only take a flat system-prompt string (the OpenAI
-    // proxy, Best-of-N) fall back to the old flattened text via
-    // flatMemorySuffix so they don't lose memory context entirely.
-    //
-    // Issue #660: every memory entry built below changes turn to turn, so
-    // all of them default to "late" -- anything per-turn placed early would
-    // change the prompt prefix and defeat llama-server's prompt cache. The
-    // system prompt above stays per-turn-free for the same reason (persona,
-    // background memory, name-sorted skills index, session goal), except for
-    // the per-message mode text, which goes last so a mode switch only
-    // changes its tail; screen and market text already ride on the user
-    // message itself.
-    const memoryExtraMessages = { early: [], late: [] };
-    // #679: images the chat model can see itself (server-routes.js decided);
-    // buildMessages puts them on the live user message on every path below.
-    if (replyMeta?.images?.length) memoryExtraMessages.images = replyMeta.images;
-    let flatMemorySuffix = "";
-    let promptMemoryChars = 0;
-    let promptMemoryText = "";
-    let promptMemoryTruncated = false;
-    let turnsDroppedByAge = 0;
-    try {
-      if (sessionId) {
-        const result = await acpMemoryStore.buildPromptMemoryEntries(sessionId);
-        for (const entry of result.entries) {
-          memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
-          flatMemorySuffix += `\n\n${entry.content}`;
-          promptMemoryChars += entry.content.length;
-          promptMemoryText += `\n\n${entry.content}`;
-          if (entry.truncated) promptMemoryTruncated = true;
-        }
-        turnsDroppedByAge = result.turnsDroppedByAge || 0;
-      }
-    } catch (memErr) {
-      console.warn("Failed to build session memory:", memErr.message);
-    }
-
-    // Issue #141: the larger, on-demand tier -- only pulled in when the
-    // current message actually names something previously discussed in a
-    // *different* session. Bounded by maxChars in getRelatedFactsEntries,
-    // so it never grows with total memory volume.
-    let relatedFactsChars = 0;
-    let relatedFactsText = "";
-    let relatedFactsTruncated = false;
-    // Issue #674: candidate/kept counts and any recall fallback, for #400.
-    let relatedFactsRecall = null;
-    try {
-      if (typeof acpMemoryStore.getRelatedFactsEntries === "function") {
-        const { entries, recall } = await acpMemoryStore.getRelatedFactsEntries(transcript, {
-          excludeSessionId: sessionId,
-          // Q27: a scheduled job (replyMeta.scheduled) sees confirmed facts only.
-          confirmedOnly: Boolean(replyMeta && replyMeta.scheduled),
-        });
-        relatedFactsRecall = recall || null;
-        for (const entry of entries) {
-          memoryExtraMessages[entry.position].push({ role: entry.role, content: entry.content });
-          flatMemorySuffix += `\n\n${entry.content}`;
-          relatedFactsChars += entry.content.length;
-          relatedFactsText += `\n\n${entry.content}`;
-          if (entry.truncated) relatedFactsTruncated = true;
-        }
-      }
-    } catch (relErr) {
-      console.warn("Failed to look up related facts:", relErr.message);
-    }
-
-    // Issue #700: her mood, as tone guidance only -- "late" like memory,
-    // since it changes turn to turn. It never touches the token budget,
-    // tools or mode, and moodPromptBlock leaves coding replies alone.
-    // Part of #700: plus "be gentle, don't pry" while I've seemed down for
-    // several turns (even with her mood frozen -- that's about me, not her).
-    let moodText = "";
-    try {
-      activeMoodStore.recordTurn(transcript);
-      moodText = [moodPromptBlock(activeMoodStore.get(), mode), gentleHint(acpMemoryStore.getUserAffectState(), mode)]
-        .filter(Boolean)
-        .join("\n");
-      if (moodText) {
-        memoryExtraMessages.late.push({ role: "system", content: moodText });
-        flatMemorySuffix += `\n\n${moodText}`;
-      }
-    } catch (moodErr) {
-      console.warn("Failed to apply mood:", moodErr.message);
-    }
-    // #914: her own notes on how we get along, same place and rules; in my
-    // own chat, now and then one of her milestones (our first chat is one:
-    // for Mana, the day of the oldest session).
-    try {
-      const relationshipText = relationshipPromptBlock(relationshipStore.list(), mode);
-      if (userChat) {
-        relationshipStore.ensureFirstChat(() =>
-          characterStore.active().id === DEFAULT_CHARACTER_ID ? oldestSessionAt() : null,
-        );
-      }
-      const milestoneText = userChat ? relationshipStore.milestoneToMention(mode) : null;
-      for (const text of [relationshipText, milestoneText].filter(Boolean)) {
-        memoryExtraMessages.late.push({ role: "system", content: text });
-        flatMemorySuffix += `\n\n${text}`;
-      }
-    } catch (relationshipErr) {
-      console.warn("Failed to apply relationship notes:", relationshipErr.message);
-    }
-
-    // Issue #400: makes the composition of the prompt this reply actually
-    // used observable (GET /prompt-composition), instead of only
-    // discoverable by reading the code the way #364's truncation bug was.
-    // Covers the three blocks gathered unconditionally above (system-prompt
-    // folds in persona/preset/background-memory/skills-index/session-goal/mode,
-    // since those are all concatenated into one string by this point),
-    // before the reply-path branches below diverge; tool schemas and the
-    // live turns differ per reply path (tool-aware vs. streaming vs. plain)
-    // and aren't included here (#642 adds them once the reply is done).
-    //
-    // Issue #642: the skills index is its own block now, and each block's
-    // text is kept (compositionTexts) so the end of the turn can count its
-    // real tokens -- see finalizePromptComposition below.
-    const systemPromptText = skillsIndexText
-      ? selectedSystemPrompt.replace(`\n\n${skillsIndexText}`, "")
-      : selectedSystemPrompt;
-    const compositionTexts = {
-      "system-prompt": systemPromptText,
-      "skills-index": skillsIndexText,
-      "prompt-memory": promptMemoryText,
-      "related-facts": relatedFactsText,
-      mood: moodText,
-    };
-    let compositionRecord = null;
-    try {
-      compositionRecord = recordPromptComposition(sessionId, [
-        { name: "system-prompt", chars: systemPromptText.length, dropped: null },
-        { name: "skills-index", chars: skillsIndexText.length, dropped: { skillsOmitted: skillsOmittedCount } },
-        { name: "prompt-memory", chars: promptMemoryChars, dropped: { truncated: promptMemoryTruncated, turnsDroppedByAge } },
-        {
-          name: "related-facts",
-          chars: relatedFactsChars,
-          dropped: { truncated: relatedFactsTruncated, ...(relatedFactsRecall ? { recall: relatedFactsRecall } : {}) },
-        },
-        { name: "mood", chars: moodText.length, dropped: null },
-      ]);
-    } catch (compErr) {
-      // Diagnostic-only; never blocks a reply.
-      console.warn("Failed to record prompt composition:", compErr.message);
-    }
-
-    // Attempt retrieval from local retriever-index (fast) first. If it yields nothing, fall back to the existing HTTP or legacy Python retrievers.
-    // Repository retrieval helps coding questions; casual chat just gets
-    // polluted by random repo snippets. Override with MANA_RETRIEVAL_MODES
-    // (comma-separated modes, e.g. "coding,everyday").
-    let retrievedText = "";
-    const retrievalModes = String(process.env.MANA_RETRIEVAL_MODES || "coding")
-      .split(",")
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean);
-    try {
-      if (!retrievalModes.includes(String(mode || "").toLowerCase())) {
-        throw Object.assign(new Error("retrieval skipped for this mode"), {
-          retrievalSkipped: true,
-        });
-      }
-      try {
-        const retrieverIndex = require("./tools/retriever-index");
-        const idx =
-          retrieverIndex.loadIndexSync && retrieverIndex.loadIndexSync();
-        if (idx && Array.isArray(idx.entries) && idx.entries.length) {
-          try {
-            let hits = null;
-            try {
-              const vsModule = require("./tools/vector-store");
-              const createStore =
-                vsModule && vsModule.createStore ? vsModule.createStore : null;
-              if (createStore) {
-                const store = createStore({
-                  dir:
-                    process.env.VECTOR_STORE_DIR ||
-                    path.join(__dirname, "..", "tools", "vector_store"),
-                });
-                await store.init();
-                await store.load();
-                const cnt = (await store.count().catch(() => 0)) || 0;
-                if (
-                  cnt > 0 &&
-                  typeof retrieverIndex.computeEmbedding === "function"
-                ) {
-                  try {
-                    const qembed =
-                      await retrieverIndex.computeEmbedding(transcript, { query: true });
-                    if (qembed) {
-                      const s = await store.search(qembed, 5);
-                      if (Array.isArray(s) && s.length) {
-                        // Issue #217: this vector-store-direct fast path used
-                        // to duplicate the read-file-then-slice(0, 800) loop
-                        // retriever-index.js's search() itself replaced with
-                        // buildSnippets() in issue #211 -- meaning whenever
-                        // this fast path succeeded (the common case once a
-                        // vector store exists), #211's compression never
-                        // actually ran. Reusing the same shared helper here
-                        // closes that gap.
-                        const candidates = s.map((it) => ({
-                          id: it.id,
-                          path: it.path || it.id,
-                          score: it.score,
-                        }));
-                        hits = await retrieverIndex.buildSnippets(
-                          candidates,
-                          transcript,
-                          compressExcerpts,
-                        );
-                      }
-                    }
-                  } catch (e) {
-                    hits = null;
-                  }
-                }
-              }
-            } catch (e) {
-              hits = null;
-            }
-
-            if (!hits)
-              hits = await retrieverIndex.search(transcript, 5, {
-                compress: compressExcerpts,
-              });
-            if (Array.isArray(hits) && hits.length) {
-              const maxChars = Number(process.env.RETRIEVER_MAX_CHARS || 3000);
-              const pieces = [];
-              let acc = 0;
-              for (let i = 0; i < hits.length; i++) {
-                const h = hits[i];
-                const chunk = (h.snippet || "").trim();
-                const header = `Source: ${h.path} [score ${h.score}]\n`;
-                const snippet = header + chunk + "\n\n";
-                if (acc + snippet.length > maxChars) {
-                  break;
-                }
-                pieces.push(
-                  `--- Retrieved snippet ${i + 1} ---\n${snippet}--- End snippet ${i + 1} ---`,
-                );
-                acc += snippet.length;
-                if (pieces.length >= 5) break;
-              }
-              if (pieces.length) {
-                retrievedText =
-                  "Retrieved repository context:\n\n" +
-                  pieces.join("\n\n") +
-                  "\n\n";
-              }
-            }
-          } catch (riErr) {
-            console.warn(
-              "retriever-index.search failed:",
-              riErr && riErr.message ? riErr.message : riErr,
-            );
-          }
-        }
-      } catch (loadErr) {
-        // retriever-index not available or failed to load; continue to HTTP/Python retriever
-      }
-
-      // If retriever-index produced results, skip the heavier HTTP/python retrievers
-      if (!retrievedText) {
-        const retrieverUrl =
-          process.env.RETRIEVER_URL || "http://127.0.0.1:9000/retrieve";
-        try {
-          await retrieverService.ensure().catch((e) =>
-            console.warn("Python retriever unavailable:", e?.message || e),
-          );
-          // try HTTP retriever first
-          const resp = await fetch(retrieverUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: transcript, k: 5 }),
-          });
-          if (resp.ok) {
-            try {
-              const hits = await resp.json();
-              if (Array.isArray(hits) && hits.length) {
-                const maxChars = Number(
-                  process.env.RETRIEVER_MAX_CHARS || 3000,
-                );
-                const pieces = [];
-                let acc = 0;
-                for (let i = 0; i < hits.length; i++) {
-                  const h = hits[i];
-                  const meta = h.meta || {};
-                  const chunk = (meta.text || meta.preview || "").trim();
-                  const header = `Source: ${meta.path} [chars ${meta.start_char}-${meta.end_char}]\n`;
-                  const snippet = header + chunk + "\n\n";
-                  if (acc + snippet.length > maxChars) {
-                    break;
-                  }
-                  pieces.push(
-                    `--- Retrieved snippet ${i + 1} ---\n${snippet}--- End snippet ${i + 1} ---`,
-                  );
-                  acc += snippet.length;
-                  if (pieces.length >= 5) break;
-                }
-                if (pieces.length) {
-                  retrievedText =
-                    "Retrieved repository context:\n\n" +
-                    pieces.join("\n\n") +
-                    "\n\n";
-                }
-              }
-            } catch (pe) {
-              console.warn(
-                "Failed to parse retriever HTTP response:",
-                pe.message,
-              );
-            }
-          } else {
-            console.warn(
-              "Retriever HTTP returned status",
-              resp.status,
-              resp.statusText,
-            );
-          }
-        } catch (httpErr) {
-          // HTTP retriever failed; attempt legacy python subprocess retriever for compatibility
-          try {
-            const vectorDir =
-              process.env.VECTOR_STORE_DIR ||
-              path.join(__dirname, "..", "tools", "vector_store");
-            const pythonBin = process.env.PYTHON_BIN || "python";
-            const retrieverScript = path.join(
-              __dirname,
-              "..",
-              "tools",
-              "retriever.py",
-            );
-            // NODE_ENV/NODE_TEST_CONTEXT guard (same convention used
-            // throughout this file): this fallback is otherwise gated only
-            // by fs.existsSync(vectorDir/retrieverScript), both real files
-            // present in this repo, so without it a real `spawnSync` to a
-            // real (but test-irrelevant) Python vector index runs on every
-            // coding-mode reply a test exercises -- ~20s and fails anyway
-            // since there's no matching index.
-            const skipUnderTest =
-              process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT);
-            if (!skipUnderTest && fs.existsSync(vectorDir) && fs.existsSync(retrieverScript)) {
-              const args = [
-                retrieverScript,
-                "--index",
-                vectorDir,
-                "--query",
-                transcript,
-                "--k",
-                "5",
-              ];
-              const r = spawnSync(pythonBin, args, {
-                encoding: "utf8",
-                // Issue #388: no console flash on the retriever call.
-                windowsHide: true,
-                maxBuffer: 20 * 1024 * 1024,
-              });
-              if (!r.error && r.status === 0 && r.stdout) {
-                try {
-                  const hits = JSON.parse(r.stdout);
-                  if (Array.isArray(hits) && hits.length) {
-                    const maxChars = Number(
-                      process.env.RETRIEVER_MAX_CHARS || 3000,
-                    );
-                    const pieces = [];
-                    let acc = 0;
-                    for (let i = 0; i < hits.length; i++) {
-                      const h = hits[i];
-                      const meta = h.meta || {};
-                      const chunk = (meta.text || meta.preview || "").trim();
-                      const header = `Source: ${meta.path} [chars ${meta.start_char}-${meta.end_char}]\n`;
-                      const snippet = header + chunk + "\n\n";
-                      if (acc + snippet.length > maxChars) {
-                        break;
-                      }
-                      pieces.push(
-                        `--- Retrieved snippet ${i + 1} ---\n${snippet}--- End snippet ${i + 1} ---`,
-                      );
-                      acc += snippet.length;
-                      if (pieces.length >= 5) break;
-                    }
-                    if (pieces.length) {
-                      retrievedText =
-                        "Retrieved repository context:\n\n" +
-                        pieces.join("\n\n") +
-                        "\n\n";
-                    }
-                  }
-                } catch (pe) {
-                  console.warn(
-                    "Failed to parse retriever subprocess output:",
-                    pe.message,
-                  );
-                }
-              } else if (r.error) {
-                console.warn(
-                  "Retriever subprocess spawn error:",
-                  r.error.message,
-                );
-              } else if (r.status !== 0) {
-                console.warn(
-                  "Retriever subprocess exited with status",
-                  r.status,
-                );
-              }
-            }
-          } catch (subErr) {
-            console.warn("Subprocess retriever failed:", subErr.message);
-          }
-        }
-      }
-    } catch (e) {
-      if (!e || !e.retrievalSkipped) {
-        console.warn("Vector retriever failed:", e.message);
-      }
-    }
-
-    const finalPrompt = (retrievedText || "") + prompt;
-
-    // Issue #623: the reply without its emotion tags, applied wherever a
-    // pass produces one; replyMeta.emotion is the face for a client that
-    // speaks it as one clip (not streamed, or rewritten after streaming).
-    const untag = (text) => {
-      if (typeof text !== "string") return text;
-      const { text: clean, emotions } = stripEmotionTags(text);
-      if (replyMeta) replyMeta.emotion = replyEmotion(emotions);
-      return clean;
-    };
-
-    // Try OpenAI/proxy only when explicitly allowed.
-    if (shouldUseRemoteAi()) {
-      try {
-        const openAiReply = untag(await runOpenAIReply(
-          finalPrompt,
-          effectiveMaxTokens,
-          selectedSystemPrompt + flatMemorySuffix,
-          sessionId,
-        ));
-        if (openAiReply) {
-          console.log("Using OpenAI proxy reply.");
-          queueVTubeReaction(openAiReply);
-          try {
-            if (
-              sessionId &&
-              acpMemoryStore &&
-              typeof acpMemoryStore.appendTurn === "function"
-            ) {
-              // fire-and-forget but log failures
-              acpMemoryStore
-                .appendTurn({
-                  sessionId,
-                  user: transcript,
-                  assistant:
-                    typeof openAiReply === "string" &&
-                    typeof cleanLlamaOutput === "function"
-                      ? cleanLlamaOutput(openAiReply)
-                      : openAiReply,
-                  // #914: history lines are labelled with who said them.
-                  speaker: characterStore.active().name,
-                })
-                .catch((memErr) =>
-                  console.warn(
-                    "Failed to append turn to ACP memory:",
-                    memErr?.message || memErr,
-                  ),
-                );
-            }
-          } catch (memErr) {
-            console.warn(
-              "Failed to append turn to ACP memory:",
-              memErr.message,
-            );
-          }
-          return openAiReply;
-        }
-      } catch (e) {
-        console.warn(
-          "OpenAI proxy failed, falling back to local llama:",
-          e.message,
-        );
-      }
-    }
-
-    // toolCallingEnabled is declared earlier, alongside the skills-index
-    // gate above -- both need the same condition. Any failure or empty
-    // result from the tool-aware attempt below falls straight back to the
-    // plain path rather than surfacing a broken reply.
-    // Captured here rather than threaded through replyMaybeWithBestOfN's and
-    // the verify/retry loop's return values (both currently just `string`)
-    // -- issue #153 needs whatever tool calls actually produced the reply
-    // that gets appended to session memory, and a closure-scoped variable
-    // gets that without changing any other reply path's signature.
-    let lastToolCalls = [];
-    // Issue #673: every tool that has returned so far this turn (across
-    // regeneration attempts too), so a memory write can tell whether it may
-    // be repeating content a tool brought in (memory-tool-source.js).
-    const turnTools = [];
-
-    // Issue #331: onSentence streams only the very first plain local-
-    // completion attempt. Regeneration (rut-detection nudge, verify/retry)
-    // reuses replyMaybeWithBestOfN/replyMaybeWithTools too, but must not
-    // stream again -- multiple overlapping sentence streams from separate
-    // generation attempts would be nonsensical to a client. This flag makes
-    // "first call only" explicit rather than relying on call order.
-    let firstPassStreamed = false;
-    const streamedSentences = [];
-    // Issue #623: each sentence goes out without its emotion tags, with the
-    // face it's said with. An untagged sentence keeps the previous one's;
-    // a bare tag (the chunker cut it off as its own "sentence") only sets
-    // the face for the next.
-    let sentenceEmotion = null;
-    const wrappedOnSentence = onSentence
-      ? async (tagged) => {
-          const { text: sentence, emotions } = stripEmotionTags(tagged);
-          if (emotions.length) sentenceEmotion = emotions[0];
-          if (!sentence) return;
-          streamedSentences.push(sentence);
-          await onSentence(sentence, sentenceEmotion);
-        }
-      : null;
-
-    // Issue #642: what the reply's own completion was sent -- the user turn
-    // and, on the tool-aware path, the tool schemas -- and llama-server's
-    // real size of that prompt. A regeneration pass calls this again and
-    // the last one wins, same as lastToolCalls. Compared by identity: the
-    // runtime keeps a fresh object per completion, so an unchanged one
-    // means this pass never reached llama-server (llama-cli fallback).
-    let turnToolSchemas = [];
-    let turnPromptUsage = null;
-    // #646: this pass's entry in GET /agent/activity; its stop flag is
-    // read by the executeTool wrapper below.
-    let activityRun = null;
-    async function replyMaybeWithTools(promptText) {
-      turnToolSchemas = [];
-      const usageBefore = activeLlamaServerRuntime.getLastPromptUsage?.();
-      activityRun = agentActivity.start({
-        model: String(activeLlamaServerRuntime.getStatus?.()?.model || "").split(/[\\/]/).pop() || null,
-      });
-      // #1122: the Browser tool lists the web pages this turn took in.
-      activeBrowserAutomationToolSource.activityLog.recordTurnPages(untrustedLinks(promptText));
-      let reply;
-      try {
-        reply = await replyMaybeWithToolsUnmetered(promptText);
-      } finally {
-        agentActivity.finish(activityRun);
-        // #1159: her task is over; only the tab she's on stays open.
-        browserAutomationPlugin.closeExtraTabs().catch(() => {});
-      }
-      const usageAfter = activeLlamaServerRuntime.getLastPromptUsage?.();
-      turnPromptUsage = usageAfter && usageAfter !== usageBefore ? usageAfter : null;
-      compositionTexts["user-turn"] = promptText;
-      return reply;
-    }
-
-    async function replyMaybeWithToolsUnmetered(promptText) {
-      lastToolCalls = [];
-      if (
-        toolCallingEnabled &&
-        normalizedModelProfile === "default" &&
-        isLlamaServerAvailable()
-      ) {
-        try {
-          // Issue #169/#267: merged fresh per reply, not cached -- MCP tool
-          // discovery is async and the registered-server list is small
-          // enough that re-listing costs little once a connection is
-          // already established (see mcp-client-registry.js). One generic
-          // buildToolPolicy call folds in every source at once instead of
-          // a hand-rolled buildToolPolicyWithX chain.
-          //
-          // Memory (issue #198): bound to this reply's sessionId (not
-          // model-supplied), built fresh per reply for the same reason --
-          // cheap, and the session the fact should be attributed to only
-          // exists per-call. approvalGate: a model-asserted memory write is
-          // agent-authored content same as a skill write (issue #152) --
-          // gated the same way, see ai/memory-tool-source.js.
-          //
-          // Session search: full-text search across past conversations,
-          // independent of the curated memory summary above.
-          //
-          // Skill creation (issue #262 follow-up): user-requested mid-
-          // conversation ("make a skill that does X") -- distinct from the
-          // idle-triggered autonomous proposal pass, which nobody
-          // explicitly asked for. Despite the direct ask, this still stays
-          // genuinely pending like the idle pass does, not auto-approved
-          // like the Settings UI's own create flow -- the drafted content
-          // is the model's own text, not the user's verbatim words, and a
-          // page Mana read earlier in the same turn could otherwise talk
-          // it into staging attacker-authored content (see
-          // ai/skill-tool-source.js).
-          //
-          // Browser automation (issue #188): only offered when the plugin
-          // is actually enabled (Settings > Plugins) -- same gate every
-          // other browser-automation entry point (its own HTTP routes,
-          // GET /plugins) already respects.
-          // #1158: files whose full path I write in my own chat message are
-          // the ones her browser may upload (never ones she picks herself).
-          if (userChat) browserAutomationPlugin.offerFilesFromMessage(transcript);
-          let mergedToolPolicy = await buildToolPolicy(activeToolPolicy, [
-            activeMcpClientRegistry,
-            createMemoryToolSource({
-              acpMemoryStore,
-              sessionId,
-              approvalGate: activeApprovalGate,
-              // Issue #317: deliberately `transcript` (the raw user turn),
-              // not `prompt`/`finalPrompt` -- both of those are already
-              // blended with screen OCR, market data, and retrieved web
-              // content by this point, which would let a memory__remember
-              // call "attribute" itself to injected content instead of
-              // something the user actually said.
-              userMessage: transcript,
-              // Issue #431: LLM-confirmed conflict judging -- never loads
-              // or swaps a model, see llamaServerRuntime's own comment on
-              // isProfileAlreadyLoaded/runLocalReplyIfSafelyLoaded.
-              runLocalReply: llamaServerRuntime.runLocalReplyIfSafelyLoaded,
-              turnTools,
-            }),
-            createSessionSearchToolSource({ acpMemoryStore, sessionId }),
-            createSkillToolSource({ approvalGate: activeApprovalGate, skillsStore: activeSkillsStore }),
-            createSnapshotToolSource({
-              approvalGate: activeApprovalGate,
-              snapshotStore,
-              // Issue #475 whole-branch review: without this, a file-kind
-              // restore skips the workspace-containment check that
-              // getEditorIntegrations().restoreEditSnapshot already
-              // enforces for the REST/UI restore path.
-              restoreFileSnapshot: (id, opts) => getEditorIntegrations().restoreEditSnapshot(id, opts),
-            }),
-            // Issue #253: lets Mana pick her own Live2D expression for this
-            // reply, alongside (not instead of) reply-emotion.js's automatic
-            // detection. No approvalGate/store needed -- see
-            // ai/expression-tool-source.js's own header comment for why.
-            createExpressionToolSource(),
-            // #923/#925: speech words and mishearing fixes I ask for;
-            // only words from this turn's own text (see the source).
-            createSpeechToolSource({ speechVocabulary, userMessage: transcript }),
-            // Issue #417: lets Mana decide mid-reply that seeing the screen
-            // would help, instead of vision only being reachable via the
-            // hotkey or the ambient screen-sensing loop. Same
-            // deps.X || fallback resolution registerCoreRoutes's deps use
-            // for these two below (server.js:4742-4747) -- no single
-            // shared local exists at this point in registerRoutes to reuse.
-            createVisionToolSource({
-              getVisionStatus:
-                deps.getVisionStatus || (() => llamaServerRuntime.getVisionStatus()),
-              runVisionReply:
-                deps.runVisionReply ||
-                ((prompt, images, maxTokens) =>
-                  llamaServerRuntime.runVisionReply(prompt, images, maxTokens)),
-              visionCaptureBridge,
-              screenSensingPlugin,
-              pluginSettingsStore: activePluginSettingsStore,
-            }),
-            // Issue #276: draft a proposed code change as a diff file
-            // instead of editing live -- reuses the existing editor
-            // workspace/proposal machinery (zed-integration.js) that
-            // already backs the /editors/* admin routes, just stops short
-            // of ever calling approveEditProposal.
-            // #787: approvalGate enables coding__run_tests (asks first).
-            createCodingToolSource({ editors: getEditorIntegrations(), approvalGate: activeApprovalGate, reviewEdit }),
-            ...(isPluginEnabled(browserAutomationPlugin, activePluginSettingsStore)
-              ? [activeBrowserAutomationToolSource]
-              : []),
-            // Issue #401: only offered when this session actually has a
-            // goal set -- there's nothing to finish otherwise, and no
-            // reason to spend schema tokens advertising it on every reply.
-            ...(sessionGoal ? [createSessionGoalToolSource()] : []),
-            // #675 Q12b: Mana turns deep thinking on/off herself; the rest
-            // of this reply's tool rounds follow it at once.
-            // #905: reminders the user asks for in chat -- not offered to
-            // scheduled replies, which nobody is asking in.
-            ...(userChat ? [createReminderToolSource({ getScheduler: cronSchedulerPlugin.getScheduler, sessionId })] : []),
-            // #1282: "not now", "don't bring this up again", quiet hours.
-            ...(userChat ? [createProactiveToolSource({ proactive: require("./proactive") })] : []),
-            // #1010: "let me try your PR" / "back to main" -- a PR number
-            // only from my own message. #1194: "update to main" asks me first.
-            ...(userChat
-              ? [
-                  createTryPrToolSource({
-                    userMessage: transcript,
-                    revert: reverter.revert,
-                    approvalGate: activeApprovalGate,
-                    isGaming: deps.isGaming || gamingWatch.isGaming,
-                  }),
-                ]
-              : []),
-            // #1008: "work on #N" -- only a number from my own message.
-            ...(userChat ? [selfWork.chatToolSource(transcript, { sessionId })] : []),
-            // #1182: git and GitHub, only in my own chat.
-            ...(userChat ? [gitTools] : []),
-            // #906: my email and calendar, only in my own chat (never a
-            // scheduled reply or a Discord/Telegram bridge).
-            ...(userChat
-              ? [createMailCalendarToolSource({ store: mailCalendarSettings, approvalGate: activeApprovalGate })]
-              : []),
-            // #911: media keys, volume, apps, audio output, file moves --
-            // only when I'm asking.
-            ...(userChat
-              ? [
-                  createDesktopToolSource({
-                    bridge: visionCaptureBridge,
-                    isGaming: deps.isGaming || gamingWatch.isGaming,
-                    voice: replyMeta.voice === true,
-                    snapshotStore,
-                  }),
-                ]
-              : []),
-            // #907: "brief me".
-            ...(userChat ? [briefing.toolSource] : []),
-            // #914: her own notes on our relationship.
-            // Each new note is a chat line (replyMeta.onNoted), so I see it.
-            ...(userChat
-              ? [
-                  createRelationshipToolSource({
-                    store: relationshipStore,
-                    onNoted: ({ kind, id, text, date }) => {
-                      const character = characterStore.active();
-                      replyMeta.onNoted?.({ kind, id, text, date, character: character.id, characterName: character.name });
-                    },
-                  }),
-                ]
-              : []),
-            ...(userChat
-              ? [
-                  createDeepThinkingToolSource({
-                    onSet: (on) => {
-                      // Already on for this reply: asking again mustn't
-                      // restart the 10-reply cap.
-                      if (!(on && manaThinking)) deepThinking.set(sessionId, on);
-                      replyMeta.deepThinking = deepThinking.isOn(sessionId);
-                      thinkHarder = askedThinkHarder || on || undefined;
-                    },
-                  }),
-                ]
-              : []),
-          ]);
-          // #1318: command and sub-task tools ask for a `description`.
-          mergedToolPolicy = withStepDescriptions(mergedToolPolicy);
-          // #1318: a step held in the approval queue shows as awaiting
-          // approval in the chat and activity panel until it's answered.
-          const stepApprovalGate = new Proxy(activeApprovalGate, {
-            get(target, prop) {
-              const value = Reflect.get(target, prop, target);
-              if (typeof value !== "function") return value;
-              if (prop !== "requestApproval") return value.bind(target);
-              return async (...request) => {
-                reportTool(activityRun.tool, "waiting");
-                try {
-                  return await value.apply(target, request);
-                } finally {
-                  reportTool(activityRun.tool, "resumed");
-                }
-              };
-            },
-          });
-          // Issue #281: on the "fast" (small) profile, protect its limited
-          // context from a large tool catalogue and from raw tool-result
-          // payloads -- both reuse this same already-loaded model rather
-          // than a dedicated filter model, and both are pure best-effort
-          // (any failure falls back to the unfiltered/uncompressed
-          // behavior, never blocks the reply). Skipped entirely on
-          // "quality"/"coding" profiles, which have the context headroom
-          // to not need either pass.
-          if (modelManagement.getActiveProfile() === "fast") {
-            mergedToolPolicy.tools = await filterRelevantTools({
-              tools: mergedToolPolicy.tools,
-              queryText: promptText,
-              runLocalReply: runLocalLlamaReply,
-            });
-            mergedToolPolicy = wrapWithResultDigest(mergedToolPolicy, {
-              runLocalReply: runLocalLlamaReply,
-            });
-          }
-          // Issue #426: the user's own PreToolUse/PostToolUse-style hook
-          // rules (deny/ask/run-command), applied *before* (wrapped inside)
-          // wrapWithToolCallLog below -- so a denied or ask-gated call still
-          // lands in the audit trail as its own logged event, additive to
-          // both existing gates rather than replacing either.
-          mergedToolPolicy = wrapWithHooks(mergedToolPolicy, activeHooksStore, stepApprovalGate, {
-            snapshotStore,
-          });
-          // Issue #669: per-call risk tiers. Destructive calls (rm -rf,
-          // registry edits, iwr | iex, credential files...) always go to a
-          // human; the mode (Settings > Approvals, else MANA_TOOL_APPROVAL,
-          // else "smart") decides the rest. Outside
-          // wrapWithHooks so a destructive call is reviewed before any hook
-          // runs; inside wrapWithToolCallLog so the outcome is logged.
-          // #699: a heartbeat check brings its own gate (its grants and
-          // scope) in place of this one.
-          mergedToolPolicy =
-            typeof replyMeta?.wrapToolPolicy === "function"
-              ? replyMeta.wrapToolPolicy(mergedToolPolicy, activeApprovalGate)
-              : wrapWithRiskGate(mergedToolPolicy, stepApprovalGate, {
-                  mode: resolveToolApprovalMode(
-                    activeApprovalGate.getToolApprovalMode(),
-                    (deps.env || process.env).MANA_TOOL_APPROVAL,
-                  ),
-                  // A web page, search/wiki results or the browser tab
-                  // (framed by ai/untrusted-content.js) came in with the turn.
-                  untrustedSources: untrustedSources(promptText),
-                });
-          // Issue #188: applied last so it catches every tool call from
-          // every source (local read_file, browser-automation, MCP) in one
-          // shared audit/trace log.
-          mergedToolPolicy = wrapWithToolCallLog(mergedToolPolicy, activeToolCallLog, () =>
-            activeMoodStore.record("task_failed"),
-          );
-          // #486: modify-input hook rules rewrite args first, so every gate
-          // above and the audit log see the rewritten call, never the original.
-          mergedToolPolicy = wrapWithInputHooks(mergedToolPolicy, activeHooksStore);
-          const executeLoggedTool = mergedToolPolicy.executeTool;
-          // #661: /reply/stream relays tool start/end so the avatar can
-          // show she's working. expression__set is her face, not work.
-          const onToolCall =
-            replyMeta && typeof replyMeta.onToolCall === "function" ? replyMeta.onToolCall : null;
-          const run = activityRun;
-          // #1318: each step's description/status/duration goes to the
-          // activity record and, as a "tool" event, to the chat's step lines.
-          const reportTool = (name, phase, extra) => {
-            if (!name || isExpressionToolName(name)) return;
-            const step =
-              phase === "start"
-                ? agentActivity.toolStarted(run, name, extra)
-                : phase === "waiting" || phase === "resumed"
-                  ? agentActivity.toolWaiting(run, phase === "waiting")
-                  : agentActivity.toolEnded(run, name, extra);
-            if (!onToolCall) return;
-            try {
-              onToolCall({ ...step, name, phase });
-            } catch (e) {}
-          };
-          mergedToolPolicy.executeTool = async (name, args) => {
-            // #646: Stop from the activity panel. The tool already running
-            // finishes; every later call is refused, so the model answers
-            // or the loop's own 3-consecutive-errors cap makes it.
-            // ponytail: no runtime change (it's mid-edit in #770/#787) --
-            // a stop check in runToolAwareReply's budget test would end
-            // the loop without those extra refused rounds.
-            if (run.stopRequested) {
-              throw new Error("Stopped by the user. Don't call any more tools; answer with what you have.");
-            }
-            reportTool(name, "start", stepInfo(name, args));
-            let ok = false;
-            let result;
-            try {
-              // #1121: a command this call runs is stopped by this loop's Stop.
-              result = await terminalFeed.runWith({ stop: () => agentActivity.stop(run.id) }, () =>
-                executeLoggedTool(name, args),
-              );
-              turnTools.push(name);
-              ok = true;
-              return result;
-            } finally {
-              reportTool(name, "end", {
-                ok,
-                result: ok ? trimResult(result) : undefined,
-                tokens: activeLlamaServerRuntime.getLastPromptUsage?.()?.promptTokens,
-                // #1337: a background task it started gets its own chat line.
-                task: ok ? launchedTask(result) : undefined,
-              });
-            }
-          };
-          // #1337: what she says before a tool round is part of the reply:
-          // streamed as it comes and kept ahead of her answer. A step's
-          // textOffset is the reply's length when its round started. Joined
-          // by single spaces so the offsets hold in the saved turn too (its
-          // text is whitespace-collapsed by acp-memory-store's cleanText).
-          const streamThisPass = Boolean(wrappedOnSentence && !firstPassStreamed);
-          const say = async (text) => {
-            firstPassStreamed = true;
-            const chunker = createSentenceChunker();
-            for (const sentence of [...chunker.push(text), ...chunker.flush()]) {
-              await wrappedOnSentence(sentence);
-            }
-          };
-          let shownText = "";
-          const toolResult = await runToolAwareReply(
-            promptText,
-            mergedToolPolicy,
-            {
-              maxTokens: effectiveMaxTokens,
-              profile: normalizedModelProfile,
-              overrideSystemPrompt: selectedSystemPrompt,
-              extraMessages: memoryExtraMessages,
-              thinking: () => thinkHarder,
-              goal: goalMode ? sessionGoal : null,
-              onRoundText: async (text) => {
-                const clean = stripEmotionTags(text).text.replace(/\s+/g, " ").trim();
-                if (streamThisPass) await say(text);
-                if (clean) shownText = shownText ? `${shownText} ${clean}` : clean;
-                agentActivity.textShown(run, shownText.length);
-              },
-            },
-          );
-          if (toolResult.content && toolResult.content.trim()) {
-            if (toolResult.toolCalls.length) {
-              lastToolCalls = toolResult.toolCalls;
-              console.log(
-                `Mana tool-calling (${toolResult.rounds} round(s)): ${toolResult.toolCalls
-                  .map((call) => `${call.name}(${call.ok ? "ok" : "error"})`)
-                  .join(", ")}`,
-              );
-              // Issue #253: reported via the replyMeta out-parameter, not a
-              // return-value change -- buildAssistantReply's return type
-              // stays a plain string for every one of its 5 call sites
-              // (mana-acp-agent.js, mobile-routes.js x2, server-routes.js x2),
-              // same reasoning already documented above for lastToolCalls.
-              if (replyMeta) {
-                // Last successful call wins, not first -- runToolAwareReply
-                // supports multiple tool-calling rounds, so a model that
-                // calls expression__set more than once in one reply is
-                // revising its choice; the final pick is the one that
-                // reflects "Mana's expression for this reply."
-                const expressionCall = [...toolResult.toolCalls]
-                  .reverse()
-                  .find((call) => isExpressionToolName(call.name) && call.ok);
-                if (expressionCall) {
-                  const name = String(expressionCall.args?.name || "").trim();
-                  if (name) replyMeta.expression = name;
-                }
-              }
-            }
-            turnToolSchemas = mergedToolPolicy.tools;
-            // Issue #623: the tool path isn't streamed, so the finished reply
-            // goes out sentence by sentence here, each with its own face,
-            // instead of as one clip with one face.
-            if (streamThisPass) await say(toolResult.content);
-            return shownText ? `${shownText} ${toolResult.content}` : toolResult.content;
-          }
-          console.warn(
-            "Tool-aware reply returned empty content; falling back to the plain reply path",
-          );
-        } catch (e) {
-          console.warn(
-            "Tool-aware reply failed, falling back to plain reply:",
-            e && e.message ? e.message : e,
-          );
-        }
-      }
-      if (wrappedOnSentence && !firstPassStreamed && isLlamaServerAvailable()) {
-        // Set before the attempt, not just on success -- sentences may
-        // already have been emitted (and possibly spoken client-side)
-        // before a failure, so a later regeneration must not stream again.
-        firstPassStreamed = true;
-        try {
-          return await activeLlamaServerRuntime.streamLocalAssistantReply(promptText, {
-            maxTokens: effectiveMaxTokens,
-            profile: normalizedModelProfile,
-            overrideSystemPrompt: selectedSystemPrompt,
-            extraMessages: memoryExtraMessages,
-            onSentence: wrappedOnSentence,
-            onThought: replyMeta?.onThought,
-            onThoughtDone: (thought) => {
-              if (replyMeta) replyMeta.thought = thought;
-            },
-            thinking: thinkHarder,
-          });
-        } catch (e) {
-          console.warn(
-            "Streaming local reply failed, falling back to non-streaming:",
-            e && e.message ? e.message : e,
-          );
-        }
-      }
-      if (memoryExtraMessages && replyMeta) {
-        memoryExtraMessages.onThoughtDone = (thought) => {
-          replyMeta.thought = thought;
-        };
-      }
-      return runLocalAssistantReply(
-        promptText,
-        effectiveMaxTokens,
-        normalizedModelProfile,
-        selectedSystemPrompt,
-        memoryExtraMessages,
-        () => replyWithBackup(promptText),
-        thinkHarder,
-      );
-    }
-
-    // Best-of-N self-voting (issue #70), opt-in and scoped to coding-mode
-    // replies. Layers on top of replyMaybeWithTools rather than replacing
-    // the reply pipeline: on any failure or empty result it falls through
-    // to the same tool-calling-or-plain path above, and the existing
-    // verify/retry pass below still gates whatever reply comes out of here,
-    // exactly as it already does for every other reply path.
-    const bestOfNEnabled =
-      String(process.env.MANA_BEST_OF_N_ENABLED || "0") === "1";
-    async function replyMaybeWithBestOfN(promptText) {
-      if (
-        bestOfNEnabled &&
-        !goalMode &&
-        // #679: Best-of-N builds its own messages without the images.
-        !replyMeta?.images?.length &&
-        mode === "coding" &&
-        !thinkHarder &&
-        isLlamaServerAvailable()
-      ) {
-        try {
-          const n = Number(process.env.MANA_BEST_OF_N_COUNT || 3);
-          const result = await runBestOfNReply(promptText, {
-            n,
-            maxTokens: effectiveMaxTokens,
-            profile: normalizedModelProfile,
-            overrideSystemPrompt: selectedSystemPrompt + flatMemorySuffix,
-          });
-          if (result.content && result.content.trim()) {
-            // Issue #159: rather than trusting the judge's pick blindly,
-            // prefer whichever already-generated candidate is least
-            // similar to Mana's recent replies in this session -- no
-            // extra network call, since Best-of-N already paid for all N.
-            let selected = { content: result.content, index: result.judgeIndex, switched: false };
-            if (sessionId && acpMemoryStore && result.candidates.length > 1) {
-              const recentReplies = (acpMemoryStore.getSession(sessionId)?.turns || [])
-                .map((t) => t.assistant)
-                .filter(Boolean);
-              selected = rutDetector.pickLeastRepetitive(
-                sessionId,
-                result.candidates,
-                result.judgeIndex,
-                recentReplies,
-              );
-              if (selected.switched) {
-                console.log(
-                  `Mana rut detection: swapped judge's pick for candidate ${selected.index + 1}/${result.candidates.length} (less repetitive)`,
-                );
-              }
-            }
-            console.log(
-              `Mana best-of-N: judge picked candidate ${result.judgeIndex + 1}/${result.candidates.length}`,
-            );
-            return selected.content;
-          }
-          console.warn(
-            "Best-of-N reply returned empty content; falling back to the plain reply path",
-          );
-        } catch (e) {
-          console.warn(
-            "Best-of-N reply failed, falling back to plain reply:",
-            e && e.message ? e.message : e,
-          );
-        }
-      }
-      return replyMaybeWithTools(promptText);
-    }
-
-    const BACKUP_NOTICE = "My main model isn't answering, so I'm using my backup.";
-    let usedBackup = false;
-    // #666: wait out a llama-server (re)start instead of failing the turn,
-    // telling a streaming client once, as a spoken sentence. Not in
-    // streamedSentences, so it never counts against streamedMatchesFinal.
-    // If nothing comes up, the paths below fall back to llama-cli as before.
-    // Gated on the runtime's own isEnabled (false under the test runner), not
-    // the deps.isLlamaServerEnabled override: a test that only stubs that
-    // override must never reach a real llama-server start from here.
-    if (
-      activeLlamaServerRuntime.waitForServer &&
-      activeLlamaServerRuntime.isEnabled()
-    ) {
-      try {
-        const readyProfile = await activeLlamaServerRuntime.waitForServer(
-          normalizedModelProfile,
-          onSentence ? () => onSentence("Give me a second, I'm waking up.") : null,
-          memoryExtraMessages.images,
-        );
-        if (readyProfile !== normalizedModelProfile) {
-          console.warn(`Mana: ${normalizedModelProfile} model unavailable, answering with ${readyProfile}`);
-          if (onSentence) onSentence(BACKUP_NOTICE);
-          normalizedModelProfile = readyProfile;
-          usedBackup = true;
-        }
-      } catch (e) {
-        console.warn("llama-server still unavailable after waiting:", e && e.message ? e.message : e);
-      }
-    }
-
-    // #666: an empty reply (after the runtime's own retry) gets one try on
-    // the backup model before llama-cli -- once per turn, including a switch
-    // the wait above already made, so the notice is said at most once.
-    async function replyWithBackup(promptText) {
-      if (usedBackup) return null;
-      usedBackup = true;
-      try {
-        const backup = activeLlamaServerRuntime.backupProfileFor?.(normalizedModelProfile);
-        if (!backup) return null;
-        const backupReply = await activeLlamaServerRuntime.runLocalAssistantReply(
-          promptText,
-          effectiveMaxTokens,
-          backup,
-          selectedSystemPrompt,
-          memoryExtraMessages,
-        );
-        console.warn(`Mana: ${normalizedModelProfile} model gave an empty reply, answered with ${backup}`);
-        if (onSentence) onSentence(BACKUP_NOTICE);
-        normalizedModelProfile = backup;
-        return backupReply;
-      } catch (e) {
-        console.warn("Backup model reply failed, falling back to llama-cli:", e && e.message ? e.message : e);
-        return null;
-      }
-    }
-
-    // Fall back to local llama
-    let reply = untag(await replyMaybeWithBestOfN(finalPrompt));
-
-    // Conversational rut detection (issue #159), general reply path: the
-    // Best-of-N branch above already prefers a less-repetitive candidate
-    // when one exists, but every reply -- Best-of-N or not -- funnels
-    // through here, so this is where casual/everyday replies (where
-    // verbal-tic repetition actually shows up) get covered too. Only one
-    // regeneration attempt, with an explicit nudge -- if that's still a
-    // rut, send it rather than looping.
-    try {
-      const rutEnabled = String(process.env.MANA_RUT_DETECTION_ENABLED || "1") === "1";
-      // #676: never regenerate a goal-mode reply -- that reruns the whole loop, tool calls included.
-      if (rutEnabled && !goalMode && sessionId && acpMemoryStore && typeof reply === "string") {
-        const recentReplies = (acpMemoryStore.getSession(sessionId)?.turns || [])
-          .map((t) => t.assistant)
-          .filter(Boolean);
-        const check = rutDetector.checkReply(sessionId, reply, recentReplies);
-        if (check.isRut) {
-          const nudgedPrompt = `${finalPrompt}\n\nYour last several replies have repeated similar phrasing. Say this differently -- vary your wording and sentence structure instead of reusing recent lines.`;
-          const regenerated = await replyMaybeWithBestOfN(nudgedPrompt);
-          if (typeof regenerated === "string" && regenerated.trim()) {
-            reply = untag(regenerated);
-            rutDetector.recordIntervention(sessionId);
-            console.log("Mana rut detection: regenerated a repetitive reply with a phrasing nudge");
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("Rut detection check failed:", e?.message || e);
-    }
-    queueVTubeReaction(reply);
-
-    // Token-budget accounting: estimate reply tokens and deduct from session budget
-    try {
-      const talkBudget = require("./utils/talk_budget");
-      try {
-        const tokenCount =
-          await require("./tools/python_token_cache.async").countTokensForText(
-            typeof reply === "string" ? reply : String(reply),
-            ".py",
-            false,
-          );
-        const sessionKey = sessionId || "global";
-        const consumeRes = talkBudget.consumeTokens(sessionKey, tokenCount);
-        if (!consumeRes.ok) {
-          console.warn(
-            `Talk budget exceeded for session ${sessionKey}: attempted ${tokenCount} tokens, remaining ${consumeRes.remaining}`,
-          );
-        }
-        // record perf metric (perfMetrics.operations is a label->stats map,
-        // same shape logPerf uses; GET /perf/status returns it as-is)
-        perfMetrics.operations.reply_token_usage = {
-          lastTokens: tokenCount,
-          session: sessionKey,
-          updatedAt: new Date().toISOString(),
-        };
-      } catch (e) {
-        console.warn("Failed to account for reply tokens:", e?.message || e);
-      }
-    } catch (e) {
-      // if talk budget module missing, skip
-    }
-
-    // Optional verification and auto-retry logic
-    try {
-      const { verifyReply } = require("./utils/reply-verifier");
-      const verifyEnabled =
-        String(process.env.MANA_VERIFY_REPLY || "0") === "1";
-      const autoRetry =
-        String(process.env.MANA_AUTO_RETRY_VERIFICATION || "0") === "1";
-      const maxRetries = Number(process.env.MANA_VERIFY_MAX_RETRIES || 1);
-
-      if (verifyEnabled) {
-        let attempts = 0;
-        while (true) {
-          attempts += 1;
-          const verification = await verifyReply(
-            typeof reply === "string" ? reply : String(reply),
-            assistantMode || "everyday",
-          );
-          if (verification.ok) {
-            // verified
-            break;
-          }
-
-          console.warn("Reply verification failed:", verification.issues);
-          if (autoRetry && !goalMode && attempts <= maxRetries) {
-            // Ask the model to fix its previous reply
-            const fixPrompt =
-              finalPrompt +
-              "\n\nThe assistant produced a reply that failed verification.\nPlease regenerate the reply and fix the following issues:\n" +
-              verification.issues
-                .map((i) => `- ${i.type}: ${i.message}`)
-                .join("\n") +
-              "\nReturn only the reply.";
-            console.log(
-              "Attempting auto-retry of assistant reply (attempt",
-              attempts,
-              ")",
-            );
-            try {
-              reply = untag(await replyMaybeWithBestOfN(fixPrompt));
-              queueVTubeReaction(reply);
-              continue; // re-verify
-            } catch (retryErr) {
-              console.warn("Auto-retry failed:", retryErr?.message || retryErr);
-              break;
-            }
-          }
-
-          break;
-        }
-      }
-    } catch (e) {
-      console.warn("Reply verification unavailable:", e?.message || e);
-    }
-
-    // Anti-formulaic-phrasing rewrite pass (issue #160): runs last, right
-    // before the reply is recorded/returned, since the verify/retry loop
-    // above can still replace `reply` wholesale -- this needs to see
-    // whatever text will actually be spoken, not an intermediate draft.
-    try {
-      const phrasingEnabled =
-        String(process.env.MANA_PHRASING_VARIATION_ENABLED || "1") === "1";
-      if (phrasingEnabled && sessionId && typeof reply === "string") {
-        const check = phrasingVariator.checkReply(sessionId, reply);
-        if (check.isPredictable) {
-          const alt = await rewritePhrase(check.match.matchedText, {
-            synthesize: (prompt) =>
-              runLocalAssistantReply(
-                prompt,
-                40,
-                normalizedModelProfile,
-                "You are a concise writing assistant. Follow instructions exactly and reply with only what was asked for.",
-              ),
-          });
-          if (alt && alt.trim() && alt.toLowerCase() !== check.match.matchedText.toLowerCase()) {
-            reply = reply.replace(check.match.matchedText, alt.trim());
-            console.log("Mana phrasing variation: rewrote a repeated catchphrase/opener");
-          }
-        }
-        const finalMatch = phrasingVariator.findLexiconMatch(reply);
-        if (finalMatch) phrasingVariator.recordUsage(sessionId, finalMatch.id);
-      }
-    } catch (e) {
-      console.warn("Phrasing variation check failed:", e?.message || e);
-    }
-
-    try {
-      if (
-        sessionId &&
-        acpMemoryStore &&
-        typeof acpMemoryStore.appendTurn === "function"
-      ) {
-        acpMemoryStore
-          .appendTurn({
-            sessionId,
-            user: transcript,
-            assistant:
-              typeof reply === "string" &&
-              typeof cleanLlamaOutput === "function"
-                ? cleanLlamaOutput(reply)
-                : reply,
-            thought: replyMeta?.thought || null,
-            toolCalls: lastToolCalls,
-            // #1337: the reply's step lines, for the chat when it's reopened.
-            steps: activityRun ? agentActivity.steps(activityRun.id) : null,
-            speaker: characterStore.active().name,
-          })
-          .catch((memErr) =>
-            console.warn(
-              "Failed to append turn to ACP memory:",
-              memErr?.message || memErr,
-            ),
-          );
-      }
-    } catch (memErr) {
-      console.warn("Failed to append turn to ACP memory:", memErr.message);
-    }
-    if (replyMeta) {
-      replyMeta.streamedMatchesFinal = streamedMatchesFinal(streamedSentences, reply);
-    }
-    // #642 (Q33c): once per conversation, at 90% of the context window,
-    // Mana ends this reply by suggesting a fresh chat. Added after the
-    // stream check (like #666's notice, it's an extra sentence, not a
-    // changed reply) and after the turn went to memory. Rides on a reply
-    // the user asked for, so it's fine while gaming too.
-    const contextSize = turnPromptUsage ? await activeLlamaServerRuntime.getContextSize?.() : null;
-    const fullNote = turnPromptUsage && typeof reply === "string"
-      ? contextFullNote(sessionId, turnPromptUsage.promptTokens, contextSize)
-      : "";
-    if (fullNote) {
-      reply = `${reply.trimEnd()} ${fullNote}`;
-      // Streamed and unchanged: speak it as one more sentence. Otherwise the
-      // client speaks the final reply, which now ends with it.
-      if (onSentence && replyMeta?.streamedMatchesFinal) await onSentence(fullNote);
-    }
-    // Issue #642: the context meter (GET /prompt-composition/:sessionId).
-    // Not awaited -- a few local /tokenize calls are never worth delaying
-    // the reply for; until they land the record shows char/4 estimates.
-    if (compositionRecord) {
-      const isMcp = (tool) => String(tool?.function?.name || "").startsWith("mcp__");
-      const localTools = turnToolSchemas.filter((tool) => !isMcp(tool));
-      const mcpTools = turnToolSchemas.filter(isMcp);
-      (async () =>
-        finalizePromptComposition(compositionRecord, {
-          texts: {
-            ...compositionTexts,
-            "tool-schemas": localTools.length ? JSON.stringify(localTools) : "",
-            "mcp-tool-schemas": mcpTools.length ? JSON.stringify(mcpTools) : "",
-          },
-          promptUsage: turnPromptUsage,
-          contextSize: contextSize ?? (await activeLlamaServerRuntime.getContextSize?.()),
-          countTokens: activeLlamaServerRuntime.countTokens,
-        }))().catch((e) => console.warn("Failed to finalize prompt composition:", e?.message || e));
-    }
-    return reply;
-  }
+  function buildAssistantReply(...args) { return chatReply.buildAssistantReply(...args); }
 
   registerCoreRoutes(app, upload, {
+    documentAccess,
     UNIVERSALIS_DEFAULT_WORLD,
     TTS_PROVIDER,
     SCREEN_CONTEXT_MAX_CHARS,
@@ -6035,20 +4255,7 @@ function registerRoutes(app, upload, deps = {}) {
   // run inside speakAs(partner) so the persona, personality and mood are
   // hers. Same chat model, one short call; no tools and no emotion tags.
   // The route saves it (only if it's still wanted).
-  async function buildGroupReaction({ sessionId, userText, sister, reply }) {
-    const me = characterStore.active();
-    const system = [
-      persona.buildPersonaPrompt(sessionId, personalityStore.get().traits, personaOf(me)),
-      moodPromptBlock(activeMoodStore.get(), "casual"),
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-    const prompt = `I said: "${userText}"\n\nYour sister ${sister.name} answered: "${reply}"\n\nAdd one short reaction to her, one or two short sentences, as yourself. Don't repeat what she said.`;
-    const raw = shouldUseRemoteAi()
-      ? await runOpenAIReply(prompt, GROUP_REACTION_MAX_TOKENS, system, sessionId)
-      : await runLocalAssistantReply(prompt, GROUP_REACTION_MAX_TOKENS, "default", system);
-    return cleanLlamaOutput(stripEmotionTags(String(raw || "")).text).trim();
-  }
+  function buildGroupReaction(...args) { return chatReply.buildGroupReaction(...args); }
 
   // Test-only hook (same pattern as app.locals.broadcastTrayNotification
   // below): exposes the real buildAssistantReply closure -- with its
@@ -6060,6 +4267,7 @@ function registerRoutes(app, upload, deps = {}) {
   // directly (e.g. triggering its automatic summarizeFn compaction) rather
   // than going through an HTTP route.
   app.locals.acpMemoryStore = deps.acpMemoryStore || acpMemoryStore;
+  require('./routes/chat-models').registerChatModelRoutes(app, { modelManagement, acpMemoryStore: app.locals.acpMemoryStore, checkAdminAuth });
 
   registerVTubeRoutes(app, { vtubeRuntime });
 
@@ -6148,6 +4356,14 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/api/memory/notes", authMiddleware, async (req, res) => {
     try {
       res.json(currentMemoryNotes());
+    } catch (e) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  app.get("/api/memory/notes/excluded", authMiddleware, async (req, res) => {
+    try {
+      res.json({ excluded: excludedMemoryEntities() });
     } catch (e) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -6395,6 +4611,7 @@ module.exports = {
   manaProcessesUnder,
   buildMemoryNotes,
   buildVaultViews,
+  slugifyEntityName,
   buildSkillsIndexBlock,
   checkEmotionalReflexes,
   DEEP_RESEARCH_SUBTASK_PROFILE,
@@ -6407,5 +4624,6 @@ module.exports = {
   shouldUseRemoteAi,
   startServer,
   sweepStaleTmpFiles,
+  deleteUploadFiles,
   codingSessionManager,
 };
