@@ -182,6 +182,12 @@ test("the report has a row per case and each case's diff", async () => {
   const json = JSON.parse(fs.readFileSync(path.join(out, "report.json"), "utf8"));
   assert.equal(json.results[0].patch, undefined);
   assert.match(fs.readFileSync(path.join(out, "1-add-subtracts.diff"), "utf8"), /a \+ b/);
+  // #1467: every tool call she made, in order, beside the diff; not in report.json.
+  assert.equal(json.results[0].trace, undefined);
+  const trace = fs.readFileSync(path.join(out, "1-add-subtracts.trace.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(trace.length, 7);
+  assert.deepEqual(trace.map((t) => t.n), [1, 2, 3, 4, 5, 6, 7]);
+  assert.ok(trace.some((t) => t.name === "coding__propose_edit" && /a \+ b/.test(t.args)));
 });
 
 // #1221
@@ -230,6 +236,8 @@ test("each failed run gets one failure kind", () => {
   const base = { passed: false, ended: "not-finished", summary: "", rounds: 5, maxRounds: 20, editErrors: 0, contextSize: 16384, outside: [], tokens: { peak: 5000, textCalls: 0 }, diff: { files: [] } };
   const kind = (over) => failureKind({ ...base, ...over }, c);
   assert.equal(kind({ passed: true }), null);
+  // #1467: the harness failing her comes first; it isn't the model's failure.
+  assert.equal(kind({ harnessErrors: ["coding__run_tests: Copy would leave the approved source: x"], rounds: 20 }), "harness error");
   assert.equal(kind({ tokens: { peak: 13000, textCalls: 0 } }), "context overflow");
   assert.equal(kind({ ended: "stuck" }), "stuck");
   assert.equal(kind({ ended: "refuted" }), "no valid edit: reviewer refusal");

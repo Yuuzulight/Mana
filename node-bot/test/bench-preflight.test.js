@@ -1,0 +1,97 @@
+// #1467: the bench's preflight -- the harness and the cases, checked before
+// any GPU time. Fakes for the sandbox, llama-server and the model.
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const test = require("node:test");
+
+const pre = require("../bench/preflight");
+const { HARNESS_ERROR } = require("../bench/self-work-bench");
+
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "mana-preflight-"));
+
+function repoWithModules() {
+  const repo = tmp();
+  fs.mkdirSync(path.join(repo, "node-bot", "node_modules"), { recursive: true });
+  return repo;
+}
+
+test("copy sources: missing, broken or not covering node_modules is a problem; covering it isn't", () => {
+  const repo = repoWithModules();
+  const modules = path.join(repo, "node-bot", "node_modules");
+  assert.match(pre.copySourcesProblem(repo, { load: () => ({ dependencyRoots: [] }) }), /doesn't approve .*node_modules.*Copy would leave the approved source/);
+  assert.match(
+    pre.copySourcesProblem(repo, { load: () => { throw new Error("Invalid sandbox copy-source configuration"); } }),
+    /is invalid \(Invalid sandbox copy-source configuration\)/,
+  );
+  assert.equal(pre.copySourcesProblem(repo, { load: () => ({ dependencyRoots: [modules] }) }), null);
+  assert.equal(pre.copySourcesProblem(repo, { load: () => ({ dependencyRoots: [path.join(repo, "node-bot")] }) }), null, "a parent folder covers it");
+  assert.equal(pre.copySourcesProblem(tmp(), { load: () => ({ dependencyRoots: [] }) }), null, "no node_modules, nothing to approve");
+});
+
+test("sandbox: a real test run through the link; a failed or thrown run is a problem, and the probe is cleaned up", async () => {
+  const wt = tmp();
+  const seen = [];
+  const run = (exitCode) => async (command, cwd, opts) => {
+    seen.push({ command, cwd, opts });
+    return { exitCode, output: "tail of output" };
+  };
+  assert.equal(await pre.sandboxProblem(wt, { run: run(0), copySources: { dependencyRoots: [] } }), null);
+  assert.equal(seen[0].command, "node --test test/bench-preflight.test.js");
+  assert.equal(seen[0].cwd, path.join(wt, "node-bot"));
+  assert.equal(seen[0].opts.workspaceRoot, wt);
+  assert.match(await pre.sandboxProblem(wt, { run: run(1), copySources: { dependencyRoots: [] } }), /failed \(exit 1\): tail of output/);
+  const thrown = async () => { throw new Error("Copy would leave the approved source: x"); };
+  assert.match(await pre.sandboxProblem(wt, { run: thrown, copySources: { dependencyRoots: [] } }), /couldn't run: Copy would leave/);
+  assert.equal(fs.existsSync(path.join(wt, "node-bot", "test", "bench-preflight.test.js")), false);
+});
+
+test("server args: flags llama-server doesn't list are named; values and known flags pass", () => {
+  const help = () => "-fa,   --flash-attn [on|off|auto]\n-fit,  --fit [on|off]\n-ctk,  --cache-type-k TYPE\n-lm,   --load-mode MODE\n";
+  assert.equal(pre.serverArgsProblem("--fit,on,-fa,on,-ctk,q8_0,--load-mode,none", "llama-server.exe", { help }), null);
+  assert.equal(pre.serverArgsProblem("", "llama-server.exe", { help }), null);
+  assert.match(pre.serverArgsProblem("--fit,on,--fitt-target,768,-ncmoe,20", "llama-server.exe", { help }), /doesn't know --fitt-target, -ncmoe/);
+});
+
+test("cases: an unsound one is left out with why, and a verdict is cached until the case changes", async () => {
+  const file = path.join(tmp(), "verified.json");
+  const cases = [
+    { id: "a", base: "1", hiddenTests: [] },
+    { id: "b", base: "2", hiddenTests: [] },
+    { id: "c", base: "3", hiddenTests: [] },
+  ];
+  const verdicts = { a: { ok: true, failsAtBase: true, passesWithFix: true }, b: { ok: false, failsAtBase: false, passesWithFix: true }, c: { ok: false, failsAtBase: true, passesWithFix: false } };
+  let checks = 0;
+  const verify = async (c) => (checks++, verdicts[c.id]);
+  const log = () => {};
+  const first = await pre.soundCases(cases, verify, { file, log });
+  assert.deepEqual(first.sound.map((c) => c.id), ["a"]);
+  assert.deepEqual(first.skipped, [
+    { id: "b", why: "its hidden tests already pass at the base (a free pass)" },
+    { id: "c", why: "its hidden tests don't pass with the fix" },
+  ]);
+  assert.equal(checks, 3);
+  await pre.soundCases(cases, verify, { file, log });
+  assert.equal(checks, 3, "cached");
+  await pre.soundCases([{ ...cases[0], base: "9" }], verify, { file, log });
+  assert.equal(checks, 4, "a changed case is checked again");
+});
+
+test("the model: a parsed tool call passes; none, or a failed loop, is a problem", async () => {
+  const calls = async (prompt, policy) => {
+    assert.equal(policy.tools[0].function.name, "bench_ping");
+    await policy.executeTool("bench_ping", { n: 1 });
+    return { content: "done" };
+  };
+  assert.equal(await pre.toolCallProblem(calls), null);
+  assert.match(await pre.toolCallProblem(async () => ({ content: '<tool_call>{"name": "bench_ping"}</tool_call>' })), /didn't make a tool call/);
+  assert.match(await pre.toolCallProblem(async () => { throw new Error("500"); }), /first tool call failed: 500/);
+});
+
+test("harness errors: the sandbox and test runner, not her own mistakes", () => {
+  assert.ok(HARNESS_ERROR.test("Copy would leave the approved source: D:\\x\\node_modules"));
+  assert.ok(HARNESS_ERROR.test("Native execution helper is unavailable; no unrestricted fallback"));
+  assert.ok(!HARNESS_ERROR.test("ENOENT: no such file or directory, open 'data/facts.json'"));
+  assert.ok(!HARNESS_ERROR.test("old_text isn't in node-bot/util.js"));
+});

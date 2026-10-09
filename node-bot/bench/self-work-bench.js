@@ -11,6 +11,15 @@
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--out <dir>] [--verify]
 //     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
+//     [--check]   (the preflight only: no model, no runs)
+//
+// #1467: before any GPU time, bench/preflight.js checks the harness (the
+// sandbox's copy-source approval, a real sandboxed test in a bench worktree,
+// the model file and --server-args) and that every case is sound (cached);
+// unsound cases are left out of the run and listed in the report. Once the
+// model is up, it must make one tool call the loop parses. A run a game or
+// RAM paused is run again, not scored; a harness error (the sandbox, not the
+// model) stops the bench. Every tool call goes in <run>.trace.jsonl.
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
 // live); each runs --repeat times (model output varies); --model and
@@ -192,6 +201,8 @@ function isGamingNow(repoRoot) {
 // being up means she's in use: the bench's model would take the VRAM her
 // next reply needs.
 const GAMING = "a game is running";
+// Tool errors that are the harness's, not the model's.
+const HARNESS_ERROR = /Copy would leave the approved source|Invalid sandbox copy-source|Native execution helper is unavailable|AppContainer|Disposable workspace copy exceeds|Self-work tests require the approval gate|ENOSPC/i;
 async function blocker({ isGaming, ramPercent, backendModelUp }) {
   if (isGaming()) return GAMING;
   const ram = ramPercent();
@@ -214,14 +225,20 @@ async function runCase(c, deps) {
   try {
     const start = applyMutation(wt, c);
     // Counted here, so a loop that throws still reports what it did.
-    const calls = { total: 0, errors: 0, editErrors: 0, samples: [] };
+    const calls = { total: 0, errors: 0, editErrors: 0, harness: [], samples: [], trace: [] };
+    const clip = (v) => (typeof v === "string" ? v : JSON.stringify(v) ?? "").slice(0, 2000);
     const counted = (policy) => ({
       ...policy,
       async executeTool(name, args) {
         calls.total += 1;
+        const at = Date.now();
         try {
-          return await policy.executeTool(name, args);
+          const out = await policy.executeTool(name, args);
+          calls.trace.push({ n: calls.total, ms: Date.now() - at, name, args: clip(args), result: clip(out) });
+          return out;
         } catch (e) {
+          calls.trace.push({ n: calls.total, ms: Date.now() - at, name, args: clip(args), error: clip(e.message) });
+          if (HARNESS_ERROR.test(e.message)) calls.harness.push(`${name}: ${String(e.message).slice(0, 200)}`);
           calls.errors += 1;
           if (name === "coding__propose_edit") calls.editErrors += 1;
           // What went wrong, for the report: the first few.
@@ -271,6 +288,8 @@ async function runCase(c, deps) {
       toolErrors: calls.errors,
       editErrors: calls.editErrors,
       errorSamples: calls.samples,
+      // The harness failing her (the sandbox, the test runner), not the model.
+      harnessErrors: calls.harness,
       wallMs,
       peakVramMb: peak.vramMb,
       peakRamPercent: peak.ramPercent,
@@ -296,6 +315,7 @@ async function runCase(c, deps) {
       error: error ? error.slice(0, 300) : undefined,
       summary: String(reply?.content || "").slice(0, 600),
       patch: diff.patch,
+      trace: calls.trace,
       hiddenTail: hidden.passed ? "" : hidden.tail,
     };
     result.failure = failureKind(result, c);
@@ -309,6 +329,7 @@ async function runCase(c, deps) {
 // that touched files the real fix didn't (a passing one only notes it).
 function failureKind(r, c) {
   if (r.passed) return null;
+  if (r.harnessErrors?.length) return "harness error";
   const overflow = /outgrew the model's context|exceeds the available context/i.test(`${r.summary} ${r.error || ""}`);
   if (overflow || (r.contextSize && r.tokens.peak >= 0.78 * r.contextSize)) return "context overflow";
   if (r.ended === "stuck") return "stuck";
@@ -431,7 +452,8 @@ function writeReport(results, outDir, meta = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const name = (r) => (meta.repeats > 1 ? `${r.id}-r${r.repeat}` : r.id);
   for (const r of results) if (r.patch) fs.writeFileSync(path.join(outDir, `${name(r)}.diff`), r.patch + "\n");
-  const rows = results.map(({ patch, ...r }) => r);
+  for (const r of results) if (r.trace?.length) fs.writeFileSync(path.join(outDir, `${name(r)}.trace.jsonl`), r.trace.map((t) => JSON.stringify(t)).join("\n") + "\n");
+  const rows = results.map(({ patch, trace, ...r }) => r);
   const summary = summarize(rows);
   const passed = rows.filter((r) => r.passed).length;
   fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ ...meta, passed, total: rows.length, summary, results: rows }, null, 2));
@@ -649,6 +671,21 @@ async function main(argv) {
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
 
+  // #1467: the harness and the cases, before any GPU time.
+  const pre = require("./preflight");
+  const problems = [pre.copySourcesProblem(repoRoot)];
+  if (config.model && !fs.existsSync(config.model)) problems.push(`no model file at ${config.model}`);
+  if (!problems.some(Boolean)) {
+    const wt = path.join(worktreesDir, "bench-preflight");
+    makeWorktree(repoRoot, wt, cases[0].base);
+    try {
+      problems.push(await pre.sandboxProblem(wt));
+    } finally {
+      removeWorktree(repoRoot, wt);
+    }
+  }
+  if (problems.some(Boolean)) throw new Error(`The bench's preflight failed:\n- ${problems.filter(Boolean).join("\n- ")}`);
+
   if (argv.includes("--verify")) {
     for (const c of cases) {
       const why = await blocker(gate);
@@ -658,21 +695,45 @@ async function main(argv) {
     return;
   }
 
+  const { sound, skipped } = await pre.soundCases(cases, (c) => verifyCase(c, { repoRoot, worktreesDir }));
+  for (const s of skipped) console.log(`Leaving out ${s.id}: ${s.why}.`);
+  if (!sound.length) throw new Error("no sound cases to run");
+  if (argv.includes("--check")) {
+    console.log(`Preflight passed: ${sound.length} sound case(s), ${skipped.length} left out.`);
+    return;
+  }
+
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   const model = remote ? remoteModel(repoRoot, tokens, spend, { model: remote, thinking }, config) : realModel(repoRoot, tokens, config);
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000, ...(remote ? { spend } : {}) };
+  if (!remote) {
+    const bad = pre.serverArgsProblem(config.serverArgs, model.runtime.findLlamaServerBin());
+    if (bad) throw new Error(`The bench's preflight failed: ${bad}`);
+  }
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
-  for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
+  for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of sound) runs.push({ c, repeat });
   try {
     await model.start();
+    const noCall = await pre.toolCallProblem(model.runLoop);
+    if (noCall) throw new Error(`The bench's preflight failed: ${noCall}`);
     for (const { c, repeat } of runs) {
-      const why = await waitOut(c, gate, model);
-      if (why) {
-        console.log(`Stopping before ${c.id}: ${why}.`);
+      // A run a game or RAM paused isn't her result: wait it out, run it again.
+      let result = null;
+      let why = null;
+      for (let tries = 0; tries < 3 && !result; tries += 1) {
+        why = await waitOut(c, gate, model);
+        if (why) break;
+        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate });
+        if (result.ended === "paused") {
+          console.log(`${c.id} was paused; running it again.`);
+          result = null;
+        }
+      }
+      if (!result) {
+        console.log(`Stopping before ${c.id}: ${why || "it was paused three times"}.`);
         break;
       }
-      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate });
       if (model.aborted()) {
         console.log(`Stopping at ${c.id}: ${model.aborted()}.`);
         break;
@@ -685,6 +746,10 @@ async function main(argv) {
       }
       results.push(result);
       writeReport(results, outDir, meta);
+      if (result.harnessErrors.length) {
+        console.log(`Stopping at ${c.id}: the harness failed her, not the model: ${result.harnessErrors[0]}`);
+        break;
+      }
     }
   } finally {
     await model.stop();
@@ -700,4 +765,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+module.exports = { HARNESS_ERROR, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };

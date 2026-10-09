@@ -1,0 +1,120 @@
+// #1467: everything the bench needs, checked before any GPU time is spent,
+// so a run measures the model and not the harness. Each check returns a
+// problem (a string) or null; the bench stops on any problem.
+//   - the sandbox copy-source approval exists, parses, and covers the
+//     node_modules her worktrees link to (her tests fail without it);
+//   - a sandboxed test really runs in a bench worktree, through the link;
+//   - the model file and --server-args flags exist;
+//   - every case is sound: its hidden tests fail at the base and pass with
+//     the fix (cached per case); unsound cases are left out, with why;
+//   - once the model is up, it makes a tool call the loop can parse.
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+
+const VERIFIED_FILE = path.join(__dirname, "results", "verified-cases.json");
+
+function copySourcesProblem(repoRoot, { load = () => require("../tools/native-execution").approvedCopySources() } = {}) {
+  const modules = path.join(repoRoot, "node-bot", "node_modules");
+  if (!fs.existsSync(modules)) return null;
+  const where = path.join(__dirname, "..", "data", "native-sandbox-copy-sources.json");
+  let sources;
+  try {
+    sources = load();
+  } catch (e) {
+    return `${where} is invalid (${e.message}); her sandboxed tests would all fail`;
+  }
+  const real = fs.realpathSync(modules).toLowerCase();
+  const covered = sources.dependencyRoots.some((root) => {
+    const r = (fs.existsSync(root) ? fs.realpathSync(root) : root).toLowerCase();
+    return real === r || real.startsWith(r + path.sep);
+  });
+  return covered ? null : `${where} doesn't approve ${modules} (her worktrees link to it), so her sandboxed tests would fail with "Copy would leave the approved source"`;
+}
+
+// A throwaway test that loads a package through the worktree's node_modules
+// link, run exactly as her test runs are (the sandbox, a disposable copy).
+async function sandboxProblem(wt, { run = require("../tools/native-execution").runSandboxedTestCommand, copySources } = {}) {
+  const rel = path.join("test", "bench-preflight.test.js");
+  const file = path.join(wt, "node-bot", rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'const test = require("node:test");\ntest("packages load", () => { require("express"); });\n');
+  try {
+    const sources = copySources || require("../tools/native-execution").approvedCopySources();
+    const r = await run(`node --test ${rel.replace(/\\/g, "/")}`, path.join(wt, "node-bot"), { copySources: sources, workspaceRoot: wt });
+    if (r?.exitCode === 0) return null;
+    return `a sandboxed test in a bench worktree failed (exit ${r?.exitCode}${r?.timedOut ? ", timed out" : ""}): ${String(r?.output || "").slice(-300)}`;
+  } catch (e) {
+    return `a sandboxed test in a bench worktree couldn't run: ${e.message}`;
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+}
+
+// Flags in --server-args that this llama-server doesn't know.
+function serverArgsProblem(serverArgs, bin, { help = () => execFileSync(bin, ["--help"], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }) } = {}) {
+  const flags = String(serverArgs || "").split(/[\s,]+/).filter((a) => /^-{1,2}[a-z]/i.test(a));
+  if (!flags.length) return null;
+  let text;
+  try {
+    text = help();
+  } catch (e) {
+    text = `${e.stdout || ""}${e.stderr || ""}`;
+  }
+  const unknown = flags.filter((f) => !new RegExp(`(^|[\\s,])${f.replace(/[-]/g, "\\-")}([\\s,=]|$)`, "m").test(text));
+  return unknown.length ? `${path.basename(bin)} doesn't know ${unknown.join(", ")} (from --server-args)` : null;
+}
+
+// What a case's verdict depends on: the case, its hidden tests, Node.
+function caseKey(c) {
+  const h = crypto.createHash("sha256").update(JSON.stringify(c)).update(process.version);
+  if (c.hiddenFrom) for (const rel of c.hiddenTests || []) h.update(fs.readFileSync(path.join(c.hiddenFrom, rel)));
+  return h.digest("hex");
+}
+
+// Sound cases, and the ones left out with why. verify(c) is the bench's
+// verifyCase; verdicts are cached so a case is checked once.
+async function soundCases(cases, verify, { file = VERIFIED_FILE, log = console.log } = {}) {
+  let cache = {};
+  try {
+    cache = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {}
+  const sound = [];
+  const skipped = [];
+  for (const c of cases) {
+    const key = caseKey(c);
+    let v = cache[c.id]?.key === key ? cache[c.id] : null;
+    if (!v) {
+      log(`Checking case ${c.id}...`);
+      const r = await verify(c);
+      v = { key, ok: r.ok, failsAtBase: r.failsAtBase, passesWithFix: r.passesWithFix };
+      cache[c.id] = v;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(cache, null, 2));
+    }
+    if (v.ok) sound.push(c);
+    else skipped.push({ id: c.id, why: !v.failsAtBase ? "its hidden tests already pass at the base (a free pass)" : "its hidden tests don't pass with the fix" });
+  }
+  return { sound, skipped };
+}
+
+// The model, once up, makes one tool call the loop parses and runs.
+async function toolCallProblem(runLoop) {
+  let called = false;
+  const policy = {
+    tools: [{ type: "function", function: { name: "bench_ping", description: "Answer a ping.", parameters: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] } } }],
+    executeTool: async (name) => {
+      if (name === "bench_ping") called = true;
+      return "pong";
+    },
+  };
+  try {
+    await runLoop('Call the bench_ping tool with {"n": 1}, then say "done".', policy, { maxRounds: 3, maxTokens: 256 });
+  } catch (e) {
+    return `the model's first tool call failed: ${e.message}`;
+  }
+  return called ? null : "the model didn't make a tool call the loop could parse";
+}
+
+module.exports = { copySourcesProblem, sandboxProblem, serverArgsProblem, soundCases, toolCallProblem, caseKey, VERIFIED_FILE };
