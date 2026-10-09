@@ -1,6 +1,6 @@
 // /admin/accounts routes (create/list/revoke API-key accounts), moved out
 // of server.js's registerRoutes() (#500). Behaviour is unchanged.
-const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey } = require("./admin-key");
+const { ADMIN_KEY_REQUIRED_ERROR, hasAdminKey, hasLauncherKey } = require("./admin-key");
 const { isLocalRestartRequest } = require("./server-routes");
 
 function registerAdminAccountsRoutes(app, deps) {
@@ -23,8 +23,19 @@ function registerAdminAccountsRoutes(app, deps) {
     return res.status(403).json({ error: ADMIN_KEY_REQUIRED_ERROR });
   }
 
+  // #1428: the launcher's per-run key, from this PC, is enough on its own --
+  // the same trust it gets for restarts and mobile devices. Anyone else
+  // needs an admin-role API key plus an admin key, as above.
+  function adminAuth(req, res, next) {
+    if (hasLauncherKey(req)) {
+      req.user = { userId: "launcher", role: "admin" };
+      return next();
+    }
+    return authMiddleware(req, res, () => requireAdmin(req, res, next));
+  }
+
   // Admin only: POST /admin/accounts — create a new account
-  app.post("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
+  app.post("/admin/accounts", adminAuth, (req, res) => {
     try {
       const { email, role = "user" } = req.body;
       if (!email) {
@@ -44,7 +55,7 @@ function registerAdminAccountsRoutes(app, deps) {
   });
 
   // Admin only: GET /admin/accounts — list all accounts
-  app.get("/admin/accounts", authMiddleware, requireAdmin, (req, res) => {
+  app.get("/admin/accounts", adminAuth, (req, res) => {
     try {
       const accounts = authStore.listAccounts();
       res.json(accounts);
@@ -54,7 +65,7 @@ function registerAdminAccountsRoutes(app, deps) {
   });
 
   // Admin only: DELETE /admin/accounts/:userId — revoke an account
-  app.delete("/admin/accounts/:userId", authMiddleware, requireAdmin, (req, res) => {
+  app.delete("/admin/accounts/:userId", adminAuth, (req, res) => {
     try {
       authStore.deleteAccount(req.params.userId);
       res.json({ ok: true });
