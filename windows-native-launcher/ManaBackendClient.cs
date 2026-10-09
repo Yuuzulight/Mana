@@ -3656,12 +3656,17 @@ internal sealed class ManaProvider
     public override string ToString() => Label;
 }
 
-// When it was last reached and how that went.
+// When it was last checked and how that went: her tool loop's three steps
+// on Model (#1441); null on checks from before them.
 internal sealed class ManaProviderCheck
 {
     public DateTimeOffset At { get; init; }
     public bool Ok { get; init; }
     public string? Error { get; init; }
+    public string? Model { get; init; }
+    public bool? Chat { get; init; }
+    public bool? Tools { get; init; }
+    public bool? Stream { get; init; }
 }
 
 internal sealed class ManaChatModels

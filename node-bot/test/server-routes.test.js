@@ -2051,9 +2051,9 @@ test("provider routes: added and checked from this PC only, keys never back out,
     env: {},
     localGgufs: [],
     modelSettingsStore: store,
-    testConnection: async ({ baseUrl, apiKey }) => {
+    checkToolLoop: async ({ baseUrl, apiKey }) => {
       checked.push([baseUrl, apiKey]);
-      return { ok: true };
+      return { ok: true, model: "llama", chat: true, tools: true, stream: true };
     },
   });
   const app = createApp({ modelManagement });
@@ -2069,6 +2069,7 @@ test("provider routes: added and checked from this PC only, keys never back out,
     assert.equal(added.response.status, 200);
     assert.equal(added.payload.provider.keyHint, "…1234");
     assert.equal(added.payload.provider.lastCheck.ok, true);
+    assert.equal(added.payload.provider.lastCheck.tools, true);
     assert.ok(!JSON.stringify(added.payload).includes("gsk-1234"));
     assert.deepEqual(checked, [["https://api.groq.com/openai/v1", "gsk-1234"]]);
 

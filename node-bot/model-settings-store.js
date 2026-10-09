@@ -196,10 +196,14 @@ function createModelSettingsStore(options = {}) {
     return providerList(settings).map((p) => publicProvider(settings, p));
   }
 
-  // The address and key to reach one, for a connection check. Null if unknown.
+  // The address and key to reach one, for a connection check, and the model
+  // a use picked on it (#1441), if any. Null if unknown.
   function getProvider(id) {
-    const provider = providerList(readSettings()).find((p) => p.id === id);
-    return provider ? { id: provider.id, preset: provider.preset, baseUrl: provider.baseUrl, apiKey: readApiKey(provider) } : null;
+    const settings = readSettings();
+    const provider = providerList(settings).find((p) => p.id === id);
+    if (!provider) return null;
+    const model = Object.keys(USE_NAMES).map((use) => settings[use]).find((e) => e?.providerId === id && e.model)?.model || null;
+    return { id: provider.id, preset: provider.preset, baseUrl: provider.baseUrl, apiKey: readApiKey(provider), model };
   }
 
   function checkedUrl(value) {
