@@ -624,13 +624,16 @@ function createLlamaServerRuntime(options = {}) {
   // (DeepSeek), with every helper of hers (prompts, tool-call repair, goal
   // review) and only the request swapped. onResponse sees each reply's JSON
   // (usage, reasoning). Local-only mode refuses it.
+  // #1441: thinking true/false is DeepSeek's switch; null (other providers)
+  // sends neither it nor max_tokens, which some providers refuse or name
+  // differently. A provider on this PC needs no key.
   function remoteToolReply({ baseUrl, apiKey, model, thinking = true, maxTokens = 32768, contextSize = 131072, onResponse = null }) {
     if (isLocalOnly(env)) throw new Error("local-only mode is on, so I can't use a remote model");
-    if (!baseUrl || !apiKey || !model) throw new Error("a remote model needs a base URL, an API key and a model");
+    if (!baseUrl || !model) throw new Error("a remote model needs a base URL and a model");
     const own = {
       chatUrl: () => `${String(baseUrl).replace(/\/+$/, "")}/chat/completions`,
-      requestHeaders: () => ({ Authorization: `Bearer ${apiKey}` }),
-      keepReasoning: thinking,
+      requestHeaders: () => (apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      keepReasoning: thinking === true,
       onResponse,
       ensureServer: async () => {},
       applyLoraAdapter: async () => {},
@@ -638,7 +641,7 @@ function createLlamaServerRuntime(options = {}) {
       withModelOperation: null,
       getContextSize: async () => contextSize,
       // The tier sets thinking; temperature and the like do nothing in DeepSeek's thinking mode.
-      buildSamplingParams: () => ({ params: { model, max_tokens: maxTokens, thinking: { type: thinking ? "enabled" : "disabled" } } }),
+      buildSamplingParams: () => ({ params: thinking === null ? { model } : { model, max_tokens: maxTokens, thinking: { type: thinking ? "enabled" : "disabled" } } }),
       fitThinkingToContext: async () => {},
       logPromptCache: () => {},
     };

@@ -605,6 +605,18 @@ internal sealed class ManaBackendClient
         return (payload.Presets, payload.Providers);
     }
 
+    // #1441: a provider's chat models, for the escalation picker.
+    public async Task<IReadOnlyList<string>> GetProviderModelsAsync(string id)
+    {
+        using var response = await http.GetAsync($"/models/providers/{Uri.EscapeDataString(id)}/models");
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.TryGetProperty("models", out var m) && m.ValueKind == JsonValueKind.Array
+            ? m.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+            : [];
+    }
+
     // Added and checked at once; a refusal's words come back in the exception.
     public async Task<ManaProvider> AddProviderAsync(string preset, string? baseUrl, string? apiKey)
     {
@@ -687,16 +699,24 @@ internal sealed class ManaBackendClient
         using var document = await JsonDocument.ParseAsync(stream);
         var root = document.RootElement;
         bool Flag(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.True;
-        var provider = root.TryGetProperty("providerId", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
-        return new ManaEscalationSettings(Flag("enabled"), Flag("hasKey"), Flag("localOnly")) { ProviderId = provider };
+        string? Text(string name) => root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        var models = root.TryGetProperty("models", out var m) && m.ValueKind == JsonValueKind.Array
+            ? m.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+            : new List<string>();
+        var stats = root.TryGetProperty("stats", out var st) && st.ValueKind == JsonValueKind.Array
+            ? JsonSerializer.Deserialize<List<ManaEscalationStat>>(st.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new()
+            : new List<ManaEscalationStat>();
+        return new ManaEscalationSettings(Flag("enabled"), Flag("hasKey"), Flag("localOnly")) { ProviderId = Text("providerId"), Preset = Text("preset"), Models = models, Stats = stats };
     }
 
-    // providerId (#1426): a DeepSeek provider from Settings' list; null leaves it.
-    public async Task SetEscalationAsync(bool enabled, string? apiKey, string? providerId = null)
+    // providerId (#1426): a provider from Settings' list; null leaves it.
+    // models (#1441): the first tier and an optional second; null leaves them.
+    public async Task SetEscalationAsync(bool enabled, string? apiKey, string? providerId = null, IReadOnlyList<string>? models = null)
     {
         var fields = new Dictionary<string, object> { ["enabled"] = enabled };
         if (apiKey is not null) fields["apiKey"] = apiKey;
         if (providerId is not null) fields["providerId"] = providerId;
+        if (models is not null) fields["models"] = models;
         using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
         using var response = await http.PostAsync("/self-work/escalation", content);
         response.EnsureSuccessStatusCode();
@@ -4522,7 +4542,14 @@ internal sealed class ManaLearnedReason
 public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool LocalOnly)
 {
     public string? ProviderId { get; init; } // #1426
+    public string? Preset { get; init; } // #1441
+    public IReadOnlyList<string> Models { get; init; } = []; // #1441: the ones it tries, in order
+    public IReadOnlyList<ManaEscalationStat> Stats { get; init; } = []; // #1441
 }
+
+// #1441: how a model has done at escalation: runs with an outcome, how many
+// passed, and their cost (null when a run's price wasn't known).
+public sealed record ManaEscalationStat(string Model, int Runs, int Passed, double? Usd);
 public sealed record ManaSpendingTotals(double Usd, long Requests, long CacheHit, long CacheMiss, long Output, long Reasoning, long UnpricedRequests,
     double UsdCacheHit = 0, double UsdCacheMiss = 0, double UsdOutput = 0, double UsdReasoning = 0, double UsdPeakExtra = 0, double? CacheHitRate = null);
 public sealed record ManaIssueCost(int Issue, string? Title, string? State, IReadOnlyList<int> Prs, double Usd, long Requests);

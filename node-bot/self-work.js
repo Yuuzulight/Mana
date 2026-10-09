@@ -441,7 +441,7 @@ function createSelfWork(options = {}) {
   function status() {
     // #1406: DeepSeek escalation, on or why not, as one line.
     const no = escalation?.unavailable();
-    const fallback = escalation ? { escalation: { enabled: !no, text: no ? `DeepSeek escalation: off -- ${no}.` : "DeepSeek escalation: on, when my own attempts fail." } } : {};
+    const fallback = escalation ? { escalation: { enabled: !no, text: no ? `Escalation: off -- ${no}.` : `Escalation: on (${escalation.tiers.map((t) => t.label).join(", then ")}), when my own attempts fail.` } } : {};
     if (!current) return { state: "idle", ...fallback };
     const { done, stopRequested, lastTestPassed, halt, reviewedTree, ciFix, finalWords, ...shown } = current;
     return { ...shown, ...fallback, log: [...current.log] };
@@ -951,12 +951,12 @@ function createSelfWork(options = {}) {
   async function escalate(r, issue) {
     const no = escalation.unavailable();
     if (no) {
-      log(r, `No DeepSeek escalation: ${no}.`);
+      log(r, `No escalation: ${no}.`);
       return null;
     }
     const tiers = escalation.tiersLeft(r.issue);
     if (!tiers.length) {
-      r.fallbackNote = "I've already tried DeepSeek on this one; say retry and I'll give it a fresh go.";
+      r.fallbackNote = "I've already escalated this one; say retry and I'll give it a fresh go.";
       return null;
     }
     let facts = r.priorFacts || failureFacts(r);
@@ -1019,7 +1019,8 @@ function createSelfWork(options = {}) {
       } catch (e) {
         out = { error: e.message };
       }
-      const line = `${tier.label}: ${describeUsage(used)}${used.peak ? ", peak" : ", off-peak"}.`;
+      escalation.finish?.(r.issue, tier, { passed: Boolean(out.passed), usd: used.usd });
+      const line = `${tier.label}: ${describeUsage(used)}${tier.thinking === null ? "" : used.peak ? ", peak" : ", off-peak"}.`;
       notes.push(line);
       log(r, line);
       if (out.passed) {

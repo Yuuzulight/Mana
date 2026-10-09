@@ -3524,6 +3524,16 @@ internal sealed class SettingsPanel : UserControl
     private readonly Label fallbackStatus = SettingsRows.Status();
     private readonly ComboBox escalationSource = new SettingsCombo() { AccessibleName = "Self-work escalation" };
     private readonly Label escalationStatus = SettingsRows.Status();
+    // #1441: the models escalation tries, picked from the provider's list.
+    private readonly ComboBox escalationFirst = new SettingsCombo() { AccessibleName = "Escalation's first tier" };
+    private readonly ComboBox escalationSecond = new SettingsCombo() { AccessibleName = "Escalation's second tier" };
+    private readonly Label escalationFirstSaid = SettingsRows.Words("");
+    private readonly Label escalationSecondSaid = SettingsRows.Words("");
+    private Control? escalationFirstRow;
+    private Control? escalationSecondRow;
+    private ManaEscalationSettings? escalationNow;
+    private const string NoFirstModel = "Pick a model";
+    private const string NoSecondModel = "Nothing, stop there";
     private readonly RowList scanResults = new() { Height = 190, NameWidth = 260, AccessibleName = "Models found on this PC" };
     private Control? scanRow;
     private static readonly int[] FallbackWaits = [10, 30, 60, 0];
@@ -3533,6 +3543,9 @@ internal sealed class SettingsPanel : UserControl
     internal ComboBox MainSource => mainSource; // tests
     internal ComboBox FallbackSource => fallbackSource; // tests
     internal ComboBox EscalationSource => escalationSource; // tests
+    internal ComboBox EscalationFirst => escalationFirst; // tests
+    internal ComboBox EscalationSecond => escalationSecond; // tests
+    internal string EscalationFirstSaid => escalationFirstSaid.Text; // tests
 
     // A use's choice: "this PC" / "off", or one of the providers.
     private sealed record Source(string? ProviderId, string Label)
@@ -3545,7 +3558,7 @@ internal sealed class SettingsPanel : UserControl
         providersPanel = new ProvidersPanel(backendClient);
         providersPanel.Changed += () => _ = RefreshModelTabAsync();
 
-        foreach (var combo in new[] { mainSource, fallbackSource, escalationSource, modelProfileCombo })
+        foreach (var combo in new[] { mainSource, fallbackSource, escalationSource, escalationFirst, escalationSecond, modelProfileCombo })
         {
             combo.DropDownStyle = ComboBoxStyle.DropDownList;
             combo.BackColor = DarkTheme.Panel;
@@ -3568,6 +3581,10 @@ internal sealed class SettingsPanel : UserControl
         var wait = SettingsRows.Choice("Fall back", ["After 10 seconds", "After 30 seconds", "After 60 seconds", "Only when it fails"], 3, fallbackWait);
         wait.SelectionChangeCommitted += async (_, _) => await SaveFallbackAsync(askFirst: false);
         escalationSource.SelectionChangeCommitted += async (_, _) => await SaveEscalationAsync();
+        escalationFirst.SelectionChangeCommitted += async (_, _) => await SaveEscalationModelsAsync();
+        escalationSecond.SelectionChangeCommitted += async (_, _) => await SaveEscalationModelsAsync();
+        escalationFirst.SelectedIndexChanged += (_, _) => escalationFirstSaid.Text = ModelSaid(escalationFirst);
+        escalationSecond.SelectedIndexChanged += (_, _) => escalationSecondSaid.Text = ModelSaid(escalationSecond);
 
         // This PC's model file: found on its own, picked, or found by a scan.
         selectedModelLabel.ForeColor = DarkTheme.Muted;
@@ -3625,8 +3642,13 @@ internal sealed class SettingsPanel : UserControl
         parts.Add(Said(fallbackStatus, new SettingsRow("Cloud fallback", "Used when this PC's model can't answer in time. Provider charges may apply", "fallback cloud remote",
             fallbackSource, fallbackModelBox)));
         parts.Add(new SettingsRow("Fall back", "How long this PC's model gets first", "fallback wait timeout", wait));
-        parts.Add(Said(escalationStatus, new SettingsRow("Self-work escalation", "Tried when her own attempts at an issue fail: DeepSeek Flash, then Pro, 5 runs a day, held at peak price", "escalation self-work deepseek",
+        parts.Add(Said(escalationStatus, new SettingsRow("Self-work escalation", "Tried when her own attempts fail, 5 runs a day. DeepSeek waits for its cheaper hours", "escalation self-work deepseek provider peak",
             escalationSource)));
+        // How each tier's model has done shows in its row's line, in place of the explanation.
+        escalationFirstRow = Said(escalationFirstSaid, new SettingsRow("First tier", "The model escalation asks first", "escalation model first tier", escalationFirst), DarkTheme.Muted);
+        escalationSecondRow = Said(escalationSecondSaid, new SettingsRow("Second tier", "Asked if the first tier fails. A stronger model, if you want one", "escalation model second tier stronger", escalationSecond), DarkTheme.Muted);
+        parts.Add(escalationFirstRow);
+        parts.Add(escalationSecondRow);
         parts.Add(SettingsRows.Section("This PC's model"));
         parts.Add(new SettingsRow("Model file", "Which file this PC's model loads", "gguf file local model scan browse",
             selectedModelLabel,
@@ -3681,8 +3703,7 @@ internal sealed class SettingsPanel : UserControl
         mainModelBox.Visible = !local;
     }
 
-    // Each use's list: its "none" choice, then every provider added (for
-    // escalation, only DeepSeek's).
+    // Each use's list: its "none" choice, then every provider added.
     private static void FillSources(ComboBox combo, string none, IEnumerable<ManaProvider> providers, string? selected)
     {
         var choices = providers.Select(p => new Source(p.Id, p.Label)).Prepend(new Source(null, none)).ToList();
@@ -3778,6 +3799,93 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
         await RefreshModelTabAsync();
+    }
+
+    // #1441: the first and second tier saved together, in order.
+    private async Task SaveEscalationModelsAsync()
+    {
+        var models = new[] { escalationFirst, escalationSecond }
+            .Select(c => c.SelectedItem as string)
+            .Where(m => m is not null && m != NoFirstModel && m != NoSecondModel)
+            .Select(m => m!)
+            .ToList();
+        try
+        {
+            await backendClient.SetEscalationAsync(true, null, null, models);
+            escalationStatus.Text = "";
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            escalationStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshModelTabAsync();
+    }
+
+    // Beside a picked model: how it has done at escalation.
+    private string ModelSaid(ComboBox combo) =>
+        combo.SelectedItem is string model && model != NoFirstModel && model != NoSecondModel ? EscalationSaid(model, escalationNow?.Stats ?? []) : "";
+
+    internal static string EscalationSaid(string model, IReadOnlyList<ManaEscalationStat> stats)
+    {
+        var stat = stats.FirstOrDefault(s => s.Model == model);
+        if (stat is null || stat.Runs == 0)
+        {
+            return "Not run yet";
+        }
+        var fixedText = $"Fixed {stat.Passed} of {stat.Runs} {(stat.Runs == 1 ? "issue" : "issues")}";
+        return stat.Usd is { } usd ? $"{fixedText} · about ${usd / stat.Runs:0.00} a run" : $"{fixedText} · cost unknown";
+    }
+
+    // The provider's models, keeping the ones it tries even when the list
+    // can't be read.
+    private async Task FillEscalationModelsAsync(ManaEscalationSettings escalation)
+    {
+        IReadOnlyList<string> listed = [];
+        var on = escalation.Enabled && escalation.ProviderId is not null && !escalation.LocalOnly;
+        if (on)
+        {
+            try
+            {
+                listed = await backendClient.GetProviderModelsAsync(escalation.ProviderId!);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                escalationStatus.Text = $"Couldn't read its models: {BackendError.Describe(ex)}";
+            }
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        var models = escalation.Models.Concat(listed).Distinct().ToList();
+        void Fill(ComboBox combo, string none, string? picked)
+        {
+            combo.Items.Clear();
+            combo.Items.Add(none);
+            combo.Items.AddRange(models.ToArray<object>());
+            combo.SelectedItem = picked is not null && models.Contains(picked) ? picked : none;
+            combo.Width = Math.Max(190, combo.Items.Cast<object>().Max(i => TextRenderer.MeasureText(i.ToString(), combo.Font).Width) + 30);
+        }
+        loadingRows = true;
+        try
+        {
+            Fill(escalationFirst, NoFirstModel, escalation.Models.ElementAtOrDefault(0));
+            Fill(escalationSecond, NoSecondModel, escalation.Models.ElementAtOrDefault(1));
+        }
+        finally
+        {
+            loadingRows = false;
+        }
+        escalationFirstSaid.Text = ModelSaid(escalationFirst);
+        escalationSecondSaid.Text = ModelSaid(escalationSecond);
+        foreach (var row in new[] { escalationFirstRow, escalationSecondRow })
+        {
+            if (row is not null)
+            {
+                row.Visible = on;
+            }
+        }
     }
 
     private async Task PickVisionAsync(TextBox target)
@@ -4130,7 +4238,7 @@ internal sealed class SettingsPanel : UserControl
             FillSources(fallbackSource, "Off", providers, status.Fallback.Enabled ? status.Fallback.ProviderId : null);
             fallbackModelBox.Text = status.Fallback.Model;
             fallbackWait.SelectedIndex = Array.IndexOf(FallbackWaits, status.Fallback.TimeoutSeconds) is var wait and >= 0 ? wait : 3;
-            FillSources(escalationSource, "Off", providers.Where(p => p.Preset == "deepseek"), escalation.Enabled ? escalation.ProviderId : null);
+            FillSources(escalationSource, "Off", providers, escalation.Enabled ? escalation.ProviderId : null);
             if (loadIntoVramSwitch is not null)
             {
                 loadIntoVramSwitch.Checked = status.LoadIntoVram;
@@ -4152,9 +4260,13 @@ internal sealed class SettingsPanel : UserControl
             : status.Fallback.Enabled && !status.Fallback.Active ? "Can't reach it right now"
             : "";
         escalationSource.Enabled = !escalation.LocalOnly;
+        escalationNow = escalation;
         escalationStatus.Text = escalation.LocalOnly ? "Off in local-only mode"
-            : !providers.Any(p => p.Preset == "deepseek") ? "Add DeepSeek above to use it"
+            : providers.Count == 0 ? "Add a provider above to use it"
+            : !escalation.Enabled || escalation.ProviderId is null ? ""
+            : escalation.Models.Count == 0 ? "Pick a first tier to switch it on"
             : "";
+        await FillEscalationModelsAsync(escalation);
         visionModelPathBox.Text = status.VisionModelPath;
         visionMmprojPathBox.Text = status.VisionMmprojPath;
         await (apiSpending?.ReloadAsync() ?? Task.CompletedTask);

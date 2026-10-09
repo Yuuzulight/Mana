@@ -306,6 +306,17 @@ function registerModelRoutes(app, deps) {
     }
   });
 
+  // #1441: its chat models, for Settings' escalation picker.
+  app.get("/models/providers/:id/models", async (req, res) => {
+    if (!fromThisPc(req, res)) return;
+    try {
+      const models = await modelManagement.listProviderModels(req.params.id);
+      return models ? res.json({ models }) : res.status(404).json({ error: "unknown provider" });
+    } catch (error) {
+      return res.status(502).json({ error: `Couldn't read its model list: ${error.message}` });
+    }
+  });
+
   app.post("/models/providers/:id/check", async (req, res) => {
     if (!fromThisPc(req, res)) return;
     try {
