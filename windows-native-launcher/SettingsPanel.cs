@@ -3532,6 +3532,14 @@ internal sealed class SettingsPanel : UserControl
     private Control? escalationFirstRow;
     private Control? escalationSecondRow;
     private ManaEscalationSettings? escalationNow;
+    // #1441: prices I set for models without built-in ones.
+    private readonly ComboBox priceModel = new SettingsCombo() { AccessibleName = "Model to price" };
+    private readonly TextBox priceIn = SettingsRows.Box("Input price, dollars per million tokens", 64, "$");
+    private readonly TextBox priceOut = SettingsRows.Box("Output price, dollars per million tokens", 64, "$");
+    private readonly Button priceRemove = SettingsRows.Action("Remove", () => { });
+    private readonly Label pricesStatus = SettingsRows.Status();
+    private Control? pricesRow;
+    private ManaPrices prices = new();
     private const string NoFirstModel = "Pick a model";
     private const string NoSecondModel = "Nothing, stop there";
     private readonly RowList scanResults = new() { Height = 190, NameWidth = 260, AccessibleName = "Models found on this PC" };
@@ -3546,6 +3554,11 @@ internal sealed class SettingsPanel : UserControl
     internal ComboBox EscalationFirst => escalationFirst; // tests
     internal ComboBox EscalationSecond => escalationSecond; // tests
     internal string EscalationFirstSaid => escalationFirstSaid.Text; // tests
+    internal ComboBox PriceModel => priceModel; // tests
+    internal TextBox PriceIn => priceIn; // tests
+    internal TextBox PriceOut => priceOut; // tests
+    internal Control? PricesRow => pricesRow; // tests
+    internal Task SavePriceForTestAsync() => SavePriceAsync(); // tests
 
     // A use's choice: "this PC" / "off", or one of the providers.
     private sealed record Source(string? ProviderId, string Label)
@@ -3558,7 +3571,7 @@ internal sealed class SettingsPanel : UserControl
         providersPanel = new ProvidersPanel(backendClient);
         providersPanel.Changed += () => _ = RefreshModelTabAsync();
 
-        foreach (var combo in new[] { mainSource, fallbackSource, escalationSource, escalationFirst, escalationSecond, modelProfileCombo })
+        foreach (var combo in new[] { mainSource, fallbackSource, escalationSource, escalationFirst, escalationSecond, priceModel, modelProfileCombo })
         {
             combo.DropDownStyle = ComboBoxStyle.DropDownList;
             combo.BackColor = DarkTheme.Panel;
@@ -3581,6 +3594,8 @@ internal sealed class SettingsPanel : UserControl
         var wait = SettingsRows.Choice("Fall back", ["After 10 seconds", "After 30 seconds", "After 60 seconds", "Only when it fails"], 3, fallbackWait);
         wait.SelectionChangeCommitted += async (_, _) => await SaveFallbackAsync(askFirst: false);
         escalationSource.SelectionChangeCommitted += async (_, _) => await SaveEscalationAsync();
+        priceModel.SelectedIndexChanged += (_, _) => ShowPrice();
+        priceRemove.Click += async (_, _) => await RemovePriceAsync();
         escalationFirst.SelectionChangeCommitted += async (_, _) => await SaveEscalationModelsAsync();
         escalationSecond.SelectionChangeCommitted += async (_, _) => await SaveEscalationModelsAsync();
         escalationFirst.SelectedIndexChanged += (_, _) => escalationFirstSaid.Text = ModelSaid(escalationFirst);
@@ -3663,6 +3678,12 @@ internal sealed class SettingsPanel : UserControl
             visionMmprojPathBox, SettingsRows.Action("Browse…", () => _ = PickVisionAsync(visionMmprojPathBox))));
         parts.Add(SettingsRows.Section("Spending"));
         parts.Add(new SettingsRow("API spending", "What her API use has cost", "spending cost money balance tokens price", below: true, spending));
+        var savePrice = SettingsRows.Action("Save", () => _ = SavePriceAsync());
+        SettingsRows.MakePrimary(savePrice);
+        Label Unit(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 6, 10, 0), UseMnemonic = false };
+        pricesRow = Said(pricesStatus, new SettingsRow("Set prices", "Dollars per million tokens. Counts from now on", "price prices cost per million tokens set in out",
+            priceModel, priceIn, Unit("in"), priceOut, Unit("out"), savePrice, priceRemove));
+        parts.Add(pricesRow);
         parts.Add(SettingsRows.Section("Engine"));
         parts.Add(new SettingsRow("Coding mode", "Loads the bigger 14B engineering model for coding work, and unloads it when you switch this off", "coding 14b engineering code programming",
             codingModeStatus, codingModeCheck));
@@ -3820,6 +3841,92 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
         await RefreshModelTabAsync();
+    }
+
+    // #1441: the models to price: ones she used without a price, then ones I priced.
+    private async Task RefreshPricesAsync()
+    {
+        try
+        {
+            prices = await backendClient.GetPricesAsync();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            pricesStatus.Text = $"Couldn't load the prices: {BackendError.Describe(ex)}";
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        var keep = priceModel.SelectedItem as string;
+        var models = prices.Unpriced.Concat(prices.Set.Keys.Order()).Distinct().ToList();
+        priceModel.Items.Clear();
+        priceModel.Items.AddRange(models.ToArray<object>());
+        priceModel.SelectedIndex = models.Count == 0 ? -1 : Math.Max(0, models.IndexOf(keep ?? ""));
+        if (models.Count > 0)
+        {
+            priceModel.Width = Math.Max(190, models.Max(m => TextRenderer.MeasureText(m, priceModel.Font).Width) + 30);
+        }
+        if (pricesRow is not null)
+        {
+            pricesRow.Visible = models.Count > 0; // nothing she used needs one
+        }
+        ShowPrice();
+    }
+
+    private void ShowPrice()
+    {
+        var set = priceModel.SelectedItem is string model && prices.Set.TryGetValue(model, out var price) ? price : null;
+        priceIn.Text = set is null ? "" : set.Miss.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        priceOut.Text = set is null ? "" : set.Out.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        priceRemove.Visible = set is not null;
+        pricesStatus.Text = priceModel.SelectedItem is string m && set is null && prices.Unpriced.Contains(m) ? $"{m} has no price yet, so it shows tokens only" : "";
+    }
+
+    private async Task SavePriceAsync()
+    {
+        if (priceModel.SelectedItem is not string model)
+        {
+            return;
+        }
+        static double? Usd(string text) =>
+            double.TryParse(text.Trim().TrimStart('$'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 0 ? v : null;
+        if (Usd(priceIn.Text) is not { } input || Usd(priceOut.Text) is not { } output)
+        {
+            pricesStatus.Text = "Type both prices in dollars per million tokens, like 0.25";
+            return;
+        }
+        try
+        {
+            await backendClient.SetPriceAsync(model, input, output);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            pricesStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshPricesAsync();
+        pricesStatus.Text = $"Saved {model}'s prices";
+        await (apiSpending?.ReloadAsync() ?? Task.CompletedTask);
+    }
+
+    private async Task RemovePriceAsync()
+    {
+        if (priceModel.SelectedItem is not string model)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetPriceAsync(model, null, null);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            pricesStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshPricesAsync();
     }
 
     // Beside a picked model: how it has done at escalation.
@@ -4270,6 +4377,7 @@ internal sealed class SettingsPanel : UserControl
         visionModelPathBox.Text = status.VisionModelPath;
         visionMmprojPathBox.Text = status.VisionMmprojPath;
         await (apiSpending?.ReloadAsync() ?? Task.CompletedTask);
+        await RefreshPricesAsync();
     }
 
     // #569: TOTP secret enrollment has no API endpoint at all

@@ -53,3 +53,16 @@ test("escalation takes any added provider and its picked models; DeepSeek's two 
     assert.equal((await post("/self-work/escalation", { models: "qwen" })).status, 400);
   });
 });
+
+test("prices routes: set, list, refuse a bad one, remove (#1441)", async () => {
+  const fetch = useTestAdminToken();
+  const apiSpending = createApiSpending({ file: path.join(dir, "prices-spending.json") });
+  await withServer(createApp({ apiSpending }), async (base) => {
+    const post = (body) => fetch(`${base}/api-spending/prices`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const set = await (await post({ model: "qwen/qwen3-coder", in: 0.2, out: 0.8 })).json();
+    assert.deepEqual(set.set["qwen/qwen3-coder"], { hit: 0.2, miss: 0.2, out: 0.8 });
+    assert.deepEqual((await (await fetch(`${base}/api-spending/prices`)).json()).set, set.set);
+    assert.equal((await post({ model: "qwen/qwen3-coder", in: "lots", out: 1 })).status, 400);
+    assert.deepEqual((await (await post({ model: "qwen/qwen3-coder", remove: true })).json()).set, {});
+  });
+});
