@@ -17,6 +17,8 @@ const DEFAULT_GAME_WIKIS = {
   "World of Warcraft": { processes: ["wow.exe"], sites: ["warcraft.wiki.gg", "wowhead.com"] },
   "Stardew Valley": { processes: ["stardew valley.exe"], sites: ["stardewvalleywiki.com"] },
   "Baldur's Gate 3": { processes: ["bg3.exe", "bg3_dx11.exe"], sites: ["bg3.wiki"] },
+  // The match itself, not the lobby client (LeagueClient.exe), which is light.
+  "League of Legends": { processes: ["league of legends.exe"], sites: ["wiki.leagueoflegends.com"] },
 };
 
 // Sites go into the search query, so only plain host names.
