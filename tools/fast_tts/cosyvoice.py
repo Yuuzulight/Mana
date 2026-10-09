@@ -5,10 +5,25 @@
 #   with its own sampling settings (ras_sampling's top_p, top_k, win_size, tau_r).
 # - Streaming: the first chunk's size doubled after every chunk and was never reset between requests (25 -> 50 ->
 #   100 tokens), and new tokens were checked for every 100 ms. Reset per request, checked every 5 ms.
+# - First chunk: it waited for the reference clip's speech tokens to be padded up to a whole chunk (Mana's 9 s clip:
+#   22 tokens, about 0.4 s) before any audio. The flow's prompt is trimmed from its start to whole chunks instead.
 import functools, time, types
 import torch
 from .decoder import GraphDecoder, generate
 from .sampling import CpuSampler
+
+
+def align_prompt(kwargs, hop):
+    """The flow's prompt cut from its start to a whole number of chunks (hop tokens, two mel frames each), so the
+    first chunk needn't wait for padding. Left as it is when it's under one chunk or the frames don't line up."""
+    tok, feat = kwargs.get("flow_prompt_speech_token"), kwargs.get("prompt_speech_feat")
+    if tok is None or feat is None:
+        return kwargs
+    n = tok.shape[1]
+    cut = n % hop
+    if not cut or n - cut < hop or feat.shape[1] != 2 * n:
+        return kwargs
+    return dict(kwargs, flow_prompt_speech_token=tok[:, cut:], prompt_speech_feat=feat[:, 2 * cut:])
 
 
 def enable(model, max_cache_len=4096, dtype=torch.bfloat16, seed=None):
@@ -38,6 +53,6 @@ def enable(model, max_cache_len=4096, dtype=torch.bfloat16, seed=None):
 
         def tts_from_first_chunk_size(*a, **k):
             inner.token_hop_len = hop
-            yield from tts(*a, **k)
+            yield from tts(*a, **align_prompt(k, hop))
         inner.tts = tts_from_first_chunk_size
     return model

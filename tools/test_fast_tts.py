@@ -47,6 +47,27 @@ def check_repetition_fallback():
     assert all(s(p, decoded=[3]) != 3 for _ in range(50))  # a repeat in the window: sampled from the rest
 
 
+def check_prompt_alignment():
+    try:
+        import torch
+    except ImportError:
+        print("prompt: skipped (no torch)")
+        return
+    from fast_tts.cosyvoice import align_prompt
+    tok, feat = torch.arange(228).reshape(1, -1), torch.zeros(1, 456, 80)
+    out = align_prompt({"flow_prompt_speech_token": tok, "prompt_speech_feat": feat, "text": "kept"}, 25)
+    assert out["flow_prompt_speech_token"].shape[1] == 225 and out["prompt_speech_feat"].shape[1] == 450
+    assert out["flow_prompt_speech_token"][0, 0].item() == 3 and out["text"] == "kept"   # cut from the start
+    whole = {"flow_prompt_speech_token": tok[:, :200], "prompt_speech_feat": feat[:, :400]}
+    assert align_prompt(whole, 25) is whole                                              # already whole chunks
+    short = {"flow_prompt_speech_token": tok[:, :20], "prompt_speech_feat": feat[:, :40]}
+    assert align_prompt(short, 25) is short                                              # under one chunk
+    odd = {"flow_prompt_speech_token": tok, "prompt_speech_feat": feat[:, :455]}
+    assert align_prompt(odd, 25) is odd                                                  # frames don't line up
+    assert align_prompt({"text": "x"}, 25) == {"text": "x"}
+    print("prompt: trimmed to whole chunks from its start")
+
+
 def check_decoder_matches_plain_forward():
     try:
         import torch
@@ -86,5 +107,6 @@ if __name__ == "__main__":
     check_sampler_matches_upstream()
     check_repetition_fallback()
     print("sampler: same candidates as upstream; repetition fallback holds")
+    check_prompt_alignment()
     check_decoder_matches_plain_forward()
     print("ok")
