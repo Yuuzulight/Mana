@@ -75,6 +75,29 @@ function loadCases(dir = CASES_DIR) {
 }
 
 // A detached worktree at the base commit, with node-bot's packages linked in.
+// #1452: on Windows her test runs wait for an approval (#352). The bench
+// approves its own, within one scope: the sandboxed run (AppContainer,
+// disposable workspace) of tests in one of its throwaway bench worktrees.
+// An unrestricted rerun, any other request or another folder is refused
+// and fails that run, as a denial would.
+function benchTestGate(worktreesDir) {
+  const executors = new Map();
+  const inBench = (cwd) => {
+    const rel = path.relative(worktreesDir, path.resolve(String(cwd || "")));
+    return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel) && rel.split(path.sep)[0].startsWith("bench-");
+  };
+  return {
+    registerExecutor: (type, fn) => executors.set(type, fn),
+    async requestApproval(type, { payload } = {}) {
+      if (type !== "self-work-sandbox-tests" || !executors.has(type)) return { status: "blocked", reason: `the bench approves only its sandboxed tests, not ${type}` };
+      if (payload?.unrestricted) return { status: "blocked", reason: "the bench never approves an unrestricted test run" };
+      if (!inBench(payload?.cwd)) return { status: "blocked", reason: `tests outside the bench's own worktrees: ${payload?.cwd}` };
+      return { status: "approved", result: await executors.get(type)(payload) };
+    },
+    listPending: () => [],
+  };
+}
+
 function makeWorktree(repoRoot, wt, base) {
   if (fs.existsSync(wt)) removeWorktree(repoRoot, wt);
   git(repoRoot, "worktree", "add", "--detach", wt, base);
@@ -614,6 +637,7 @@ async function main(argv) {
   const remote = opt("--remote")[0];
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
+  const approvalGate = benchTestGate(worktreesDir);
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
@@ -644,7 +668,7 @@ async function main(argv) {
         console.log(`Stopping before ${c.id}: ${why}.`);
         break;
       }
-      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts });
+      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate });
       if (model.aborted()) {
         console.log(`Stopping at ${c.id}: ${model.aborted()}.`);
         break;
@@ -672,4 +696,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+module.exports = { benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };

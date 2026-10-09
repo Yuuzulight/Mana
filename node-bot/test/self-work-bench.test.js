@@ -348,3 +348,19 @@ test("a llama-server killed while loading stops the wait at once", async () => {
   await assert.rejects(waitUp(server, async () => false, sleep), /exited \(SIGTERM\)/);
   assert.equal(sleeps, 1);
 });
+
+// #1452: the bench approves its own sandboxed test runs in its own worktrees, and nothing else.
+test("the bench pre-approves only sandboxed tests in its own worktrees", async () => {
+  const { benchTestGate } = require("../bench/self-work-bench");
+  const { approveSelfWorkTests } = require("../tools/self-work-test-approval");
+  const root = path.join(os.tmpdir(), "Mana-worktrees");
+  const gate = benchTestGate(root);
+  const ask = (cwd, unrestricted = false) =>
+    approveSelfWorkTests({ gate, command: "npm test", cwd, unrestricted, cancelled: () => false, run: async () => "ran" });
+
+  assert.equal(await ask(path.join(root, "bench-1-add-subtracts", "node-bot")), "ran");
+  await assert.rejects(ask(path.join(root, "bench-1-add-subtracts"), true), /never approves an unrestricted/);
+  await assert.rejects(ask(path.join(root, "settings-general")), /outside the bench's own worktrees/);
+  await assert.rejects(ask(path.join(root, "bench-1-add-subtracts", "..", "..", "Users")), /outside the bench's own worktrees/);
+  assert.equal((await gate.requestApproval("memory-write", { payload: {} })).status, "blocked");
+});
