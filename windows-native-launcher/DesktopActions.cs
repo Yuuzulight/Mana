@@ -41,6 +41,7 @@ internal static class DesktopActions
         "list_folder" => ListFolder(OptionalString(args, "path"), AllowedFolders(folders)),
         "move_files" => MoveFiles(StringList(args, "from"), RequiredString(args, "to"),
             IsTrue(args, "exact"), AllowedFolders(folders), IsTrue(args, "new_folder")),
+        "remove_empty_folder" => RemoveEmptyFolder(RequiredString(args, "path"), AllowedFolders(folders)),
         _ => throw new ArgumentException($"unknown desktop action: {action}"),
     };
 
@@ -351,6 +352,7 @@ internal static class DesktopActions
             throw new ArgumentException($"give 1 to {MaxMoves} paths to move");
         }
         var target = Allowed(to, roots, allowRoot: true);
+        var created = false;
         if (newFolder && !exact && !Directory.Exists(target))
         {
             if (File.Exists(target) || !Directory.Exists(Path.GetDirectoryName(target)))
@@ -358,6 +360,7 @@ internal static class DesktopActions
                 throw new InvalidOperationException($"can't make the folder {to}: {(File.Exists(target) ? "a file has that name" : "the folder it goes in doesn't exist")}");
             }
             Directory.CreateDirectory(target);
+            created = true;
         }
         // A folder's own path in another case renames it, not "into itself".
         var into = !exact && Directory.Exists(target)
@@ -406,9 +409,29 @@ internal static class DesktopActions
                 failed.Add((path, ex.Message));
             }
         }
+        // created: the folder new_folder made, so undo can take it away again.
         return moved.Count > 0
-            ? new { moved, failed = failed.Select(f => new { from = f.From, error = f.Error }).ToArray() }
+            ? new { moved, failed = failed.Select(f => new { from = f.From, error = f.Error }).ToArray(), created = created ? target : null }
             : throw new InvalidOperationException(string.Join("; ", failed.Select(f => f.Error)));
+    }
+
+    // Undo of a move into a folder new_folder made: the folder goes again,
+    // only while it's empty -- never recursive, never an allowed folder
+    // itself (Allowed refuses those), a system folder or a link. Not one of
+    // her tools; only the undo calls it.
+    internal static object RemoveEmptyFolder(string path, IReadOnlyList<string> roots)
+    {
+        var dir = Allowed(path, roots);
+        if (!Directory.Exists(dir))
+        {
+            return new { removed = false };
+        }
+        if (Directory.EnumerateFileSystemEntries(dir).Any())
+        {
+            throw new IOException($"{path} isn't empty, so it stays");
+        }
+        Directory.Delete(dir, recursive: false);
+        return new { removed = true };
     }
 
     private static object ListAudioOutputs()
