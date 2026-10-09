@@ -78,7 +78,9 @@ const finish = ["session_goal__finish", { reason: "fixed" }];
 // #1213: and reviews her diff in three passes before she finishes.
 const reviews = ["correctness", "edge cases", "scope"].map((pass) => ["self_work__review", { pass }]);
 // #1211/#1212: she writes a short plan before her first edit; these cases test the runner, not test-first, so the plan says why.
-const plan = ["self_work__plan", { steps: ["fix add()", "finish"], no_test: "the bench case has its own hidden test" }];
+// #1467: found first, then named in the plan.
+const find = ["self_work__files", { contains: "util.js" }];
+const plan = ["self_work__plan", { steps: ["fix add()", "finish"], files: ["node-bot/util.js: add() lives here"], no_test: "the bench case has its own hidden test" }];
 
 function deps(r, calls) {
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
@@ -97,15 +99,15 @@ test('Windows benchmark refuses to run model work without its human test-approva
 
 test("a case that fixes the bug passes its hidden test, and the worktree is gone after", async () => {
   const r = makeRepo();
-  const result = await runCase(r.c, deps(r, [plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish]));
+  const result = await runCase(r.c, deps(r, [find, plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish]));
 
   assert.equal(result.passed, true, result.hiddenTail);
   assert.equal(result.ended, "finished");
-  assert.equal(result.rounds, 6);
-  assert.equal(result.toolCalls, 6);
+  assert.equal(result.rounds, 7);
+  assert.equal(result.toolCalls, 7);
   assert.equal(result.toolErrors, 0);
   assert.deepEqual([result.peakVramMb, result.peakRamPercent, result.failure], [9000, 80, null]);
-  assert.deepEqual(result.tokens, { prompt: 600, completion: 60, peak: 600, textCalls: 0, tps: null });
+  assert.deepEqual(result.tokens, { prompt: 700, completion: 70, peak: 700, textCalls: 0, tps: null });
   assert.deepEqual(result.diff, { files: ["node-bot/util.js"], added: 1, removed: 1 });
   assert.deepEqual(result.outside, []);
   assert.match(result.patch, /\+  return a \+ b;/);
@@ -134,7 +136,7 @@ test("a wrong fix fails the hidden test, and files outside the real fix are name
   const r = makeRepo();
   const result = await runCase(
     r.c,
-    deps(r, [plan, edit("node-bot/util.js", "a - b", "a * b"), edit("node-bot/extra.js", "", "module.exports = 1;\n")]),
+    deps(r, [find, plan, edit("node-bot/util.js", "a - b", "a * b"), ["self_work__plan", { files: ["node-bot/extra.js: a helper the fix uses"] }], edit("node-bot/extra.js", "", "module.exports = 1;\n")]),
   );
 
   assert.equal(result.passed, false);
@@ -171,12 +173,12 @@ test("verify: the hidden test fails at the base and passes with the fix's files"
 test("the report has a row per case and each case's diff", async () => {
   const r = makeRepo();
   const out = path.join(r.repo, "..", "report");
-  const result = await runCase(r.c, deps(r, [plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish]));
+  const result = await runCase(r.c, deps(r, [find, plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish]));
   const md = writeReport([result], out, { model: "fake.gguf" });
 
   assert.match(md, /Model: fake\.gguf\. 1 cases x 1 repeat\(s\)\./);
   assert.match(md, /\*\*pass@1 100%, pass@1 100%\*\*/);
-  assert.match(md, /\| 1-add-subtracts \| - \| 1 \| pass \| finished \| - \| 6 \| 6 \(0\) \| \d+s \| 600 \/ 60 \/ 600 \| 0 \|/);
+  assert.match(md, /\| 1-add-subtracts \| - \| 1 \| pass \| finished \| - \| 7 \| 7 \(0\) \| \d+s \| 700 \/ 70 \/ 700 \| 0 \|/);
   const json = JSON.parse(fs.readFileSync(path.join(out, "report.json"), "utf8"));
   assert.equal(json.results[0].patch, undefined);
   assert.match(fs.readFileSync(path.join(out, "1-add-subtracts.diff"), "utf8"), /a \+ b/);
@@ -278,7 +280,7 @@ test("a generated case: the bug is patched in, its test hidden, and her diff is 
   const r = makeRepo();
   const c = generatedCase(r);
   const d = deps(r, []);
-  const fixIt = fakeModel([plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish], d.tokens);
+  const fixIt = fakeModel([find, plan, edit("node-bot/util.js", "a - b", "a + b"), ...reviews, finish], d.tokens);
   d.runLoop = async (prompt, policy, opts) => {
     await assert.rejects(policy.executeTool("self_work__read", { path: "node-bot/test/util.test.js" }));
     return fixIt(prompt, policy, opts);

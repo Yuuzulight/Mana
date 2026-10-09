@@ -181,11 +181,16 @@ const TOOL_SCHEMAS = [
     function: {
       name: "self_work__plan",
       description:
-        "Your plan for the issue. Before your first edit, set 2 to 6 short steps; as you finish steps, mark them done by number. Returns the plan.",
+        "Your plan for the issue. Before your first edit, set 2 to 6 short steps and the files the change belongs in; as you finish steps, mark them done by number. Returns the plan.",
       parameters: {
         type: "object",
         properties: {
           steps: { type: "array", items: { type: "string" }, description: "The steps in order; replaces the plan." },
+          files: {
+            type: "array",
+            items: { type: "string" },
+            description: 'The files your change belongs in, each as "path: why", found with self_work__search or self_work__files first. Adds to the list.',
+          },
           done: { type: "array", items: { type: "integer" }, description: "Numbers of the steps you've finished." },
           no_test: { type: "string", description: "Only when the issue has nothing a test can check: why." },
         },
@@ -1356,7 +1361,7 @@ ${r.priorFacts ? `\nEarlier attempts at this issue didn't pass. What they found:
 How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Aim to make your first edit within ${READ_BUDGET_LINES} lines of reading: search first and read only what the change needs; then make the change.
-- Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
+- Before your first edit, write a short plan with self_work__plan: 2 to 6 steps, and in files the existing files your change belongs in, each as "path: why", that you found with self_work__search or self_work__files. Mark each step done when you finish it.
 - If a file doesn't exist yet, create it with ${CODING_EDIT_TOOL_NAME} (path and new_text, no old_text) rather than searching for it.
 - Write tests with Node's own runner, require("node:test") and require("node:assert"); chai, mocha and other test libraries aren't installed.
 - If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail before you change the code.
@@ -1413,6 +1418,8 @@ Before it can be a PR:
     let progressed = false;
     let lastTestOutcome = null;
     const looked = new Set();
+    // #1462: files she has seen named in a list, a search or a read.
+    const found = new Set();
     // #1245: lines read before her first edit, and whether she's made one.
     let readLines = 0;
     // A review round (#1259) reviews an attempt's edits, so its reads aren't budgeted.
@@ -1445,6 +1452,7 @@ Before it can be a PR:
       const name = (f) => (needle.includes("/") ? f : path.posix.basename(f));
       const all = (await git(["ls-files"], root)).split(/\r?\n/);
       const hits = all.filter((f) => (glob ? glob.test(name(f)) : f.toLowerCase().includes(needle)));
+      for (const f of hits.slice(0, MAX_LIST)) found.add(f);
       return hits.slice(0, MAX_LIST).join("\n") + (hits.length > MAX_LIST ? `\n...and ${hits.length - MAX_LIST} more` : "");
     }
 
@@ -1456,12 +1464,14 @@ Before it can be a PR:
       if (r2.code === 1) return "No matches.";
       if (r2.code !== 0) throw new Error(r2.stderr.trim());
       const lines = r2.stdout.split(/\r?\n/).filter(Boolean);
+      for (const l of lines.slice(0, 60)) found.add(l.split(":")[0]);
       return lines.slice(0, 60).map((l) => l.slice(0, 300)).join("\n") + (lines.length > 60 ? `\n...${lines.length - 60} more` : "");
     }
 
     function read({ path: rel, start_line, end_line }) {
       const full = inside(rel);
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to read a credential file");
+      found.add(posix(full));
       const budgeted = !isRefresh(r) && !madeEdit;
       const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
       const from = Math.max(1, Number(start_line) || 1);
@@ -1478,13 +1488,43 @@ Before it can be a PR:
       return `${rel} lines ${from}-${to} of ${lines.length}\n${shown}${note}`;
     }
 
+    // #1462: the files she names for her change must be ones she found
+    // (search, file list or read) or new ones in a folder that exists, and at
+    // least one must be existing code, not only a test: in the #1202
+    // comparison she edited files she'd made up, or wrote a test and never
+    // reached the fix. Each "path: why" (or { path, why }).
+    function locate(entries) {
+      const named = [];
+      for (const entry of [].concat(entries || [])) {
+        const text = typeof entry === "string" ? entry : `${entry?.path || ""}: ${entry?.why || ""}`;
+        const [, rel, why] = text.match(/^\s*([^:\s][^:]*?)\s*(?::\s*(.*))?$/s) || [];
+        if (!rel) continue;
+        if (!String(why || "").trim()) throw new Error(`say why ${rel} is part of the change ("${rel}: why")`);
+        const relPath = posix(inside(rel));
+        if (fs.existsSync(path.join(root, relPath))) {
+          if (!found.has(relPath)) throw new Error(`find ${relPath} first with self_work__search or self_work__files, so you know it's the right place`);
+        } else if (!fs.existsSync(path.dirname(path.join(root, relPath)))) {
+          throw new Error(`${relPath} doesn't exist and neither does its folder: find where this code really lives with self_work__search`);
+        }
+        named.push(relPath);
+      }
+      if (!named.length) throw new Error('name the files your change belongs in, each as "path: why"');
+      const all = new Set([...(r.files || []), ...named]);
+      const code = [...all].some((f) => !TEST_PATH_RE.test(f) && fs.existsSync(path.join(root, f)));
+      if (!code) throw new Error("name the existing code your change goes in too, not only tests: find it with self_work__search");
+      r.files = [...all];
+    }
+
     // #1211: her plan, on the run (so status() shows it) and with each edit.
-    const planText = () => r.plan.map((s, i) => `${s.done ? "[x]" : "[ ]"} ${i + 1}. ${s.text}`).join("\n");
-    function plan({ steps, done, no_test: noTest }) {
+    const planText = () =>
+      r.plan.map((s, i) => `${s.done ? "[x]" : "[ ]"} ${i + 1}. ${s.text}`).join("\n") + (r.files?.length ? `\nFiles: ${r.files.join(", ")}` : "");
+    function plan({ steps, done, files: located, no_test: noTest }) {
       if (String(noTest || "").trim()) r.noTestReason = String(noTest).trim();
+      if (located !== undefined) locate(located);
       if (steps !== undefined) {
         const clean = [].concat(steps).map((s) => String(s).trim()).filter(Boolean);
         if (clean.length < 2 || clean.length > 6) throw new Error("a plan has 2 to 6 steps");
+        if (!r.files && !isRefresh(r)) throw new Error('name the files your change belongs in with files, each as "path: why", found with self_work__search first');
         r.plan = clean.map((text) => ({ text, done: false }));
       }
       if (!r.plan) throw new Error("set your steps first");
@@ -1511,7 +1551,14 @@ Before it can be a PR:
         ownWork && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason && ![...edited].some((f) => TEST_PATH_RE.test(f));
       const refusal = writeRefusal(r, full, relPath);
       if (refusal) throw new Error(refusal);
+      // #1467: a new file outside the ones she located is refused (in the
+      // #1202 comparison she wrote into made-up paths); a change to an
+      // existing one goes through with a nudge to add it.
+      const unlocated = ownWork && r.files && !r.files.includes(relPath) && !TEST_PATH_RE.test(relPath);
       const exists = fs.existsSync(full);
+      if (unlocated && !exists) {
+        throw new Error(`${relPath} doesn't exist and isn't one of the files you located (${r.files.join(", ")}). Find where this code really lives with self_work__search; if it needs a new file, add it with self_work__plan files ("${relPath}: why") first.`);
+      }
       const original = exists ? fs.readFileSync(full, "utf8") : "";
       const eol = original.includes("\r\n") ? "\r\n" : "\n";
       const norm = (s) => String(s).replace(/\r?\n/g, eol);
@@ -1556,6 +1603,7 @@ Before it can be a PR:
         relativePath: relPath,
         diff: proposal.diff.slice(0, 2000),
         plan: r.plan ? planText() : undefined,
+        located: unlocated ? `${relPath} isn't one of the files you located; add it with self_work__plan files ("${relPath}: why") if the change belongs there, or undo this edit.` : undefined,
         warning: untested
           ? `Test first: you changed code without a test for it yet. Write or find a test for the behaviour and run it with ${CODING_TEST_TOOL_NAME}; your change goes up as a PR only once the tests pass after your last edit. If the issue has nothing a test can check, say why in self_work__plan's no_test.`
           : undefined,
