@@ -3238,6 +3238,22 @@ function registerRoutes(app, upload, deps = {}) {
     if (!checkAdminAuth(req, res)) return;
     return res.json(await spendingReport({ days: 90 }));
   });
+  // #1441: prices I set for models that aren't DeepSeek's ($ per 1M tokens),
+  // and the models she used that have none.
+  app.get("/api-spending/prices", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(apiSpending.prices());
+  });
+  // { model, in, out, cachedIn? } sets one; { model, remove: true } removes it.
+  app.post("/api-spending/prices", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const { model, remove, ...price } = req.body || {};
+    try {
+      return res.json(apiSpending.setPrice(model, remove === true ? null : price));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
   // #1406: Settings' and her chat's spending report: the ledger with each
   // issue's outcome from her lifecycle, the DeepSeek balance and how long it lasts.
   const readBalance = deps.readBalance || createBalanceReader({ settings: () => modelSettingsStore.getEscalationSettings(), env: deps.env || process.env });

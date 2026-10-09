@@ -6,7 +6,8 @@ const fs = require("fs");
 const path = require("path");
 
 // Dollars per 1M tokens, off-peak; peak is double. From DeepSeek's pricing
-// page (2026-10). A model not listed shows tokens only.
+// page (2026-10). Other models take the prices I set in Settings (#1441);
+// a model with neither shows tokens only.
 const PRICES = {
   "deepseek-flash": { hit: 0.003, miss: 0.15, out: 0.6 },
   "deepseek-v4-pro": { hit: 0.022, miss: 0.66, out: 1.98 },
@@ -44,18 +45,20 @@ function tokensOf(usage = {}) {
 }
 
 // Dollars for those tokens, or null for a model without prices. Reasoning is
-// part of output, so it isn't charged twice.
-function costOf(model, tokens, peak) {
-  const parts = costParts(model, tokens, peak);
+// part of output, so it isn't charged twice. price: one I set, for a model
+// that isn't DeepSeek's.
+function costOf(model, tokens, peak, price) {
+  const parts = costParts(model, tokens, peak, price);
   return parts && parts.usdCacheHit + parts.usdCacheMiss + parts.usdOutput + parts.usdReasoning;
 }
 
 // The same dollars by token kind, for Settings' "where the money went":
 // output here is the answer only; its reasoning part is billed at the same rate.
-function costParts(model, tokens, peak) {
-  const p = PRICES[model];
+// Only DeepSeek's own prices double at its peak.
+function costParts(model, tokens, peak, price) {
+  const p = PRICES[model] || price;
   if (!p) return null;
-  const m = (peak ? 2 : 1) / 1e6;
+  const m = (peak && PRICES[model] ? 2 : 1) / 1e6;
   return {
     usdCacheHit: tokens.cacheHit * p.hit * m,
     usdCacheMiss: tokens.cacheMiss * p.miss * m,
@@ -80,7 +83,7 @@ function add(into, b) {
 }
 
 function createApiSpending({ file, now = () => new Date() }) {
-  let data = { version: 2, buckets: {}, issues: {}, issueDays: {} };
+  let data = { version: 2, buckets: {}, issues: {}, issueDays: {}, prices: {} };
   try {
     if (fs.existsSync(file)) data = { ...data, ...JSON.parse(fs.readFileSync(file, "utf8")) };
   } catch {
@@ -98,8 +101,9 @@ function createApiSpending({ file, now = () => new Date() }) {
   function record({ model, use, usage, at = now(), issue = null }) {
     if (!USES.includes(use)) throw new Error(`unknown API use: ${use}`);
     const tokens = tokensOf(usage);
-    const peak = isPeak(at);
-    const parts = costParts(model, tokens, peak);
+    // DeepSeek's peak hours mean nothing to another provider's model.
+    const peak = Boolean(PRICES[model]) && isPeak(at);
+    const parts = costParts(model, tokens, peak, data.prices?.[model]);
     const usd = parts && USD_KINDS.reduce((sum, k) => sum + parts[k], 0);
     const day = at.toISOString().slice(0, 10);
     const b = (data.buckets[`${day}|${model}|${use}`] ||= emptyTotals());
@@ -193,10 +197,43 @@ function createApiSpending({ file, now = () => new Date() }) {
     // Average over the last 14 days, for how long a balance lasts.
     const recent = daily.slice(-14);
     const avgDaily = recent.length ? recent.reduce((sum, x) => sum + x.usd, 0) / recent.length : 0;
-    return { ...out, daily, results, avgDaily, peakNow: isPeak(now()), prices: PRICES };
+    return { ...out, daily, results, avgDaily, peakNow: isPeak(now()), prices: { ...PRICES, ...(data.prices || {}) } };
   }
 
-  return { record, summary };
+  // #1441: $ per 1M tokens I set for a model that isn't DeepSeek's: input,
+  // output, and input from cache (input's price when not given). Null
+  // removes it. Counts from now on; what she already spent stays tokens only.
+  function setPrice(model, price) {
+    const name = String(model || "").trim();
+    if (!name || name.length > 200) throw new Error("a model name is needed");
+    if (PRICES[name]) throw new Error(`${name}'s prices are built in`);
+    data.prices ||= {};
+    if (price === null) {
+      delete data.prices[name];
+    } else {
+      const usd = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0 || n > 1000) throw new Error("a price is dollars per million tokens, 0 to 1000");
+        return n;
+      };
+      const miss = usd(price?.in);
+      data.prices[name] = { hit: price?.cachedIn === undefined || price?.cachedIn === null ? miss : usd(price.cachedIn), miss, out: usd(price?.out) };
+    }
+    save();
+    return prices();
+  }
+
+  // The prices I set, and the models she used that have none, for Settings.
+  function prices() {
+    const unpriced = new Set();
+    for (const [key, b] of Object.entries(data.buckets)) {
+      const model = key.split("|")[1];
+      if (b.unpricedRequests > 0 && !PRICES[model] && !data.prices?.[model]) unpriced.add(model);
+    }
+    return { set: { ...(data.prices || {}) }, unpriced: [...unpriced].sort() };
+  }
+
+  return { record, summary, setPrice, prices };
 }
 
 // #1406: the DeepSeek account's prepaid balance (GET /user/balance), read

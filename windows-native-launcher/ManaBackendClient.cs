@@ -722,6 +722,30 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
     }
 
+    // #1441: prices I set for models that aren't DeepSeek's, and the models
+    // she used that have none.
+    public async Task<ManaPrices> GetPricesAsync()
+    {
+        using var response = await http.GetAsync("/api-spending/prices");
+        response.EnsureSuccessStatusCode();
+        return JsonSerializer.Deserialize<ManaPrices>(await response.Content.ReadAsStringAsync(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+    }
+
+    // $ per 1M tokens in and out; null removes the model's prices.
+    public async Task SetPriceAsync(string model, double? input, double? output)
+    {
+        var fields = new Dictionary<string, object> { ["model"] = model };
+        if (input is null || output is null) fields["remove"] = true;
+        else
+        {
+            fields["in"] = input.Value;
+            fields["out"] = output.Value;
+        }
+        using var content = new StringContent(JsonSerializer.Serialize(fields), Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync("/api-spending/prices", content);
+        response.EnsureSuccessStatusCode();
+    }
+
     // #1406: Settings > API Spending.
     public async Task<ManaApiSpending> GetApiSpendingAsync()
     {
@@ -4545,6 +4569,15 @@ public sealed record ManaEscalationSettings(bool Enabled, bool HasKey, bool Loca
     public string? Preset { get; init; } // #1441
     public IReadOnlyList<string> Models { get; init; } = []; // #1441: the ones it tries, in order
     public IReadOnlyList<ManaEscalationStat> Stats { get; init; } = []; // #1441
+}
+
+// #1441: a price I set, $ per 1M tokens (hit: input from cache).
+public sealed record ManaPrice(double Hit, double Miss, double Out);
+
+public sealed class ManaPrices
+{
+    public Dictionary<string, ManaPrice> Set { get; init; } = new();
+    public List<string> Unpriced { get; init; } = new();
 }
 
 // #1441: how a model has done at escalation: runs with an outcome, how many
