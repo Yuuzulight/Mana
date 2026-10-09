@@ -384,9 +384,9 @@ public class SettingsPanelLayoutTests
         });
     }
 
-    // #1426 stage 2: Models' uses pick from the providers added; only DeepSeek is offered to add for now (#1441).
+    // #1426 stage 2: Models' uses pick from the providers added; every preset not added yet is offered (#1441).
     [Fact]
-    public void Models_UsesPickFromTheProviders_AndOnlyDeepSeekIsOffered()
+    public void Models_UsesPickFromTheProviders_AndTheRestAreOffered()
     {
         ToolPanelHostTests.RunSta(() =>
         {
@@ -414,8 +414,25 @@ public class SettingsPanelLayoutTests
             Assert.Equal(new[] { "Off", "DeepSeek" }, Items(panel.EscalationSource));
             var chip = panel.ProvidersPanel!.Summary.Controls.OfType<ProviderChip>().Single();
             Assert.Equal("✓", chip.Mark); // the last check reached it
-            Assert.Empty(panel.ProvidersPanel.AddPreset.Items); // DeepSeek is added, and OpenAI isn't offered yet
+            Assert.Equal(new[] { "OpenAI" }, Items(panel.ProvidersPanel.AddPreset)); // DeepSeek is already added
         });
+    }
+
+    // #1441: a provider line says which of her tool loop's steps worked.
+    [Fact]
+    public void ProviderLight_SaysWhichStepsWorked()
+    {
+        var now = DateTimeOffset.Parse("2026-10-09T12:00:00Z");
+        ManaProvider With(ManaProviderCheck? check) => new() { Label = "Groq", LastCheck = check };
+        var at = now.AddMinutes(-5);
+        Assert.Equal("not checked yet", ProvidersPanel.Light(With(null), now).Said);
+        Assert.Equal("checked 5 min ago", ProvidersPanel.Light(With(new() { At = at, Ok = true }), now).Said); // a check from before #1441
+        Assert.Equal("chat, tools and streaming work on llama-3 · checked 5 min ago",
+            ProvidersPanel.Light(With(new() { At = at, Ok = true, Model = "llama-3", Chat = true, Tools = true, Stream = true }), now).Said);
+        var partial = ProvidersPanel.Light(With(new() { At = at, Ok = false, Model = "llama-3", Chat = true, Tools = false, Stream = true, Error = "Tool call: it didn't call the tool" }), now);
+        Assert.Equal(DarkTheme.Warn, partial.Light);
+        Assert.Equal("chat ✓ · tools ✗ · streaming ✓ on llama-3 · Tool call: it didn't call the tool", partial.Said);
+        Assert.Equal("didn't answer: Chat: answered 401", ProvidersPanel.Light(With(new() { At = at, Ok = false, Chat = false, Error = "Chat: answered 401" }), now).Said);
     }
 
     private static System.Collections.Generic.IEnumerable<Control> GetAllDescendants(Control control)

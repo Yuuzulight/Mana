@@ -24,6 +24,7 @@ const { assertLocalUrl, isLocalOnly } = require("./local-only");
 // runtime, a proxy, another host on the LAN) works the same way.
 // #1426: the providers Settings knows by name (provider-presets.js).
 const { PROVIDER_PRESETS: BRAIN_PROVIDER_PRESETS } = require("./provider-presets");
+const { checkToolLoop } = require("./provider-check");
 
 // Directory names skipped during a full-storage scan for .gguf files: OS
 // internals and huge dev-tool caches that are never where a downloaded model
@@ -765,8 +766,9 @@ function createModelManagement(options = {}) {
     }
   }
 
-  // #1426: providers, through the settings store. Checking one reaches its
-  // address with its key and remembers how that went.
+  // #1426: providers, through the settings store. Checking one runs her tool
+  // loop's three steps against it (#1441, provider-check.js) and remembers
+  // how that went.
   const listProviders = () => modelSettingsStore.listProviders();
   const addProvider = (fields) => modelSettingsStore.addProvider(fields);
   const updateProvider = (id, fields = {}) =>
@@ -775,9 +777,17 @@ function createModelManagement(options = {}) {
   async function checkProvider(id) {
     const provider = modelSettingsStore.getProvider(id);
     if (!provider) return null;
-    const result = await (options.testConnection || testBrainConnection)({ baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+    const r = await (options.checkToolLoop || checkToolLoop)(provider);
     return modelSettingsStore.updateProvider(id, {
-      lastCheck: { at: new Date().toISOString(), ok: result.ok === true, ...(result.ok ? {} : { error: String(result.error || "").slice(0, 200) }) },
+      lastCheck: {
+        at: new Date().toISOString(),
+        ok: r.ok === true,
+        model: r.model || null,
+        chat: r.chat === true,
+        tools: r.tools === true,
+        stream: r.stream === true,
+        ...(r.error ? { error: String(r.error).slice(0, 200) } : {}),
+      },
     });
   }
 

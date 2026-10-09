@@ -27,10 +27,6 @@ internal sealed class ProvidersPanel : Component
     private readonly TextBox addKey = SettingsRows.Box("API key", 220, "Paste its API key");
     private readonly Button addButton = SettingsRows.Action("Save and test", () => { });
     private IReadOnlyList<ManaProviderPreset> presets = [];
-
-    // The providers Settings offers to add for now; the backend knows all
-    // twelve presets, and the rest come later.
-    internal static readonly string[] OfferedPresets = ["deepseek"];
     private bool open;
 
     // The list changed: added, removed, or checked.
@@ -158,7 +154,7 @@ internal sealed class ProvidersPanel : Component
     // custom ones) and its key (the ones that need one).
     private Control AddLine()
     {
-        var addable = presets.Where(p => OfferedPresets.Contains(p.Id) && (p.Id == "custom" || !Providers.Any(added => added.Preset == p.Id))).ToList();
+        var addable = presets.Where(p => p.Id == "custom" || !Providers.Any(added => added.Preset == p.Id)).ToList();
         var keep = (addPreset.SelectedItem as ManaProviderPreset)?.Id;
         addPreset.Items.Clear();
         addPreset.Items.AddRange(addable.ToArray<object>());
@@ -199,9 +195,7 @@ internal sealed class ProvidersPanel : Component
         await Run(async () =>
         {
             var added = await backendClient.AddProviderAsync(preset.Id, addAddress.Visible ? addAddress.Text : null, addKey.Text);
-            status.Text = added.LastCheck is { Ok: false } failed
-                ? $"Added {added.Label}, but it didn't answer: {failed.Error}"
-                : $"Added {added.Label}; it answered";
+            status.Text = $"Added {added.Label}: {Light(added, DateTimeOffset.Now).Said}";
         }, null);
         addKey.Clear();
     }
@@ -226,14 +220,19 @@ internal sealed class ProvidersPanel : Component
         Changed?.Invoke();
     }
 
-    // Green when the last check reached it, orange when it didn't, grey
-    // before any check; and those words.
+    // Green when the last check passed, orange when it didn't (with which of
+    // chat, tools and streaming worked, #1441), grey before any check; and
+    // those words.
     internal static (Color Light, string Said) Light(ManaProvider provider, DateTimeOffset now) => provider.LastCheck switch
     {
         null => (DarkTheme.Muted, "not checked yet"),
-        { Ok: true } check => (DarkTheme.Green, $"checked {Ago(now - check.At)}"),
-        { } check => (DarkTheme.Warn, $"not reachable: {check.Error}"),
+        { Ok: true, Chat: null } check => (DarkTheme.Green, $"checked {Ago(now - check.At)}"),
+        { Ok: true } check => (DarkTheme.Green, $"chat, tools and streaming work on {check.Model} · checked {Ago(now - check.At)}"),
+        { Chat: true } check => (DarkTheme.Warn, $"chat ✓ · tools {Tick(check.Tools)} · streaming {Tick(check.Stream)} on {check.Model} · {check.Error}"),
+        { } check => (DarkTheme.Warn, $"didn't answer: {check.Error}"),
     };
+
+    private static string Tick(bool? passed) => passed == true ? "✓" : "✗";
 
     private static string Ago(TimeSpan span) =>
         span.TotalMinutes < 1 ? "just now"
