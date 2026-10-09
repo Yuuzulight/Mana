@@ -387,6 +387,9 @@ test("model cards: Qwen3.5 thinking and plain, Qwen2.5-Coder, and others keep th
   assert.equal(modelCard(qwen, false).temperature, 0.7);
   assert.equal(modelCard("qwen2.5-coder-7b-instruct-Q4_K_M.gguf", false).repeat_penalty, 1.05);
   assert.equal(modelCard("llama-3.1-8b.gguf", true), null);
+  // Qwen3-Coder doesn't think, so it keeps its one card; Qwen3.6 thinks like 3.5.
+  assert.equal(modelCard("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", true).repeat_penalty, 1.05);
+  assert.equal(modelCard("Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", true).temperature, 0.6);
   const thinking = buildSamplingParams({ task: "tools", maxTokens: 2048, thinking: 512, model: qwen, env: {} }).params;
   assert.deepEqual([thinking.temperature, thinking.top_p, thinking.thinking_budget_tokens], [0.6, 0.95, 512]);
   assert.equal(buildSamplingParams({ task: "tools", maxTokens: 2048, model: "llama.gguf", env: {} }).params.temperature, 0.7);

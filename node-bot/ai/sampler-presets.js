@@ -71,7 +71,8 @@ function loadSamplerPresets(env) {
 // Qwen2.5-Coder's generation_config (0.7, 0.8, 20, repetition 1.05).
 // ponytail: a file-name match; a model not listed keeps its profile preset.
 const MODEL_CARDS = [
-  { match: /qwen3(\.5)?[-_]/i, thinking: { temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0 }, plain: { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0 } },
+  { match: /qwen3[-_]coder/i, plain: { temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05 } },
+  { match: /qwen3(\.\d)?[-_]/i, thinking: { temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0 }, plain: { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0 } },
   { match: /qwen2\.5[-_.]?coder/i, plain: { temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05 } },
 ];
 function modelCard(model, think) {
