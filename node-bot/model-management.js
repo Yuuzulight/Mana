@@ -24,7 +24,7 @@ const { assertLocalUrl, isLocalOnly } = require("./local-only");
 // runtime, a proxy, another host on the LAN) works the same way.
 // #1426: the providers Settings knows by name (provider-presets.js).
 const { PROVIDER_PRESETS: BRAIN_PROVIDER_PRESETS } = require("./provider-presets");
-const { checkToolLoop } = require("./provider-check");
+const { checkToolLoop, listChatModels } = require("./provider-check");
 
 // Directory names skipped during a full-storage scan for .gguf files: OS
 // internals and huge dev-tool caches that are never where a downloaded model
@@ -791,6 +791,12 @@ function createModelManagement(options = {}) {
     });
   }
 
+  // #1441: a provider's chat models; null if it isn't added.
+  async function listProviderModels(id) {
+    const provider = modelSettingsStore.getProvider(id);
+    return provider ? (options.listChatModels || listChatModels)(provider) : null;
+  }
+
   function getChatModels() {
     const models = [{ id: 'automatic', label: 'Automatic' }];
     for (const profile of getKnownLlamaModelProfiles()) models.push({ id: `local:${profile}`, label: `Local: ${profile}` });
@@ -821,6 +827,7 @@ function createModelManagement(options = {}) {
     updateProvider,
     removeProvider,
     checkProvider,
+    listProviderModels,
   };
 }
 

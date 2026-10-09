@@ -202,7 +202,7 @@ function createModelSettingsStore(options = {}) {
     const settings = readSettings();
     const provider = providerList(settings).find((p) => p.id === id);
     if (!provider) return null;
-    const model = Object.keys(USE_NAMES).map((use) => settings[use]).find((e) => e?.providerId === id && e.model)?.model || null;
+    const model = Object.keys(USE_NAMES).map((use) => settings[use]).map((e) => e?.providerId === id && (e.model || e.models?.[0])).find(Boolean) || null;
     return { id: provider.id, preset: provider.preset, baseUrl: provider.baseUrl, apiKey: readApiKey(provider), model };
   }
 
@@ -361,15 +361,25 @@ function createModelSettingsStore(options = {}) {
   function getEscalationSettings() {
     const settings = readSettings();
     const e = settings.escalation && typeof settings.escalation === "object" ? settings.escalation : {};
-    const { providerId, preset, baseUrl, apiKey } = connectionOf(settings, e, PROVIDER_PRESETS.deepseek.baseUrl);
-    return { enabled: e.enabled === true, providerId, preset, baseUrl, apiKey };
+    const conn = connectionOf(settings, e, PROVIDER_PRESETS.deepseek.baseUrl);
+    // #1441: an entry from before providers is DeepSeek's.
+    const preset = conn.preset || presetForBaseUrl(conn.baseUrl);
+    const known = PROVIDER_PRESETS[preset] || PROVIDER_PRESETS.custom;
+    const provider = conn.providerId ? providerList(settings).find((p) => p.id === conn.providerId) : null;
+    const models = Array.isArray(e.models) ? e.models.filter((m) => typeof m === "string" && m) : [];
+    return { enabled: e.enabled === true, providerId: conn.providerId, preset, label: provider?.label || known.label, needsKey: known.needsKey, models, baseUrl: conn.baseUrl, apiKey: conn.apiKey };
   }
 
   function setEscalationSettings(partial = {}) {
     const settings = readSettings();
     const next = settings.escalation && typeof settings.escalation === "object" ? { ...settings.escalation } : {};
+    const before = next.providerId;
     setProviderOf(next, partial, settings);
+    // Another provider's model names mean nothing here.
+    if (partial.models === undefined && next.providerId !== before) next.models = [];
     if (partial.enabled !== undefined) next.enabled = partial.enabled === true;
+    // #1441: the first tier, then the second; empty means the provider's defaults (DeepSeek's) or none.
+    if (partial.models !== undefined) next.models = partial.models.map((m) => String(m).trim()).filter(Boolean).slice(0, 2);
     if (partial.baseUrl !== undefined) next.baseUrl = String(partial.baseUrl || "").trim();
     if (partial.apiKey !== undefined) {
       delete next.apiKey;

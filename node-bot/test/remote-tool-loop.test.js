@@ -61,9 +61,18 @@ test("thinking off: no reasoning goes back, and the request says disabled", asyn
   assert.equal(requests[1].body.messages.find((m) => m.role === "assistant").reasoning_content, undefined);
 });
 
-test("local-only mode or a missing key refuses before anything is sent", () => {
+// #1441: whether a key is needed is the escalation's call (its provider).
+test("local-only mode or a missing model refuses before anything is sent", () => {
   const { runtime } = setup({ MANA_LOCAL_ONLY: "1" });
   assert.throws(() => runtime.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "sk-test", model: "deepseek-flash" }), /local-only/);
   const { runtime: r2 } = setup();
-  assert.throws(() => r2.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "", model: "deepseek-flash" }), /API key/);
+  assert.throws(() => r2.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "sk-test", model: "" }), /a model/);
+});
+
+test("another provider (thinking null): only the model, and no key header without a key (#1441)", async () => {
+  const { runtime, requests } = setup();
+  await runtime.remoteToolReply({ baseUrl: "https://api.deepseek.test/v1", apiKey: "", model: "qwen3-coder", thinking: null })("read it", policy);
+  assert.equal(requests[0].body.thinking, undefined);
+  assert.equal(requests[0].body.max_tokens, undefined);
+  assert.equal(requests[0].headers.Authorization, undefined);
 });

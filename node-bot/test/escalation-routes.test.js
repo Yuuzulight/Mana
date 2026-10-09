@@ -35,3 +35,21 @@ test("escalation settings: off by default, the key is stored but never returned"
     assert.equal(spending.runway.low, false);
   });
 });
+
+// #1441: any added provider, with up to two models picked from its list.
+test("escalation takes any added provider and its picked models; DeepSeek's two until then", async () => {
+  const fetch = useTestAdminToken();
+  await withServer(createApp({}), async (base) => {
+    const post = (url, body) => fetch(`${base}${url}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const view = await (await fetch(`${base}/self-work/escalation`)).json();
+    assert.deepEqual(view.models, ["deepseek-flash", "deepseek-v4-pro"]);
+    assert.ok(Array.isArray(view.stats));
+    assert.equal((await post("/models/providers", { preset: "lmstudio", baseUrl: "http://127.0.0.1:1/v1" })).status, 200);
+    const picked = await (await post("/self-work/escalation", { providerId: "lmstudio", models: ["qwen3-coder"] })).json();
+    assert.deepEqual([picked.providerId, picked.preset, picked.models], ["lmstudio", "lmstudio", ["qwen3-coder"]]);
+    const switched = await (await post("/self-work/escalation", { providerId: "deepseek-none" })).json();
+    assert.match(switched.error, /isn't added/);
+    assert.equal((await post("/self-work/escalation", { models: ["a", "b", "c"] })).status, 400);
+    assert.equal((await post("/self-work/escalation", { models: "qwen" })).status, 400);
+  });
+});

@@ -3250,9 +3250,20 @@ function registerRoutes(app, upload, deps = {}) {
     const balance = await readBalance().catch((e) => ({ error: e.message }));
     return { ...summary, balance, runway: runway(balance, summary.avgDaily) };
   }
+  // #1441: the models it tries (picked, or DeepSeek's two), and how each has done.
   const escalationView = () => {
-    const { enabled, baseUrl, apiKey, providerId } = modelSettingsStore.getEscalationSettings();
-    return { enabled, providerId, baseUrl, hasKey: Boolean(apiKey), localOnly: require("./local-only").isLocalOnly(deps.env || process.env) };
+    const s = modelSettingsStore.getEscalationSettings();
+    const { tiersFor } = require("./self-work-escalation");
+    return {
+      enabled: s.enabled,
+      providerId: s.providerId,
+      preset: s.preset,
+      baseUrl: s.baseUrl,
+      hasKey: Boolean(s.apiKey),
+      models: tiersFor(s).map((t) => t.model),
+      stats: selfWork.escalation?.stats?.() || [],
+      localOnly: require("./local-only").isLocalOnly(deps.env || process.env),
+    };
   };
   app.get("/self-work/escalation", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
@@ -3260,17 +3271,16 @@ function registerRoutes(app, upload, deps = {}) {
   });
   app.post("/self-work/escalation", (req, res) => {
     if (!checkAdminAuth(req, res)) return;
-    const { enabled, apiKey, providerId } = req.body || {};
+    const { enabled, apiKey, providerId, models } = req.body || {};
     if (enabled !== undefined && typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
     if (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.length > 512)) return res.status(400).json({ error: "apiKey must be a string" });
-    // #1426: a provider from Settings' list; DeepSeek's tiers and prices
-    // are built in, so only a DeepSeek one for now.
-    if (providerId) {
-      const provider = modelSettingsStore.getProvider(providerId);
-      if (!provider) return res.status(400).json({ error: "That provider isn't added" });
-      if (provider.preset !== "deepseek") return res.status(400).json({ error: "Self-work escalation works with DeepSeek for now" });
+    // #1441: the first tier and an optional second, from its model list.
+    if (models !== undefined && (!Array.isArray(models) || models.length > 2 || models.some((m) => typeof m !== "string" || m.length > 200))) {
+      return res.status(400).json({ error: "models must be up to two model names" });
     }
-    modelSettingsStore.setEscalationSettings({ enabled, apiKey, providerId });
+    // #1426: a provider from Settings' list (#1441: any of them).
+    if (providerId && !modelSettingsStore.getProvider(providerId)) return res.status(400).json({ error: "That provider isn't added" });
+    modelSettingsStore.setEscalationSettings({ enabled, apiKey, providerId, models });
     return res.json(escalationView());
   });
   app.get("/self-work/lessons", (req, res) => {

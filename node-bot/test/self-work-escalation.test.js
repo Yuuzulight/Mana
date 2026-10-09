@@ -247,3 +247,37 @@ test("switched off: no remote call, and her run ends as it would have", async ()
   assert.notEqual(status.state, "pr-open");
   assert.deepEqual(s.remoteCalls, []);
 });
+
+// #1441: the models I pick in Settings, on any provider.
+test("tiers: DeepSeek's two until I pick; another provider's are mine to pick, without DeepSeek's thinking switch", () => {
+  const { tiersFor } = require("../self-work-escalation");
+  assert.deepEqual(tiersFor({ preset: "deepseek" }).map((t) => t.id), ["flash", "pro"]);
+  assert.deepEqual(tiersFor({ preset: "deepseek", models: ["deepseek-v4-pro"] }).map((t) => t.id), ["pro"]);
+  assert.deepEqual(tiersFor({ preset: "openrouter" }), []);
+  const [first, second] = tiersFor({ preset: "openrouter", models: ["qwen/qwen3-coder", "openai/gpt-5"] });
+  assert.deepEqual([first.model, first.thinking, second.label], ["qwen/qwen3-coder", null, "openai/gpt-5"]);
+});
+
+test("another provider: its own key wording, a local one needs none, no models picked says so, and no peak hold", () => {
+  const other = { enabled: true, preset: "openrouter", label: "OpenRouter", needsKey: true, models: ["qwen/qwen3-coder"], baseUrl: "https://openrouter.test", apiKey: "" };
+  assert.match(escalation({ settings: other }).e.unavailable(), /no OpenRouter key/);
+  assert.equal(escalation({ settings: { ...other, preset: "lmstudio", label: "LM Studio", needsKey: false } }).e.unavailable(), null);
+  assert.match(escalation({ settings: { ...other, apiKey: "sk-or", models: [] } }).e.unavailable(), /no OpenRouter model is picked/);
+  assert.equal(escalation({ settings: { ...other, apiKey: "sk-or" }, at: PEAK }).e.gate(7).ok, true);
+});
+
+test("finish and stats: per model, runs with an outcome, passes and cost", () => {
+  const { e } = escalation();
+  const [flash, pro] = e.tiers;
+  e.begin(7, flash);
+  e.finish(7, flash, { passed: false, usd: 0.04 });
+  e.begin(7, pro);
+  e.finish(7, pro, { passed: true, usd: 0.3 });
+  e.begin(8, flash);
+  e.finish(8, flash, { passed: true, usd: null });
+  e.begin(9, flash); // still running: not counted
+  assert.deepEqual(e.stats(), [
+    { model: "deepseek-flash", runs: 2, passed: 1, usd: null },
+    { model: "deepseek-v4-pro", runs: 1, passed: 1, usd: 0.3 },
+  ]);
+});

@@ -418,6 +418,52 @@ public class SettingsPanelLayoutTests
         });
     }
 
+    // #1441: escalation on any provider, its two models picked from that
+    // provider's list, each with how it has done.
+    [Fact]
+    public void Models_EscalationModelsArePickedFromTheProvidersList()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            string? posted = null;
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/self-work/escalation")
+                {
+                    posted = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                }
+                var json = request.RequestUri!.AbsolutePath switch
+                {
+                    "/models/status" => "{\"activeProfile\":\"default\",\"profiles\":{\"default\":{}},\"brain\":{\"type\":\"local\"},\"fallback\":{\"enabled\":false,\"timeoutSeconds\":0},\"loadIntoVram\":true}",
+                    "/self-work/escalation" => "{\"enabled\":true,\"hasKey\":true,\"localOnly\":false,\"providerId\":\"openrouter\",\"preset\":\"openrouter\",\"models\":[\"qwen/qwen3-coder\"]," +
+                        "\"stats\":[{\"model\":\"qwen/qwen3-coder\",\"runs\":4,\"passed\":1,\"usd\":0.2}]}",
+                    "/models/providers/openrouter/models" => "{\"models\":[\"openai/gpt-5\",\"qwen/qwen3-coder\"]}",
+                    "/models/providers" => "{\"presets\":[],\"providers\":[{\"id\":\"openrouter\",\"preset\":\"openrouter\",\"label\":\"OpenRouter\",\"baseUrl\":\"https://openrouter.ai/api/v1\",\"hasKey\":true,\"usedBy\":[]}]}",
+                    _ => null,
+                };
+                return json is null
+                    ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+            }));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Size = new System.Drawing.Size(900, 900) };
+            panel.RefreshModelTabAsync().GetAwaiter().GetResult();
+            string[] Items(ComboBox combo) => combo.Items.Cast<object>().Select(i => i.ToString()!).ToArray();
+            Assert.Equal("OpenRouter", panel.EscalationSource.Text);
+            Assert.Equal(new[] { "Pick a model", "qwen/qwen3-coder", "openai/gpt-5" }, Items(panel.EscalationFirst));
+            Assert.Equal("qwen/qwen3-coder", panel.EscalationFirst.Text);
+            Assert.Equal("Nothing, stop there", panel.EscalationSecond.Text);
+            Assert.Equal("Fixed 1 of 4 issues · about $0.05 a run", panel.EscalationFirstSaid);
+        });
+    }
+
+    [Fact]
+    public void EscalationSaid_NotRunYet_OrFixedAndCost()
+    {
+        Assert.Equal("Not run yet", SettingsPanel.EscalationSaid("m", []));
+        Assert.Equal("Fixed 1 of 1 issue · cost unknown", SettingsPanel.EscalationSaid("m", [new("m", 1, 1, null)]));
+        Assert.Equal("Fixed 0 of 2 issues · about $0.15 a run", SettingsPanel.EscalationSaid("m", [new("m", 2, 0, 0.3)]));
+    }
+
     // #1441: a provider line says which of her tool loop's steps worked.
     [Fact]
     public void ProviderLight_SaysWhichStepsWorked()

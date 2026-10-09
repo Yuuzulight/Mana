@@ -25,12 +25,17 @@ function headersFor({ apiKey, preset }) {
   return headers;
 }
 
-async function pickModels(conn, fetchImpl, signal) {
+// A provider's chat models, in its own order (#1441: Settings' escalation picker too).
+async function listChatModels(conn, { fetchImpl = fetch, signal = AbortSignal.timeout(15000) } = {}) {
   const resp = await fetchImpl(`${conn.baseUrl}/models`, { headers: headersFor(conn), signal });
   if (!resp.ok) throw new Error(`its model list answered ${resp.status}`);
   const data = await resp.json().catch(() => null);
   const ids = (Array.isArray(data?.data) ? data.data : []).map((m) => String(m?.id || "").replace(/^models\//, "")).filter(Boolean);
-  const models = ids.filter((id) => !NOT_CHAT.test(id)).slice(0, 3);
+  return ids.filter((id) => !NOT_CHAT.test(id));
+}
+
+async function pickModels(conn, fetchImpl, signal) {
+  const models = (await listChatModels(conn, { fetchImpl, signal })).slice(0, 3);
   if (!models.length) throw new Error("its model list has no chat model");
   return models;
 }
@@ -117,4 +122,4 @@ async function checkToolLoop(conn, { fetchImpl = fetch, timeoutMs = 90000 } = {}
   return result;
 }
 
-module.exports = { checkToolLoop, NOT_CHAT };
+module.exports = { checkToolLoop, listChatModels, NOT_CHAT };
