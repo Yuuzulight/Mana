@@ -174,6 +174,19 @@ test("routes list and switch; a chat request answers with the handoff line", asy
   assert.equal(store.active().id, "mana");
 });
 
+// The launcher speaks the handoff as is: a tag in a custom line isn't read out.
+test("a custom handoff line's emotion tag isn't sent to the launcher", async () => {
+  const store = createCharacterStore({ filePath: tempFile() });
+  const app = express();
+  app.use(express.json());
+  createCharactersCapability(store).registerRoutes(app);
+  store.saveCharacter("evil-mana", { name: "Evil Mana", persona: "You are Evil Mana.", handoff: "[sad] I missed you, {previous}." });
+  await withServer(app, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/characters/active`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "evil-mana" }) });
+    assert.equal((await res.json()).handoff, "I missed you, Mana.");
+  });
+});
+
 test("group mode: off by default, paused by a game unless turned on during it", () => {
   let gaming = false;
   const reported = [];
