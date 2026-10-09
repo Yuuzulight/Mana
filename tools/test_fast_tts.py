@@ -68,6 +68,39 @@ def check_prompt_alignment():
     print("prompt: trimmed to whole chunks from its start")
 
 
+def check_flow_graph_matches_eager():
+    """A graphed estimator gives what the module gives, for a new shape and for a replayed one."""
+    try:
+        import torch
+    except ImportError:
+        print("flow graph: skipped (no torch)")
+        return
+    if not torch.cuda.is_available():
+        print("flow graph: skipped (no CUDA)")
+        return
+    from fast_tts.flow_graph import GraphedEstimator
+
+    class Toy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = torch.nn.Conv1d(80, 80, 3, padding=1)
+        def forward(self, x, mask, mu, t, spks, cond, streaming=False):
+            h = self.a(x * mask + mu + cond) + spks.unsqueeze(-1) + t.view(-1, 1, 1)
+            return torch.tanh(h) * (0.5 if streaming else 1.0)
+
+    toy = Toy().cuda().eval()
+    graphed = GraphedEstimator(toy, max_graphs=2)
+    with torch.inference_mode():
+        for length in (50, 50, 75, 50, 100, 125):
+            args = [torch.randn(2, 80, length, device="cuda"), torch.ones(2, 1, length, device="cuda"),
+                    torch.randn(2, 80, length, device="cuda"), torch.rand(2, device="cuda"),
+                    torch.randn(2, 80, device="cuda"), torch.randn(2, 80, length, device="cuda")]
+            for streaming in (False, True):
+                assert torch.allclose(graphed(*args, streaming=streaming), toy(*args, streaming=streaming), atol=1e-5)
+    assert len(graphed.graphs) == 2 and not graphed.eager                      # kept to max_graphs
+    print("flow graph: matches the module, new and replayed shapes")
+
+
 def check_decoder_matches_plain_forward():
     try:
         import torch
@@ -108,5 +141,6 @@ if __name__ == "__main__":
     check_repetition_fallback()
     print("sampler: same candidates as upstream; repetition fallback holds")
     check_prompt_alignment()
+    check_flow_graph_matches_eager()
     check_decoder_matches_plain_forward()
     print("ok")

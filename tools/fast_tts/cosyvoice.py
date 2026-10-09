@@ -7,6 +7,7 @@
 #   100 tokens), and new tokens were checked for every 100 ms. Reset per request, checked every 5 ms.
 # - First chunk: it waited for the reference clip's speech tokens to be padded up to a whole chunk (Mana's 9 s clip:
 #   22 tokens, about 0.4 s) before any audio. The flow's prompt is trimmed from its start to whole chunks instead.
+# - Flow: its estimator runs as CUDA graphs, one a shape (flow_graph.py); flow_graphs=False keeps it eager.
 import functools, time, types
 import torch
 from .decoder import GraphDecoder, generate
@@ -26,7 +27,7 @@ def align_prompt(kwargs, hop):
     return dict(kwargs, flow_prompt_speech_token=tok[:, cut:], prompt_speech_feat=feat[:, 2 * cut:])
 
 
-def enable(model, max_cache_len=4096, dtype=torch.bfloat16, seed=None):
+def enable(model, max_cache_len=4096, dtype=torch.bfloat16, seed=None, flow_graphs=True):
     import cosyvoice.cli.model as cosy_model
     lm = model.model.llm
     if torch.cuda.is_available() and not hasattr(lm, "vllm"):
@@ -45,6 +46,9 @@ def enable(model, max_cache_len=4096, dtype=torch.bfloat16, seed=None):
                 yield from generate(decoder, sampler, lm_input, max_len, set(lm.stop_token_ids), min_len=min_len)
         lm.inference_wrapper = inference_wrapper
 
+    if flow_graphs:
+        from . import flow_graph
+        flow_graph.enable(model.model.flow)
     cosy_model.time = types.SimpleNamespace(sleep=lambda s: time.sleep(min(s, 0.005)), time=time.time)
     inner = model.model
     hop = getattr(inner, "token_hop_len", None)
