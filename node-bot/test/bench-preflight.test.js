@@ -47,6 +47,15 @@ test("sandbox: a real test run through the link; a failed or thrown run is a pro
   assert.equal(fs.existsSync(path.join(wt, "node-bot", "test", "bench-preflight.test.js")), false);
 });
 
+test("the sandbox helper: missing on Windows is a problem; there, or not Windows, isn't", () => {
+  const dir = tmp();
+  const helper = path.join(dir, "Mana.AnalysisSandbox.exe");
+  assert.match(pre.helperProblem({ helper, platform: "win32" }), /helper .* is missing .*copy tools\/analysis-sandbox\/bundle/);
+  assert.equal(pre.helperProblem({ helper, platform: "linux" }), null);
+  fs.writeFileSync(helper, "");
+  assert.equal(pre.helperProblem({ helper, platform: "win32" }), null);
+});
+
 test("server args: flags llama-server doesn't list are named; values and known flags pass", () => {
   const help = () => "-fa,   --flash-attn [on|off|auto]\n-fit,  --fit [on|off]\n-ctk,  --cache-type-k TYPE\n-lm,   --load-mode MODE\n";
   assert.equal(pre.serverArgsProblem("--fit,on,-fa,on,-ctk,q8_0,--load-mode,none", "llama-server.exe", { help }), null);

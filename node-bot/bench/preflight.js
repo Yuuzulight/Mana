@@ -3,6 +3,7 @@
 // problem (a string) or null; the bench stops on any problem.
 //   - the sandbox copy-source approval exists, parses, and covers the
 //     node_modules her worktrees link to (her tests fail without it);
+//   - the sandbox's helper is there (it's built, not in git);
 //   - a sandboxed test really runs in a bench worktree, through the link;
 //   - the model file and --server-args flags exist;
 //   - every case is sound: its hidden tests fail at the base and pass with
@@ -31,6 +32,13 @@ function copySourcesProblem(repoRoot, { load = () => require("../tools/native-ex
     return real === r || real.startsWith(r + path.sep);
   });
   return covered ? null : `${where} doesn't approve ${modules} (her worktrees link to it), so her sandboxed tests would fail with "Copy would leave the approved source"`;
+}
+
+// The sandbox's helper is built, not in git: a worktree the bench runs from
+// has none unless it's copied or built there.
+function helperProblem({ helper = require("../tools/analysis-sandbox").HELPER_PATH, platform = process.platform } = {}) {
+  if (platform !== "win32" || fs.existsSync(helper)) return null;
+  return `the sandbox helper ${helper} is missing (it's built, not in git), so every test she runs would fail; copy tools/analysis-sandbox/bundle from the main checkout or build it`;
 }
 
 // A throwaway test that loads a package through the worktree's node_modules
@@ -117,4 +125,4 @@ async function toolCallProblem(runLoop) {
   return called ? null : "the model didn't make a tool call the loop could parse";
 }
 
-module.exports = { copySourcesProblem, sandboxProblem, serverArgsProblem, soundCases, toolCallProblem, caseKey, VERIFIED_FILE };
+module.exports = { copySourcesProblem, helperProblem, sandboxProblem, serverArgsProblem, soundCases, toolCallProblem, caseKey, VERIFIED_FILE };

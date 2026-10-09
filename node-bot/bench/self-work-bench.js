@@ -673,7 +673,7 @@ async function main(argv) {
 
   // #1467: the harness and the cases, before any GPU time.
   const pre = require("./preflight");
-  const problems = [pre.copySourcesProblem(repoRoot)];
+  const problems = [pre.copySourcesProblem(repoRoot), pre.helperProblem()];
   if (config.model && !fs.existsSync(config.model)) problems.push(`no model file at ${config.model}`);
   if (!problems.some(Boolean)) {
     const wt = path.join(worktreesDir, "bench-preflight");
