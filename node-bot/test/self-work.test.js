@@ -1141,6 +1141,81 @@ test("#1247: a reset between attempts only runs in a worktree's own top folder",
   assert.match(fs.readFileSync(path.join(inner, "util.js"), "utf8"), /a - b/);
 });
 
+// #1467: an old_text off only in whitespace still applies, in the file's
+// indentation; one that isn't there shows the closest lines; one that's
+// there twice asks for more context.
+test("#1467: edits forgive whitespace, and a miss shows where she probably meant", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const calls = [
+    ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a * b;", new_text: "return a + b;" }],
+    ["coding__propose_edit", { path: "node-bot/util.js", old_text: "function add(a, b) {\nreturn a - b;   ", new_text: "function add(a, b) {\nreturn a + b;" }],
+  ];
+  const { sw } = selfWork(repos, { calls, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name === "coding__propose_edit").map((s) => s.result ?? s.error);
+  assert.match(results[0], /old_text isn't in node-bot\/util.js\. The closest lines:\n[\s\S]*2:   return a - b;/);
+  assert.equal(JSON.parse(results[1]).status, "ok");
+  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /function add\(a, b\) \{\r?\n  return a \+ b;/);
+});
+
+// #1467: four steps with nothing new get a nudge to change course; a step
+// marked done after an edit asks for its tests; running past a step's share
+// of the rounds gets a reminder.
+test("#1467: nudges when she repeats herself, tests after each step, and the plan's share of rounds", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const read = ["self_work__read", { path: "node-bot/util.js" }];
+  const calls = [find, plan, fix, ["self_work__plan", { done: [1] }], read, read, read, read, read];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  assert.match(results[3], /Run the tests for this step with coding__run_tests before you start the next one\./);
+  assert.ok(results.some((r) => /That's 4 steps with nothing new/.test(r)), "a stuck nudge");
+});
+
+test("#1467: the round budget follows the plan", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const read = (n) => ["self_work__read", { path: "node-bot/util.js", start_line: n }];
+  const sw = createSelfWork({
+    repoRoot: repos.live,
+    worktreesDir: repos.worktrees,
+    exec: fakeExec([]),
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_ATTEMPTS: "1" },
+    protectedPaths: guard,
+    runLoop: async (prompt, policy, opts) => {
+      await policy.executeTool(...find);
+      await policy.executeTool(...plan);
+      for (let round = 1; round <= 20; round += 1) {
+        opts.onRound?.(round, opts.maxRounds);
+        seen.push(await policy.executeTool(...read(round)));
+      }
+      return { content: "Not done yet." };
+    },
+    runTests: async () => ({ exitCode: 0, timedOut: false, output: "# pass 1" }),
+    onEvent: () => {},
+    ramPercent: () => 50,
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const nudges = seen.filter((r) => /isn't done\. Finish it now/.test(r));
+  assert.equal(nudges.length, 1, "once per step");
+  assert.match(nudges[0], /step 1 of 2 isn't done/);
+});
+
+// #1467: her self-work thinks, with the running model's own card settings.
+test("#1467: her self-work loop thinks and asks for the model's own settings", async () => {
+  const seen = [];
+  const { sw } = selfWork(makeRepos(), { calls: [], seen });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(seen[0].opts.thinking, 512);
+  assert.equal(seen[0].opts.modelCard, true);
+});
+
 // #1467: she names the files her change belongs in, ones she found, with
 // existing code among them; edits elsewhere (tests aside) need adding first.
 test("#1467: her plan names files she found, with real code among them, and edits stay in them", async () => {

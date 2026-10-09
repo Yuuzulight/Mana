@@ -64,6 +64,21 @@ function loadSamplerPresets(env) {
   return presets;
 }
 
+// #1467: a model's own recommended settings, by its file name, for work
+// that asks for them (self-work): from the model cards as I read them in
+// 2026-10 -- Qwen3/Qwen3.5 thinking for precise coding (temperature 0.6,
+// top_p 0.95, top_k 20, min_p 0) and non-thinking (0.7, 0.8, 20, 0);
+// Qwen2.5-Coder's generation_config (0.7, 0.8, 20, repetition 1.05).
+// ponytail: a file-name match; a model not listed keeps its profile preset.
+const MODEL_CARDS = [
+  { match: /qwen3(\.5)?[-_]/i, thinking: { temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0 }, plain: { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0 } },
+  { match: /qwen2\.5[-_.]?coder/i, plain: { temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05 } },
+];
+function modelCard(model, think) {
+  const card = model && MODEL_CARDS.find((c) => c.match.test(String(model).split(/[\\/]/).pop()));
+  return card ? (think && card.thinking) || card.plain : null;
+}
+
 // Profiles not listed use "stable". Creative is opt-in only.
 const PROFILE_PRESETS = { coding: "precise" };
 const THINKING_PROFILES = new Set(["quality", "coding"]);
@@ -131,9 +146,11 @@ function resolveReasoningBudget(profile, env, thinkHarder, task) {
 // included). `thinking`: true is a "think harder" turn (thinking on, with
 // its own bigger budget, even for tasks that normally never think), false
 // forces thinking off (the empty-reply retry).
-function buildSamplingParams({ profile = "default", task = null, maxTokens, thinking, env = process.env } = {}) {
+// model (#1467): the model file, for its own card's settings in place of the preset.
+function buildSamplingParams({ profile = "default", task = null, maxTokens, thinking, env = process.env, model = null } = {}) {
   const presets = loadSamplerPresets(env);
-  const params = { ...presets[resolvePresetName(profile, env, presets)] };
+  const card = modelCard(model, resolveThinking(profile, task, env, thinking) === true);
+  const params = { ...(card || presets[resolvePresetName(profile, env, presets)]) };
   if (String(task || "").toLowerCase() === "tools") {
     for (const key of Object.keys(params)) {
       if (key.startsWith("dry_") || key.startsWith("xtc_")) delete params[key];
@@ -169,4 +186,4 @@ function thinkingForLevel(level) {
   return Object.hasOwn(THINKING_LEVELS, String(level)) ? THINKING_LEVELS[level] : undefined;
 }
 
-module.exports = { SAMPLER_PRESETS, buildSamplingParams, thinkingForLevel };
+module.exports = { SAMPLER_PRESETS, buildSamplingParams, thinkingForLevel, modelCard };

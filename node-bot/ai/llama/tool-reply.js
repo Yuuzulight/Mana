@@ -21,6 +21,8 @@ async function runToolAwareReply(
       onRound = null,
       // #1318: (text) when a round shows reply text alongside its tool calls.
       onRoundText = null,
+      // #1467: the running model's own card settings instead of the profile's (self-work).
+      modelCard = false,
     } = {},
   ) {
     if (typeof context.fetchImpl !== "function") {
@@ -94,7 +96,7 @@ async function runToolAwareReply(
         ? { tools: toolPolicy.tools, tool_choice: "auto" }
         : { tool_choice: "none" };
       const think = typeof thinking === "function" ? thinking() : thinking;
-      const { params } = context.buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env: context.env });
+      const { params } = context.buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env: context.env, model: modelCard ? context.state?.model : null });
       if (think === true || think > 0) await context.fitThinkingToContext(params, { messages, ...toolFields });
       // #1406: a remote OpenAI-compatible endpoint (DeepSeek) runs this
       // same loop through chatUrl and requestHeaders; local is llama-server.

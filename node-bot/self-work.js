@@ -116,6 +116,43 @@ const RAM_WAIT_MS = 10 * 60 * 1000;
 // A run with this many tool calls in a row and no new change and no new
 // test result is stuck (on top of goal mode's 20-round cap).
 const MAX_STEPS_WITHOUT_PROGRESS = 8;
+// #1467: she thinks on each round of her self-work (nobody's waiting to hear
+// it), up to this many tokens a round; MANA_SELF_WORK_THINKING=0 turns it off.
+const SELF_WORK_THINKING = 512;
+// #1467: after this many steps with nothing new she's told to change course
+// (MAX_STEPS_WITHOUT_PROGRESS still stops the run).
+const STUCK_NUDGE_AFTER = 4;
+
+// #1467: an old_text that isn't in the file word for word, matched line by
+// line ignoring each line's leading and trailing whitespace. The lines it
+// covers, or null unless exactly one place matches.
+function looseMatch(lines, oldText) {
+  const want = String(oldText).split(/\r?\n/).map((l) => l.trim());
+  while (want.length && !want[0]) want.shift();
+  while (want.length && !want.at(-1)) want.pop();
+  if (!want.length) return null;
+  const at = [];
+  for (let i = 0; i + want.length <= lines.length; i += 1) {
+    if (want.every((w, j) => lines[i + j].trim() === w)) at.push(i);
+  }
+  return at.length === 1 ? { from: at[0], to: at[0] + want.length } : null;
+}
+
+// Where old_text was probably meant: the line most like its first one, with
+// a few lines around it, numbered, for her error.
+function closestLines(lines, oldText) {
+  const first = String(oldText).split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
+  const words = new Set(first.split(/\W+/).filter(Boolean));
+  let best = -1;
+  let bestScore = 0;
+  lines.forEach((line, i) => {
+    const score = line.split(/\W+/).filter((w) => words.has(w)).length;
+    if (score > bestScore) [best, bestScore] = [i, score];
+  });
+  if (best < 0) return "";
+  const from = Math.max(0, best - 2);
+  return lines.slice(from, best + 4).map((l, i) => `${from + i + 1}: ${l}`).join("\n");
+}
 
 function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
@@ -888,6 +925,8 @@ function createSelfWork(options = {}) {
       },
       maxMs: Infinity,
       maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
+      thinking: Number(env.MANA_SELF_WORK_THINKING ?? SELF_WORK_THINKING) || false,
+      modelCard: true,
       overrideSystemPrompt:
         "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
     }).then(keep);
@@ -1420,6 +1459,10 @@ Before it can be a PR:
     const looked = new Set();
     // #1462: files she has seen named in a list, a search or a read.
     const found = new Set();
+    // #1467: an edit since her last test run, and the plan step the round
+    // budget last nudged her about.
+    let editedSinceTest = false;
+    let nudgedAtStep = -1;
     // #1245: lines read before her first edit, and whether she's made one.
     let readLines = 0;
     // A review round (#1259) reviews an attempt's edits, so its reads aren't budgeted.
@@ -1533,7 +1576,9 @@ Before it can be a PR:
         if (!step) throw new Error(`there's no step ${n}`);
         step.done = true;
       }
-      return planText();
+      // #1467: tests after each step, not only at the end.
+      const check = [].concat(done ?? []).length && editedSinceTest ? `\nRun the tests for this step with ${CODING_TEST_TOOL_NAME} before you start the next one.` : "";
+      return planText() + check;
     }
 
     async function edit({ path: rel, old_text: oldText = "", new_text: newText, summary }) {
@@ -1573,8 +1618,24 @@ Before it can be a PR:
         next = norm(newText);
       } else if (exists) {
         const parts = original.split(norm(oldText));
-        if (parts.length !== 2) throw new Error(`old_text must match ${relPath} exactly once (found ${parts.length - 1})`);
-        next = parts.join(norm(newText));
+        const lines = original.split(/\r?\n/);
+        if (parts.length === 2) {
+          next = parts.join(norm(newText));
+        } else if (parts.length > 2) {
+          throw new Error(`old_text is in ${relPath} ${parts.length - 1} times: include a line or two more around the place you mean so it matches once`);
+        } else {
+          // #1467: the same lines with different indentation or trailing spaces still count.
+          const loose = looseMatch(lines, oldText);
+          if (!loose) {
+            const near = closestLines(lines, oldText);
+            throw new Error(`old_text isn't in ${relPath}.${near ? ` The closest lines:\n${near}\n` : " "}Copy old_text from the file as it is (self_work__read shows it with line numbers).`);
+          }
+          // A new line she sent with no indentation takes the matching old line's.
+          const indent = (l) => /^\s*/.exec(l)[0];
+          const span = lines.slice(loose.from, loose.to);
+          const newLines = String(newText).split(/\r?\n/).map((l, j) => (!l.trim() || indent(l) ? l : indent(span[Math.min(j, span.length - 1)]) + l));
+          next = [...lines.slice(0, loose.from), ...newLines, ...lines.slice(loose.to)].join(eol);
+        }
       } else {
         if (oldText) throw new Error(`${relPath} doesn't exist yet: leave old_text empty to create it`);
         next = norm(newText);
@@ -1593,6 +1654,7 @@ Before it can be a PR:
       if (next !== original) {
         progressed = true;
         madeEdit = true;
+        editedSinceTest = true;
         // A new change needs reviewing again.
         reviewed.clear();
         edited.add(relPath);
@@ -1684,6 +1746,7 @@ Before it can be a PR:
     }
 
     async function tests({ path: rel, estimate, execution }) {
+      editedSinceTest = false;
       let target = rel ? posix(inside(rel)) : "";
       // #1420: test/x.test.js without node-bot/ means hers, unless the repo root has it.
       if (/^test\/[\w.-]+\.test\.js$/.test(target) && !fs.existsSync(path.join(root, target)) && fs.existsSync(path.join(root, "node-bot", target))) {
@@ -1771,8 +1834,22 @@ Before it can be a PR:
           looked.add(key);
           progressed = true;
         }
+        let note = "";
         if (progressed) stepsWithoutProgress = 0;
-        return result;
+        else if (stepsWithoutProgress === STUCK_NUDGE_AFTER) {
+          // #1467: in the #1202 comparison the 7B coder repeated itself until the run stopped.
+          note += `\n[That's ${STUCK_NUDGE_AFTER} steps with nothing new: the same calls or the same results. Change course: re-read the last failing test output, look at a different file, or go back to your plan. ${MAX_STEPS_WITHOUT_PROGRESS - STUCK_NUDGE_AFTER} more like this and the run stops.]`;
+        }
+        // #1467: each plan step's share of the rounds; past it, a reminder.
+        const steps = r.plan?.length || 0;
+        if (steps && !extra.mustReview && r.maxRounds && r.round) {
+          const doneCount = r.plan.filter((step) => step.done).length;
+          if (doneCount < steps && r.round > (r.maxRounds * (doneCount + 1)) / steps && nudgedAtStep !== doneCount) {
+            nudgedAtStep = doneCount;
+            note += `\n[Round ${r.round} of ${r.maxRounds}, and step ${doneCount + 1} of ${steps} isn't done. Finish it now (the edit, then its test), or mark it done if it is.]`;
+          }
+        }
+        return note && typeof result === "string" ? result + note : result;
       },
     };
   }

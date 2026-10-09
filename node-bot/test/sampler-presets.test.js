@@ -378,3 +378,16 @@ test("thinking levels: off never thinks, each other level thinks with its own bu
   const high = buildSamplingParams({ profile: "default", maxTokens: 300, thinking: true, env });
   assert.equal(high.params.thinking_budget_tokens, 1024);
 });
+
+// #1467: a model's own card settings, by file name, when asked for.
+test("model cards: Qwen3.5 thinking and plain, Qwen2.5-Coder, and others keep the preset", () => {
+  const { buildSamplingParams, modelCard } = require("../ai/sampler-presets");
+  const qwen = "D:\\models\\Qwen3.5-9B-heretic-v2-Q4_K_M.gguf";
+  assert.deepEqual(modelCard(qwen, true), { temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0 });
+  assert.equal(modelCard(qwen, false).temperature, 0.7);
+  assert.equal(modelCard("qwen2.5-coder-7b-instruct-Q4_K_M.gguf", false).repeat_penalty, 1.05);
+  assert.equal(modelCard("llama-3.1-8b.gguf", true), null);
+  const thinking = buildSamplingParams({ task: "tools", maxTokens: 2048, thinking: 512, model: qwen, env: {} }).params;
+  assert.deepEqual([thinking.temperature, thinking.top_p, thinking.thinking_budget_tokens], [0.6, 0.95, 512]);
+  assert.equal(buildSamplingParams({ task: "tools", maxTokens: 2048, model: "llama.gguf", env: {} }).params.temperature, 0.7);
+});

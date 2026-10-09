@@ -285,7 +285,8 @@ async function runCase(c, deps) {
         tps: tokens.genMs > (before.genMs || 0) ? Math.round(((tokens.genN - (before.genN || 0)) / (tokens.genMs - (before.genMs || 0))) * 10000) / 10 : null,
       },
       diff: { files: diff.files, added: diff.added, removed: diff.removed },
-      outside: diff.files.filter((f) => !allowed.has(f)),
+      // #1467: tests she adds for her change aren't outside it.
+      outside: diff.files.filter((f) => !allowed.has(f) && !/(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i.test(f)),
       // How her loop ended: finished, or why not.
       ended: error
         ? "error"
