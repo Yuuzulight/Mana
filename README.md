@@ -138,7 +138,7 @@ Remote AI is an explicit escape hatch, not the default path.
 
 ## Configuration
 
-These are the variables most setups change. [`node-bot/.env.sample`](node-bot/.env.sample) has every variable, with a comment on each.
+These are the variables most setups change. [`node-bot/.env.sample`](node-bot/.env.sample) has the core settings, with a comment on each. Feature-specific variables are in their own docs.
 
 | Variable | Purpose |
 |---|---|
@@ -151,7 +151,6 @@ These are the variables most setups change. [`node-bot/.env.sample`](node-bot/.e
 | `MANA_BIND_HOST` | Address the backend listens on; loopback only by default. Read the note in `.env.sample` before changing it |
 | `ADMIN_TOKEN` | Sent as the `x-admin-token` header by scripts; the launchers use their own per-run key |
 | `MANA_WEB_ACCESS_ENABLED` | Set to `0` to disable local web search, wiki lookups, and page reads |
-| `MANA_VISION_HOTKEY` | Screen-description hotkey (default `Ctrl+Alt+M`) |
 
 ## Editor Integration
 
