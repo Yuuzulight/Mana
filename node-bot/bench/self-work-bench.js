@@ -234,7 +234,7 @@ const HARNESS_ERROR = /Copy would leave the approved source|Invalid sandbox copy
 async function blocker({ isGaming, ramPercent, backendModelUp }) {
   if (isGaming()) return GAMING;
   const ram = ramPercent();
-  if (ram > BENCH_MAX_RAM_PERCENT) return `RAM is at ${ram}%`;
+  if (ram > BENCH_MAX_RAM_PERCENT) return `RAM is at ${ram}% (${topProcessesByRam(3).map((p) => `${p.name} ${p.mb} MB`).join(", ")})`;
   if (await backendModelUp()) return "the backend's chat model is loaded";
   return null;
 }
@@ -324,6 +324,8 @@ async function runCase(c, deps) {
       wallMs,
       peakVramMb: peak.vramMb,
       peakRamPercent: peak.ramPercent,
+      // Who held the RAM at the run's peak, when it reached RAM_TOP_FROM_PERCENT.
+      peakRamTop: peak.ramTop || null,
       contextSize,
       tokens: {
         prompt: tokens.prompt - before.prompt,
@@ -391,7 +393,10 @@ function watchPeaks(sample) {
     const s = await sample().catch(() => null);
     if (!s) return;
     if (s.vramMb != null) peak.vramMb = Math.max(peak.vramMb ?? 0, s.vramMb);
-    if (s.ramPercent != null) peak.ramPercent = Math.max(peak.ramPercent ?? 0, s.ramPercent);
+    if (s.ramPercent != null) {
+      if (s.ramPercent >= (peak.ramPercent ?? 0) && s.ramTop) peak.ramTop = s.ramTop;
+      peak.ramPercent = Math.max(peak.ramPercent ?? 0, s.ramPercent);
+    }
   };
   const first = take();
   const timer = setInterval(take, 5000);
@@ -405,11 +410,38 @@ function watchPeaks(sample) {
   };
 }
 
+// The programs using the most RAM, summed by image name (a browser is dozens of processes): [{ name, mb, count }].
+function topProcessesByRam(n = 5) {
+  try {
+    const out = execFileSync("tasklist", ["/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    const by = new Map();
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/^"([^"]+)","\d+","[^"]*","\d+","([^"]+) K"/);
+      if (!m) continue;
+      const e = by.get(m[1]) || { name: m[1], mb: 0, count: 0 };
+      e.mb += Math.round(Number(m[2].replace(/\D/g, "")) / 1024);
+      e.count += 1;
+      by.set(m[1], e);
+    }
+    return [...by.values()].sort((a, b) => b.mb - a.mb).slice(0, n);
+  } catch {
+    return [];
+  }
+}
+
+// From 80% up, a sample also says who holds the RAM, so a spike has a name.
+const RAM_TOP_FROM_PERCENT = 80;
+
 function sampleMachine() {
   const { execFile } = require("node:child_process");
   return new Promise((resolve) => {
     execFile("nvidia-smi", ["--query-gpu=memory.used", "--format=csv,noheader,nounits"], { windowsHide: true }, (err, out) => {
-      resolve({ vramMb: err ? null : Number(String(out).trim().split(/\r?\n/)[0]) || null, ramPercent: systemRamPercent() });
+      const ramPercent = systemRamPercent();
+      resolve({
+        vramMb: err ? null : Number(String(out).trim().split(/\r?\n/)[0]) || null,
+        ramPercent,
+        ...(ramPercent >= RAM_TOP_FROM_PERCENT ? { ramTop: topProcessesByRam() } : {}),
+      });
     });
   });
 }
@@ -809,4 +841,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+module.exports = { HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv, watchPeaks, topProcessesByRam };

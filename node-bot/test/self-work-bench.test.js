@@ -380,3 +380,25 @@ test("the bench pre-approves only sandboxed tests in its own worktrees", async (
   await assert.rejects(ask(path.join(root, "bench-1-add-subtracts", "..", "..", "Users")), /outside the bench's own worktrees/);
   assert.equal((await gate.requestApproval("memory-write", { payload: {} })).status, "blocked");
 });
+
+test("a run's RAM peak keeps who held the RAM at that sample, not at the latest one", async () => {
+  const { watchPeaks } = require("../bench/self-work-bench");
+  const samples = [
+    { vramMb: 1, ramPercent: 70 },
+    { vramMb: 2, ramPercent: 93, ramTop: [{ name: "chrome.exe", mb: 4000, count: 30 }] },
+    { vramMb: 3, ramPercent: 81, ramTop: [{ name: "node.exe", mb: 900, count: 2 }] },
+  ];
+  const peaks = watchPeaks(async () => samples.shift() || { vramMb: 3, ramPercent: 81, ramTop: [{ name: "node.exe", mb: 900, count: 2 }] });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const peak = await peaks.stop();
+  assert.equal(peak.ramPercent, 93);
+  assert.equal(peak.ramTop[0].name, "chrome.exe");
+});
+
+test("topProcessesByRam sums a program's processes and sorts by memory", { skip: process.platform !== "win32" }, () => {
+  const { topProcessesByRam } = require("../bench/self-work-bench");
+  const top = topProcessesByRam(5);
+  assert.ok(top.length > 0 && top.length <= 5);
+  assert.ok(top.every((p) => typeof p.name === "string" && p.mb >= 0 && p.count >= 1));
+  assert.ok(top.every((p, i) => i === 0 || top[i - 1].mb >= p.mb));
+});
