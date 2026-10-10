@@ -32,7 +32,7 @@
 
 Talking to a cloud AI assistant means handing your voice, your screen, and every conversation to someone else's servers. Character platforms and cloud VTuber stacks get you a voice and a face, but the moment their servers go down or the subscription lapses, so does the companion. Mana takes the other path: transcription, replies, TTS, memory, and screen awareness all run on your own Windows PC, so the assistant is actually yours — it works offline, it doesn't meter you, and nothing you say to it leaves the machine unless you explicitly turn that on.
 
-The project is built for a personal Windows setup: one user, local models by default, clear setup checks, and optional companion features when you want phone access or avatar control.
+Mana is a personal project: it's built for one Windows setup, with local models by default, clear setup checks, and optional companion features when you want phone access or avatar control. It's shared openly, and it's meant to grow into something other people can install. That's future work, not a promise.
 
 ### Why Mana?
 
@@ -49,7 +49,7 @@ Mana is for people who want an always-listening voice assistant on their desktop
 
 ### Related projects
 
-Mana isn't the only project chasing a local, always-on AI companion. [Project AIRI](https://github.com/moeru-ai/airi) (web/desktop, Vue + WebGPU, aiming for a Neuro-sama-style streamer) and [Open-LLM-VTuber](https://github.com/t41372/Open-LLM-VTuber) (Python, cross-platform) both explore the same space from different angles, and Mana's voice barge-in feature specifically was inspired by seeing how both projects treat mid-speech interruption as a UX baseline rather than an afterthought. Where Mana differs: it's built for one specific Windows setup rather than a general audience, ships a native C#/.NET launcher (with an Electron predecessor kept only as a fallback) plus a packaged installer client instead of a browser-first stage, and leans hard into practical daily-driver features (editor handoff, plugin ecosystem, Deep Research) alongside the avatar.
+[Project AIRI](https://github.com/moeru-ai/airi) (web/desktop) and [Open-LLM-VTuber](https://github.com/t41372/Open-LLM-VTuber) (Python, cross-platform) explore the same local, always-on companion space from different angles. Mana's voice barge-in was inspired by how both treat mid-speech interruption as a basic part of the experience.
 
 ## Preview
 
@@ -58,20 +58,20 @@ https://github.com/user-attachments/assets/639fd9b4-3f1e-4a58-aa02-79b56572306c
 <p align="center"><sub>Mana's debut: a 48-second self-introduction in her own voice (Fish Speech), rendered with the same Live2D runtime the launchers use. The avatar is Live2D's Hiyori sample model, standing in until Mana's own model is finished.</sub></p>
 
 <p align="center">
-  <img src="docs/images/windows-launcher-main.png" alt="Mana windows-launcher main screen" width="490">
+  <img src="docs/images/windows-launcher-main.png" alt="Mana Electron launcher main screen" width="490">
   <img src="docs/images/desktop-client-main.png" alt="Mana desktop-client main screen" width="490">
 </p>
-<p align="center"><sub>windows-launcher (left, the legacy Electron launcher, kept only as a fallback) and desktop-client (right) — see <a href="#architecture">Architecture</a> for how the pieces differ. <code>windows-native-launcher</code> is now the primary launcher; a screenshot hasn't been added here yet.</sub></p>
+<p align="center"><sub>The retired Electron launcher (left, kept as a fallback; see <a href="docs/legacy_launcher.md">the legacy launcher notes</a>) and desktop-client (right). The native launcher's screenshot hasn't been added here yet.</sub></p>
 
 ## Quick Start
 
-The current supported path is the native Windows launcher plus the local Node backend.
+The current supported path is the native Windows launcher plus the local Node backend. Run these from the repo root, wherever you cloned it:
 
 ```powershell
-cd C:\ManaAI\Mana\node-bot
+cd node-bot
 npm install
 
-cd C:\ManaAI\Mana\windows-native-launcher
+cd ..\windows-native-launcher
 powershell -File pack-folio.ps1
 dotnet build
 dotnet run
@@ -79,45 +79,30 @@ dotnet run
 
 Requires the .NET 10 SDK (not just the runtime) and git. `pack-folio.ps1` builds the [Folio](https://github.com/Yuuzulight/Folio) packages that draw HTML artifacts into `windows-native-launcher\folio-feed`, the local package source in `nuget.config`, from the Folio commit the launcher pins. Run it again whenever the pin changes. To bump Folio, set `FolioCommit` in `ManaNativeLauncher.csproj` to a Folio commit on main and `FolioVersion` to `0.1.0-m1.N`, where N is `git rev-list --count <commit>` in Folio; the script stops if the two don't match.
 
-For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md) and [docs/native_launcher_plan.md](docs/native_launcher_plan.md) for native-launcher-specific build notes. `windows-launcher` (Electron) still works and is kept as a fallback — see [Status](#status).
+For the full setup flow, including model paths, Whisper, TTS services, gaming mode, and optional market helpers, see [docs/quick_start_windows.md](docs/quick_start_windows.md) and [docs/native_launcher_plan.md](docs/native_launcher_plan.md).
 
 ## Highlights
 
-- **Local AI by default**: Mana uses local `llama.cpp` models unless remote AI is explicitly enabled.
+- **Local AI by default**: Mana uses local `llama.cpp` models unless remote AI is explicitly enabled. See [Model Stack](#model-stack).
 - **Voice loop**: wake Mana once with `Mana` or `wake up`, then keep talking without repeating the wake word.
-- **Voice barge-in**: interrupt Mana mid-reply with a hotkey or just by talking over her (on by default) instead of waiting out a sentence you already cut off.
-- **Local transcription**: audio is transcribed through `whisper.cpp`.
-- **Local text generation**: replies come from GGUF models through `llama.cpp`.
-- **Local speech output**: Fish Speech (S1-mini) is the default TTS provider, with inline reference-audio voice cloning; Kokoro and GPT-SoVITS provider paths are also supported.
-- **Neural voice-activity detection**: the launcher's continuous-listening loop uses Silero VAD to detect speech/silence, with a graceful fallback to RMS-threshold detection if the model is unavailable.
-- **Screen text awareness**: after Mana is awake, the launcher can capture the primary display and OCR readable text locally.
-- **Local image understanding**: with a vision GGUF installed, Mana can look at screenshots and images and talk about them; see [docs/vision_setup.md](docs/vision_setup.md).
-- **Look-at-my-screen hotkey**: press `Ctrl+Alt+Shift+M` (remappable in Settings > Hotkeys; `Ctrl+Alt+M` in the Electron launcher) to have Mana capture the screen, describe it, and speak the answer.
-- **Translate the screen**: ask "translate my screen" or "what did that JP player say?", or press `Ctrl+Alt+Shift+J` (Settings > Hotkeys), and Mana reads the Japanese in the window in front with Windows OCR and translates it. Needs the Windows Japanese OCR language pack; without it she falls back to the vision model.
-- **Gaming mode**: Mana reduces idle work while watched games are running.
-- **Game-aware help**: while a game with a known wiki is running or in front, Mana answers a question like "where do I unlock Dragoon?" in a sentence or two from that game's wiki, searched through local SearXNG (FFXIV: Console Games Wiki and the Lodestone); the lookup waits 5 s at most. Every listed game also turns on gaming mode. Add or change games in `node-bot/data/game-wikis.json` (`{ "Game": { "processes": ["game.exe"], "sites": ["wiki.example.com"] } }`); other games get the normal search.
-- **Desktop avatar support**: Mana emotes through a built-in Live2D VTuber avatar with lip sync and emotion reactions ([docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md)), PNG overlay fallback, and optional VTube Studio hotkey control. A VRM (3D) model option is also available in the legacy `windows-launcher` (Electron) build ([docs/vrm_avatar_setup.md](docs/vrm_avatar_setup.md)), driven by the same lip-sync/emotion signals, with automatic fallback to Live2D when no VRM model is configured; `windows-native-launcher` is Live2D-only by design — see [issue #563](https://github.com/Yuuzulight/Mana/issues/563).
-- **Mobile and remote companion paths**: phone chat and summary sync over the local backend and an optional tunnel, plus opt-in Telegram and Discord bridges (DM pairing-code approval, Discord voice-channel join with per-speaker transcription and barge-in) for messaging Mana from somewhere other than your desktop.
-- **Editor coding handoff**: Mana can detect local Zed or VS Code CLIs and open projects or files for coding help without applying edits silently.
-- **FFXIV, market, and job-search helpers**: Mana can query Universalis crafting/market data, Alpha Vantage stock summaries, and live Adzuna job postings when configured, plus a local job-application tracker with resume/cover-letter tailoring, as self-contained optional plugins that also inject context into chat replies; see [Plugins](plugins/README.md).
-- **MCP server (opt-in)**: Mana can expose its FFXIV market and web-access tools over the Model Context Protocol for local MCP clients like Claude Desktop or Claude Code; see [docs/roadmap/issue-42-mcp-support.md](docs/roadmap/issue-42-mcp-support.md).
-- **Deep Research**: a "Research" button next to the composer runs a bounded, multi-source search-and-read pass — with programmatic tool calling and parallel subagent delegation for harder queries — and replies with a cited report instead of a single search-and-answer; see [docs/roadmap/issue-47-deep-research.md](docs/roadmap/issue-47-deep-research.md).
-- **Better replies over time**: idle-triggered Dream Mode consolidates recent memory, Best-of-N self-voting picks the strongest of several candidate replies, conversational-rut and formulaic-phrasing detection keep replies from going stale, and memories get cross-session connections and entity tagging instead of staying siloed per conversation.
-- **Procedural memory (skills)**: a `node-bot/skills/` store holds "how I did X last time" knowledge as small, human-readable files -- a cheap always-available index plus full content loaded only when a skill is actually relevant, with idle-time pruning for skills nobody's touched in a while.
-- **Renderable artifacts**: HTML or long markdown in a reply renders inline instead of dumping raw source into the chat, with a standalone viewer window for a closer look.
-- **Session trajectory export**: pull any session's full turn history — including tool calls — out as ShareGPT-style JSONL for your own analysis or fine-tuning.
-- **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools (e.g. Obsidian Copilot) talk to Mana's local backend directly.
-- **Obsidian plugin**: Mana Memory Sync pulls Mana's memory into an Obsidian vault as linked notes; the setup flow also detects a local Obsidian install. See [plugins/obsidian-plugin/README.md](plugins/obsidian-plugin/README.md).
+- **Voice barge-in**: interrupt Mana mid-reply with a hotkey or just by talking over her, on by default. See [docs/roadmap/issue-219-voice-barge-in.md](docs/roadmap/issue-219-voice-barge-in.md).
+- **Local transcription and speech output**: audio goes through `whisper.cpp`, and replies are spoken locally. Fish Speech is the default TTS provider; see [docs/fish_speech_tts.md](docs/fish_speech_tts.md).
+- **Screen text awareness**: after Mana is awake, the launcher can capture the primary display and read the text on it locally.
+- **Look-at-my-screen hotkey**: press `Ctrl+Alt+Shift+M` (remappable in Settings > Hotkeys) to have Mana describe the screen and speak the answer. See [docs/vision_setup.md](docs/vision_setup.md).
+- **Desktop avatar support**: Mana emotes through a built-in Live2D avatar with lip sync and emotion reactions. See [docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md).
+- **Editor coding handoff**: Mana can open projects or files in Zed or VS Code and propose edits for review. See [Editor Integration](#editor-integration).
+- **Memory between conversations**: memories link across sessions and are consolidated while she's idle, so what she learns outlives one chat.
+- **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools talk to Mana's local backend. See [Backend API](#backend-api).
+
+More features, including gaming mode, Deep Research, the MCP server and the plugins, are listed in [docs/features.md](docs/features.md).
 
 ## Support Development
 
-Building Mana is a one-person, after-hours effort — every wake-word fix, every plugin, every avatar animation gets built in whatever time is left after everything else. If Mana's saved you time, gotten you excited about running AI locally, or just been fun to talk to, sponsoring keeps that work moving: it's what turns roadmap items like the native launcher and a fully 3D avatar into shipped features instead of permanent "planned" notes.
-
-**[Sponsor development on GitHub Sponsors](https://github.com/sponsors/Yuuzulight)** — even a small monthly amount helps, and every sponsor is genuinely appreciated. No pressure if not; using Mana and filing issues is already a real help.
+Mana is built by one person in spare time. If it's useful to you, sponsoring helps the roadmap move, such as the native launcher's avatar work. **[Sponsor development on GitHub Sponsors](https://github.com/sponsors/Yuuzulight).** Using Mana and filing issues helps too.
 
 ## Architecture
 
-Mana is intentionally split into small runtime pieces, all talking to one local backend over `http://localhost:5005`. Nothing below the "Remote AI" box at the bottom leaves your PC unless you explicitly turn it on.
+Mana is split into small runtime pieces, all talking to one local backend over `http://localhost:5005`. Nothing below the "Remote AI" box at the bottom leaves your PC unless you explicitly turn it on.
 
 <p align="center">
   <img src="docs/images/mana-architecture.svg" alt="Mana system architecture" width="100%">
@@ -125,36 +110,15 @@ Mana is intentionally split into small runtime pieces, all talking to one local 
 
 ```text
 Mana/
-├── windows-native-launcher/  # Native C#/.NET WinForms launcher — the primary, supported launcher (docs/native_launcher_plan.md)
-├── windows-launcher/         # Electron desktop launcher — legacy, kept only as a fallback
-├── desktop-client/           # Electron chat client — packaged NSIS installer, context-isolated renderer
+├── windows-native-launcher/  # The primary launcher: C#/.NET WinForms (docs/native_launcher_plan.md)
+├── windows-launcher/         # Retired Electron launcher, kept as a fallback (docs/legacy_launcher.md)
+├── desktop-client/           # Electron chat client with a packaged installer
 ├── node-bot/                 # Local backend API (http://localhost:5005)
-│   ├── server.js             # Request routing, tool-calling loop, approval-gate
-│   ├── ai/                   # LLM prompt assembly, tool sources, memory tooling
-│   ├── acp-memory-store.js   # Hebbian memory graph, session memory, contradiction-detection
-│   ├── skills/               # Procedural memory ("how I did X last time")
-│   ├── capabilities/         # Extracted admin/retriever route modules
-│   ├── mcp-server.js         # Model Context Protocol server (opt-in)
-│   └── test/                 # node:test suite
-├── plugins/                  # Self-contained optional feature plugins — see plugins/README.md
-│   ├── ffxiv-market/         # Universalis crafting/market data
-│   ├── stock-market/         # Alpha Vantage stock summaries
-│   ├── job-search-adzuna/    # Live job postings
-│   ├── job-applications/     # Local application tracker
-│   ├── document-reader/      # PDF/URL ingestion into the retriever
-│   ├── image-generation/     # Automatic1111/ComfyUI text-to-image (off by default)
-│   ├── video-watch/          # yt-dlp + Whisper + vision video summarization
-│   ├── screen-sensing/       # Privacy-gated ambient screen awareness
-│   ├── browser-automation/   # Playwright-driven browser control
-│   ├── telegram-bridge/      # Remote messaging via Telegram
-│   ├── discord-bot/          # Remote messaging + voice channels via Discord
-│   ├── cron-scheduler/       # Built-in scheduled tasks
-│   └── obsidian-plugin/      # Syncs Mana's memory into an Obsidian vault
-├── tools/
-│   ├── whisper/               # Expected location for local whisper.cpp binaries and models
-│   └── llama/                 # Expected location for local llama.cpp binaries and GGUF models
-├── tts-service/               # Local Python service for Kokoro TTS
-└── docs/                      # Setup guides and roadmap notes
+├── plugins/                  # Optional feature plugins (plugins/README.md)
+├── tts-service/              # Local TTS service
+├── zed-agent/                # Zed External Agent entry point (docs/zed_external_agent.md)
+├── tools/                    # Expected places for whisper.cpp and llama.cpp binaries and models
+└── docs/                     # Setup guides and roadmap notes
 ```
 
 ## Local AI And Privacy
@@ -174,65 +138,42 @@ Remote AI is an explicit escape hatch, not the default path.
 
 ## Configuration
 
+These are the variables most setups change. [`node-bot/.env.sample`](node-bot/.env.sample) has the core settings, with a comment on each. Feature-specific variables are in their own docs.
+
 | Variable | Purpose |
 |---|---|
 | `LLAMA_BIN` | Path to the `llama.cpp` binary used for local replies |
-| `LLAMA_MODEL` | Path to the active GGUF model; unset searches local folders (see [Model Stack](#model-stack)) |
-| `WHISPER_BIN` | Path to the `whisper.cpp` binary used for transcription |
-| `WHISPER_MODEL` | Path to the active Whisper model |
-| `TTS_PROVIDER` | TTS backend: Fish Speech (`fish`, default), Kokoro, or GPT-SoVITS |
-| `OPENAI_API_KEY` | Remote AI key — ignored unless `MANA_ALLOW_REMOTE_AI=1` |
-| `MANA_ALLOW_REMOTE_AI` | Set to `1` to opt into remote AI; unset/`0` keeps everything local |
-| `MANA_WEB_ACCESS_ENABLED` | Set to `0` to disable local SearXNG web search, wiki lookups, and page reads |
-| `MANA_VISION_HOTKEY` | Screen-description hotkey (default `Ctrl+Alt+M`) |
-| `ZED_BIN` | Path to the Zed CLI, for editor handoff |
-| `VSCODE_BIN` | Path to the VS Code CLI, for editor handoff |
-| `MANA_DEFAULT_EDITOR` | Default editor when none is specified in an open request (`zed` or `code`) |
-
-See [docs/quick_start_windows.md](docs/quick_start_windows.md) for the full setup flow, and the per-feature docs linked in [Docs By Goal](#docs-by-goal) for feature-specific variables.
+| `LLAMA_MODEL` | Path to the active GGUF model; unset, Mana picks one from [Model Stack](#model-stack) |
+| `WHISPER_BIN` / `WHISPER_MODEL` | Path to the `whisper.cpp` binary and its model |
+| `TTS_PROVIDER` | TTS backend: `fish` (default), `kokoro`, `gpt-sovits`, or `qwen3tts` |
+| `MANA_ALLOW_REMOTE_AI` | Set to `1` to opt into remote AI; unset or `0` keeps everything local |
+| `OPENAI_API_KEY` | Remote AI key, ignored unless `MANA_ALLOW_REMOTE_AI=1` |
+| `MANA_BIND_HOST` | Address the backend listens on; loopback only by default. Read the note in `.env.sample` before changing it |
+| `ADMIN_TOKEN` | Sent as the `x-admin-token` header by scripts; the launchers use their own per-run key |
+| `MANA_WEB_ACCESS_ENABLED` | Set to `0` to disable local web search, wiki lookups, and page reads |
 
 ## Editor Integration
 
-Mana can hand coding work to a local editor CLI. On this setup, Zed is the default editor.
+Mana can hand coding work to a local editor, Zed (the default) or VS Code. The integration runs in the local backend, so any launcher that talks to it can use it. Mana doesn't edit your code silently: her changes arrive as proposals you review first, and snapshots let you restore earlier states.
 
-Setup:
+- **windows-launcher** (Electron, retired): reviews proposals and snapshots.
+- **windows-native-launcher**: reviews proposals and snapshots. Opening a project or file in Zed or VS Code from the launcher is a future integration.
 
-```powershell
-$env:ZED_BIN = "C:\Program Files\Zed\zed.exe"
-$env:VSCODE_BIN = "C:\Users\User\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd"
-$env:MANA_DEFAULT_EDITOR = "zed"
-```
-
-If `ZED_BIN` is unset, Mana checks for `zed` on `PATH`. If `VSCODE_BIN` is unset, Mana checks for `code` on `PATH`.
-
-Current behavior:
-
-- `GET /editors/status` reports Zed and VS Code CLI availability.
-- `POST /editors/open` opens an existing file or folder in the requested editor.
-- If no editor is requested, Mana uses `MANA_DEFAULT_EDITOR`, falling back to Zed.
-- `GET /editors/workspace` reports the active local workspace path Mana last opened or was told to use.
-- `POST /editors/workspace` sets the active local workspace path explicitly.
-- `GET /editors/workspace/files` lists files in the active workspace with heavy folders skipped.
-- `GET /editors/workspace/file?path=...` reads one bounded text file inside the active workspace.
-- `POST /editors/workspace/proposals` creates an in-memory edit proposal for review without writing the file.
-- `GET /editors/workspace/proposals` and `GET /editors/workspace/proposals/:id` review pending proposals.
-- `GET /zed/status` and `POST /zed/open` remain available as Zed-specific compatibility routes.
-- Optional `line` and `column` values are passed as `file:line:column`.
-- Mana does not silently inspect or modify code through this integration. File lists and reads require explicit endpoint calls, and edit proposals stay in memory for review instead of being applied to disk.
-- Coding replies still use the local coding model profile unless remote AI is explicitly enabled.
-- `node-bot\mana-acp-agent.js --acp` is a protocol-generic [Agent Client Protocol](https://agentclientprotocol.com) agent that any ACP client can launch over stdio -- Zed's `agent_servers` today, and other editors' ACP clients as they gain one; see [docs/zed_external_agent.md](docs/zed_external_agent.md) for the Zed setup steps.
+Setup, the editor variables, and the routes are in [docs/editor_integration.md](docs/editor_integration.md).
 
 ## Model Stack
 
-| Profile | Model | Notes |
-|---|---|---|
-| Primary chat | `Qwen3-4B-Q4_K_M.gguf` | Default profile |
-| Fast fallback | `qwen2.5-1.5b-instruct-q4_k_m.gguf` | Used when `LLAMA_MODEL` is unset and the 4B model isn't found |
-| Quality mode | `Qwen3-14B-Q4_K_M.gguf` | Falls back to `Qwen3-8B-Q4_K_M.gguf` if not downloaded |
-| Coding mode | `qwen2.5-coder-7b-instruct-q4_k_m.gguf` | Used for editor-handoff and coding replies |
-| Vision (optional) | `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` + its `mmproj` file | See [docs/vision_setup.md](docs/vision_setup.md) |
+These are the models Mana's code picks by default. Each profile tries its models in order and uses the first one found in your local model folders. Your own choices belong in `node-bot/.env` (see [Configuration](#configuration)).
 
-If `LLAMA_MODEL` is unset, Mana searches local model folders and chooses the default profile in order: 4B, 1.5B, then 8B.
+| Profile | First choice | Falls back to |
+|---|---|---|
+| Default chat | `Qwen3-4B-Q4_K_M.gguf` | `qwen2.5-1.5b-instruct-q4_k_m.gguf`, then `Qwen3-8B-Q4_K_M.gguf` |
+| Fast fallback | `Qwen3-1.7B-Q8_0.gguf` | `qwen2.5-1.5b-instruct-q4_k_m.gguf`, `Qwen3-4B-Q4_K_M.gguf`, `Qwen3-8B-Q4_K_M.gguf` |
+| Quality | `Qwen3.5-9B-Q4_K_M.gguf` | `Qwen3-14B-Q4_K_M.gguf`, `Qwen3-8B-Q4_K_M.gguf`, `Qwen3-4B-Q4_K_M.gguf`, `qwen2.5-1.5b-instruct-q4_k_m.gguf` |
+| Coding | `qwen2.5-coder-14b-instruct-q4_k_m.gguf` when present, else `qwen2.5-coder-7b-instruct-mana-imat-Q4_K_M.gguf` | `Qwen3-4B-Q4_K_M.gguf`, `qwen2.5-1.5b-instruct-q4_k_m.gguf`, `Qwen3-8B-Q4_K_M.gguf` |
+| Vision (optional) | any vision GGUF with its `mmproj` file | see [docs/vision_setup.md](docs/vision_setup.md) |
+
+Background memory review uses the fast fallback profile, since it doesn't need the same quality as a live reply.
 
 ## Doctor And Troubleshooting
 
@@ -245,20 +186,18 @@ cd node-bot
 npm run doctor
 ```
 
-From `windows-native-launcher`, use the **Doctor** panel and **Run checks** button (the legacy `windows-launcher` has the same panel).
+From `windows-native-launcher`, use the **Doctor** panel and **Run checks** button.
 
-Doctor checks currently cover:
+The main checks cover:
 
-- Node runtime
-- local AI policy
-- llama binary and model paths
-- Whisper configuration
-- local TTS health URLs
-- mobile auth configuration
-- local storage writability
-- backend port availability
-- Zed and VS Code CLI availability
-- Zed External Agent entry point, local-only policy, and local backend reachability
+- Node runtime, local AI policy, and llama binary and model paths
+- Whisper configuration and local TTS health URLs
+- Mobile auth configuration, storage writability, and backend port availability
+- Zed and VS Code CLI availability, and the Zed External Agent entry point
+- SearXNG web search
+- The self-work sandbox, which her own tests run in on Windows
+
+The Doctor panel shows every check.
 
 Common troubleshooting:
 
@@ -270,151 +209,63 @@ Common troubleshooting:
 ## Docs By Goal
 
 - [Windows quick start](docs/quick_start_windows.md): full setup and daily run flow.
+- [Features](docs/features.md): everything Mana does, beyond the highlights.
+- [Native launcher plan](docs/native_launcher_plan.md): the primary C#/WinForms launcher, its feature history and benchmarks.
+- [Legacy launcher notes](docs/legacy_launcher.md): the retired Electron launcher, kept as a fallback.
+- [Editor integration](docs/editor_integration.md): Zed and VS Code handoff, editor variables and routes.
 - [Mobile PWA and Cloudflare Tunnel](docs/mobile_pwa_cloudflare.md): phone companion setup.
 - [PNG avatar setup](docs/png_avatar_setup.md): desktop avatar overlay.
 - [Live2D avatar setup](docs/live2d_avatar_setup.md): built-in VTuber avatar with lip sync.
 - [VTube Studio setup](docs/vtube_studio_setup.md): avatar hotkeys and reactions.
-- [Native launcher plan](docs/native_launcher_plan.md): the primary C#/WinForms launcher — full feature parity with the legacy Electron launcher, plus a measured lower memory footprint.
 - [GPT-SoVITS setup](docs/gpt_sovits_setup.md): trial anime-style voice-cloning provider.
 - [Qwen3-TTS](docs/qwen3_tts.md): lighter voice-cloning provider (`TTS_PROVIDER=qwen3tts`).
-- [Fish Speech TTS](docs/fish_speech_tts.md): optional Fish Speech provider.
+- [Fish Speech TTS](docs/fish_speech_tts.md): the default speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
 - [Vision setup](docs/vision_setup.md): local image understanding with a vision GGUF.
 - [Web access setup](docs/web_access_setup.md): local search (SearXNG), wiki lookups, and page reading.
 - [Zed External Agent setup](docs/zed_external_agent.md): local Zed `agent_servers` configuration.
 - [MCP support roadmap](docs/roadmap/issue-42-mcp-support.md): running Mana as an MCP server (`npm run mcp`) and the plan for MCP client support.
-- [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report, bounded steps/time, and a "Research" entry point (a composer button in `windows-launcher`, a "Deep Research" tray item in `windows-native-launcher`).
-- [Voice barge-in roadmap](docs/roadmap/issue-219-voice-barge-in.md): interrupting Mana mid-speech by hotkey or by voice.
+- [Deep Research roadmap](docs/roadmap/issue-47-deep-research.md): multi-step, multi-source research with a cited report.
 - [Discord bot roadmap](docs/roadmap/issue-185-discord-bot.md) and [Discord voice channels roadmap](docs/roadmap/issue-187-discord-voice-channels.md): remote messaging and voice-channel companion support.
 - [Code signing setup](docs/code_signing_setup.md): what's needed to get a signed, SmartScreen-clean desktop-client installer.
-- [Auto-update setup](docs/auto_update_setup.md): how desktop-client checks for and installs updates, and what a release needs to include for it to work.
-- [Local data storage and uninstalling](docs/local_data_and_uninstall.md): where desktop-client's local data lives and what the uninstaller does (and doesn't) delete.
-- [First-run setup wizard](docs/first_run_setup_wizard.md): the guided on-ramp desktop-client shows until a local model and Whisper are actually configured.
+- [Auto-update setup](docs/auto_update_setup.md): how desktop-client checks for and installs updates.
+- [Local data storage and uninstalling](docs/local_data_and_uninstall.md): where desktop-client's local data lives and what the uninstaller does.
+- [First-run setup wizard](docs/first_run_setup_wizard.md): the guided on-ramp desktop-client shows until a local model and Whisper are configured.
 
 ## Backend API
 
-The main backend listens on `http://localhost:5005` by default. It only accepts connections from this PC (loopback) unless `MANA_BIND_HOST` says otherwise -- see `node-bot/.env.sample` before setting it, since anything that can reach the backend can make Mana reply and run tools (#670). Every route also needs an admin key unless it's on the short public list in `node-bot/admin-key.js` (`/health`, the mobile companion's own routes, the API-key routes and the context-push extension): the launchers send their own per-run key, and scripts send `ADMIN_TOKEN` from `node-bot/.env` as the `x-admin-token` header.
+The backend listens on `http://localhost:5005`. It only accepts connections from this PC (loopback) unless `MANA_BIND_HOST` says otherwise. Read `node-bot/.env.sample` before setting it, since anything that can reach the backend can make Mana reply and run tools (#670). Every route needs an admin key unless it's on the short public list in `node-bot/admin-key.js`: the launchers send their own per-run key, and scripts send `ADMIN_TOKEN` from `node-bot/.env` as the `x-admin-token` header.
 
-Useful endpoints:
+Core routes:
 
 | Method &amp; Path | Description |
 |---|---|
 | `GET /health` | Basic backend status |
 | `GET /doctor` | Setup and readiness checks |
-| `GET /perf/status` | Local performance and process metrics |
-| `GET /plugins` | Discover loaded plugins grouped by category (see [plugins/README.md](plugins/README.md)) |
-| `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` | OpenAI-compatible routes for external tools |
-| `GET /editors/status` | Local editor CLI availability |
-| `POST /editors/open` | Open an existing file or folder in Zed or VS Code |
-| `GET /editors/workspace` / `POST /editors/workspace` | Read or set the active local coding workspace |
-| `GET /editors/workspace/files` | List active workspace files |
-| `GET /editors/workspace/file` | Read one bounded file inside the active workspace |
-| `GET /editors/workspace/proposals` | List pending edit proposals |
-| `POST /editors/workspace/proposals` | Create an in-memory edit proposal |
-| `GET /editors/workspace/proposals/:id` | Inspect one edit proposal and preview diff |
-| `GET /zed/status` | Zed CLI availability |
-| `POST /zed/open` | Open an existing file or folder in Zed |
-| `POST /transcribe` | Audio upload, transcription, and reply |
-| `POST /transcribe-only` | Audio upload and transcription only |
+| `GET /plugins` | Loaded plugins, grouped by category (see [plugins/README.md](plugins/README.md)) |
 | `POST /reply` | Text reply from Mana; accepts an optional `image` for vision replies |
-| `POST /vision/describe` | Local vision-model reply about an image |
+| `POST /transcribe` | Audio upload, transcription, and reply |
 | `POST /synthesize` | TTS audio for text |
-| `POST /screen/read` | Local OCR for a screen image |
-| `POST /web/search` | Web search via local SearXNG |
-| `POST /web/read` | Read and summarize a specific page |
-| `GET /wiki/:term` | Wikipedia summary lookup |
-| `GET /ffxiv/market` | Universalis market lookup |
-| `GET /ffxiv/crafting/profit` | Craft-profit scan |
-| `GET /market/stock/summary` | Stock summary |
-| `GET /market/stock/compare` | Stock comparison |
-| `GET /market/watchlist` | Configured watchlist summary |
+| `POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models` | OpenAI-compatible routes for external tools |
 
-See [node-bot/README.md](node-bot/README.md) for backend-specific details.
+The editor, web, screen, market and FFXIV routes are listed in [node-bot/README.md](node-bot/README.md).
 
 ## Getting Help
 
-- **Found a bug?** Open a [GitHub Issue](https://github.com/Yuuzulight/Mana/issues) — including your `npm run doctor` output for setup-related problems saves a round trip.
-- **Have an idea or a feature request?** Start a thread in [GitHub Discussions](https://github.com/Yuuzulight/Mana/discussions) — it's a better fit than Issues for "what if Mana could..." conversations.
+- **Found a bug?** Open a [GitHub Issue](https://github.com/Yuuzulight/Mana/issues), and include your `npm run doctor` output for setup problems.
+- **Have an idea or a feature request?** Start a thread in [GitHub Discussions](https://github.com/Yuuzulight/Mana/discussions). It's a better fit than Issues for "what if Mana could..." conversations.
 - If Mana's useful to you, starring or sharing the repo is a small, free way to help a local-first alternative get found.
 
 ## Development
 
-Install dependencies in the packages you are changing:
-
-```powershell
-cd node-bot
-npm install
-
-cd ..\windows-native-launcher
-dotnet restore
-```
-
-`windows-launcher` (Electron, legacy fallback) still needs `npm install` in its own directory if you're touching it.
-
-Run the backend tests:
-
-```powershell
-cd node-bot
-npm test
-```
-
-Run the native launcher tests:
-
-```powershell
-cd windows-native-launcher\ManaNativeLauncher.Tests
-dotnet test
-```
-
-Run the legacy Electron launcher's tests:
-
-```powershell
-cd windows-launcher
-npm test
-```
-
-Use `npm run dev` in `windows-launcher` when editing the legacy Electron launcher/backend loop and you want auto-restart behavior.
-
-## Required Before Pushing
-
-Before pushing any branch, run status and verification checks for the files you changed.
-
-Minimum required check:
-
-```powershell
-git status --short --branch
-```
-
-If `node-bot` changed:
-
-```powershell
-cd node-bot
-npm test
-```
-
-If `windows-native-launcher` changed:
-
-```powershell
-cd windows-native-launcher\ManaNativeLauncher.Tests
-dotnet test
-```
-
-If `windows-launcher` (legacy Electron launcher) changed:
-
-```powershell
-cd windows-launcher
-npm test
-```
-
-For changed JavaScript files, also run `node --check` on each changed file that can be parsed by Node without a browser or Electron runtime.
-
-Do not push if required checks fail. Fix the failure first, or clearly document the blocked check and why it could not be run before asking for review.
+Setup, the test commands and the checks to run before pushing are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-Mana is under active development. The current stable path is:
+Mana is under active development. The supported path is:
 
 ```text
 windows-native-launcher -> node-bot -> local Whisper / local Llama / local TTS
 ```
 
-`windows-native-launcher`, the native C#/WinForms launcher, reached full feature parity with the legacy Electron launcher (the last residual gaps closed 2026-09-21, after a 5-round independent verification pass caught them; see [docs/native_launcher_plan.md](docs/native_launcher_plan.md)) and is now the primary, supported launcher. A measured benchmark backs the memory claim: on the test machine, the native launcher's own incremental cost settled at ~540MB RAM / +21MB VRAM, while `windows-launcher` pushed the same system to 98.8% RAM within 3 seconds and had to be killed before reaching a steady state (see the plan doc for full methodology and caveats). `windows-launcher` (Electron) is kept only as a fallback going forward, not because of any known feature gap, and isn't planned to receive further feature development. The next major engineering priority is backend modularization (splitting monolithic `node-bot` files into modular components, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500)); component health status, local model management, and mobile device controls have since shipped.
+The native launcher is the primary, supported launcher. Its feature history and benchmarks are in [docs/native_launcher_plan.md](docs/native_launcher_plan.md). The Electron launcher is retired and kept only as a fallback. The next engineering priority is backend modularization, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500).
