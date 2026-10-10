@@ -697,11 +697,13 @@ async function main(argv) {
   const spend = {};
   const maxUsd = Number(opt("--max-usd")[0]) || 0;
   const approvalGate = benchTestGate(worktreesDir);
+  // --adopt: the model runs on another machine, so a game here or her chat model in VRAM isn't competing with it
+  // (RAM still counts: the case's tests run here).
   const gate = {
-    isGaming: () => isGamingNow(repoRoot),
+    isGaming: () => !config.adopt && isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
     backendModelUp: () =>
-      fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
+      config.adopt ? Promise.resolve(false) : fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
 
   // #1467: the harness and the cases, before any GPU time.
