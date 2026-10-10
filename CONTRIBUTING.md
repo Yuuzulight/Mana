@@ -63,3 +63,57 @@ ADMIN_TOKEN for admin endpoints
 - CI and test jobs that exercise admin endpoints should set the `ADMIN_TOKEN` secret in the repository settings (name: `ADMIN_TOKEN`).
 
 Thank you for your interest in contributing to Mana. We welcome well-scoped proposals and will respond to request issues in due course.
+
+
+## Development setup
+
+Install dependencies in the packages you're changing:
+
+```powershell
+cd node-bot
+npm install
+
+cd ..\windows-native-launcher
+dotnet restore
+```
+
+`windows-launcher` (Electron, retired) still needs `npm install` in its own directory if you're touching it. See [docs/legacy_launcher.md](docs/legacy_launcher.md).
+
+## Tests
+
+Backend tests:
+
+```powershell
+cd node-bot
+npm test
+```
+
+Native launcher tests:
+
+```powershell
+cd windows-native-launcher\ManaNativeLauncher.Tests
+dotnet test
+```
+
+Legacy Electron launcher tests:
+
+```powershell
+cd windows-launcher
+npm test
+```
+
+## Before pushing
+
+Run status and verification checks for the files you changed.
+
+Minimum check:
+
+```powershell
+git status --short --branch
+```
+
+If `node-bot` changed, run `npm test` in `node-bot`. If `windows-native-launcher` changed, run `dotnet test` in `windows-native-launcher\ManaNativeLauncher.Tests`. If `windows-launcher` changed, run `npm test` in `windows-launcher`.
+
+For changed JavaScript files, also run `node --check` on each one that Node can parse without a browser or Electron runtime.
+
+Don't push if a required check fails. Fix the failure first, or document the blocked check and why it couldn't run before asking for review.
