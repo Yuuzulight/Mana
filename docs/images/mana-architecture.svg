@@ -1,156 +1,110 @@
-<svg viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#0e1210"/>
-      <stop offset="1" stop-color="#171d1a"/>
-    </linearGradient>
-    <linearGradient id="clients" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#4ad0c0"/>
-      <stop offset="1" stop-color="#5fd0e0"/>
-    </linearGradient>
-    <linearGradient id="core" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#1fa669"/>
-      <stop offset="1" stop-color="#6cd48a"/>
-    </linearGradient>
-    <linearGradient id="runtime" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#e0b04c"/>
-      <stop offset="1" stop-color="#e8cf7a"/>
-    </linearGradient>
-    <linearGradient id="plugins" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#7b8ce0"/>
-      <stop offset="1" stop-color="#a595e8"/>
-    </linearGradient>
-    <linearGradient id="remote" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#5a6470"/>
-      <stop offset="1" stop-color="#7a8590"/>
-    </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="3" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
-      <path d="M0 0 L10 5 L0 10 z" fill="#4a5a50"/>
-    </marker>
-    <marker id="arrowDashed" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
-      <path d="M0 0 L10 5 L0 10 z" fill="#5a6470"/>
-    </marker>
-  </defs>
-
-  <rect width="1200" height="900" fill="url(#bg)"/>
-
-  <g stroke="#ffffff" stroke-opacity="0.03">
-    <line x1="0" y1="205" x2="1200" y2="205"/>
-    <line x1="0" y1="400" x2="1200" y2="400"/>
-    <line x1="0" y1="620" x2="1200" y2="620"/>
-  </g>
-
-  <!-- Title -->
-  <text x="60" y="52" fill="#f0ece4" font-size="30" font-weight="700" letter-spacing="2">MANA</text>
-  <text x="60" y="76" fill="#8a9490" font-size="14" letter-spacing="0.5">local-first AI companion — every layer below runs on one Windows PC unless you opt out</text>
-
-  <!-- Row 1: Clients -->
-  <text x="60" y="118" fill="#4ad0c0" font-size="13" font-weight="600" letter-spacing="1.5">CLIENTS</text>
-
-  <rect x="60" y="130" width="330" height="64" rx="10" fill="#161c19" stroke="url(#clients)" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="80" y="156" fill="#f0ece4" font-size="16" font-weight="600">windows-launcher</text>
-  <text x="80" y="176" fill="#9aa5a0" font-size="12">Electron · mic capture · avatar overlay · Doctor panel</text>
-
-  <rect x="420" y="130" width="330" height="64" rx="10" fill="#161c19" stroke="url(#clients)" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="440" y="156" fill="#f0ece4" font-size="16" font-weight="600">desktop-client</text>
-  <text x="440" y="176" fill="#9aa5a0" font-size="12">Electron · packaged installer · context-isolated renderer</text>
-
-  <rect x="780" y="130" width="360" height="64" rx="10" fill="#161c19" stroke="url(#remote)" stroke-width="1.5" stroke-dasharray="6,4"/>
-  <text x="800" y="156" fill="#c8ceb8" font-size="16" font-weight="600">Mobile / remote companion</text>
-  <text x="800" y="176" fill="#8a9490" font-size="12">phone chat, Telegram &amp; Discord bridges — opt-in tunnel</text>
-
-  <!-- connectors clients -> core -->
-  <line x1="225" y1="194" x2="225" y2="240" stroke="#4a5a50" stroke-width="1.5" marker-end="url(#arrow)"/>
-  <line x1="585" y1="194" x2="585" y2="240" stroke="#4a5a50" stroke-width="1.5" marker-end="url(#arrow)"/>
-  <line x1="960" y1="194" x2="960" y2="240" stroke="#5a6470" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowDashed)"/>
-  <text x="600" y="222" fill="#5c665f" font-size="11" text-anchor="middle">http://localhost:5005</text>
-
-  <!-- Row 2: node-bot core -->
-  <text x="60" y="240" fill="#6cd48a" font-size="13" font-weight="600" letter-spacing="1.5">NODE-BOT BACKEND</text>
-
-  <rect x="60" y="252" width="1080" height="120" rx="10" fill="#141a17" stroke="url(#core)" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="82" y="280" fill="#f0ece4" font-size="16" font-weight="700">node-bot — local backend API</text>
-
-  <g font-size="12" fill="#a8b3ab">
-    <text x="82" y="304">server.js · request routing</text>
-    <text x="82" y="322">tool-calling loop (multi-round)</text>
-    <text x="82" y="340">approval-gate (agent-authored actions)</text>
-
-    <text x="330" y="304">acp-memory-store · Hebbian memory graph</text>
-    <text x="330" y="322">skills/ · procedural memory (recipes)</text>
-    <text x="330" y="340">persona.js · SOUL file · emotional reflexes</text>
-
-    <text x="640" y="304">model-management · hardware-aware profiles</text>
-    <text x="640" y="322">Deep Research · subagent delegation</text>
-    <text x="640" y="340">session-export · artifacts (Markdown/Mermaid)</text>
-
-    <text x="900" y="304">mobile-routes · mobile-auth</text>
-    <text x="900" y="322">mcp-server / mcp-client-registry</text>
-    <text x="900" y="340">zed-integration · editor handoff</text>
-  </g>
-
-  <!-- connectors core -> runtime & plugins -->
-  <line x1="300" y1="372" x2="300" y2="420" stroke="#4a5a50" stroke-width="1.5" marker-end="url(#arrow)"/>
-  <line x1="850" y1="372" x2="850" y2="420" stroke="#4a5a50" stroke-width="1.5" marker-end="url(#arrow)"/>
-
-  <!-- Row 3: local runtime -->
-  <text x="60" y="440" fill="#e0b04c" font-size="13" font-weight="600" letter-spacing="1.5">LOCAL RUNTIME</text>
-
-  <rect x="60" y="452" width="255" height="150" rx="10" fill="#1a1712" stroke="url(#runtime)" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="80" y="478" fill="#f0ece4" font-size="15" font-weight="600">Brain</text>
-  <text x="80" y="500" fill="#a8a190" font-size="12">llama.cpp · Qwen3 GGUF</text>
-  <text x="80" y="518" fill="#a8a190" font-size="12">hot-swappable profiles</text>
-  <text x="80" y="536" fill="#a8a190" font-size="12">(chat / quality / coding / vision)</text>
-
-  <rect x="335" y="452" width="255" height="150" rx="10" fill="#1a1712" stroke="url(#runtime)" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="355" y="478" fill="#f0ece4" font-size="15" font-weight="600">Ears</text>
-  <text x="355" y="500" fill="#a8a190" font-size="12">whisper.cpp transcription</text>
-  <text x="355" y="518" fill="#a8a190" font-size="12">Silero VAD (RMS fallback)</text>
-  <text x="355" y="536" fill="#a8a190" font-size="12">self-TTS-exclusion</text>
-
-  <rect x="610" y="452" width="255" height="150" rx="10" fill="#1a1712" stroke="url(#runtime)" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="630" y="478" fill="#f0ece4" font-size="15" font-weight="600">Voice</text>
-  <text x="630" y="500" fill="#a8a190" font-size="12">Fish Speech (S1-mini, default)</text>
-  <text x="630" y="518" fill="#a8a190" font-size="12">Kokoro · GPT-SoVITS</text>
-  <text x="630" y="536" fill="#a8a190" font-size="12">MFCC viseme lip-sync</text>
-
-  <rect x="885" y="452" width="255" height="150" rx="10" fill="#1a1712" stroke="url(#runtime)" stroke-width="1.5" filter="url(#glow)"/>
-  <text x="905" y="478" fill="#f0ece4" font-size="15" font-weight="600">Presence</text>
-  <text x="905" y="500" fill="#a8a190" font-size="12">Live2D avatar (default)</text>
-  <text x="905" y="518" fill="#a8a190" font-size="12">VRM (3D) — optional</text>
-  <text x="905" y="536" fill="#a8a190" font-size="12">local OCR (tesseract.js) · vision GGUF</text>
-
-  <!-- Row 4: plugins -->
-  <text x="60" y="638" fill="#a595e8" font-size="13" font-weight="600" letter-spacing="1.5">PLUGINS — self-contained, opt-in via GET /plugins</text>
-
-  <rect x="60" y="650" width="1080" height="130" rx="10" fill="#17151f" stroke="url(#plugins)" stroke-width="1.5" filter="url(#glow)"/>
-  <g font-size="12" fill="#b3aed0">
-    <text x="82" y="678">ffxiv-market</text>
-    <text x="220" y="678">stock-market</text>
-    <text x="360" y="678">job-search-adzuna</text>
-    <text x="530" y="678">job-applications</text>
-    <text x="680" y="678">document-reader</text>
-    <text x="850" y="678">cron-scheduler</text>
-    <text x="1000" y="678">obsidian-plugin</text>
-
-    <text x="82" y="704">image-generation</text>
-    <text x="230" y="704">video-watch</text>
-    <text x="360" y="704">screen-sensing</text>
-    <text x="510" y="704">browser-automation</text>
-    <text x="680" y="704">telegram-bridge</text>
-    <text x="850" y="704">discord-bot</text>
-    <text x="1000" y="704">context-push</text>
-  </g>
-  <text x="82" y="752" fill="#7d7a94" font-size="12">Each plugin registers its own routes, injects context into replies, and reports health independently — nothing here is required for the core voice loop to work.</text>
-
-  <!-- Remote AI opt-in -->
-  <rect x="60" y="812" width="1080" height="58" rx="10" fill="#141414" stroke="url(#remote)" stroke-width="1.5" stroke-dasharray="6,4"/>
-  <text x="82" y="836" fill="#c8ceb8" font-size="14" font-weight="600">Remote AI — explicit opt-in only</text>
-  <text x="82" y="854" fill="#8a9490" font-size="12">OPENAI_API_KEY / ANTHROPIC_API_KEY are ignored unless MANA_ALLOW_REMOTE_AI=1 — nothing leaves the machine by default</text>
-
-  <line x1="600" y1="780" x2="600" y2="812" stroke="#5a6470" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowDashed)"/>
+<svg viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" role="img">
+<title>Mana system architecture</title>
+<desc>Clients talk to one local backend on port 5005. The backend drives local runtime pieces (chat model, speech, voice and avatar) and optional plugins. Remote AI is off unless opted in.</desc>
+<defs><radialGradient id="glowA" cx="0.05" cy="0.02" r="0.55"><stop offset="0" stop-color="#c6aae0" stop-opacity="0.59"/><stop offset="1" stop-color="#c6aae0" stop-opacity="0"/></radialGradient><radialGradient id="glowB" cx="0.98" cy="1.02" r="0.62"><stop offset="0" stop-color="#a3d2fa" stop-opacity="0.63"/><stop offset="1" stop-color="#a3d2fa" stop-opacity="0"/></radialGradient><radialGradient id="glowC" cx="0.55" cy="0.45" r="0.35"><stop offset="0" stop-color="#766dbe" stop-opacity="0.16"/><stop offset="1" stop-color="#766dbe" stop-opacity="0"/></radialGradient></defs>
+<rect width="1200" height="900" fill="#f5f3fa"/>
+<rect width="1200" height="900" fill="url(#glowA)"/>
+<rect width="1200" height="900" fill="url(#glowB)"/>
+<rect width="1200" height="900" fill="url(#glowC)"/>
+<text x="60" y="52" font-size="30" font-weight="600" fill="#1b1e3f" text-anchor="start">MANA</text>
+<text x="60" y="76" font-size="14" font-weight="400" fill="#67628a" text-anchor="start">local-first AI companion. Every layer below runs on one Windows PC unless you opt out.</text>
+<circle cx="1140" cy="48" r="5" fill="#23874a"/>
+<text x="1126" y="53" font-size="12" font-weight="400" fill="#67628a" text-anchor="end">on this PC</text>
+<text x="60" y="118" font-size="12" font-weight="600" fill="#6a5fb8" text-anchor="start">CLIENTS</text>
+<rect x="60" y="130" width="330" height="64" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1.5"/>
+<path d="M70 130.5 H380" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="80" y="156" font-size="15" font-weight="600" fill="#1b1e3f" text-anchor="start">windows-native-launcher</text>
+<text x="80" y="176" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">primary · WinForms · mic · avatar · Doctor</text>
+<rect x="420" y="130" width="330" height="64" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<path d="M430 130.5 H740" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="440" y="156" font-size="15" font-weight="600" fill="#1b1e3f" text-anchor="start">desktop-client</text>
+<text x="440" y="176" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Electron · packaged installer</text>
+<rect x="780" y="130" width="360" height="64" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#a86b0c" stroke-width="1" stroke-dasharray="6,4"/>
+<path d="M790 130.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="800" y="156" font-size="15" font-weight="600" fill="#1b1e3f" text-anchor="start">Mobile / remote companion</text>
+<text x="800" y="176" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">phone chat, Telegram, Discord (opt-in)</text>
+<line x1="600" y1="194" x2="600" y2="250" stroke="#67628a" stroke-width="1.5"/>
+<path d="M595 244 L600 252 L605 244" fill="none" stroke="#67628a" stroke-width="1.5"/>
+<text x="612" y="226" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">http://localhost:5005</text>
+<text x="60" y="240" font-size="12" font-weight="600" fill="#6a5fb8" text-anchor="start">NODE-BOT BACKEND</text>
+<rect x="60" y="252" width="1080" height="120" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1.5"/>
+<path d="M70 252.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="82" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">node-bot, local backend API</text>
+<text x="82" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">server.js · request routing</text>
+<text x="82" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">tool-calling loop (multi-round)</text>
+<text x="82" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">approval gate for agent actions</text>
+<text x="330" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">Memory and persona</text>
+<text x="330" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">acp-memory-store · memory graph</text>
+<text x="330" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">skills/ · procedural memory</text>
+<text x="330" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">persona · SOUL file · reflexes</text>
+<text x="640" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">Models and research</text>
+<text x="640" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">model management · hardware-aware</text>
+<text x="640" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Deep Research · subagents</text>
+<text x="640" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">session export · artifacts</text>
+<text x="900" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">Connections</text>
+<text x="900" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">mobile routes · mobile auth</text>
+<text x="900" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">MCP server and client registry</text>
+<text x="900" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">zed-integration · editor handoff</text>
+<text x="60" y="440" font-size="12" font-weight="600" fill="#4f4596" text-anchor="start">LOCAL RUNTIME</text>
+<rect x="60" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<path d="M70 452.5 H305" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="82" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Brain</text>
+<text x="82" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">llama.cpp · Qwen3 GGUF</text>
+<text x="82" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">hot-swappable profiles</text>
+<text x="82" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">chat, quality, coding, vision</text>
+<rect x="335" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<path d="M345 452.5 H580" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="357" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Ears</text>
+<text x="357" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">whisper.cpp transcription</text>
+<text x="357" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Silero VAD (RMS fallback)</text>
+<text x="357" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">self-TTS exclusion</text>
+<rect x="610" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<path d="M620 452.5 H855" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="632" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Voice</text>
+<text x="632" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Fish Speech (S1-mini, default)</text>
+<text x="632" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Kokoro · GPT-SoVITS</text>
+<text x="632" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">MFCC viseme lip-sync</text>
+<rect x="885" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<path d="M895 452.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="907" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Presence</text>
+<text x="907" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Live2D avatar (default)</text>
+<text x="907" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">VRM (3D), optional</text>
+<text x="907" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">local OCR · vision GGUF</text>
+<text x="60" y="638" font-size="12" font-weight="600" fill="#67628a" text-anchor="start">PLUGINS: SELF-CONTAINED, OPT-IN VIA GET /PLUGINS</text>
+<rect x="60" y="650" width="1080" height="130" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<path d="M70 650.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<rect x="74" y="663" width="101" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="82" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">ffxiv-market</text>
+<rect x="212" y="663" width="101" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="220" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">stock-market</text>
+<rect x="352" y="663" width="135" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="360" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">job-search-adzuna</text>
+<rect x="522" y="663" width="128" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="530" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">job-applications</text>
+<rect x="672" y="663" width="122" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="680" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">document-reader</text>
+<rect x="842" y="663" width="115" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="850" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">cron-scheduler</text>
+<rect x="992" y="663" width="122" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="1000" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">obsidian-plugin</text>
+<rect x="74" y="689" width="128" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="82" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">image-generation</text>
+<rect x="222" y="689" width="94" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="230" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">video-watch</text>
+<rect x="352" y="689" width="115" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="360" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">screen-sensing</text>
+<rect x="502" y="689" width="142" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="510" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">browser-automation</text>
+<rect x="672" y="689" width="122" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="680" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">telegram-bridge</text>
+<rect x="842" y="689" width="94" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="850" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">discord-bot</text>
+<rect x="992" y="689" width="101" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="1000" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">context-push</text>
+<text x="82" y="752" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Each plugin registers its own routes, injects context into replies, and reports health on its own.</text>
+<text x="82" y="770" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Nothing here is needed for the core voice loop to work.</text>
+<rect x="60" y="812" width="1080" height="58" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#a86b0c" stroke-width="1" stroke-dasharray="6,4"/>
+<path d="M70 812.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
+<text x="82" y="836" font-size="14" font-weight="600" fill="#a86b0c" text-anchor="start">Remote AI: explicit opt-in only</text>
+<text x="82" y="854" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">OPENAI_API_KEY and ANTHROPIC_API_KEY are ignored unless MANA_ALLOW_REMOTE_AI=1. Nothing leaves the machine by default.</text>
 </svg>
