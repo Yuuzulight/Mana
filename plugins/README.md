@@ -9,6 +9,7 @@ read, tested, and reasoned about without the rest of the backend.
 
 - [`ffxiv-market`](ffxiv-market/): Universalis market-board prices and
   Garland/XIVAPI craft-profitability lookups for Final Fantasy XIV.
+  **Off by default.**
 - [`stock-market`](stock-market/): real-world stock quotes, comparisons,
   and watchlist summaries via Alpha Vantage.
 - [`job-applications`](job-applications/): local job-application tracker
@@ -28,8 +29,8 @@ read, tested, and reasoned about without the rest of the backend.
   searches.
 - [`cron-scheduler`](cron-scheduler/): run a script action or a full agent
   prompt on a fixed interval or daily-at-time schedule, independent of chat
-  or idle activity. **Off by default** (`defaultEnabled: false`) -- enable
-  it in Settings > Plugins before adding jobs.
+  or idle activity. **On by default** (#1426); its jobs are managed in
+  Settings > Plugins.
 - [`image-generation`](image-generation/): generate or edit an image from a
   text description. Local-first (Automatic1111 or ComfyUI HTTP API) with
   an opt-in external-API fallback. **Off by default.**
@@ -50,6 +51,12 @@ read, tested, and reasoned about without the rest of the backend.
   homeserver instead of a cloud vendor API (long-polling `/sync`, same
   pairing-code approval), auto-joining on invite. Unencrypted rooms only --
   no E2EE (Olm/Megolm) support. **Off by default.**
+- [`screen-sensing`](screen-sensing/): periodically glances at the screen
+  (only while enabled and driven by an opt-in client-side timer), and
+  summarizes it with the already-loaded local model: the foreground
+  window's text, or a screenshot when there's no text. Images are discarded
+  as soon as the vision call returns, never written to disk. **Off by
+  default.**
 - [`video-watch`](video-watch/): download (`yt-dlp`) or accept a local
   video, pull captions or fall back to local Whisper transcription,
   extract a duration-scaled set of frames, and answer questions grounded
@@ -62,10 +69,12 @@ read, tested, and reasoned about without the rest of the backend.
   references "this page"/"this video". **Off by default**, and needs the
   separate browser extension installed to do anything.
 
-All thirteen are always loaded (no separate install step); `cron-scheduler`,
-`image-generation`, `browser-automation`, `telegram-bridge`,
-`discord-bot`, `matrix-bridge`, `video-watch`, and `context-push` are
-disabled by default, the rest are enabled by default.
+All fourteen are loaded at startup (no separate install step). Nine are
+disabled by default: `image-generation`, `browser-automation`,
+`telegram-bridge`, `discord-bot`, `matrix-bridge`, `video-watch`,
+`context-push`, `ffxiv-market` and `screen-sensing`. The other five are
+enabled: `cron-scheduler`, `document-reader`, `stock-market`,
+`job-applications` and `job-search-adzuna`.
 
 ### A different kind of plugin: `obsidian-plugin` and `context-push-extension`
 
