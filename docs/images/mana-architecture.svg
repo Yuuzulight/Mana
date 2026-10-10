@@ -83,17 +83,17 @@
 <rect x="60" y="650" width="1080" height="110" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
 <path d="M70 650.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
 <rect x="82" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="94" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">ffxiv-market</text>
+<text x="94" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">document-reader</text>
 <rect x="230" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="242" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">stock-market</text>
+<text x="242" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">screen-sensing</text>
 <rect x="378" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="390" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">document-reader</text>
+<text x="390" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">telegram-bridge</text>
 <rect x="526" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="538" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">telegram-bridge</text>
+<text x="538" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">discord-bot</text>
 <rect x="674" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="686" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">discord-bot</text>
+<text x="686" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">cron-scheduler</text>
 <rect x="822" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="834" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">obsidian-plugin</text>
+<text x="834" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">video-watch</text>
 <rect x="970" y="672" width="136" height="30" rx="7" fill="none" stroke="#6a5fb8" stroke-opacity="0.35" stroke-width="1" stroke-dasharray="4,3"/>
 <text x="982" y="692" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">+8 more</text>
 <text x="82" y="734" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Each plugin registers its own routes, injects context into replies, and reports health on its own.</text>
