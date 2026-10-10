@@ -224,6 +224,11 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     if (!explicit && settings.muted.includes(reason)) return "dropped";
     if (!urgent && !(score >= Math.min(1, SCORE_THRESHOLD * multiplier(reason, now())))) return "dropped";
     if (held.some((c) => c.reason === reason && c.payload.text === payload.text)) return "held";
+    // A reminder's grace (lateIn, ms) becomes a time on this clock.
+    if (Number.isFinite(payload.lateIn)) {
+      const { lateIn, ...rest } = payload;
+      payload = { ...rest, lateAfter: now() + lateIn };
+    }
     const candidate = { reason, payload, score, urgent, explicit: Boolean(explicit), expiresAt: now() + ttlMs };
     held.push(candidate);
     held.sort((a, b) => b.urgent - a.urgent || b.score - a.score);
