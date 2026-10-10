@@ -3099,7 +3099,11 @@ function registerRoutes(app, upload, deps = {}) {
   const improvementTools =
     deps.improvementTools ||
     createImprovementToolSource(
-      createIssueProposals({ approvalGate: activeApprovalGate, lessons: { listOpen: () => lessons.list().filter((l) => l.status === "open") } }),
+      createIssueProposals({
+        approvalGate: activeApprovalGate,
+        lessons: { listOpen: () => lessons.list().filter((l) => l.status === "open") },
+        onFiled: (filed) => selfImprovement.onFiled(filed),
+      }),
     );
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =

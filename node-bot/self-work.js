@@ -752,6 +752,9 @@ function createSelfWork(options = {}) {
 
   async function work(r, issue) {
     log(r, `I'm starting on #${r.issue}: ${r.title}`, true);
+    try {
+      lifecycle?.onRunStart(r);
+    } catch {}
     await git(["fetch", "origin", "main"]);
     await prepare(r, "origin/main");
     // #1420: a run that died can leave half-edits in a reused worktree.

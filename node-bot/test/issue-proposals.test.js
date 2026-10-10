@@ -16,7 +16,7 @@ test.after(() => bases.forEach((b) => fs.rmSync(b, { recursive: true, force: tru
 const BODY = "Transcription websocket reconnect handling stalls whenever laptop hibernation interrupts microphone streaming";
 
 // issues/prs: what the searches return. views: "issue 7" -> issue. fail: "issue list" -> error.
-function setup({ issues = [], prs = [], views = {}, fail = {}, lessons = null } = {}) {
+function setup({ issues = [], prs = [], views = {}, fail = {}, lessons = null, onFiled = null } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "mana-proposals-"));
   bases.push(base);
   const roadmap = path.join(base, "repo", "docs", "roadmap");
@@ -43,7 +43,7 @@ function setup({ issues = [], prs = [], views = {}, fail = {}, lessons = null } 
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
   };
   const gate = createApprovalGate({ dataDir: path.join(base, "gate") });
-  const proposals = createIssueProposals({ gh, repoRoot: path.join(base, "repo"), approvalGate: gate, lessons, env: {} });
+  const proposals = createIssueProposals({ gh, repoRoot: path.join(base, "repo"), approvalGate: gate, lessons, onFiled, env: {} });
   return { proposals, gate, calls, created };
 }
 
@@ -163,4 +163,16 @@ test("the tool source forwards to propose and reports a refusal", async () => {
   assert.ok(source.isKnownToolName("improvement__propose"));
   const out = JSON.parse(await source.executeTool("improvement__propose", { title: "t", body: "b", evidence: [] }));
   assert.equal(out.status, "refused");
+});
+
+// #1386: what I approve starts her lifecycle record; a denied one leaves none.
+test("a filed issue is handed to the lifecycle with its number and title", async () => {
+  const filed = [];
+  const { proposals, gate } = setup({ onFiled: (f) => filed.push(f) });
+  const denied = await proposals.propose({ title: "Shorten the tray menu", body: "Too many entries", evidence: ["log: tray.log"] });
+  await gate.decide(denied.requestId, "deny");
+  assert.deepEqual(filed, []);
+  const r = await proposals.propose({ title: "Cache emoji sprites between renders", body: "Sprite atlas rebuilds every frame", evidence: ["trace: run 4411"] });
+  await gate.decide(r.requestId, "allow-once");
+  assert.deepEqual(filed, [{ issue: 9999, title: "Cache emoji sprites between renders" }]);
 });
