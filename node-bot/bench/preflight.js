@@ -71,7 +71,7 @@ function serverArgsProblem(serverArgs, bin, { help = () => execFileSync(bin, ["-
   } catch (e) {
     text = `${e.stdout || ""}${e.stderr || ""}`;
   }
-  const unknown = flags.filter((f) => !new RegExp(`(^|[\\s,])${f.replace(/[-]/g, "\\-")}([\\s,=]|$)`, "m").test(text));
+  const unknown = flags.filter((f) => !new RegExp(`(^|[\\s,])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([\\s,=]|$)`, "m").test(text));
   return unknown.length ? `${path.basename(bin)} doesn't know ${unknown.join(", ")} (from --server-args)` : null;
 }
 
