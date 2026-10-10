@@ -1,110 +1,105 @@
 <svg viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" role="img">
 <title>Mana system architecture</title>
-<desc>Clients talk to one local backend on port 5005. The backend drives local runtime pieces (chat model, speech, voice and avatar) and optional plugins. Remote AI is off unless opted in.</desc>
-<defs><radialGradient id="glowA" cx="0.05" cy="0.02" r="0.55"><stop offset="0" stop-color="#c6aae0" stop-opacity="0.59"/><stop offset="1" stop-color="#c6aae0" stop-opacity="0"/></radialGradient><radialGradient id="glowB" cx="0.98" cy="1.02" r="0.62"><stop offset="0" stop-color="#a3d2fa" stop-opacity="0.63"/><stop offset="1" stop-color="#a3d2fa" stop-opacity="0"/></radialGradient><radialGradient id="glowC" cx="0.55" cy="0.45" r="0.35"><stop offset="0" stop-color="#766dbe" stop-opacity="0.16"/><stop offset="1" stop-color="#766dbe" stop-opacity="0"/></radialGradient></defs>
+<desc>Clients talk to one local backend on port 5005. The backend drives the local runtime (chat model, speech, voice and avatar) and optional plugins. Remote AI is off unless opted in.</desc>
+<defs><radialGradient id="glowA" cx="0.05" cy="0.02" r="0.55"><stop offset="0" stop-color="#c6aae0" stop-opacity="0.59"/><stop offset="1" stop-color="#c6aae0" stop-opacity="0"/></radialGradient><radialGradient id="glowB" cx="0.98" cy="1.02" r="0.62"><stop offset="0" stop-color="#a3d2fa" stop-opacity="0.63"/><stop offset="1" stop-color="#a3d2fa" stop-opacity="0"/></radialGradient><radialGradient id="glowC" cx="0.55" cy="0.45" r="0.35"><stop offset="0" stop-color="#766dbe" stop-opacity="0.16"/><stop offset="1" stop-color="#766dbe" stop-opacity="0"/></radialGradient><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#55507a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <rect width="1200" height="900" fill="#f5f3fa"/>
 <rect width="1200" height="900" fill="url(#glowA)"/>
 <rect width="1200" height="900" fill="url(#glowB)"/>
 <rect width="1200" height="900" fill="url(#glowC)"/>
 <text x="60" y="52" font-size="30" font-weight="600" fill="#1b1e3f" text-anchor="start">MANA</text>
-<text x="60" y="76" font-size="14" font-weight="400" fill="#67628a" text-anchor="start">local-first AI companion. Every layer below runs on one Windows PC unless you opt out.</text>
-<circle cx="1140" cy="48" r="5" fill="#23874a"/>
-<text x="1126" y="53" font-size="12" font-weight="400" fill="#67628a" text-anchor="end">on this PC</text>
-<text x="60" y="118" font-size="12" font-weight="600" fill="#6a5fb8" text-anchor="start">CLIENTS</text>
-<rect x="60" y="130" width="330" height="64" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1.5"/>
+<text x="60" y="76" font-size="14" font-weight="400" fill="#55507a" text-anchor="start">local-first AI companion. Every layer below runs on one Windows PC unless you opt out.</text>
+<circle cx="1128" cy="48" r="5" fill="#23874a"/>
+<text x="1140" y="53" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">on this PC</text>
+<text x="60" y="118" font-size="12" font-weight="600" fill="#6a5fb8" text-anchor="start" letter-spacing="1.6">CLIENTS</text>
+<rect x="60" y="130" width="330" height="64" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.9" stroke-width="1.5"/>
 <path d="M70 130.5 H380" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
 <text x="80" y="156" font-size="15" font-weight="600" fill="#1b1e3f" text-anchor="start">windows-native-launcher</text>
-<text x="80" y="176" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">primary · WinForms · mic · avatar · Doctor</text>
+<text x="80" y="176" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">primary · WinForms · mic · avatar · Doctor</text>
 <rect x="420" y="130" width="330" height="64" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
 <path d="M430 130.5 H740" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
 <text x="440" y="156" font-size="15" font-weight="600" fill="#1b1e3f" text-anchor="start">desktop-client</text>
-<text x="440" y="176" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Electron · packaged installer</text>
+<text x="440" y="176" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Electron · packaged installer</text>
 <rect x="780" y="130" width="360" height="64" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#a86b0c" stroke-width="1" stroke-dasharray="6,4"/>
 <path d="M790 130.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
 <text x="800" y="156" font-size="15" font-weight="600" fill="#1b1e3f" text-anchor="start">Mobile / remote companion</text>
-<text x="800" y="176" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">phone chat, Telegram, Discord (opt-in)</text>
-<line x1="600" y1="194" x2="600" y2="250" stroke="#67628a" stroke-width="1.5"/>
-<path d="M595 244 L600 252 L605 244" fill="none" stroke="#67628a" stroke-width="1.5"/>
-<text x="612" y="226" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">http://localhost:5005</text>
-<text x="60" y="240" font-size="12" font-weight="600" fill="#6a5fb8" text-anchor="start">NODE-BOT BACKEND</text>
-<rect x="60" y="252" width="1080" height="120" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1.5"/>
+<text x="800" y="176" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">phone chat, Telegram, Discord (opt-in)</text>
+<line x1="600" y1="194" x2="600" y2="250" stroke="#55507a" stroke-width="1.5" marker-end="url(#ah)"/>
+<text x="612" y="226" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">http://localhost:5005</text>
+<text x="60" y="240" font-size="12" font-weight="600" fill="#6a5fb8" text-anchor="start" letter-spacing="1.6">NODE-BOT BACKEND</text>
+<rect x="60" y="252" width="1080" height="120" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.9" stroke-width="1.5"/>
 <path d="M70 252.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
 <text x="82" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">node-bot, local backend API</text>
-<text x="82" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">server.js · request routing</text>
-<text x="82" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">tool-calling loop (multi-round)</text>
-<text x="82" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">approval gate for agent actions</text>
+<text x="82" y="304" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">server.js · request routing</text>
+<text x="82" y="322" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">tool-calling loop (multi-round)</text>
+<text x="82" y="340" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">approval gate for agent actions</text>
 <text x="330" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">Memory and persona</text>
-<text x="330" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">acp-memory-store · memory graph</text>
-<text x="330" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">skills/ · procedural memory</text>
-<text x="330" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">persona · SOUL file · reflexes</text>
+<text x="330" y="304" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">acp-memory-store · memory graph</text>
+<text x="330" y="322" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">skills/ · procedural memory</text>
+<text x="330" y="340" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">persona · SOUL file · reflexes</text>
 <text x="640" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">Models and research</text>
-<text x="640" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">model management · hardware-aware</text>
-<text x="640" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Deep Research · subagents</text>
-<text x="640" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">session export · artifacts</text>
+<text x="640" y="304" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">model management · hardware-aware</text>
+<text x="640" y="322" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Deep Research · subagents</text>
+<text x="640" y="340" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">session export · artifacts</text>
 <text x="900" y="280" font-size="14" font-weight="600" fill="#1b1e3f" text-anchor="start">Connections</text>
-<text x="900" y="304" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">mobile routes · mobile auth</text>
-<text x="900" y="322" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">MCP server and client registry</text>
-<text x="900" y="340" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">zed-integration · editor handoff</text>
-<text x="60" y="440" font-size="12" font-weight="600" fill="#4f4596" text-anchor="start">LOCAL RUNTIME</text>
-<rect x="60" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<text x="900" y="304" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">mobile routes · mobile auth</text>
+<text x="900" y="322" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">MCP server and client registry</text>
+<text x="900" y="340" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">zed-integration · editor handoff</text>
+<line x1="600" y1="372" x2="600" y2="412" stroke="#55507a" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="187.5" y1="412" x2="1012.5" y2="412" stroke="#55507a" stroke-width="1.5"/>
+<line x1="187.5" y1="412" x2="187.5" y2="450" stroke="#55507a" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="462.5" y1="412" x2="462.5" y2="450" stroke="#55507a" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="737.5" y1="412" x2="737.5" y2="450" stroke="#55507a" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="1012.5" y1="412" x2="1012.5" y2="450" stroke="#55507a" stroke-width="1.5" marker-end="url(#ah)"/>
+<text x="60" y="440" font-size="12" font-weight="600" fill="#4f4596" text-anchor="start" letter-spacing="1.6">LOCAL RUNTIME</text>
+<rect x="60" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
 <path d="M70 452.5 H305" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
-<text x="82" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Brain</text>
-<text x="82" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">llama.cpp · Qwen3 GGUF</text>
-<text x="82" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">hot-swappable profiles</text>
-<text x="82" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">chat, quality, coding, vision</text>
-<rect x="335" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<circle cx="86" cy="473" r="5" fill="#6a5fb8"/>
+<text x="100" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Brain</text>
+<text x="82" y="502" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">llama.cpp · Qwen3 GGUF</text>
+<text x="82" y="520" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">hot-swappable profiles</text>
+<text x="82" y="538" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">chat, quality, coding, vision</text>
+<rect x="335" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
 <path d="M345 452.5 H580" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
-<text x="357" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Ears</text>
-<text x="357" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">whisper.cpp transcription</text>
-<text x="357" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Silero VAD (RMS fallback)</text>
-<text x="357" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">self-TTS exclusion</text>
-<rect x="610" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<circle cx="361" cy="473" r="5" fill="#3b8fd9"/>
+<text x="375" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Ears</text>
+<text x="357" y="502" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">whisper.cpp transcription</text>
+<text x="357" y="520" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Silero VAD (RMS fallback)</text>
+<text x="357" y="538" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">self-TTS exclusion</text>
+<rect x="610" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
 <path d="M620 452.5 H855" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
-<text x="632" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Voice</text>
-<text x="632" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Fish Speech (S1-mini, default)</text>
-<text x="632" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Kokoro · GPT-SoVITS</text>
-<text x="632" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">MFCC viseme lip-sync</text>
-<rect x="885" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#4f4596" stroke-width="1"/>
+<circle cx="636" cy="473" r="5" fill="#a86b0c"/>
+<text x="650" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Voice</text>
+<text x="632" y="502" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Fish Speech (S1-mini, default)</text>
+<text x="632" y="520" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Kokoro · GPT-SoVITS</text>
+<text x="632" y="538" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">MFCC viseme lip-sync</text>
+<rect x="885" y="452" width="255" height="150" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
 <path d="M895 452.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
-<text x="907" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Presence</text>
-<text x="907" y="502" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Live2D avatar (default)</text>
-<text x="907" y="520" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">VRM (3D), optional</text>
-<text x="907" y="538" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">local OCR · vision GGUF</text>
-<text x="60" y="638" font-size="12" font-weight="600" fill="#67628a" text-anchor="start">PLUGINS: SELF-CONTAINED, OPT-IN VIA GET /PLUGINS</text>
-<rect x="60" y="650" width="1080" height="130" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<circle cx="911" cy="473" r="5" fill="#23874a"/>
+<text x="925" y="478" font-size="16" font-weight="600" fill="#1b1e3f" text-anchor="start">Presence</text>
+<text x="907" y="502" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Live2D avatar (default)</text>
+<text x="907" y="520" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">VRM (3D), optional</text>
+<text x="907" y="538" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">local OCR · vision GGUF</text>
+<text x="60" y="638" font-size="12" font-weight="600" fill="#55507a" text-anchor="start" letter-spacing="1.6">PLUGINS: SELF-CONTAINED, OPT-IN VIA GET /PLUGINS</text>
+<rect x="60" y="650" width="1080" height="110" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
 <path d="M70 650.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
-<rect x="74" y="663" width="101" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="82" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">ffxiv-market</text>
-<rect x="212" y="663" width="101" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="220" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">stock-market</text>
-<rect x="352" y="663" width="135" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="360" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">job-search-adzuna</text>
-<rect x="522" y="663" width="128" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="530" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">job-applications</text>
-<rect x="672" y="663" width="122" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="680" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">document-reader</text>
-<rect x="842" y="663" width="115" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="850" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">cron-scheduler</text>
-<rect x="992" y="663" width="122" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="1000" y="678" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">obsidian-plugin</text>
-<rect x="74" y="689" width="128" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="82" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">image-generation</text>
-<rect x="222" y="689" width="94" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="230" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">video-watch</text>
-<rect x="352" y="689" width="115" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="360" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">screen-sensing</text>
-<rect x="502" y="689" width="142" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="510" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">browser-automation</text>
-<rect x="672" y="689" width="122" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="680" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">telegram-bridge</text>
-<rect x="842" y="689" width="94" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="850" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">discord-bot</text>
-<rect x="992" y="689" width="101" height="22" rx="6" fill="#eee7f8" fill-opacity="0.7" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
-<text x="1000" y="704" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">context-push</text>
-<text x="82" y="752" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Each plugin registers its own routes, injects context into replies, and reports health on its own.</text>
-<text x="82" y="770" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">Nothing here is needed for the core voice loop to work.</text>
+<rect x="82" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="94" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">ffxiv-market</text>
+<rect x="230" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="242" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">stock-market</text>
+<rect x="378" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="390" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">document-reader</text>
+<rect x="526" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="538" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">telegram-bridge</text>
+<rect x="674" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="686" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">discord-bot</text>
+<rect x="822" y="672" width="136" height="30" rx="7" fill="#eee7f8" fill-opacity="0.75" stroke="#6a5fb8" stroke-opacity="0.22" stroke-width="1"/>
+<text x="834" y="692" font-size="12" font-weight="400" fill="#1b1e3f" text-anchor="start">obsidian-plugin</text>
+<rect x="970" y="672" width="136" height="30" rx="7" fill="none" stroke="#6a5fb8" stroke-opacity="0.35" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="982" y="692" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">+8 more</text>
+<text x="82" y="734" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Each plugin registers its own routes, injects context into replies, and reports health on its own.</text>
+<text x="82" y="752" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">Nothing here is needed for the core voice loop to work.</text>
 <rect x="60" y="812" width="1080" height="58" rx="10" fill="#ffffff" fill-opacity="0.55" stroke="#a86b0c" stroke-width="1" stroke-dasharray="6,4"/>
 <path d="M70 812.5 H1130" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1"/>
 <text x="82" y="836" font-size="14" font-weight="600" fill="#a86b0c" text-anchor="start">Remote AI: explicit opt-in only</text>
-<text x="82" y="854" font-size="12" font-weight="400" fill="#67628a" text-anchor="start">OPENAI_API_KEY and ANTHROPIC_API_KEY are ignored unless MANA_ALLOW_REMOTE_AI=1. Nothing leaves the machine by default.</text>
+<text x="82" y="854" font-size="12" font-weight="400" fill="#55507a" text-anchor="start">OPENAI_API_KEY and ANTHROPIC_API_KEY are ignored unless MANA_ALLOW_REMOTE_AI=1. Nothing leaves the machine by default.</text>
 </svg>
