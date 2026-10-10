@@ -53,7 +53,7 @@ class GraphDecoder:
                     self._forward(self.emb, self.pos)
             torch.cuda.current_stream().wait_stream(side)
             self.graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self.graph):
+            with torch.cuda.graph(self.graph, capture_error_mode="thread_local"):
                 self.probs = self._forward(self.emb, self.pos)
         self.graph.replay()
         return self._host(self.probs)
