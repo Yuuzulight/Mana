@@ -40,7 +40,7 @@
 // bench's own llama-server (so --model, --context and --server-args still
 // pick that). It needs the DeepSeek key in Settings and spends real money:
 // each run's tokens and dollars go in the report and in API spending (use:
-// bench). Off-peak is half price.
+// bench). Off-peak is half price. --max-usd N stops the run once it has spent N.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -669,6 +669,7 @@ async function main(argv) {
   const remote = opt("--remote")[0];
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
+  const maxUsd = Number(opt("--max-usd")[0]) || 0;
   const approvalGate = benchTestGate(worktreesDir);
   const gate = {
     isGaming: () => isGamingNow(repoRoot),
@@ -757,6 +758,10 @@ async function main(argv) {
       }
       results.push(result);
       writeReport(results, outDir, meta);
+      if (maxUsd && spend.usd >= maxUsd) {
+        console.log(`Stopping after ${c.id}: $${spend.usd.toFixed(2)} spent, the cap is $${maxUsd}.`);
+        break;
+      }
       if (result.harnessErrors.length) {
         console.log(`Stopping at ${c.id}: the harness failed her, not the model: ${result.harnessErrors[0]}`);
         break;
