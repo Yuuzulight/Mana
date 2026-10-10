@@ -13,6 +13,8 @@
 //     [--out <dir>] [--verify]
 //     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
 //     [--check]   (the preflight only: no model, no runs)
+//     [--adopt]   (use the llama-server already on 127.0.0.1:8097, e.g. bench/remote's proxy to a Colab one,
+//                  instead of starting one; --model still names the local copy of the same file)
 //
 // #1467: before any GPU time, bench/preflight.js checks the harness (the
 // sandbox's copy-source approval, a real sandboxed test in a bench worktree,
@@ -689,7 +691,7 @@ async function main(argv) {
   const roundScale = Number(opt("--round-scale")[0]) || 1;
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
-  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
+  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], adopt: argv.includes("--adopt") };
   const remote = opt("--remote")[0];
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
@@ -745,7 +747,7 @@ async function main(argv) {
     const bad = pre.serverArgsProblem(config.serverArgs, model.runtime.findLlamaServerBin());
     if (bad) throw new Error(`The bench's preflight failed: ${bad}`);
   }
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, roundScale, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, ...(config.adopt ? { adopt: true } : {}), label, repeats, attempts, roundScale, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of sound) runs.push({ c, repeat });
