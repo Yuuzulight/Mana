@@ -121,13 +121,15 @@ function fakeExec(ghCalls) {
 }
 
 const FIXED = "function add(a, b) {\n  return a + b;\n}\nmodule.exports = { add };\n";
-const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"], no_test: "scripted" }];
+// #1467: found first, then named in the plan.
+const find = ["self_work__files", { contains: "util.js" }];
+const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"], files: ["node-bot/util.js: add() lives here"], no_test: "scripted" }];
 const fix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: "return a + b;" }];
 const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const reviews = ["correctness", "edge cases", "scope"].map((pass) => ["self_work__review", { pass }]);
 const finish = ["session_goal__finish", { reason: "done" }];
 const gotNowhere = [[], "Not done yet: I couldn't find it."];
-const passes = [[plan, fix, runTests, ...reviews, finish], "I made add() add."];
+const passes = [[find, plan, fix, runTests, ...reviews, finish], "I made add() add."];
 const usage = { prompt_tokens: 1000, prompt_cache_hit_tokens: 800, prompt_cache_miss_tokens: 200, completion_tokens: 100, completion_tokens_details: { reasoning_tokens: 40 } };
 
 async function play(policy, calls, seen) {
@@ -213,7 +215,7 @@ test("Flash fails, Pro passes: Pro hears what Flash tried, and Flash's reasoning
   let call = 0;
   // Her run is unjudged; Flash's tests fail; Pro's pass.
   const s = setup({
-    remote: { "deepseek-flash": [[plan, fix, runTests, ...reviews, finish], "Done, I think."], "deepseek-v4-pro": passes },
+    remote: { "deepseek-flash": [[find, plan, fix, runTests, ...reviews, finish], "Done, I think."], "deepseek-v4-pro": passes },
     testsPass: () => ++call > 2,
   });
   const status = await s.runIssue();

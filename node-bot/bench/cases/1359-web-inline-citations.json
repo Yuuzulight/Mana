@@ -1,5 +1,6 @@
 {
   "id": "1359-web-inline-citations",
+  "minRounds": 23,
   "kind": "multi-file",
   "pr": 1359,
   "issue": 1329,
@@ -23,6 +24,6 @@
     "node-bot/test/web-access.test.js"
   ],
   "testCommand": "node --test test/citation-check.test.js test/speech-text.test.js test/web-access.test.js",
-  "interface": "web access context asks for numbered citations, citation-check validates them, and speech text strips source markers safely.",
+  "interface": "web access context asks for numbered citations, citation-check validates them, and speech text strips source markers safely. The tests call: `node-bot/utils/citation-check.js` exports `verifyAndFilterCitations(text, sources)`.",
   "why": "Research/verification tasks need citations if Mana is going to work independently."
 }

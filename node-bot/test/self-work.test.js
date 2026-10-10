@@ -98,10 +98,12 @@ const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];
 // #1211: every issue run plans before its first edit. (#1212's test-first
 // gate has its own test; here the scripted test run comes after the fix.)
-const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"], no_test: "the scripted runs only" }];
+// #1467: she finds the file her change goes in and names it in her plan.
+const find = ["self_work__files", { contains: "util.js" }];
+const plan = ["self_work__plan", { steps: ["Make add() add", "Test it"], files: ["node-bot/util.js: add() lives here"], no_test: "the scripted runs only" }];
 // #1213: and reviews its diff in three passes before it finishes.
 const reviews = ["correctness", "edge cases", "scope"].map((pass) => ["self_work__review", { pass }]);
-const planned = (calls) => [plan, ...calls.flatMap((c) => (c === finish ? [...reviews, finish] : [c]))];
+const planned = (calls) => [find, plan, ...calls.flatMap((c) => (c === finish ? [...reviews, finish] : [c]))];
 
 function selfWork(repos, { calls, plans = true, answer = "I made add() add and tested it.\nCo-Authored-By: Someone <x@y>", passed = true, review = null, labels, seen, onTest = () => {}, prs, issues, author, login, ...extra } = {}) {
   const ghCalls = [];
@@ -228,7 +230,7 @@ test("#1213 / #1251: the third refutation of a file stops the run to ask me; the
   const repos = makeRepos();
   let reviewerCalls = 0;
   const { sw, ghCalls } = selfWork(repos, {
-    calls: [plan, fix, runTests, ...reviews, finish, finish, finish],
+    calls: [find, plan, fix, runTests, ...reviews, finish, finish, finish],
     plans: false,
     reviewEdit: async () => ((reviewerCalls += 1), { verdict: "refuted", failingCase: "add(1, 1) returns 3", concrete: true }),
   });
@@ -264,7 +266,7 @@ test("writes stay inside her worktree and off her guardrails", async () => {
   });
   await sw.start(7);
   await sw._current().done;
-  const errors = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.error);
+  const errors = seen.filter((s) => s.name && !["self_work__plan", "self_work__files"].includes(s.name)).map((s) => s.error);
   assert.match(errors[0], /one of my guardrails/);
   assert.match(errors[1], /outside my worktree/);
   assert.match(errors[2], /escapes/);
@@ -462,7 +464,7 @@ test("a run going nowhere stops after 8 steps without anything new", async () =>
   await sw.start(7);
   await sw._current().done;
   assert.equal(sw.status().state, "stuck");
-  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result || s.error);
+  const results = seen.filter((s) => s.name && !["self_work__plan", "self_work__files"].includes(s.name)).map((s) => s.result || s.error);
   assert.doesNotMatch(results[8], /blocked/); // the first read plus 8 repeats run
   assert.match(results[9], /"blocked"/);
   assert.match(results[10], /"blocked"/); // her fix isn't written once she's stuck
@@ -805,6 +807,7 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   const seen = [];
   const long = Array.from({ length: 300 }, (_, i) => `// line ${i + 1}`).join("\n");
   const calls = [
+    ["self_work__plan", { files: ["node-bot/long.js: a long file to read back"] }],
     ["coding__propose_edit", { path: "node-bot/long.js", new_text: long }],
     ["self_work__read", { path: "node-bot/long.js" }],
     ["self_work__read", { path: "node-bot/long.js", start_line: 10, end_line: 400 }],
@@ -812,7 +815,7 @@ test("#1214: her run gets its own context and the issue's rounds, and reads 120 
   const { sw } = selfWork(repos, { calls, seen });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
+  const results = seen.filter((s) => s.name && !["self_work__plan", "self_work__files"].includes(s.name)).map((s) => s.result ?? s.error);
 
   assert.equal(seen[0].opts.contextSize, 32768);
   assert.equal(seen[0].opts.maxRounds, 30);
@@ -841,7 +844,7 @@ test("#1245 / #1256: past 600 lines of reading before her first edit, reads stil
   const { sw } = selfWork(repos, { calls, seen });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name && s.name !== "self_work__plan").map((s) => s.result ?? s.error);
+  const results = seen.filter((s) => s.name && !["self_work__plan", "self_work__files"].includes(s.name)).map((s) => s.result ?? s.error);
 
   assert.doesNotMatch(results[0], /lines of reading left/);
   assert.match(results[1], /\[100 of 600 lines of reading left before your first edit\. Plan your change now\.\]$/);
@@ -889,7 +892,8 @@ function attemptsWork(repos, writes, { ghCalls = [], events = [], attempts = "4"
     inLoop = true;
     const i = n++;
     const op = writes[Math.min(i, writes.length - 1)];
-    await policy.executeTool("self_work__plan", { steps: ["Change add()", "Test it"], no_test: "scripted attempts" });
+    await policy.executeTool("self_work__files", { contains: "util.js" });
+    await policy.executeTool("self_work__plan", { steps: ["Change add()", "Test it"], files: ["node-bot/util.js: add() lives here"], no_test: "scripted attempts" });
     await policy.executeTool("coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: `return a ${op} b;` });
     await extra(i, policy);
     await policy.executeTool("coding__run_tests", { path: "node-bot/test/util.test.js" });
@@ -1137,19 +1141,132 @@ test("#1247: a reset between attempts only runs in a worktree's own top folder",
   assert.match(fs.readFileSync(path.join(inner, "util.js"), "utf8"), /a - b/);
 });
 
+// #1467: an old_text off only in whitespace still applies, in the file's
+// indentation; one that isn't there shows the closest lines; one that's
+// there twice asks for more context.
+test("#1467: edits forgive whitespace, and a miss shows where she probably meant", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const calls = [
+    ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a * b;", new_text: "return a + b;" }],
+    ["coding__propose_edit", { path: "node-bot/util.js", old_text: "function add(a, b) {\nreturn a - b;   ", new_text: "function add(a, b) {\nreturn a + b;" }],
+  ];
+  const { sw } = selfWork(repos, { calls, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name === "coding__propose_edit").map((s) => s.result ?? s.error);
+  assert.match(results[0], /old_text isn't in node-bot\/util.js\. The closest lines:\n[\s\S]*2:   return a - b;/);
+  assert.equal(JSON.parse(results[1]).status, "ok");
+  assert.match(fs.readFileSync(path.join(repos.worktrees, "mana-7", "node-bot", "util.js"), "utf8"), /function add\(a, b\) \{\r?\n  return a \+ b;/);
+});
+
+// #1467: four steps with nothing new get a nudge to change course; a step
+// marked done after an edit asks for its tests; running past a step's share
+// of the rounds gets a reminder.
+test("#1467: nudges when she repeats herself, tests after each step, and the plan's share of rounds", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const read = ["self_work__read", { path: "node-bot/util.js" }];
+  const calls = [find, plan, fix, ["self_work__plan", { done: [1] }], read, read, read, read, read];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  assert.match(results[3], /Run the tests for this step with coding__run_tests before you start the next one\./);
+  assert.ok(results.some((r) => /That's 4 steps with nothing new/.test(r)), "a stuck nudge");
+});
+
+test("#1467: the round budget follows the plan", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const read = (n) => ["self_work__read", { path: "node-bot/util.js", start_line: n }];
+  const sw = createSelfWork({
+    repoRoot: repos.live,
+    worktreesDir: repos.worktrees,
+    exec: fakeExec([]),
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, MANA_SELF_WORK_ATTEMPTS: "1" },
+    protectedPaths: guard,
+    runLoop: async (prompt, policy, opts) => {
+      await policy.executeTool(...find);
+      await policy.executeTool(...plan);
+      for (let round = 1; round <= 20; round += 1) {
+        opts.onRound?.(round, opts.maxRounds);
+        seen.push(await policy.executeTool(...read(round)));
+      }
+      return { content: "Not done yet." };
+    },
+    runTests: async () => ({ exitCode: 0, timedOut: false, output: "# pass 1" }),
+    onEvent: () => {},
+    ramPercent: () => 50,
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const nudges = seen.filter((r) => /isn't done\. Finish it now/.test(r));
+  assert.equal(nudges.length, 1, "once per step");
+  assert.match(nudges[0], /step 1 of 2 isn't done/);
+});
+
+// #1467: her self-work thinks, with the running model's own card settings.
+test("#1467: her self-work loop thinks and asks for the model's own settings", async () => {
+  const seen = [];
+  const { sw } = selfWork(makeRepos(), { calls: [], seen });
+  await sw.start(7);
+  await sw._current().done;
+  assert.equal(seen[0].opts.thinking, 512);
+  assert.equal(seen[0].opts.modelCard, true);
+});
+
+// #1467: she names the files her change belongs in, ones she found, with
+// existing code among them; edits elsewhere (tests aside) need adding first.
+test("#1467: her plan names files she found, with real code among them, and edits stay in them", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const steps = ["Make add() add", "Test it"];
+  const planWith = (files) => ["self_work__plan", { steps, files, no_test: "scripted" }];
+  const calls = [
+    ["self_work__plan", { steps, no_test: "scripted" }], // no files
+    planWith(["node-bot/util.js: add() lives here"]), // not found yet
+    planWith(["node-bot/made-up/helper.js: a guess"]), // a folder that isn't there
+    planWith(["node-bot/util.js"]), // no reason
+    ["self_work__search", { text: "function add" }],
+    planWith(["node-bot/util.test.js: its test"]), // only a test
+    planWith(["node-bot/util.js: add() lives here"]),
+    ["coding__propose_edit", { path: "node-bot/other.js", old_text: "", new_text: "module.exports = 1;\n" }], // not located
+    ["coding__propose_edit", { path: "node-bot/test/add.test.js", old_text: "", new_text: "// a test\n" }], // tests are fine
+    ["self_work__plan", { files: ["node-bot/other.js: a new helper add() uses"] }],
+    ["coding__propose_edit", { path: "node-bot/other.js", old_text: "", new_text: "module.exports = 1;\n" }],
+  ];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+
+  assert.match(results[0], /name the files your change belongs in/);
+  assert.match(results[1], /find node-bot\/util.js first with self_work__search/);
+  assert.match(results[2], /doesn't exist and neither does its folder/);
+  assert.match(results[3], /say why node-bot\/util.js is part of the change/);
+  assert.match(results[5], /name the existing code your change goes in too, not only tests/);
+  assert.match(results[6], /Files: node-bot\/util.js$/);
+  assert.match(results[7], /node-bot\/other.js doesn't exist and isn't one of the files you located/);
+  assert.equal(JSON.parse(results[8]).status, "ok");
+  assert.match(results[9], /Files: node-bot\/util.js, node-bot\/other.js$/);
+  assert.equal(JSON.parse(results[10]).status, "ok");
+});
+
 test("#1211: her first edit waits for a plan, and the plan is checked off in her run", async () => {
   const repos = makeRepos();
   const seen = [];
-  const calls = [fix, plan, ["self_work__plan", { done: [1] }], fix];
+  const calls = [fix, find, plan, ["self_work__plan", { done: [1] }], fix];
   const { sw } = selfWork(repos, { calls, plans: false, seen });
   await sw.start(7);
   await sw._current().done;
   const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
 
   assert.match(results[0], /Write a short plan with self_work__plan before your first edit/);
-  assert.equal(results[1], "[ ] 1. Make add() add\n[ ] 2. Test it");
-  assert.equal(results[2], "[x] 1. Make add() add\n[ ] 2. Test it");
-  assert.equal(JSON.parse(results[3]).plan, "[x] 1. Make add() add\n[ ] 2. Test it");
+  // results[1] is the file list she found util.js in.
+  assert.equal(results[2], "[ ] 1. Make add() add\n[ ] 2. Test it\nFiles: node-bot/util.js");
+  assert.equal(results[3], "[x] 1. Make add() add\n[ ] 2. Test it\nFiles: node-bot/util.js");
+  assert.equal(JSON.parse(results[4]).plan, "[x] 1. Make add() add\n[ ] 2. Test it\nFiles: node-bot/util.js");
   assert.deepEqual(sw.status().plan, [
     { text: "Make add() add", done: true },
     { text: "Test it", done: false },
@@ -1158,7 +1275,7 @@ test("#1211: her first edit waits for a plan, and the plan is checked off in her
 });
 
 test("#1212 / #1257: a code change before a test applies with a warning; a test file she wrote or a failing test she ran clears it", async () => {
-  const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"] }];
+  const steps = ["self_work__plan", { steps: ["Test add()", "Make it add"], files: ["node-bot/util.js: add() lives here"] }];
   const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
   const again = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a + b;", new_text: "return b + a;" }];
   const edits = (seen) => seen.filter((s) => s.name === "coding__propose_edit").map((s) => JSON.parse(s.result));
@@ -1166,7 +1283,7 @@ test("#1212 / #1257: a code change before a test applies with a warning; a test 
   // Code first: applied, with the warning; after a test file she wrote, no warning.
   const repos = makeRepos();
   const seen = [];
-  const { sw } = selfWork(repos, { calls: [steps, fix, addTest, again, ...reviews, finish], plans: false, passed: false, seen });
+  const { sw } = selfWork(repos, { calls: [find, steps, fix, addTest, again, ...reviews, finish], plans: false, passed: false, seen });
   await sw.start(7);
   await sw._current().done;
   const [first, test, second] = edits(seen);
@@ -1180,7 +1297,7 @@ test("#1212 / #1257: a code change before a test applies with a warning; a test 
 
   // A test that was already there, run and seen failing, counts.
   const ranSeen = [];
-  const ran = selfWork(makeRepos(), { calls: [steps, runTests, fix], plans: false, passed: false, seen: ranSeen });
+  const ran = selfWork(makeRepos(), { calls: [find, steps, runTests, fix], plans: false, passed: false, seen: ranSeen });
   await ran.sw.start(7);
   await ran.sw._current().done;
   assert.equal(edits(ranSeen)[0].warning, undefined);
@@ -1191,11 +1308,11 @@ test("#1213: she finishes only after three passes over her diff since her last e
   const seen = [];
   const reviewed = [];
   const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
-  const calls = [plan, fix, finish, ...reviews, addTest, finish, ...reviews, finish];
+  const calls = [find, plan, fix, finish, ...reviews, addTest, finish, ...reviews, finish];
   const { sw } = selfWork(repos, { calls, plans: false, seen, reviewEdit: async (p) => (reviewed.push(p), { verdict: "holds" }) });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const results = seen.filter((s) => s.name && s.name !== "self_work__files").map((s) => s.result ?? s.error);
 
   assert.match(results[2], /^Before you finish, review your diff with self_work__review: correctness, then edge cases, then scope/);
   assert.match(results[3], /^Pass: correctness\. [\s\S]*Passes left: edge cases, scope\.[\s\S]*\+  return a \+ b;/);
@@ -1212,7 +1329,7 @@ test("MANA_SELF_WORK_REVIEW_PASSES=5 adds tests and regressions, and any edit st
   const seen = [];
   const fivePasses = [...reviews, ["self_work__review", { pass: "tests" }], ["self_work__review", { pass: "regressions" }]];
   const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
-  const calls = [plan, fix, finish, ...fivePasses.slice(0, 3), addTest, finish, ...fivePasses, finish];
+  const calls = [find, plan, fix, finish, ...fivePasses.slice(0, 3), addTest, finish, ...fivePasses, finish];
   const { sw } = selfWork(repos, {
     calls,
     plans: false,
@@ -1222,7 +1339,7 @@ test("MANA_SELF_WORK_REVIEW_PASSES=5 adds tests and regressions, and any edit st
   });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const results = seen.filter((s) => s.name && s.name !== "self_work__files").map((s) => s.result ?? s.error);
 
   assert.match(results[2], /correctness, then edge cases, then scope, then tests, then regressions/);
   assert.match(results[3], /Passes left: edge cases, scope, tests, regressions\./);
@@ -1292,7 +1409,8 @@ test("#1249: a snapshot between attempts only runs in a worktree's own top folde
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
     protectedPaths: guard,
     runLoop: async (prompt, policy) => {
-      await policy.executeTool("self_work__plan", { steps: ["Write it", "Test it"], no_test: "scripted" });
+      const hit = String(await policy.executeTool("self_work__files", { contains: "util.js" })).split("\n")[0];
+      await policy.executeTool("self_work__plan", { steps: ["Write it", "Test it"], files: [`${hit}: add() lives here`], no_test: "scripted" });
       fs.writeFileSync(path.join(inner, "keep.txt"), "mine\n");
       await policy.executeTool("coding__run_tests", { path: "node-bot/test/util.test.js" });
       await policy.executeTool("session_goal__finish", { reason: "done" });
@@ -1359,11 +1477,11 @@ test("#1420: re-reviewing after a fix is progress, so it can't make her stuck", 
   const seen = [];
   const addTest = ["coding__propose_edit", { path: "node-bot/test/util.test.js", new_text: "// add(2, 3) is 5\n" }];
   // Each repeat of a review is a call she's made before; with 6 repeat reads after it that was 9 steps without progress.
-  const calls = [plan, read, fix, ...reviews, addTest, ...reviews, ...Array(6).fill(read), finish];
+  const calls = [find, plan, read, fix, ...reviews, addTest, ...reviews, ...Array(6).fill(read), finish];
   const { sw } = selfWork(repos, { calls, plans: false, seen, reviewEdit: async () => ({ verdict: "holds" }) });
   await sw.start(7);
   await sw._current().done;
-  const results = seen.filter((s) => s.name).map((s) => s.result ?? s.error);
+  const results = seen.filter((s) => s.name && s.name !== "self_work__files").map((s) => s.result ?? s.error);
   assert.notEqual(sw.status().state, "stuck");
   assert.match(results[5], /That's every pass\. If your tests pass and there's nothing left to fix, call session_goal__finish now\./);
   assert.equal(JSON.parse(results.at(-1)).finished, true);
@@ -1410,4 +1528,44 @@ test("#1420: a run starts on a clean worktree, whatever a dead run left there", 
   await again.sw._current().done;
   assert.match(String(seen.find((s) => s.name === "self_work__read").result), /return a - b;/);
   assert.equal(fs.existsSync(path.join(worktree, "node-bot", "leftover.js")), false);
+});
+
+// #1467: a pattern written without regex: true (a|b, a.*b) is tried as one when it has no exact match.
+test("#1467: search tries a grep-style pattern when the exact text isn't there", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const calls = [
+    ["self_work__search", { text: "function add|function sub" }],
+    ["self_work__search", { text: "add.*b\)" }],
+    ["self_work__search", { text: "function nothing|nowhere" }],
+    ["self_work__search", { text: "return a - b" }],
+  ];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name === "self_work__search").map((s) => s.result ?? s.error);
+  assert.match(results[0], /^\(No literal match; matched as a pattern\.\)\nnode-bot\/util\.js:1:function add/);
+  assert.match(results[1], /matched as a pattern[\s\S]*util\.js:1:/);
+  assert.equal(results[2], "No matches.");
+  assert.match(results[3], /^node-bot\/util\.js:2:/, "an exact match stays as it was");
+});
+
+// #1467: a new feature can need a new folder: one level in a folder that exists, when the plan says it's new.
+test("#1467: a plan may name a file in a new folder when it says it's new", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const steps = ["Add the helper", "Test it"];
+  const calls = [
+    ["self_work__search", { text: "function add" }],
+    ["self_work__plan", { steps, files: ["node-bot/util.js: add() lives here", "node-bot/helpers/sum.js: a guess"], no_test: "scripted" }],
+    ["self_work__plan", { steps, files: ["node-bot/util.js: add() lives here", "node-bot/a/b/sum.js: new folders for it"], no_test: "scripted" }],
+    ["self_work__plan", { steps, files: ["node-bot/util.js: add() lives here", "node-bot/helpers/sum.js: new helper folder for sum()"], no_test: "scripted" }],
+  ];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const results = seen.filter((s) => s.name === "self_work__plan").map((s) => s.result ?? s.error);
+  assert.match(results[0], /neither does its folder.*if it's a new folder say so/);
+  assert.match(results[1], /neither does its folder/, "only one new level");
+  assert.match(results[2], /node-bot\/helpers\/sum\.js/);
 });

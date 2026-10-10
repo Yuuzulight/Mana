@@ -1,5 +1,6 @@
 {
   "id": "1089-model-recommendation-subtract",
+  "minRounds": 11,
   "kind": "multi-file",
   "pr": 1089,
   "issue": 1086,
