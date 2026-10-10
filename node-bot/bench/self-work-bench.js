@@ -9,6 +9,7 @@
 //   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
+//     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
 //     [--out <dir>] [--verify]
 //     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
 //     [--check]   (the preflight only: no model, no runs)
@@ -269,7 +270,7 @@ async function runCase(c, deps) {
     const started = Date.now();
     // #1467: a case's minRounds is what its merged fix takes through her tools (the oracle); every run gets
     // that and EXPLORE_ROUNDS more, so a budget never decides a case on its own.
-    const issue = { number: c.issue, title: c.title, body, ...(c.minRounds ? { maxRounds: c.minRounds + EXPLORE_ROUNDS } : {}) };
+    const issue = { number: c.issue, title: c.title, body, ...(c.minRounds ? { maxRounds: Math.round((c.minRounds + EXPLORE_ROUNDS) * (deps.roundScale || 1)) } : {}) };
     // #1247: --attempts N is her best-of-N (where self-work has it).
     const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
@@ -467,7 +468,7 @@ function writeReport(results, outDir, meta = {}) {
   const md = [
     `# Self-work benchmark${meta.label ? `: ${meta.label}` : ""}`,
     "",
-    `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${meta.attempts > 1 ? `Best of ${meta.attempts} attempts. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
+    `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${meta.attempts > 1 ? `Best of ${meta.attempts} attempts. ` : ""}${meta.roundScale > 1 ? `Round budgets x${meta.roundScale}. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
     "",
     `**pass@1 ${pct(o.pass1)}, pass@${summary.repeats} ${pct(o.passK)}**, passes per repeat ${o.spread[0]}-${o.spread[1]} of ${o.cases}. ${passed}/${rows.length} runs passed.`,
     "",
@@ -661,6 +662,7 @@ async function main(argv) {
   const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
   const attempts = Math.max(1, Number(opt("--attempts")[0]) || 1);
+  const roundScale = Number(opt("--round-scale")[0]) || 1;
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
@@ -718,7 +720,7 @@ async function main(argv) {
     const bad = pre.serverArgsProblem(config.serverArgs, model.runtime.findLlamaServerBin());
     if (bad) throw new Error(`The bench's preflight failed: ${bad}`);
   }
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, roundScale, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of sound) runs.push({ c, repeat });
@@ -733,7 +735,7 @@ async function main(argv) {
       for (let tries = 0; tries < 3 && !result; tries += 1) {
         why = await waitOut(c, gate, model);
         if (why) break;
-        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate, ...(oracle ? { prefix: "bench-oracle-" } : {}) });
+        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, approvalGate, ...(oracle ? { prefix: "bench-oracle-" } : {}) });
         if (result.ended === "paused") {
           console.log(`${c.id} was paused; running it again.`);
           result = null;
