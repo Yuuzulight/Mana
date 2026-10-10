@@ -107,3 +107,29 @@ test("harness errors: the sandbox and test runner, not her own mistakes", () => 
   assert.ok(!HARNESS_ERROR.test("ENOENT: no such file or directory, open 'data/facts.json'"));
   assert.ok(!HARNESS_ERROR.test("old_text isn't in node-bot/util.js"));
 });
+
+test("the sandbox check loads every package module she uses, sub-paths included", () => {
+  const wt = tmp();
+  fs.mkdirSync(path.join(wt, "node-bot", "ai"), { recursive: true });
+  fs.writeFileSync(path.join(wt, "node-bot", "package.json"), JSON.stringify({ dependencies: { axios: "1", "@modelcontextprotocol/sdk": "1", uuid: "1" } }));
+  fs.writeFileSync(path.join(wt, "node-bot", "ai", "a.js"), 'const x = require("axios");\nconst y = require("@modelcontextprotocol/sdk/server/mcp.js");\nconst z = require("node:fs");\nconst w = require("./local");\n');
+  fs.writeFileSync(path.join(wt, "node-bot", "b.js"), 'require("@modelcontextprotocol/sdk/server/mcp.js");\n');
+  assert.deepEqual(pre.usedSpecifiers(path.join(wt, "node-bot"), ["axios", "@modelcontextprotocol/sdk", "uuid"]), ["@modelcontextprotocol/sdk/server/mcp.js", "axios"]);
+});
+
+test("a package that doesn't load in the sandbox is named in the problem", async () => {
+  const wt = tmp();
+  fs.mkdirSync(path.join(wt, "node-bot"), { recursive: true });
+  fs.writeFileSync(path.join(wt, "node-bot", "package.json"), JSON.stringify({ dependencies: { ws: "1" } }));
+  fs.writeFileSync(path.join(wt, "node-bot", "c.js"), 'require("ws");\n');
+  const run = async () => ({ exitCode: 1, output: "not ok 1 - ws\n  Cannot find module 'ws'\n" });
+  assert.match(await pre.sandboxProblem(wt, { run, copySources: { dependencyRoots: [] } }), /these don't load: ws/);
+});
+
+test("the case cache changes when the harness changes", () => {
+  const f = path.join(tmp(), "harness.js");
+  fs.writeFileSync(f, "one");
+  const before = pre.harnessFingerprint([f]);
+  fs.writeFileSync(f, "two");
+  assert.notEqual(pre.harnessFingerprint([f]), before);
+});

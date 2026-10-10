@@ -110,6 +110,26 @@ function benchTestGate(worktreesDir) {
   };
 }
 
+// A case's hidden tests are the bench's to run, not hers to change: a write to one is refused the way her other
+// guardrails are, so she can't make a test pass by editing it. Everything else is her usual guard.
+function hiddenTestGuard(c, wt) {
+  const base = require("../protected-paths");
+  const hidden = new Map((c.hiddenTests || []).map((rel) => [path.resolve(wt, rel).toLowerCase(), rel]));
+  const label = (rel) => `the case's hidden test ${rel}`;
+  return {
+    ...base,
+    protectedPathFor(full) {
+      const rel = hidden.get(path.resolve(full).toLowerCase());
+      return rel ? label(rel) : base.protectedPathFor(full);
+    },
+    protectedPathMessage(entry) {
+      return entry.startsWith("the case's hidden test ")
+        ? `${entry} is the bench's, not mine to change; change the code it tests`
+        : base.protectedPathMessage(entry);
+    },
+  };
+}
+
 function makeWorktree(repoRoot, wt, base) {
   if (fs.existsSync(wt)) removeWorktree(repoRoot, wt);
   git(repoRoot, "worktree", "add", "--detach", wt, base);
@@ -262,6 +282,7 @@ async function runCase(c, deps) {
       ramPercent: deps.ramPercent,
       runTests: deps.runTests,
       approvalGate: deps.approvalGate,
+      protectedPaths: hiddenTestGuard(c, wt),
       onEvent: deps.onEvent || ((run, text) => console.log(`[bench ${c.id}] ${text}`)),
     });
     // The interface the hidden tests call (names, options, messages), when
@@ -781,4 +802,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { HARNESS_ERROR, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+module.exports = { HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
