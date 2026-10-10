@@ -206,8 +206,12 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
       if (inGameBreak && !next.explicit) breakUsed = true;
       lastSentAt = t;
       lastSent = { reason: next.reason, title: next.payload.title ?? null, text: next.payload.text ?? null, at: t };
+      // A reminder held past its lateAfter (no launcher listening, say) is
+      // said as a late one: judged when it's said, not when it fired.
+      const { lateAfter, ...payload } = next.payload;
+      if (payload.kind === "reminder" && Number.isFinite(lateAfter) && t > lateAfter) payload.kind = "reminder-late";
       Promise.resolve()
-        .then(() => deliver(next.payload))
+        .then(() => deliver(payload))
         .catch(() => {});
     }
     if (held.length !== count || settled) save();
@@ -220,6 +224,11 @@ function createProactive({ deliver, isGaming = () => false, inBreak = () => fals
     if (!explicit && settings.muted.includes(reason)) return "dropped";
     if (!urgent && !(score >= Math.min(1, SCORE_THRESHOLD * multiplier(reason, now())))) return "dropped";
     if (held.some((c) => c.reason === reason && c.payload.text === payload.text)) return "held";
+    // A reminder's grace (lateIn, ms) becomes a time on this clock.
+    if (Number.isFinite(payload.lateIn)) {
+      const { lateIn, ...rest } = payload;
+      payload = { ...rest, lateAfter: now() + lateIn };
+    }
     const candidate = { reason, payload, score, urgent, explicit: Boolean(explicit), expiresAt: now() + ttlMs };
     held.push(candidate);
     held.sort((a, b) => b.urgent - a.urgent || b.score - a.score);

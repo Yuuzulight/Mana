@@ -93,6 +93,20 @@ test("a file move is recorded as a snapshot, and undoing it moves each item back
     ],
   );
 
+  // A move into a folder it made: undo takes the folder away too, once all went back.
+  const made = { moved: [{ from: "C:/d/a.png", to: "C:/p/Cats/a.png" }], failed: [], created: "C:/p/Cats" };
+  const madeBridge = fakeBridge({ answer: made });
+  const madeRecords = [];
+  const madeSource = createDesktopToolSource({ bridge: madeBridge, snapshotStore: { recordSnapshot: (s) => (madeRecords.push(s), { id: "s2" }) } });
+  await madeSource.executeTool("desktop__move_files", { from: ["C:/d/a.png"], to: "C:/p/Cats", new_folder: true });
+  assert.equal(madeRecords[0].payload.createdFolder, "C:/p/Cats");
+  let madeRestorer;
+  registerFileMoveRestorer({ registerRestorer: (kind, fn) => (madeRestorer = fn) }, madeBridge);
+  madeBridge.sent.length = 0;
+  assert.deepEqual(await madeRestorer(madeRecords[0].key, madeRecords[0].payload), { undone: 1, failed: [] });
+  assert.deepEqual(madeBridge.sent.map((s) => s.action), ["move_files", "remove_empty_folder"]);
+  assert.deepEqual(madeBridge.sent[1].args, { path: "C:/p/Cats" });
+
   const gone = fakeBridge({ answer: new Error("C:\Users\me\Pictures\a.png doesn't exist") });
   registerFileMoveRestorer(snapshotStore, gone);
   await assert.rejects(() => restorer.fn(records[0].key, records[0].payload), /doesn't exist/);

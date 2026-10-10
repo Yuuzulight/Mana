@@ -153,7 +153,8 @@ function createDesktopToolSource({ bridge, isGaming = () => false, voice = false
         const snapshot = snapshotStore?.recordSnapshot({
           kind: "file-move",
           key: String(args?.to || ""),
-          payload: { moves: result.moved },
+          // created: a folder new_folder made, which undo takes away again.
+          payload: { moves: result.moved, ...(result.created ? { createdFolder: result.created } : {}) },
           summary: `Moved ${result.moved.length} item(s) to ${args?.to}`,
           source: "agent",
         });
@@ -169,7 +170,8 @@ function createDesktopToolSource({ bridge, isGaming = () => false, voice = false
   return { listToolSchemas, executeTool, isKnownToolName: isDesktopToolName };
 }
 
-// Undoing a file-move snapshot moves each item back, last first. What
+// Undoing a file-move snapshot moves each item back, last first, then
+// removes a folder the move made, if it's empty. What
 // can't go back (moved again, deleted since) is reported; only when
 // nothing could does it throw, which keeps the snapshot for a retry.
 function registerFileMoveRestorer(snapshotStore, bridge) {
@@ -185,6 +187,14 @@ function registerFileMoveRestorer(snapshotStore, bridge) {
       }
     }
     if (!undone && failed.length) throw new Error(failed.map((f) => f.error).join("; "));
+    // Everything went back: the folder the move made goes too, if empty.
+    if (payload?.createdFolder && !failed.length) {
+      try {
+        await bridge.requestDesktop("remove_empty_folder", { path: payload.createdFolder });
+      } catch (e) {
+        failed.push({ path: payload.createdFolder, error: e.message || String(e) });
+      }
+    }
     return { undone, failed };
   });
 }
