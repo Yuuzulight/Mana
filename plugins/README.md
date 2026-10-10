@@ -29,8 +29,7 @@ read, tested, and reasoned about without the rest of the backend.
   searches.
 - [`cron-scheduler`](cron-scheduler/): run a script action or a full agent
   prompt on a fixed interval or daily-at-time schedule, independent of chat
-  or idle activity. **On by default** (#1426); its jobs are managed in
-  Settings > Plugins.
+  or idle activity. **On by default** (#1426).
 - [`image-generation`](image-generation/): generate or edit an image from a
   text description. Local-first (Automatic1111 or ComfyUI HTTP API) with
   an opt-in external-API fallback. **Off by default.**
