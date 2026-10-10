@@ -213,9 +213,12 @@ function diffAgainst(wt, base) {
   return { files, added, removed, patch: git(wt, "diff", "--cached", base) };
 }
 
+const BENCH_GAMES = ["League of Legends.exe", "LeagueClient.exe"];
+
 function isGamingNow(repoRoot) {
   if (process.platform !== "win32") return false;
-  const names = require("../game-wikis").loadGameWikis(path.join(repoRoot, "node-bot", "data", "game-wikis.json")).processes;
+  // The bench pauses for the games the backend knows, and for these (League isn't in the wiki list yet).
+  const names = [...require("../game-wikis").loadGameWikis(path.join(repoRoot, "node-bot", "data", "game-wikis.json")).processes, ...BENCH_GAMES];
   const running = execFileSync("tasklist", ["/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true }).toLowerCase();
   return names.some((n) => running.includes(`"${n}"`));
 }
