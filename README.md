@@ -58,10 +58,15 @@ https://github.com/user-attachments/assets/639fd9b4-3f1e-4a58-aa02-79b56572306c
 <p align="center"><sub>Mana's debut: a 48-second self-introduction in her own voice (Fish Speech), rendered with the same Live2D runtime the launchers use. The avatar is Live2D's Hiyori sample model, standing in until Mana's own model is finished.</sub></p>
 
 <p align="center">
+  <img src="docs/images/windows-native-launcher-main.png" alt="Mana native launcher main screen" width="640">
+</p>
+<p align="center"><sub>The native Windows launcher (the primary one), with the chat sidebar hidden.</sub></p>
+
+<p align="center">
   <img src="docs/images/windows-launcher-main.png" alt="Mana Electron launcher main screen" width="490">
   <img src="docs/images/desktop-client-main.png" alt="Mana desktop-client main screen" width="490">
 </p>
-<p align="center"><sub>The retired Electron launcher (left, kept as a fallback; see <a href="docs/legacy_launcher.md">the legacy launcher notes</a>) and desktop-client (right). The native launcher's screenshot hasn't been added here yet.</sub></p>
+<p align="center"><sub>The retired Electron launcher (left, kept as a fallback; see <a href="docs/legacy_launcher.md">the legacy launcher notes</a>) and desktop-client (right).</sub></p>
 
 ## Quick Start
 
