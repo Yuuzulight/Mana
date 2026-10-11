@@ -70,10 +70,15 @@ function createEmbedder(options = {}) {
   // server.js's cached watched-game status (utils/gaming-watch.js).
   const gaming = options.gaming || (() => false);
 
+  // MANA_EMBEDDER_DEVICE=cpu keeps the embedder off the GPU: it asks the resource manager for RAM only (so it is
+  // started in CPU mode, no VRAM booked), the same run the "Run on CPU instead?" approval picks.
+  const cpuOnly = () => String(env.MANA_EMBEDDER_DEVICE || "").trim().toLowerCase() === "cpu";
+  const cpuEstimate = () => ({ ramMb: Math.ceil(fs.statSync(modelPath()).size / 1048576) + 512 });
+
   const server = createOnDemandProcess({
     resourceCoordinator: options.resourceCoordinator,
-    resourceEstimate: () => ({ ramMb: Math.ceil(fs.statSync(modelPath()).size / 1048576), vramMb: Math.max(2300, Math.ceil(fs.statSync(modelPath()).size / 1048576 * 1.2)) }),
-    cpuAlternative: () => ({ ramMb: Math.ceil(fs.statSync(modelPath()).size / 1048576) + 512 }),
+    resourceEstimate: () => cpuOnly() ? cpuEstimate() : ({ ramMb: Math.ceil(fs.statSync(modelPath()).size / 1048576), vramMb: Math.max(2300, Math.ceil(fs.statSync(modelPath()).size / 1048576 * 1.2)) }),
+    cpuAlternative: () => cpuOnly() ? undefined : cpuEstimate(),
     name: "Embedding llama-server",
     healthUrl: () => `http://127.0.0.1:${port()}/health`,
     command: (mode) => {
