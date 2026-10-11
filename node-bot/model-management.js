@@ -270,9 +270,10 @@ function detectSystemMemoryMb(totalmem = os.totalmem) {
 
 // #1086: VRAM the voice stack holds next to the LLM. TTS by provider (Kokoro
 // and the CLI run on CPU; GPT-SoVITS isn't measured yet); Qwen3-TTS's is
-// docs/qwen3_tts.md's resident figure. Whisper by model size, from
+// docs/qwen3_tts.md's resident figure; CosyVoice3's is its peak after load
+// on fast_tts (docs/cosyvoice3_tts.md). Whisper by model size, from
 // whisper.cpp's README memory table.
-const TTS_VRAM_MB = { fish: FISH_VRAM_MB, qwen3tts: 2765 };
+const TTS_VRAM_MB = { fish: FISH_VRAM_MB, qwen3tts: 2765, cosyvoice3: 5120 };
 const WHISPER_VRAM_MB = { large: 3990, medium: 2150, small: 852, base: 388, tiny: 273 };
 
 function voiceVramMb({ ttsProvider, whisperModel }) {

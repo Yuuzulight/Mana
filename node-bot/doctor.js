@@ -846,6 +846,14 @@ function getConfiguredTtsHealthTargets(env) {
     });
   }
 
+  // Same for CosyVoice3: the launcher starts it whenever it's selected.
+  if (provider === "cosyvoice3") {
+    targets.push({
+      id: "cosyvoice3",
+      url: withHealthPath(env.COSYVOICE3_TTS_URL || "http://127.0.0.1:5013"),
+    });
+  }
+
   return targets.filter((target) => target.url);
 }
 

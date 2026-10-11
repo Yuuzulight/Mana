@@ -242,6 +242,81 @@ test("tts runtime posts text plus the detected language to Qwen3-TTS", async () 
   assert.deepEqual(calls[1].body, { text: "Yay!", language: "english", emotion: "excited" });
 });
 
+test("tts runtime posts text, language, emotion and the character's voice to CosyVoice3", async () => {
+  const calls = [];
+  let voice = null;
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "cosyvoice3", COSYVOICE3_TTS_URL: "http://cosy.local" },
+    postJsonBuffer: async (url, body, timeoutMs) => {
+      calls.push({ url, body, timeoutMs });
+      return Buffer.from("cosy-audio");
+    },
+    getVoice: () => voice,
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+
+  const audio = await runtime.synthesizeReply("Good morning!", "happy");
+  assert.equal(audio.toString("utf8"), "cosy-audio");
+  assert.equal(calls[0].url, "http://cosy.local/synthesize");
+  assert.deepEqual(calls[0].body, { text: "Good morning!", language: "english", emotion: "happy" });
+  assert.ok(calls[0].timeoutMs > 0);
+
+  voice = { refAudio: "D:/clip.wav", refText: "Hello." };
+  await runtime.synthesizeReply("Hi");
+  assert.deepEqual(calls[1].body, { text: "Hi", language: "english", ref_audio: "D:/clip.wav", ref_text: "Hello." });
+});
+
+test("tts runtime has no CosyVoice3 fallback by default, and uses Kokoro only when asked", async () => {
+  const urls = [];
+  const post = async (url) => {
+    urls.push(url);
+    if (url.startsWith("http://127.0.0.1:5013")) throw new Error("connect ECONNREFUSED 127.0.0.1:5013");
+    return Buffer.from("kokoro-audio");
+  };
+  const strict = createTtsRuntime({
+    env: { TTS_PROVIDER: "cosyvoice3", KOKORO_TTS_URL: "http://kokoro.local" },
+    postJsonBuffer: post,
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+  await assert.rejects(() => strict.synthesizeReply("hello"), /ECONNREFUSED/);
+  assert.deepEqual(urls, ["http://127.0.0.1:5013/synthesize"]);
+
+  urls.length = 0;
+  const optedIn = createTtsRuntime({
+    env: { TTS_PROVIDER: "cosyvoice3", COSYVOICE3_TTS_FALLBACK_PROVIDER: "kokoro", KOKORO_TTS_URL: "http://kokoro.local" },
+    postJsonBuffer: post,
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+  assert.equal((await optedIn.synthesizeReply("hello")).toString("utf8"), "kokoro-audio");
+  assert.deepEqual(urls, ["http://127.0.0.1:5013/synthesize", "http://kokoro.local/synthesize"]);
+});
+
+test("a voice override switches between Qwen3-TTS and CosyVoice3 without a restart", async () => {
+  const urls = [];
+  const runtime = createTtsRuntime({
+    env: { TTS_PROVIDER: "cosyvoice3" },
+    postJsonBuffer: async (url) => {
+      urls.push(url);
+      return Buffer.from("audio");
+    },
+    nowMs: () => 1,
+    logPerf: () => {},
+  });
+  await runtime.synthesizeReply("hello");
+  runtime.setProviderOverride("qwen3tts");
+  await runtime.synthesizeReply("hello");
+  runtime.setProviderOverride(null);
+  await runtime.synthesizeReply("hello");
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:5013/synthesize",
+    "http://127.0.0.1:5012/synthesize",
+    "http://127.0.0.1:5013/synthesize",
+  ]);
+});
+
 test("postJsonBuffer gives up on a service that never answers once timeoutMs passes", async () => {
   const server = http.createServer(() => {});
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
