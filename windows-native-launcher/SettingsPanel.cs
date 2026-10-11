@@ -1510,6 +1510,8 @@ internal sealed class SettingsPanel : UserControl
             SwitchRow("Echo cancellation", "Stops her hearing herself through your speakers", "aec feedback speakers",
                 saved.EchoCancellation ?? true, on => Save(s => s.EchoCancellation = on), EnvironmentWins("MANA_VOICE_AEC")),
             SettingsRows.Section("Listening"),
+            SwitchRow("Wake word", "On: she answers only after you say her name. Off: she answers everything while she's listening", "wake word name hotword always on sleep",
+                saved.WakeWordRequired ?? false, on => Save(s => s.WakeWordRequired = on), EnvironmentWins("MANA_WAKE_WORD")),
             ChoiceRow("Wake-word filter", "Ignores speech that doesn't sound like her name. Applies next launch", "wake word hotword prefilter",
                 new[] { "Off", "Loose", "Normal" }, Math.Max(0, Array.IndexOf(WakePrefilterModes, saved.WakePrefilter)),
                 i => Save(s => s.WakePrefilter = i == 0 ? null : WakePrefilterModes[i]), status: EnvironmentWins("MANA_WAKE_PREFILTER")),
