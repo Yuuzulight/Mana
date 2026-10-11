@@ -54,6 +54,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly SettingsSwitch keepFolioCheck = new() { AccessibleName = "Keep Folio up to date" };
     private readonly Label folioStatusLabel = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 8, 3, 3), AccessibleName = "Folio check result" };
     private readonly ComboBox voiceProviderCombo = new SettingsCombo();
+    private readonly Label voiceStatus = SettingsRows.Status();
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
@@ -1529,7 +1530,7 @@ internal sealed class SettingsPanel : UserControl
                 new[] { "After two words", "Straight away", "Never, she finishes first" }, (int)BargeInPolicy.Resolve(null, saved.BargeInMode),
                 i => Save(s => s.BargeInMode = i == 0 ? null : BargeInModes[i]), status: EnvironmentWins("MANA_BARGE_IN_MODE")),
             ChoiceRow("Voice engine", "Which voice she speaks with", "tts text to speech fish kokoro sovits",
-                TtsProviderLabels, 0, i => _ = SaveVoiceProviderAsync(i), voiceProviderCombo),
+                TtsProviderLabels, 0, i => _ = SaveVoiceProviderAsync(i), voiceProviderCombo, voiceStatus),
             SettingsRows.Section("Your voice"),
             ChoiceRow("Only your voice can", "Other people's speech is ignored for these", "voiceprint speaker gate only me",
                 new[] { "Nothing, anyone can", "Wake her", "Wake her or talk over her", "Wake her, talk over her or give commands" },
@@ -2694,6 +2695,50 @@ internal sealed class SettingsPanel : UserControl
     // ManaApplicationContext, which owns the voice services.
     public Func<string?, Task<bool>>? EnsureVoiceService { get; set; }
 
+    // "ready", "warming", "off" or "n/a" for a voice engine (ManaProcessManager.TtsServiceStateAsync).
+    public Func<string?, Task<string>>? VoiceServiceState { get; set; }
+    private int voiceStatusRound;
+
+    // The status beside the Voice engine dropdown. Keeps reading while the voice
+    // warms up; a newer pick or refresh takes over from an older one.
+    private async Task ShowVoiceStatusAsync(string? provider)
+    {
+        var round = ++voiceStatusRound;
+        while (!IsDisposed && round == voiceStatusRound)
+        {
+            var state = "n/a";
+            try
+            {
+                state = VoiceServiceState is { } read ? await read(provider) : "n/a";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SettingsPanel: voice status failed. {ex.Message}");
+            }
+            if (IsDisposed || round != voiceStatusRound)
+            {
+                return;
+            }
+            SetVoiceStatus(state);
+            if (state != "warming")
+            {
+                return;
+            }
+            await Task.Delay(3000);
+        }
+    }
+
+    private void SetVoiceStatus(string state)
+    {
+        (voiceStatus.Text, voiceStatus.ForeColor) = state switch
+        {
+            "ready" => ("\u2713 Ready", Color.SeaGreen),
+            "warming" => ("Warming up\u2026", DarkTheme.Muted),
+            "off" => ("Not running", Color.OrangeRed),
+            _ => ("", DarkTheme.Muted),
+        };
+    }
+
     private readonly Func<HotkeyAction, Keys?, string?>? bindHotkey;
 
     // #689: each global hotkey's combination -- click the box and press the
@@ -3246,6 +3291,11 @@ internal sealed class SettingsPanel : UserControl
         var provider = index == 0 ? null : TtsProviders[index];
         voiceProviderCombo.Enabled = false; // a local voice can take a minute to load
         UseWaitCursor = true;
+        voiceStatusRound++; // stops an older status read from overwriting this
+        if (provider is null or "cosyvoice3" or "qwen3tts")
+        {
+            SetVoiceStatus("warming");
+        }
         try
         {
             if (EnsureVoiceService is { } ensure && !await ensure(provider))
@@ -3255,6 +3305,7 @@ internal sealed class SettingsPanel : UserControl
                 return;
             }
             await backendClient.SetTtsOverrideAsync(provider);
+            _ = ShowVoiceStatusAsync(provider);
         }
         catch (Exception ex)
         {
@@ -3286,6 +3337,7 @@ internal sealed class SettingsPanel : UserControl
         loadingRows = true;
         voiceProviderCombo.SelectedIndex = Math.Max(0, Array.IndexOf(TtsProviders, overrideProvider ?? AutoProviderLabel));
         loadingRows = false;
+        _ = ShowVoiceStatusAsync(overrideProvider);
     }
 
     // #582: "live" -- a self-driving 1s timer, not just a refresh-on-open
