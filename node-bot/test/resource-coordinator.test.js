@@ -120,6 +120,36 @@ test('hardware adapter never credits N/A GPU usage or a different GPU', async ()
   assert.deepEqual(sample.observed.lease, { ramMb: 1 });
 });
 
+test('hardware adapter credits a running model with Windows GPU counters when nvidia-smi says N/A, and caches the read', async () => {
+  let counterReads = 0, clock = 0;
+  const run = async (bin, args) => {
+    if (bin === 'nvidia-smi') return { stdout: args[0].includes('query-gpu=') ? 'GPU-one, 8000' : 'GPU-one, 123, N/A' };
+    if (args.at(-1).includes('GPU Process Memory')) { counterReads++; return { stdout: '{"123":2147483648,"456":1048576}' }; }
+    return { stdout: '[{"Id":123,"WorkingSet64":1048576}]' };
+  };
+  const adapter = createHardwareTelemetry({ platform: 'win32', now: () => clock, run,
+    memory: { totalmem: () => 104857600, freemem: () => 52428800, availableParallelism: () => 16 } });
+  const leases = [{ id: 'lease', pid: 123 }, { id: 'other', pid: 999 }];
+  let sample = await adapter(leases);
+  assert.deepEqual(sample.observed.lease, { ramMb: 1, vramMb: 2048 });
+  assert.equal(sample.observed.other, undefined); // not listed by the counters: no credit
+  clock = 5000; await adapter(leases); assert.equal(counterReads, 1); // still inside the cache window
+  clock = 20000; await adapter(leases); assert.equal(counterReads, 2);
+  // nvidia-smi's own number wins and the counters aren't read at all.
+  counterReads = 0;
+  const direct = createHardwareTelemetry({ platform: 'win32', now: () => 0,
+    memory: { totalmem: () => 104857600, freemem: () => 52428800, availableParallelism: () => 16 },
+    run: async (bin, args) => bin === 'nvidia-smi' ? { stdout: args[0].includes('query-gpu=') ? 'GPU-one, 8000' : 'GPU-one, 123, 512' } : args.at(-1).includes('GPU Process Memory') ? (counterReads++, { stdout: '{}' }) : { stdout: '[{"Id":123,"WorkingSet64":1048576}]' } });
+  sample = await direct([{ id: 'lease', pid: 123 }]);
+  assert.equal(sample.observed.lease.vramMb, 512);
+  assert.equal(counterReads, 0);
+  // A failed counter read gives no credit and doesn't throw.
+  const broken = createHardwareTelemetry({ platform: 'win32', now: () => 0,
+    memory: { totalmem: () => 104857600, freemem: () => 52428800, availableParallelism: () => 16 },
+    run: async (bin, args) => { if (bin === 'nvidia-smi') return { stdout: args[0].includes('query-gpu=') ? 'GPU-one, 8000' : 'GPU-one, 123, N/A' }; if (args.at(-1).includes('GPU Process Memory')) throw new Error('no counters'); return { stdout: '[{"Id":123,"WorkingSet64":1048576}]' }; } });
+  assert.deepEqual((await broken([{ id: 'lease', pid: 123 }])).observed.lease, { ramMb: 1 });
+});
+
 test('GPU alternatives are offered after brief telemetry retries, never selected automatically', async t => {
   const { coordinator, set } = fixture(t, { pollMs: 1000 });
   set({ vramFreeMb: undefined });
