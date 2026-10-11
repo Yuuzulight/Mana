@@ -464,6 +464,25 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task TtsServiceState_ReadsReadyOffAndNotApplicable()
+    {
+        // Nothing answers: a voice that isn't running is "off"; the others aren't tracked.
+        using (var manager = new ManaProcessManager(@"C:\does-not-exist", new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))))
+        {
+            Assert.Equal("off", await manager.TtsServiceStateAsync("cosyvoice3"));
+            Assert.Equal("off", await manager.TtsServiceStateAsync("qwen3tts"));
+            Assert.Equal("n/a", await manager.TtsServiceStateAsync("fish"));
+            Assert.Equal("n/a", await manager.TtsServiceStateAsync("kokoro"));
+            Assert.Equal("n/a", await manager.TtsServiceStateAsync(null)); // neither is the configured voice
+        }
+        // Only CosyVoice3's port answers its health check.
+        using var running = new ManaProcessManager(@"C:\does-not-exist", new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Port == 5013 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable)));
+        Assert.Equal("ready", await running.TtsServiceStateAsync("cosyvoice3"));
+        Assert.Equal("off", await running.TtsServiceStateAsync("qwen3tts"));
+    }
+
+    [Fact]
     public async Task EnsureTtsService_WithAnotherProviderOrNoSetup_DoesNothingOrFails()
     {
         using var manager = new ManaProcessManager(@"C:\does-not-exist", new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
