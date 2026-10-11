@@ -3670,7 +3670,7 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
-  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "gpt_sovits", "cli"];
+  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "gpt_sovits", "qwen3tts", "cosyvoice3", "cli"];
 
   app.get("/tts/override", (req, res) => {
     res.json({ ok: true, override: ttsRuntime.getProviderOverride() });
