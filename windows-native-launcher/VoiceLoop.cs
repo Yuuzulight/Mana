@@ -232,6 +232,16 @@ internal sealed class VoiceLoop : IDisposable
     internal static long ResolveWakeRearmMs(string? env) =>
         long.TryParse(env, out var ms) && ms >= 0 ? ms : DefaultWakeRearmMs;
 
+    // Whether she needs the wake word at all: MANA_WAKE_WORD (1/on/true or
+    // 0/off/false) over Settings > Voice's "Wake word"; neither set means no,
+    // she is awake the whole time she's listening.
+    internal static bool ResolveWakeWordRequired(string? env, bool? saved) => env?.Trim().ToLowerInvariant() switch
+    {
+        "1" or "on" or "true" => true,
+        "0" or "off" or "false" => false,
+        _ => saved ?? false,
+    };
+
     // Only between segments, so a command already being spoken when the
     // quiet period runs out still counts.
     internal static bool ShouldRearm(bool awake, bool midSegment, long lastTurnAtMs, long nowMs, long rearmMs) =>
@@ -409,17 +419,22 @@ internal sealed class VoiceLoop : IDisposable
         {
             return;
         }
-        // #681: (re)starting always needs the wake word again. Also reset
-        // here, not just in Stop(), in case a turn that was already past
-        // the wake-word gate when Stop() ran set it back to true since.
+        // #681: (re)starting needs the wake word again, when it's required
+        // (below). Also reset here, not just in Stop(), in case a turn that
+        // was already past the wake-word gate when Stop() ran set it back
+        // to true since.
         awake = false;
         var settings = ManaSettingsStore.Load();
+        // Without the wake word she's awake from the start and never re-arms.
+        var wakeWordRequired = ResolveWakeWordRequired(Environment.GetEnvironmentVariable("MANA_WAKE_WORD"), settings.WakeWordRequired);
+        awake = !wakeWordRequired;
+        lastTurnAtMs = Environment.TickCount64;
         bargeInMode = BargeInPolicy.Resolve(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MODE"), settings.BargeInMode);
         bargeInMinWords = BargeInPolicy.MinWords(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_WORDS"));
         bargeInVoiceEnabled = BargeInGate.VoiceEnabled(Environment.GetEnvironmentVariable("MANA_BARGE_IN_VOICE"));
         bargeInRequiredMs = BargeInGate.ResolveHoldMs(Environment.GetEnvironmentVariable("MANA_BARGE_IN_HOLD_MS"));
         bargeInMinDbfs = BargeInGate.ResolveMinDbfs(Environment.GetEnvironmentVariable("MANA_BARGE_IN_MIN_DBFS"));
-        wakeRearmMs = ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS"));
+        wakeRearmMs = wakeWordRequired ? ResolveWakeRearmMs(Environment.GetEnvironmentVariable("MANA_WAKE_REARM_MS")) : 0;
         speakerGateMode = SpeakerGate.ResolveMode(Environment.GetEnvironmentVariable("MANA_SPEAKER_GATE"), settings.VoiceprintGate);
         speakerThreshold = SpeakerGate.ResolveThreshold(Environment.GetEnvironmentVariable("MANA_SPEAKER_THRESHOLD"), settings.SpeakerThreshold);
         voiceprint = speakerGateMode == SpeakerGateMode.Off ? null : settings.Voiceprint;
