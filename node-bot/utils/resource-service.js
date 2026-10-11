@@ -6,8 +6,15 @@ const { createResourceCoordinator } = require('./resource-coordinator');
 
 let service = null;
 const execute = promisify(execFile);
+// Windows' per-process GPU memory counters: nvidia-smi reports N/A per process under WDDM (the usual Windows
+// driver mode), so without these a running model's estimate counted on top of the GPU memory it already uses.
+const GPU_COUNTER_SCRIPT = "$g = @{}; try { (Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage' -ErrorAction Stop).CounterSamples | "
+  + "ForEach-Object { if ($_.InstanceName -match '^pid_(\\d+)_') { $g[$matches[1]] += $_.CookedValue } } } catch {}; $g | ConvertTo-Json -Compress";
+// A read takes a second or two, so it is reused for this long.
+const GPU_COUNTER_TTL_MS = 10000;
 function createHardwareTelemetry({ run = execute, platform = process.platform, env = process.env,
   memory = os, now = Date.now } = {}) {
+  let gpuCounters = { at: -Infinity, byPid: new Map() };
   return async leases => {
     const observed = {};
     const result = { at: now(), ramTotalMb: memory.totalmem() / 1048576,
@@ -44,6 +51,24 @@ function createHardwareTelemetry({ run = execute, platform = process.platform, e
           for (const lease of leases) if (lease.pid === process.Id) observed[lease.id] = { ...observed[lease.id], ramMb: process.WorkingSet64 / 1048576 };
         }
       } catch {}
+    }
+    // Leases whose GPU use nvidia-smi couldn't give: the Windows counters, per process id. A process the counters
+    // don't list, or a failed read, gets no credit, like an unknown value always did.
+    const unseen = leases.filter(e => Number.isInteger(e.pid) && e.pid > 0 && observed[e.id]?.vramMb === undefined);
+    if (uuid && platform === 'win32' && unseen.length) {
+      if (now() - gpuCounters.at >= GPU_COUNTER_TTL_MS) {
+        const byPid = new Map();
+        try {
+          const powershell = path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+          const { stdout } = await run(powershell, ['-NoProfile', '-NonInteractive', '-Command', GPU_COUNTER_SCRIPT], { ...options, timeout: 8000 });
+          const parsed = JSON.parse(stdout);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            for (const [pid, bytes] of Object.entries(parsed)) if (Number.isFinite(bytes) && bytes >= 0) byPid.set(Number(pid), bytes / 1048576);
+          }
+        } catch {}
+        gpuCounters = { at: now(), byPid };
+      }
+      for (const lease of unseen) if (gpuCounters.byPid.has(lease.pid)) observed[lease.id] = { ...observed[lease.id], vramMb: gpuCounters.byPid.get(lease.pid) };
     }
     if (uuid) {
       try {

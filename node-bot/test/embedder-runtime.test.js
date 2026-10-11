@@ -264,3 +264,37 @@ test("an embedder used while gaming stops GAMING_IDLE_MS after; the normal idle 
   t.mock.timers.tick(3600000 - GAMING_IDLE_MS);
   assert.equal(server.children[1].killed, true);
 }));
+
+test("MANA_EMBEDDER_DEVICE=cpu books RAM only and starts the server on the CPU", async () => {
+  const model = tempModel();
+  const asked = [];
+  const run = async (device) => {
+    const server = fakeServer();
+    const embedder = createEmbedder({
+      env: { MANA_EMBEDDER_MODEL: model, ...(device ? { MANA_EMBEDDER_DEVICE: device } : {}) },
+      findServerBin: () => "C:\\llama\\llama-server.exe",
+      spawn: server.spawn,
+      fetch: server.fetch,
+      sleep: async () => {},
+      resourceCoordinator: {
+        currentContext: () => null,
+        acquire: async (request) => {
+          asked.push(request);
+          return { mode: request.estimate.vramMb > 0 ? "gpu" : "cpu", attachProcess() {}, release() {} };
+        },
+      },
+    });
+    await embedder.embed(["hello"]);
+    return server.calls.spawn[0];
+  };
+  const starts = () => asked.filter((request) => request.owner === "Embedding llama-server");
+  const gpu = await run(null);
+  assert.ok(starts()[0].estimate.vramMb >= 2300);
+  assert.ok(gpu.args.includes("99") && !gpu.opts.env);
+  const cpu = await run("CPU");
+  assert.equal(starts()[1].estimate.vramMb, undefined);
+  assert.ok(starts()[1].estimate.ramMb > 0);
+  assert.equal(starts()[1].cpuAlternative, undefined);
+  assert.deepEqual(cpu.args.slice(cpu.args.indexOf("-ngl"), cpu.args.indexOf("-ngl") + 2), ["-ngl", "0"]);
+  assert.equal(cpu.opts.env.CUDA_VISIBLE_DEVICES, "-1");
+});

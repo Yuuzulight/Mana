@@ -17,7 +17,10 @@ function nativeEstimate(service, env = process.env) {
   switch (service) {
     case 'fish-speech': return { ramMb: 3072, vramMb: 5120 };
     case 'qwen3-tts': return { ramMb: 2765, vramMb: 2765 };
-    case 'cosyvoice3': return { ramMb: 3500, vramMb: 5120 };
+    // RAM is what the service holds once warm (~450 MB after it trims itself, measured idle and after speaking),
+    // not its ~5.7 GB load peak: the reservation stays booked for the service's life, and 3.5 GB of it unused kept
+    // the 9.9 GB chat model from starting. VRAM is its peak after load.
+    case 'cosyvoice3': return { ramMb: 1200, vramMb: 5120 };
     case 'embedder': return { ramMb: 1024, vramMb: (env.RETRIEVER_EMBEDDER_DEVICE || 'cpu') === 'cpu' ? 0 : 2300 };
     case 'retriever': return { ramMb: 1024 };
     case 'gpt-sovits': {
