@@ -2682,12 +2682,17 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    // #583: "Auto" (null override) plus the 4 providers server.js's
+    // #583: "Auto" (null override) plus the providers server.js's
     // TTS_OVERRIDE_PROVIDERS allow-lists -- selecting it clears the
-    // override rather than sending an invalid 5th value.
+    // override rather than sending an invalid extra value.
     private const string AutoProviderLabel = "Auto (gaming-based)";
-    private static readonly string[] TtsProviders = { AutoProviderLabel, "fish", "kokoro", "gpt_sovits", "cli" };
-    private static readonly string[] TtsProviderLabels = { "Automatic", "Fish Speech", "Kokoro", "GPT-SoVITS", "Command line" };
+    private static readonly string[] TtsProviders = { AutoProviderLabel, "cosyvoice3", "qwen3tts", "fish", "kokoro", "gpt_sovits", "cli" };
+    private static readonly string[] TtsProviderLabels = { "Automatic", "CosyVoice3", "Qwen3-TTS", "Fish Speech", "Kokoro", "GPT-SoVITS", "Command line" };
+
+    // Starts the chosen local voice (and stops the other one) before the
+    // backend is told to use it; false when it didn't come up. Set by
+    // ManaApplicationContext, which owns the voice services.
+    public Func<string?, Task<bool>>? EnsureVoiceService { get; set; }
 
     private readonly Func<HotkeyAction, Keys?, string?>? bindHotkey;
 
@@ -3238,13 +3243,27 @@ internal sealed class SettingsPanel : UserControl
 
     private async Task SaveVoiceProviderAsync(int index)
     {
+        var provider = index == 0 ? null : TtsProviders[index];
+        voiceProviderCombo.Enabled = false; // a local voice can take a minute to load
+        UseWaitCursor = true;
         try
         {
-            await backendClient.SetTtsOverrideAsync(index == 0 ? null : TtsProviders[index]);
+            if (EnsureVoiceService is { } ensure && !await ensure(provider))
+            {
+                MessageBox.Show(this, "That voice didn't start. Its log is in tools\\cosyvoice or tools\\qwen3-tts (service.err.log).", "Voice", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                await RefreshVoiceTabAsync();
+                return;
+            }
+            await backendClient.SetTtsOverrideAsync(provider);
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Couldn't change her voice: {BackendError.Describe(ex)}", "Voice", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            voiceProviderCombo.Enabled = true;
         }
     }
 

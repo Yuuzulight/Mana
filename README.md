@@ -219,6 +219,7 @@ Common troubleshooting:
 - [VTube Studio setup](docs/vtube_studio_setup.md): avatar hotkeys and reactions.
 - [GPT-SoVITS setup](docs/gpt_sovits_setup.md): trial anime-style voice-cloning provider.
 - [Qwen3-TTS](docs/qwen3_tts.md): lighter voice-cloning provider (`TTS_PROVIDER=qwen3tts`).
+- [CosyVoice3](docs/cosyvoice3_tts.md): voice-cloning provider (`TTS_PROVIDER=cosyvoice3`); Settings > Voice swaps between it and Qwen3-TTS.
 - [Fish Speech TTS](docs/fish_speech_tts.md): the default speech provider.
 - [Market analysis helper](docs/market_analysis_helper.md): stock-market helper setup.
 - [Vision setup](docs/vision_setup.md): local image understanding with a vision GGUF.

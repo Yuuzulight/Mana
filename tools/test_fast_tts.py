@@ -1,0 +1,146 @@
+"""Self-check for tools/fast_tts (#1454). The sampler needs only NumPy; the decoder check needs CUDA, PyTorch and
+transformers and is skipped without them. Run with the CosyVoice venv (or any with those):
+
+    tools/cosyvoice/env/python.exe tools/test_fast_tts.py
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+import numpy as np  # noqa: E402
+
+from fast_tts.sampling import CpuSampler  # noqa: E402
+
+
+def upstream_nucleus(p, top_p=0.8, top_k=25):
+    # CosyVoice's nucleus_sampling loop (cosyvoice/utils/common.py), the candidate set it chooses from.
+    order = np.argsort(-p, kind="stable")
+    kept, cum = [], 0.0
+    for i in order:
+        if cum < top_p and len(kept) < top_k:
+            cum += p[i]
+            kept.append(int(i))
+        else:
+            break
+    return kept
+
+
+def check_sampler_matches_upstream():
+    rng = np.random.default_rng(0)
+    s = CpuSampler(top_k=25, top_p=0.8, eos=7)
+    for trial in range(300):
+        logits = rng.normal(scale=rng.uniform(0.5, 6), size=300)
+        p = np.exp(logits) / np.exp(logits).sum()
+        cand, _, _ = s.candidates(p)
+        assert list(cand) == upstream_nucleus(p), trial
+        masked = p.copy(); masked[7] = 0; masked /= masked.sum()
+        cand, _, _ = s.candidates(p, mask_eos=True)
+        assert list(cand) == upstream_nucleus(masked) and 7 not in cand, trial
+
+
+def check_repetition_fallback():
+    s = CpuSampler(top_k=1, top_p=0.8, win_size=10, tau_r=0.1, seed=1)
+    p = np.full(50, 0.001); p[3] = 1.0; p /= p.sum()
+    assert s(p, decoded=[]) == 3                          # top-1 is token 3
+    assert all(s(p, decoded=[3]) != 3 for _ in range(50))  # a repeat in the window: sampled from the rest
+
+
+def check_prompt_alignment():
+    try:
+        import torch
+    except ImportError:
+        print("prompt: skipped (no torch)")
+        return
+    from fast_tts.cosyvoice import align_prompt
+    tok, feat = torch.arange(228).reshape(1, -1), torch.zeros(1, 456, 80)
+    out = align_prompt({"flow_prompt_speech_token": tok, "prompt_speech_feat": feat, "text": "kept"}, 25)
+    assert out["flow_prompt_speech_token"].shape[1] == 225 and out["prompt_speech_feat"].shape[1] == 450
+    assert out["flow_prompt_speech_token"][0, 0].item() == 3 and out["text"] == "kept"   # cut from the start
+    whole = {"flow_prompt_speech_token": tok[:, :200], "prompt_speech_feat": feat[:, :400]}
+    assert align_prompt(whole, 25) is whole                                              # already whole chunks
+    short = {"flow_prompt_speech_token": tok[:, :20], "prompt_speech_feat": feat[:, :40]}
+    assert align_prompt(short, 25) is short                                              # under one chunk
+    odd = {"flow_prompt_speech_token": tok, "prompt_speech_feat": feat[:, :455]}
+    assert align_prompt(odd, 25) is odd                                                  # frames don't line up
+    assert align_prompt({"text": "x"}, 25) == {"text": "x"}
+    print("prompt: trimmed to whole chunks from its start")
+
+
+def check_flow_graph_matches_eager():
+    """A graphed estimator gives what the module gives, for a new shape and for a replayed one."""
+    try:
+        import torch
+    except ImportError:
+        print("flow graph: skipped (no torch)")
+        return
+    if not torch.cuda.is_available():
+        print("flow graph: skipped (no CUDA)")
+        return
+    from fast_tts.flow_graph import GraphedEstimator
+
+    class Toy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = torch.nn.Conv1d(80, 80, 3, padding=1)
+        def forward(self, x, mask, mu, t, spks, cond, streaming=False):
+            h = self.a(x * mask + mu + cond) + spks.unsqueeze(-1) + t.view(-1, 1, 1)
+            return torch.tanh(h) * (0.5 if streaming else 1.0)
+
+    toy = Toy().cuda().eval()
+    graphed = GraphedEstimator(toy, max_graphs=2)
+    with torch.inference_mode():
+        for length in (50, 50, 75, 50, 100, 125):
+            args = [torch.randn(2, 80, length, device="cuda"), torch.ones(2, 1, length, device="cuda"),
+                    torch.randn(2, 80, length, device="cuda"), torch.rand(2, device="cuda"),
+                    torch.randn(2, 80, device="cuda"), torch.randn(2, 80, length, device="cuda")]
+            for streaming in (False, True):
+                assert torch.allclose(graphed(*args, streaming=streaming), toy(*args, streaming=streaming), atol=1e-5)
+    assert len(graphed.graphs) == 2 and not graphed.eager                      # kept to max_graphs
+    print("flow graph: matches the module, new and replayed shapes")
+
+
+def check_decoder_matches_plain_forward():
+    try:
+        import torch
+        from transformers import Qwen2Config, Qwen2Model
+    except ImportError:
+        print("decoder: skipped (no torch/transformers)")
+        return
+    if not torch.cuda.is_available():
+        print("decoder: skipped (no CUDA)")
+        return
+    from fast_tts.decoder import GraphDecoder
+    torch.manual_seed(0)
+    cfg = Qwen2Config(hidden_size=64, intermediate_size=128, num_hidden_layers=2, num_attention_heads=4,
+                      num_key_value_heads=2, vocab_size=10, max_position_embeddings=256)
+    backbone = Qwen2Model(cfg).cuda().float().eval()
+    head = torch.nn.Linear(64, 40, bias=False).cuda().float()
+    embed = torch.nn.Embedding(40, 64).cuda().float()
+    dec = GraphDecoder(backbone, head, embed, max_cache_len=128, dtype=torch.float32)
+
+    def plain(embeds):
+        with torch.inference_mode():
+            return head(backbone(inputs_embeds=embeds).last_hidden_state[:, -1]).softmax(-1)[0].cpu().numpy()
+
+    for prompt_len in (9, 5):                             # a second prompt reuses the graph and the cache
+        prompt = torch.randn(1, prompt_len, 64, device="cuda")
+        probs, pos = dec.prefill(prompt)
+        seq = prompt
+        assert np.allclose(probs, plain(seq), atol=1e-4)
+        for token in (3, 17, 3, 31, 0, 12):
+            seq = torch.cat([seq, embed.weight[token].reshape(1, 1, -1)], dim=1)
+            probs = dec.step(token, pos); pos += 1
+            assert np.allclose(probs, plain(seq), atol=1e-4), (prompt_len, token)
+    print("decoder: graph steps match a plain forward")
+
+
+if __name__ == "__main__":
+    check_sampler_matches_upstream()
+    check_repetition_fallback()
+    print("sampler: same candidates as upstream; repetition fallback holds")
+    check_prompt_alignment()
+    check_flow_graph_matches_eager()
+    check_decoder_matches_plain_forward()
+    print("ok")

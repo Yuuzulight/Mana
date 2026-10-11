@@ -212,6 +212,12 @@ function createTtsRuntime(options = {}) {
   const qwen3TtsUrl = env.QWEN3_TTS_URL || "http://127.0.0.1:5012";
   const qwen3TtsFallbackProvider =
     env.QWEN3_TTS_FALLBACK_PROVIDER || "none";
+  // CosyVoice3 voice (tools/cosyvoice3_service.py, docs/cosyvoice3_tts.md);
+  // opt in with TTS_PROVIDER=cosyvoice3. Like Qwen3-TTS it has no fallback by
+  // default, so a failure shows instead of switching to a different voice.
+  const cosyvoice3TtsUrl = env.COSYVOICE3_TTS_URL || "http://127.0.0.1:5013";
+  const cosyvoice3TtsFallbackProvider =
+    env.COSYVOICE3_TTS_FALLBACK_PROVIDER || "none";
   // server.js passes resolveTtsProvider()'s startup decision (#1076).
   const ttsProvider = options.ttsProvider || env.TTS_PROVIDER || (ttsBin ? "cli" : "fish");
   // Manual runtime override (e.g. "use Kokoro while gaming"), set via
@@ -617,6 +623,22 @@ function createTtsRuntime(options = {}) {
         20000,
       );
       logPerf("tts qwen3tts", startedAt);
+    } else if (provider === "cosyvoice3") {
+      const startedAt = nowMs();
+      // Slower than Qwen3-TTS (~0.5x real time): the timeout only stops a
+      // wedged service from hanging the reply.
+      const voice = getVoice();
+      audio = await postJson(
+        `${cosyvoice3TtsUrl}/synthesize`,
+        {
+          text,
+          language: pickQwen3TtsLanguage(text),
+          ...(emotion ? { emotion } : {}),
+          ...(voice ? { ref_audio: voice.refAudio, ref_text: voice.refText } : {}),
+        },
+        30000,
+      );
+      logPerf("tts cosyvoice3", startedAt);
     } else if (provider === "cli") {
       audio = runTts(text);
     } else {
@@ -711,19 +733,25 @@ function createTtsRuntime(options = {}) {
       }
     }
 
-    if (activeProvider === "qwen3tts") {
+    // The two local cloning voices: same shape, each with its own fallback.
+    const localVoice = {
+      qwen3tts: ["Qwen3-TTS", qwen3TtsFallbackProvider],
+      cosyvoice3: ["CosyVoice3", cosyvoice3TtsFallbackProvider],
+    }[activeProvider];
+    if (localVoice) {
+      const [label, fallbackProvider] = localVoice;
       try {
-        const res = await synthesizeWithConfiguredProvider("qwen3tts", text, emotion);
+        const res = await synthesizeWithConfiguredProvider(activeProvider, text, emotion);
         return res.audio;
       } catch (error) {
-        if (qwen3TtsFallbackProvider === "none") {
+        if (fallbackProvider === "none") {
           throw error;
         }
         console.warn(
-          `Qwen3-TTS failed, falling back to ${qwen3TtsFallbackProvider}: ${error.message}`,
+          `${label} failed, falling back to ${fallbackProvider}: ${error.message}`,
         );
         const res = await synthesizeWithConfiguredProvider(
-          qwen3TtsFallbackProvider,
+          fallbackProvider,
           text,
         );
         return res.audio;
