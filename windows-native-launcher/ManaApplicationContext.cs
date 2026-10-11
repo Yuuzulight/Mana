@@ -302,6 +302,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         sessionListForm.BindHotkey = (action, keys) => globalHotkeys.Bind(action.Id, keys);
         sessionListForm.DictateAnywhereChanged = on => dictationService.IsEnabled = on; // #1426: from Settings > Voice
         sessionListForm.EnsureVoiceService = processManager.EnsureTtsServiceAsync; // from Settings > Voice's CosyVoice3 / Qwen3-TTS pick
+        sessionListForm.VoiceServiceState = processManager.TtsServiceStateAsync; // the Ready / Warming up status beside it
         sessionListForm.AvatarSettingsChanged = () => RunOnUi(ApplyAvatarSettings); // #1426: from Settings > General > Avatar
         sessionListForm.SwitchCharacter = SwitchCharacterAsync; // #1426: from Settings > Memory > Characters
         sessionListForm.RevertMergedPr = PromptRevertPr; // #1426: from Settings > Advanced > Developer

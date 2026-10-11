@@ -41,7 +41,7 @@ Mana is for people who want an always-listening voice assistant on their desktop
 ### How is Mana different?
 
 - 🔒 **Privacy-first, not privacy-optional** — local `llama.cpp` replies, local Whisper transcription, local TTS, and local OCR by default; `OPENAI_API_KEY` is ignored unless you explicitly opt into remote AI.
-- 🎙️ **Voice-native, not one-shot** — say the wake word once (`Mana` or `wake up`) and keep talking, instead of re-triggering per question like a push-to-talk command. Talk over her mid-reply (hotkey or just your voice) and she stops to listen, instead of finishing a sentence you already interrupted.
+- 🎙️ **Voice-native, not one-shot** — she's awake the whole time she's listening, so you just keep talking (turn on Settings > Voice > Wake word to make her wait for `Mana` or `wake up` first), instead of re-triggering per question like a push-to-talk command. Talk over her mid-reply (hotkey or just your voice) and she stops to listen, instead of finishing a sentence you already interrupted.
 - 🧩 **One integrated loop, not five disconnected tools** — transcription, LLM reply, TTS, and screen OCR are wired together into a single conversation instead of scripts you have to glue yourself.
 - 🛠️ **Developer-friendly, not a black box** — Mana can open files in Zed or VS Code, propose edits for review instead of silently applying them, and can even run as a Zed External Agent.
 - 🎭 **A presence, not just a reply** — a Live2D or VRM avatar with lip sync and emotion reactions, plus a gaming mode that backs off while you're playing, so it feels like a companion on your desktop rather than a chatbot tab.
@@ -58,10 +58,15 @@ https://github.com/user-attachments/assets/639fd9b4-3f1e-4a58-aa02-79b56572306c
 <p align="center"><sub>Mana's debut: a 48-second self-introduction in her own voice (Fish Speech), rendered with the same Live2D runtime the launchers use. The avatar is Live2D's Hiyori sample model, standing in until Mana's own model is finished.</sub></p>
 
 <p align="center">
+  <img src="docs/images/windows-native-launcher-main.png" alt="Mana native launcher main screen" width="640">
+</p>
+<p align="center"><sub>The native Windows launcher (the primary one), with the chat sidebar hidden.</sub></p>
+
+<p align="center">
   <img src="docs/images/windows-launcher-main.png" alt="Mana Electron launcher main screen" width="490">
   <img src="docs/images/desktop-client-main.png" alt="Mana desktop-client main screen" width="490">
 </p>
-<p align="center"><sub>The retired Electron launcher (left, kept as a fallback; see <a href="docs/legacy_launcher.md">the legacy launcher notes</a>) and desktop-client (right). The native launcher's screenshot hasn't been added here yet.</sub></p>
+<p align="center"><sub>The retired Electron launcher (left, kept as a fallback; see <a href="docs/legacy_launcher.md">the legacy launcher notes</a>) and desktop-client (right).</sub></p>
 
 ## Quick Start
 
@@ -84,7 +89,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 ## Highlights
 
 - **Local AI by default**: Mana uses local `llama.cpp` models unless remote AI is explicitly enabled. See [Model Stack](#model-stack).
-- **Voice loop**: wake Mana once with `Mana` or `wake up`, then keep talking without repeating the wake word.
+- **Voice loop**: she answers everything while she's listening, no wake word. Settings > Voice > Wake word brings it back: say `Mana` or `wake up` once, then keep talking.
 - **Voice barge-in**: interrupt Mana mid-reply with a hotkey or just by talking over her, on by default. See [docs/roadmap/issue-219-voice-barge-in.md](docs/roadmap/issue-219-voice-barge-in.md).
 - **Local transcription and speech output**: audio goes through `whisper.cpp`, and replies are spoken locally. Fish Speech is the default TTS provider; see [docs/fish_speech_tts.md](docs/fish_speech_tts.md).
 - **Screen text awareness**: after Mana is awake, the launcher can capture the primary display and read the text on it locally.

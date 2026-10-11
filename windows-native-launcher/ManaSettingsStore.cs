@@ -47,6 +47,11 @@ internal sealed class ManaSettingsStore
     // hold and is now ignored, so existing installs get the new default.
     public string? WakePrefilter { get; set; }
 
+    // Settings > Voice's "Wake word": true = she needs her name to wake and
+    // sleeps again after a while; null/false = awake the whole time she's
+    // listening (the default). MANA_WAKE_WORD overrides it.
+    public bool? WakeWordRequired { get; set; }
+
     // #619: echo cancellation on the microphone (EchoCancellation); null =
     // default (on). Settings > Voice; MANA_VOICE_AEC overrides it.
     public bool? EchoCancellation { get; set; }

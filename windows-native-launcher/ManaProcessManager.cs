@@ -803,6 +803,25 @@ internal sealed class ManaProcessManager : IDisposable
         return started is not null && await WaitForHealthyAsync(true, healthUrl, TimeSpan.FromMinutes(3), null, started);
     }
 
+    // What Settings > Voice shows beside the voice engine: "ready" once the
+    // voice answers its health check, "warming" while its process is up but
+    // doesn't yet, "off" when it isn't running, "n/a" for voices this
+    // doesn't manage (Fish, Kokoro, ...). null is the configured voice.
+    public async Task<string> TtsServiceStateAsync(string? provider)
+    {
+        provider ??= UsesCosyVoice3 ? "cosyvoice3" : UsesQwen3Tts ? "qwen3tts" : null;
+        if (!isBackendLocal || provider is not ("qwen3tts" or "cosyvoice3"))
+        {
+            return "n/a";
+        }
+        var cosy = provider == "cosyvoice3";
+        if (await IsServiceRunningAsync(cosy ? cosyVoice3HealthUrl : qwen3TtsHealthUrl))
+        {
+            return "ready";
+        }
+        return (cosy ? cosyVoice3Process : qwen3TtsProcess) is { HasExited: false } ? "warming" : "off";
+    }
+
     // A launch failure of an optional service is logged, never fatal.
     private static Process? StartOptional(string name, string fileName, string arguments, string workingDirectory, Dictionary<string, string>? environment = null)
     {

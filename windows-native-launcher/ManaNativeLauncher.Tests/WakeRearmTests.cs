@@ -27,4 +27,16 @@ public class WakeRearmTests
     {
         Assert.Equal(expected, VoiceLoop.ResolveWakeRearmMs(env));
     }
+
+    [Theory]
+    [InlineData(null, null, false)]     // default: no wake word
+    [InlineData(null, true, true)]      // Settings > Voice
+    [InlineData(null, false, false)]
+    [InlineData("1", false, true)]      // the environment wins
+    [InlineData("off", true, false)]
+    [InlineData("junk", true, true)]
+    public void ResolveWakeWordRequired(string? env, bool? saved, bool expected)
+    {
+        Assert.Equal(expected, VoiceLoop.ResolveWakeWordRequired(env, saved));
+    }
 }

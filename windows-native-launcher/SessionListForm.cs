@@ -1717,6 +1717,7 @@ internal sealed partial class SessionListForm : Form
     public Action<bool>? DictateAnywhereChanged { get; set; }
     // Settings > Voice's CosyVoice3 / Qwen3-TTS switch: starts the chosen service. Set by ManaApplicationContext.
     public Func<string?, Task<bool>>? EnsureVoiceService { get; set; }
+    public Func<string?, Task<string>>? VoiceServiceState { get; set; }
     public Action? AvatarSettingsChanged { get; set; }
 
     // #1426: Settings > Memory > Characters' "Switch to her".
@@ -1774,6 +1775,7 @@ internal sealed partial class SessionListForm : Form
         panel.OpenDoc = OpenDoc;
         panel.DictateAnywhereChanged = on => DictateAnywhereChanged?.Invoke(on);
         panel.EnsureVoiceService = provider => EnsureVoiceService?.Invoke(provider) ?? Task.FromResult(true);
+        panel.VoiceServiceState = provider => VoiceServiceState?.Invoke(provider) ?? Task.FromResult("n/a");
         panel.AvatarSettingsChanged = () => AvatarSettingsChanged?.Invoke();
         panel.SwitchCharacter = id => SwitchCharacter?.Invoke(id) ?? Task.CompletedTask;
         panel.RevertMergedPr = () => RevertMergedPr?.Invoke();
