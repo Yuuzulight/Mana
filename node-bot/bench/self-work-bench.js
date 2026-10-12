@@ -11,6 +11,7 @@
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
 //     [--setup <name>]   (worktree folders bench-<name>-<case>, so setups can run side by side)
+//     [--helper-model <model>]   (with --remote: that model also does her goal check and tool-call repair, and reviews her edits unless --reviewer says otherwise; nothing local runs)
 //     [--reviewer <model>]   (with --remote: that DeepSeek model reviews her edits, so no local model is loaded)
 //     [--no-round-cap]   (no round limit: the run ends when it hands in, is stuck, fills its context or runs out of time)
 //     [--time-warn-only]   (with --time-by-estimate: only the warning at the estimate; --max-minutes is then the stop, a guard against a hang)
@@ -580,7 +581,12 @@ function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
     addSpend(spend, model, t, costOf(model, t, isPeak()) || 0);
     ledger.record({ model, use: "bench", usage: json?.usage || {} });
   };
-  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse, contextSize: REMOTE_CONTEXT, maxTokens: REMOTE_MAX_TOKENS, retries: 12 });
+  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse, contextSize: REMOTE_CONTEXT, maxTokens: REMOTE_MAX_TOKENS, retries: 12,
+    ...(local.helperModel ? { helperModel: local.helperModel, onHelperResponse: (json) => {
+      const t = tokensOf(json?.usage || {});
+      addSpend(spend, local.helperModel, t, costOf(local.helperModel, t, isPeak()) || 0);
+      ledger.record({ model: local.helperModel, use: "bench", usage: json?.usage || {} });
+    } } : {}) });
   // The report's context-overflow check measures a run against the window its loop worked to: the remote model's,
   // not the local reviewer's (--context only sizes that one).
   // --reviewer <model>: that model reviews her edits through the same API (no thinking, short replies), and the bench
@@ -759,14 +765,14 @@ async function main(argv) {
   const timeWarnOnly = process.argv.includes("--time-warn-only");
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
-  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], reviewer: opt("--reviewer")[0] };
+  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], helperModel: opt("--helper-model")[0], reviewer: opt("--reviewer")[0] || opt("--helper-model")[0] };
   const remote = opt("--remote")[0];
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
   const maxUsd = Number(opt("--max-usd")[0]) || 0;
   const approvalGate = benchTestGate(worktreesDir);
   // Her loop and her reviewer both on the API: nothing of the bench's takes the GPU, so a game or her chat model being up is no reason to wait.
-  const noLocalModel = Boolean(remote && config.reviewer);
+  const noLocalModel = Boolean(remote && config.reviewer && config.helperModel);
   const gate = {
     isGaming: () => !noLocalModel && isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
