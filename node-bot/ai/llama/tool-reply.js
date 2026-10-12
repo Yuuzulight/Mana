@@ -388,6 +388,16 @@ async function runToolAwareReply(
         });
       }
 
+      if (structuredActions && typeof toolPolicy.allowedActions === "function") {
+        const allowed = toolPolicy.allowedActions();
+        if (Array.isArray(allowed) && allowed.length === 1 && allowed[0] === "coding__propose_edit") {
+          messages.push({
+            role: "user",
+            content: "CONTROLLER PHASE TRANSITION: inspection is complete. The next response must be one coding__propose_edit action using the evidence already returned. Do not emit a plan, read, search, or explanation.",
+          });
+        }
+      }
+
       const budgetExhausted =
         goalFinished ||
         awaitingApproval ||
