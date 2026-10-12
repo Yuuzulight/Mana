@@ -214,7 +214,7 @@ class AgenticCodingController {
 
   recoveryActions(name) {
     if (name === "self_work__read" || name === "self_work__files") {
-      return ["self_work__search", "self_work__read", "coding__propose_edit"];
+      return ["self_work__search", "coding__propose_edit"];
     }
     if (name === "coding__run_tests") {
       return ["self_work__search", "self_work__read", "coding__propose_edit"];
@@ -237,7 +237,14 @@ class AgenticCodingController {
       });
     }
     const allowed = this.requirePlan ? this.allowedActions() : [];
-    if (allowed.length && !allowed.includes(name) && name !== "self_work__plan") {
+    if (PLAN_TOOLS.has(name) && this.planned &&
+        args.steps === undefined && args.done === undefined && args.no_test === undefined) {
+      throw this.deny("A plan already exists. Advance it with an inspection, edit, verification, review, or finish action instead of restating it.", {
+        recoveryCode: "PLAN_ALREADY_SET",
+        nextActions: this.allowedActions().filter((action) => action !== "self_work__plan"),
+      });
+    }
+    if (allowed.length && !allowed.includes(name)) {
       throw this.deny(`This is the ${this.phase} phase. Choose one of: ${allowed.join(", ")}.`, {
         recoveryCode: "ILLEGAL_ACTION",
         nextActions: allowed,

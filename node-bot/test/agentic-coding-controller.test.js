@@ -92,6 +92,19 @@ test("requires a plan before edits when production mode enables plan gating", ()
   assert.doesNotThrow(() => c.before("coding__propose_edit", edit));
 });
 
+test("does not allow a planned run to loop on plan summaries", () => {
+  const c = createAgenticCodingController({ requirePlan: true });
+  const plan = { steps: ["inspect the target", "edit and verify"] };
+  c.before("self_work__plan", plan);
+  c.after("self_work__plan", plan, "plan");
+  assert.throws(() => c.before("self_work__plan", { summary: "restating the same plan" }), error => {
+    assert.equal(error.recoveryCode, "PLAN_ALREADY_SET");
+    assert.ok(!error.nextActions.includes("self_work__plan"));
+    assert.ok(error.nextActions.includes("self_work__read"));
+    return true;
+  });
+});
+
 test("validates action payloads before they can reach workspace executors", () => {
   assert.throws(() => validateAction("self_work__read", { path: "src/a.js", start_line: 0 }), /positive line/);
   assert.throws(() => validateAction("self_work__search", { text: 3 }), /text must be a string/);
