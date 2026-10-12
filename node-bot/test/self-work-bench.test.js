@@ -407,3 +407,39 @@ test("worktreePrefix gives each setup its own bench- folder prefix", () => {
   assert.equal(worktreePrefix(undefined), "bench-");
   assert.equal(worktreePrefix("a b/../c"), "bench-a-b-c-");
 });
+
+test("cost per solved case overall, by kind and by model; nothing solved gives null, not Infinity", () => {
+  const run = (id, kind, passed, costUsd, costByModel, ended = "finished") => ({ id, kind, repeat: 1, passed, ended, costUsd, costByModel, wallMs: 1000, rounds: 5, toolCalls: 5, tokens: { prompt: 10, completion: 1, peak: 10 } });
+  const s = summarize([
+    run("a", "node-bug", true, 1, { "deepseek-v4-pro": 1 }),
+    run("b", "node-bug", true, 2, { "deepseek-v4-pro": 1.5, "deepseek-flash": 0.5 }),
+    run("c", "launcher", false, 3, { "deepseek-v4-pro": 3 }, "stuck"),
+  ]);
+  assert.equal(s.money.usd, 6);
+  assert.equal(s.money.usdPerSolved, 3);
+  assert.equal(s.byKind["node-bug"].usdPerSolved, 1.5);
+  assert.equal(s.byKind.launcher.usdPerSolved, null);
+  assert.deepEqual(s.byModelUsd, { "deepseek-v4-pro": 5.5, "deepseek-flash": 0.5 });
+  assert.deepEqual(s.endedBy, { finished: 2, stuck: 1 });
+  assert.equal(summarize([run("c", "launcher", false, 3, {})]).money.usdPerSolved, null);
+});
+
+test("spendDelta is what one case added to the run's spend, in total and per model", () => {
+  const { spendDelta, addSpend } = require("../bench/self-work-bench");
+  const spend = {};
+  addSpend(spend, "deepseek-flash", { cacheHit: 1 }, 0.25);
+  const before = JSON.parse(JSON.stringify(spend));
+  addSpend(spend, "deepseek-v4-pro", { cacheHit: 1 }, 0.5);
+  addSpend(spend, "deepseek-flash", { cacheHit: 1 }, 0.25);
+  assert.deepEqual(spendDelta(before, spend), { costUsd: 0.75, costByModel: { "deepseek-v4-pro": 0.5, "deepseek-flash": 0.25 } });
+  assert.deepEqual(spendDelta({}, {}), { costUsd: 0, costByModel: {} });
+});
+
+test("the report prints cost per solved case, by model and by kind", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bench-cost-report-"));
+  const run = (id, kind, passed, costUsd) => ({ id, kind, repeat: 1, passed, ended: "finished", costUsd, costByModel: { "deepseek-flash": costUsd }, wallMs: 1000, rounds: 5, toolCalls: 5, toolErrors: 0, tokens: { prompt: 10, completion: 1, peak: 10 }, diff: { added: 1, removed: 0, files: ["a.js"] }, outside: [] });
+  const md = writeReport([run("a", "node-bug", true, 0.5), run("b", "node-bug", false, 0.5)], dir, { label: "x" });
+  assert.match(md, /Cost: \$1\.00 in all, \$1\.00 per solved case \(1 solved\)/);
+  assert.match(md, /deepseek-flash \$1\.00/);
+  assert.match(md, /\| node-bug \| 2 \| 50% \| 50% \| 1-1 \| \$1\.00 \| \$1\.00 \|/);
+});

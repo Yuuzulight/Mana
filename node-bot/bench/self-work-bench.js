@@ -456,8 +456,24 @@ function verifyCase(c, { repoRoot, worktreesDir }) {
 // #1221: pass@1 (the mean over repeats), pass@k (passed in any repeat)
 // and the spread (fewest and most passes in one repeat), overall and by
 // kind; failure kinds; and the mean cost of a run.
+// What a case cost: the dollars a run added while it ran (a setup runs one case at a time), in total and per model.
+function spendDelta(before, after) {
+  const costByModel = {};
+  for (const [m, now] of Object.entries(after.byModel || {})) {
+    const usd = now.usd - (before.byModel?.[m]?.usd || 0);
+    if (usd) costByModel[m] = usd;
+  }
+  return { costUsd: (after.usd || 0) - (before.usd || 0), costByModel };
+}
+
 function summarize(results) {
   const repeats = [...new Set(results.map((r) => r.repeat || 1))];
+  // Dollars for some rows and what each solved case cost (null, not Infinity, when none solved).
+  const money = (rows) => {
+    const usd = rows.reduce((a, r) => a + (r.costUsd || 0), 0);
+    const solved = rows.filter((r) => r.passed).length;
+    return { usd, solved, usdPerSolved: solved ? usd / solved : null };
+  };
   const ids = [...new Set(results.map((r) => r.id))];
   const of = (rows) => {
     const cases = [...new Set(rows.map((r) => r.id))];
@@ -468,8 +484,13 @@ function summarize(results) {
       pass1: cases.length ? perRepeat.reduce((a, b) => a + b, 0) / repeats.length / cases.length : 0,
       passK: cases.length ? anyPass / cases.length : 0,
       spread: [Math.min(...perRepeat), Math.max(...perRepeat)],
+      ...money(rows),
     };
   };
+  const byModelUsd = {};
+  for (const r of results) for (const [m, usd] of Object.entries(r.costByModel || {})) byModelUsd[m] = (byModelUsd[m] || 0) + usd;
+  const endedBy = {};
+  for (const r of results) endedBy[r.ended] = (endedBy[r.ended] || 0) + 1;
   const kinds = [...new Set(results.map((r) => r.kind || ""))].sort();
   const failures = {};
   for (const r of results) if (r.failure) failures[r.failure] = (failures[r.failure] || 0) + 1;
@@ -484,6 +505,9 @@ function summarize(results) {
     overall: of(results),
     byKind: Object.fromEntries(kinds.map((k) => [k, of(results.filter((r) => (r.kind || "") === k))])),
     failures,
+    money: money(results),
+    byModelUsd,
+    endedBy,
     cost: {
       wallS: mean((r) => r.wallMs / 1000),
       rounds: mean((r) => r.rounds),
@@ -499,6 +523,7 @@ function summarize(results) {
 }
 
 const pct = (x) => `${Math.round(x * 100)}%`;
+const usd = (x) => `$${(x || 0).toFixed(2)}`;
 
 function writeReport(results, outDir, meta = {}) {
   fs.mkdirSync(outDir, { recursive: true });
@@ -519,9 +544,14 @@ function writeReport(results, outDir, meta = {}) {
     "",
     `**pass@1 ${pct(o.pass1)}, pass@${summary.repeats} ${pct(o.passK)}**, passes per repeat ${o.spread[0]}-${o.spread[1]} of ${o.cases}. ${passed}/${rows.length} runs passed.`,
     "",
-    "| Kind | Cases | pass@1 | pass@k | Spread |",
-    "| --- | --- | --- | --- | --- |",
-    ...Object.entries(summary.byKind).map(([k, v]) => `| ${k || "-"} | ${v.cases} | ${pct(v.pass1)} | ${pct(v.passK)} | ${v.spread[0]}-${v.spread[1]} |`),
+    "| Kind | Cases | pass@1 | pass@k | Spread | Cost | $ per solved |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...Object.entries(summary.byKind).map(([k, v]) => `| ${k || "-"} | ${v.cases} | ${pct(v.pass1)} | ${pct(v.passK)} | ${v.spread[0]}-${v.spread[1]} | ${usd(v.usd)} | ${v.usdPerSolved == null ? "-" : usd(v.usdPerSolved)} |`),
+    "",
+    ...(rows.some((r) => typeof r.costUsd === "number")
+      ? [`Cost: ${usd(summary.money.usd)} in all, ${summary.money.usdPerSolved == null ? "nothing solved" : `${usd(summary.money.usdPerSolved)} per solved case`} (${summary.money.solved} solved). By model: ${Object.entries(summary.byModelUsd).map(([m, v]) => `${m} ${usd(v)}`).join(", ") || "none"}.`, ""]
+      : []),
+    `Ended by: ${Object.entries(summary.endedBy).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}.`,
     "",
     `Failures: ${Object.entries(summary.failures).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}.`,
     "",
@@ -850,6 +880,7 @@ async function main(argv) {
     let harnessStreak = 0;
     for (const { c, repeat } of runs) {
       // A run a game or RAM paused isn't her result: wait it out, run it again.
+      const spendBefore = JSON.parse(JSON.stringify(spend));
       let result = null;
       let why = null;
       // DeepSeek bills double at peak hours: a case waits for off-peak instead of starting in them or within 30 minutes of them.
@@ -880,6 +911,7 @@ async function main(argv) {
         console.log(`Stopping at ${c.id}: ${result.error}`);
         break;
       }
+      if (remote) Object.assign(result, spendDelta(spendBefore, spend));
       results.push(result);
       writeReport(results, outDir, meta);
       if (maxUsd && spend.usd >= maxUsd) {
@@ -908,4 +940,4 @@ if (require.main === module) {
 }
 
 module.exports = {
-  addSpend, worktreePrefix, caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+  spendDelta, addSpend, worktreePrefix, caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
