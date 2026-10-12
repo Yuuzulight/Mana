@@ -124,6 +124,8 @@ function createToolCalls(context) {
       properties: {
         tool_calls: {
           type: "array",
+          minItems: 1,
+          maxItems: 1,
           items: {
             oneOf: tools.map((t) => ({
               type: "object",
@@ -138,6 +140,28 @@ function createToolCalls(context) {
       },
       required: ["tool_calls"],
     };
+  }
+
+  function parseStructuredToolCalls(content, tools) {
+    let parsed;
+    try {
+      parsed = JSON.parse(String(content || ""));
+    } catch {
+      return [];
+    }
+    const calls = Array.isArray(parsed?.tool_calls) ? parsed.tool_calls : [];
+    const params = new Map((tools || []).map((t) => [t.function.name, t.function.parameters || {}]));
+    return calls.flatMap((call, index) => {
+      const schema = params.get(call?.name);
+      if (!schema || !call || typeof call.arguments !== "object") return [];
+      const { args, problem, missing } = context.checkToolCallArgs(call.arguments, schema);
+      if (problem || missing.length) return [];
+      return [{
+        id: `structured_${Date.now()}_${index}`,
+        type: "function",
+        function: { name: call.name, arguments: JSON.stringify(args) },
+      }];
+    });
   }
 
 // One extra request, schema-constrained instead of relying on the
@@ -187,7 +211,7 @@ function createToolCalls(context) {
     }));
   }
 
-  return { looksLikeFailedToolCallJson, stripThinking, extractThinking, parseTextToolCalls, buildToolCallRepairSchema, repairToolCalls };
+  return { looksLikeFailedToolCallJson, stripThinking, extractThinking, parseTextToolCalls, buildToolCallRepairSchema, parseStructuredToolCalls, repairToolCalls };
 }
 
 module.exports = { createToolCalls };

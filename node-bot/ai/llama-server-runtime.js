@@ -534,6 +534,8 @@ function createLlamaServerRuntime(options = {}) {
 
   function buildToolCallRepairSchema(...args) { return toolCalls.buildToolCallRepairSchema(...args); }
 
+  function parseStructuredToolCalls(...args) { return toolCalls.parseStructuredToolCalls(...args); }
+
   function repairToolCalls(...args) { return withModelOperation(() => toolCalls.repairToolCalls(...args), Math.max(1, Number(threads) || 1)); }
 
   const goalReview = createGoalReview({
@@ -574,6 +576,7 @@ function createLlamaServerRuntime(options = {}) {
     get threads() { return threads; },
     get applyLoraAdapter() { return applyLoraAdapter; },
     get buildMessages() { return buildMessages; },
+    get buildToolCallRepairSchema() { return buildToolCallRepairSchema; },
     get buildSamplingParams() { return buildSamplingParams; },
     get checkToolCallArgs() { return checkToolCallArgs; },
     get ensureServer() { return ensureServer; },
@@ -590,6 +593,7 @@ function createLlamaServerRuntime(options = {}) {
     get memoryClaimNote() { return memoryClaimNote; },
     get nowMs() { return nowMs; },
     get parseTextToolCalls() { return parseTextToolCalls; },
+    get parseStructuredToolCalls() { return parseStructuredToolCalls; },
     get repairToolCalls() { return repairToolCalls; },
     get repairToolCallText() { return repairToolCallText; },
     get reviewGoalCompletion() { return reviewGoalCompletion; },

@@ -19,6 +19,10 @@ async function runToolAwareReply(
       onRound = null,
       // #1318: (text) when a round shows reply text alongside its tool calls.
       onRoundText = null,
+      // Goal-mode coding turns use a schema-constrained single action by
+      // default. This avoids relying on small local models to emit native
+      // tool-call markup consistently.
+      structuredGoalActions = false,
     } = {},
   ) {
     if (typeof context.fetchImpl !== "function") {
@@ -39,6 +43,7 @@ async function runToolAwareReply(
 
     const goalText = String(goal || "").trim();
     const goalMode = Boolean(goalText);
+    const structuredActions = goalMode && structuredGoalActions;
     const roundLimit = Math.max(
       1,
       Number(
@@ -89,7 +94,18 @@ async function runToolAwareReply(
       // tool_calls (reasoning_content); the loop below never sends it back
       // or parses it, and strips any <think> block left inside content.
       const toolFields = toolsEnabled
-        ? { tools: toolPolicy.tools, tool_choice: "auto" }
+        ? structuredActions
+          ? {
+              tool_choice: "none",
+              response_format: {
+                type: "json_schema",
+                json_schema: {
+                  name: "single_goal_tool_call",
+                  schema: context.buildToolCallRepairSchema(toolPolicy.tools),
+                },
+              },
+            }
+          : { tools: toolPolicy.tools, tool_choice: "auto" }
         : { tool_choice: "none" };
       const think = typeof thinking === "function" ? thinking() : thinking;
       const { params } = context.buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env: context.env });
@@ -235,6 +251,10 @@ async function runToolAwareReply(
       let requestedToolCalls = Array.isArray(message.tool_calls)
         ? message.tool_calls
         : [];
+
+      if (!requestedToolCalls.length && structuredActions) {
+        requestedToolCalls = context.parseStructuredToolCalls(visibleContent, toolPolicy.tools);
+      }
 
       if (!requestedToolCalls.length) {
         requestedToolCalls = context.parseTextToolCalls(visibleContent, toolPolicy.tools);

@@ -772,6 +772,7 @@ function createSelfWork(options = {}) {
       },
       maxMs: Infinity,
       maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
+      structuredGoalActions: true,
       overrideSystemPrompt:
         "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
     }).then(keep);
@@ -860,6 +861,7 @@ function createSelfWork(options = {}) {
         },
         maxMs: Infinity,
         maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
+        structuredGoalActions: true,
         overrideSystemPrompt:
           "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
       },
@@ -1041,6 +1043,7 @@ ${
       },
       maxMs: Infinity,
       maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
+      structuredGoalActions: true,
       overrideSystemPrompt:
         "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
     });
