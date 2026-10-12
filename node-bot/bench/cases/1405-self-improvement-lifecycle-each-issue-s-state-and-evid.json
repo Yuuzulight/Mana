@@ -1,0 +1,22 @@
+{
+  "id": "1405-self-improvement-lifecycle-each-issue-s-state-and-evid",
+  "kind": "node-feature",
+  "pr": 1405,
+  "issue": 1405,
+  "base": "5607db4872b8cfea688df4662d6ba4d7273f3bc8",
+  "fix": "2040faa20975da3008b68552b74a8d41033e6bd5",
+  "title": "Self-improvement lifecycle: each issue's state and evidence, a retry budget, holds the idle picker respects (#1386)",
+  "body": "Part of #1386.\n\n`self-improvement.js` keeps one record per issue she works on, across restarts (`<memory dir>/self-improvement.json`, written with tmp + rename). Each transition is kept with its evidence (the last 30 per issue), and at most 200 records are kept. Held ones are never dropped.\n- **From her run ends** (self-work's end notice): `pr-open` (with the PR number), `needs-you`, `retry`, then `exhausted` after 2 failed runs, or `waiting` / `no-change`. A game or RAM pause and my stop don't count against the budget.\n- **From merged PRs** (`offerUpdate`, which already lists them): `merged`.\n- **From an evaluation:** `POST /self-improvement/:issue/verify {label}` reads `bench/results/<label>/report.json` (#1381 behaviour evals or the bench). Its gate decides `verified` or `regressed`. Only a folder name is accepted, never a path.\n- **Holds:** `needs-you`, `exhausted` and `regressed` are skipped by her idle picker. Today a failing issue is picked again every idle period. `POST /self-improvement/:issue/retry` (me saying \"try that again\") clears the hold and the budget.\n- **`GET /self-improvement`:** every record with its history.\n\nIt records and advises only. Opening PRs, merging, deploying and reverting stay with self-work's own steps and my approvals, so a restart, a cancellation or a rejected approval can't repeat a side effect or open a duplicate PR. Self-work's existing open-PR check still applies.\n\nNot in this PR (it depends on PRs still open):\n- #1404 (#1384): approved improvement issues could get the `mana-task` label in the reviewed payload, so they queue for her.\n- #1402 (#1385): an exhausted issue's explanation could quote its lesson.\n- #1392 (#1381): running the behaviour evals automatically after a merged change is deployed. For now I trigger verify with a report.\n\nTests: `test/self-improvement.test.js` (budget and holds, evidence, merged / verified / regressed, restart and a broken file, retention, routes), run in CI.",
+  "fixFiles": [
+    "node-bot/self-improvement.js",
+    "node-bot/self-work.js",
+    "node-bot/server.js",
+    "node-bot/test/self-improvement.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/self-improvement.test.js"
+  ],
+  "testCommand": "node --test test/self-improvement.test.js",
+  "interface": "The merged change for PR #1405 is covered by test/self-improvement.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

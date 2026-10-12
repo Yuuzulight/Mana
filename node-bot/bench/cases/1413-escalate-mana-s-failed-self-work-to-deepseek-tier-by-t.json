@@ -1,0 +1,22 @@
+{
+  "id": "1413-escalate-mana-s-failed-self-work-to-deepseek-tier-by-t",
+  "kind": "node-feature",
+  "pr": 1413,
+  "issue": 1413,
+  "base": "4206a772d41dd2b0a430e5c142374c6efcda58cc",
+  "fix": "30ad46717b912e66d21e814b10485ad050372da1",
+  "title": "Escalate Mana's failed self-work to DeepSeek, tier by tier",
+  "body": "Part of #1406 (2 of 4). Stacked on #1412.\n\nWhen none of her own attempts at an issue passes, DeepSeek takes over (`self-work-escalation.js` plus the ladder in `self-work.js`):\n\n- **Tiers in order, one run each per issue.** Flash, then Pro, both with thinking on. These are provisional until #1411.\n- **Each tier is her own loop on the remote model** (#1412's `remoteToolReply`):\n  - it starts from a clean worktree, with the facts of her attempts in the prompt (failing tests, reviewer notes), never her diff;\n  - it's judged like her attempts: her tests, plus a review round when the tests pass but it didn't hand in;\n  - her local reviewer runs on its finish.\n  - A later tier also hears what the earlier tier tried.\n- **Caps.** One run per tier per issue until my \"retry\" on the lifecycle, which now resets it. 5 remote runs a day.\n- **Peak price.** At DeepSeek's peak she holds the issue, with the facts, until off-peak, and tells me when half price starts. The idle picker skips the issue while it's held. The next run on it goes straight to DeepSeek, without repeating her own attempts.\n- **Go ahead.** Her \"work on #N\" chat tool takes `go_ahead`, which lets one run past the hold or the day's cap. It only works for a number from my own message.\n- **Metering.** Each response goes into API spending (use: self-work). The end notice gets one line per tier, for example `DeepSeek Flash: 412k in (380k cached), 31k out (12k reasoning), $0.04, off-peak.`\n- **Training data.** A remote run is never saved as a training record.\n- **Reasoning.** A failed tier's reasoning is kept in `self-work-reasoning/` beside her worktrees, redacted and capped at 20k characters. A passing tier keeps none.\n- **Off by default.** It stays off until I switch it on with a key; local-only blocks it. Gemini still runs when no escalation is configured, and the next PR removes it.\n\nTests: `self-work-escalation.test.js` covers why it's unavailable, the per-issue and per-day caps with go ahead and retry, the peak hold surviving a restart, and full runs: Flash passing (PR text, metering, no training record), Flash failing then Pro passing (Pro hears Flash's try, Flash's reasoning kept), peak hold then go ahead (straight to DeepSeek), and switched off (no remote call). The existing `self-work` and `self-work-gemini` tests still pass locally.",
+  "fixFiles": [
+    "node-bot/self-work-escalation.js",
+    "node-bot/self-work.js",
+    "node-bot/server.js",
+    "node-bot/test/self-work-escalation.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/self-work-escalation.test.js"
+  ],
+  "testCommand": "node --test test/self-work-escalation.test.js",
+  "interface": "The merged change for PR #1413 is covered by test/self-work-escalation.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

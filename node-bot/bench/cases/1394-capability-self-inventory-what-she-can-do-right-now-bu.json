@@ -1,0 +1,23 @@
+{
+  "id": "1394-capability-self-inventory-what-she-can-do-right-now-bu",
+  "kind": "node-feature",
+  "pr": 1394,
+  "issue": 1394,
+  "base": "a3b872d2e86ab788c9fe935027edc38d5db26a6e",
+  "fix": "93b73acb3e262af4153ac6bd2f6183882eb86fa7",
+  "title": "Capability self-inventory: what she can do right now, built live from the existing registry (#1383)",
+  "body": "Fixes #1383.\n\nNew read-only tool `capabilities__inventory` (only in my own chat). It's built fresh on every call from what already exists, so there's no second registry and nothing goes stale:\n- **Tools:** this reply's actual tool list. For each tool it says whether it runs without asking, asks first, asks for itself, or depends on the command. That comes from the risk gate's tiers and the current approval mode.\n- **Plugins and capabilities:** the existing `capabilities` array and its health. An off plugin says \"turned off in Settings > Plugins\". An unhealthy one shows its health message. One whose health check hasn't reported shows as \"unknown\", not healthy.\n- **MCP servers:** name, transport, and tool count. Their health is marked \"not tracked\", because #644 hasn't added it yet.\n- **Models:** active profile, local-only, remote/cloud fallback on or off, and a cost line. It shows \"unknown\" when model status isn't reported.\n\nSafety:\n- **No credentials:** model status is reduced to booleans, and MCP transports show only their kind.\n- **Not authority:** it says listing isn't permission.\n- **Bounded:** capped at 6000 chars by halving the longest list and saying how many were left out. `about` narrows it.\n\nAlso: `capabilities__inventory` and `resources__status` (#1380) now have the read tier, so they no longer ask first in smart mode.\n\nNot yet joined: #1382's telemetry (PR #1393). It can add per-tool failure rates here once both land.\n\nTests: `test/capability-inventory.test.js`, run in CI.",
+  "fixFiles": [
+    "node-bot/ai/capability-inventory.js",
+    "node-bot/ai/chat-reply.js",
+    "node-bot/ai/tool-risk.js",
+    "node-bot/server.js",
+    "node-bot/test/capability-inventory.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/capability-inventory.test.js"
+  ],
+  "testCommand": "node --test test/capability-inventory.test.js",
+  "interface": "The merged change for PR #1394 is covered by test/capability-inventory.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

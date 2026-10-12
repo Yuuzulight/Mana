@@ -1,0 +1,30 @@
+{
+  "id": "1414-retire-the-gemini-cli-fallback-for-deepseek-escalation",
+  "kind": "multi-file",
+  "pr": 1414,
+  "issue": 1414,
+  "base": "30ad46717b912e66d21e814b10485ad050372da1",
+  "fix": "111e202e53f8229952d30a8220a7a358b48d9246",
+  "title": "Retire the Gemini CLI fallback for DeepSeek escalation",
+  "body": "Part of #1406 (3 of 4). Stacked on #1413.\n\n- **Gemini removed from self-work.** `gemini-fallback.js`, its takeover path, `benchGemini`, its settings in `.env.sample` and its tests are gone. The `.env.sample` section now describes DeepSeek escalation; its key lives in Settings, not `.env`.\n- **Status line.** Self-work's `status()` now reports `escalation: { enabled, text }`, for example \"DeepSeek escalation: off -- there's no DeepSeek key in Settings.\". The launcher's self-work window shows that line where the Gemini one was.\n- **Bench.** `--gemini` becomes `--remote <model> [--thinking on|off]` for #1411. It runs her loop on that DeepSeek model, with her local reviewer on the bench's own llama-server and the key from Settings. Each run's tokens and dollars go in the report (`spend`) and in API spending (use: bench). The bench's token counter now counts remote replies too.\n- **Training-traces doc** and the telemetry route treat DeepSeek as a remote model.\n\nTests: `self-work` 54, `self-work-escalation` 7, `self-work-bench` 17 (Gemini's case replaced by a `--remote` one: no key means no run; otherwise it names the model, thinking setting and reviewer) and `self-work-traces` 5 all pass locally. The launcher's self-work test now reads the escalation line.",
+  "fixFiles": [
+    "docs/self_work_training_traces.md",
+    "node-bot/.env.sample",
+    "node-bot/bench/self-work-bench.js",
+    "node-bot/gemini-fallback.js",
+    "node-bot/self-work.js",
+    "node-bot/server.js",
+    "node-bot/test/self-work-bench.test.js",
+    "node-bot/test/self-work-gemini.test.js",
+    "windows-native-launcher/ManaBackendClient.cs",
+    "windows-native-launcher/ManaNativeLauncher.Tests/SelfWorkFormTests.cs",
+    "windows-native-launcher/SelfWorkForm.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/self-work-bench.test.js",
+    "node-bot/test/self-work-gemini.test.js"
+  ],
+  "testCommand": "node --test test/self-work-bench.test.js test/self-work-gemini.test.js",
+  "interface": "The merged change for PR #1414 is covered by test/self-work-bench.test.js, test/self-work-gemini.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

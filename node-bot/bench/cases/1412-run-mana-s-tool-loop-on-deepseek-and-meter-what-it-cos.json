@@ -1,0 +1,30 @@
+{
+  "id": "1412-run-mana-s-tool-loop-on-deepseek-and-meter-what-it-cos",
+  "kind": "multi-file",
+  "pr": 1412,
+  "issue": 1412,
+  "base": "d1c81ce34b9ffc37e7e100d0e347f5090eb34a71",
+  "fix": "4206a772d41dd2b0a430e5c142374c6efcda58cc",
+  "title": "Run Mana's tool loop on DeepSeek and meter what it costs",
+  "body": "Part of #1406 (1 of 4). The self-work ladder, chat-on-request and the Settings section build on this.\n\n- **Remote tool loop.** `runtime.remoteToolReply({ baseUrl, apiKey, model, thinking })` runs her existing tool loop on an OpenAI-compatible endpoint. All of her helpers stay the same (prompts, tool-call repair, goal review, context guard); only the request is swapped.\n  - The key goes in a header, never in a log.\n  - The tier sets the model and thinking. No local sampling settings are sent.\n  - Each earlier turn's `reasoning_content` is sent back while tools are on, which DeepSeek's thinking mode requires (it returns a 400 otherwise).\n  - Local-only mode refuses it before anything is sent.\n  - The prompt-size guard reads the API's `usage` when there are no llama timings.\n- **API spending (`api-spending.js`).** One bucket per day, model and use (self-work, chat, bench), holding tokens and dollars:\n  - tokens: input from cache, input not from cache, output, and the reasoning part of output;\n  - dollars at DeepSeek's prices, doubled in its weekday peak windows;\n  - a model without known prices shows tokens only;\n  - no prompts or code are ever stored.\n  - Exposed through `GET /api-spending` for Settings and the `api_spending__summary` chat tool (read tier).\n- **DeepSeek key.** `GET/POST /self-work/escalation` store the key protected, like the other keys, and only ever return `hasKey`. Escalation is off by default.\n\nTests:\n- `api-spending.test.js`: peak windows, the cost split, totals by period, model and use, restart survival, and the chat tool.\n- `remote-tool-loop.test.js`: endpoint, key, model and thinking in the request; reasoning sent back or not; usage reaching `onResponse`; local-only and missing-key refusals.\n- `escalation-routes.test.js`: the key is never returned, and the spending route works.",
+  "fixFiles": [
+    "node-bot/ai/chat-reply.js",
+    "node-bot/ai/llama-server-runtime.js",
+    "node-bot/ai/llama/tool-reply.js",
+    "node-bot/ai/tool-risk.js",
+    "node-bot/api-spending.js",
+    "node-bot/model-settings-store.js",
+    "node-bot/server.js",
+    "node-bot/test/api-spending.test.js",
+    "node-bot/test/escalation-routes.test.js",
+    "node-bot/test/remote-tool-loop.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/api-spending.test.js",
+    "node-bot/test/escalation-routes.test.js",
+    "node-bot/test/remote-tool-loop.test.js"
+  ],
+  "testCommand": "node --test test/api-spending.test.js test/escalation-routes.test.js test/remote-tool-loop.test.js",
+  "interface": "The merged change for PR #1412 is covered by test/api-spending.test.js, test/escalation-routes.test.js, test/remote-tool-loop.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

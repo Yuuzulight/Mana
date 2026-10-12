@@ -1,0 +1,27 @@
+{
+  "id": "1378-require-explicit-approval-for-local-document-reads-132",
+  "kind": "multi-file",
+  "pr": 1378,
+  "issue": 1378,
+  "base": "d24f8e8e99739244cf2599394055bcd8549ada38",
+  "fix": "c464ecf590cd691190d6f5ada03856143db61e31",
+  "title": "Require explicit approval for local document reads (#1325)",
+  "body": "Refs #1325. Owner-approved repair for the document path findings blocking #1371. Chat attachments and document extraction/ingestion APIs now use Mana's existing approval queue, forced human review, one-use grants scoped to path/session/purpose, a bounded queue and expiring metadata-only grants. Opened files are checked against the approved identity before and after a bounded read; handles close on success or failure. HTTP paths no longer flow directly into document extraction. Adds real authenticated API, changed-file cleanup, expiry, scope, denial, queue and plugin regressions. Full CI and security checks are required before merge; no alerts are dismissed.",
+  "fixFiles": [
+    "node-bot/document-access.js",
+    "node-bot/server-routes.js",
+    "node-bot/server.js",
+    "node-bot/test/document-access.test.js",
+    "node-bot/test/reply-stream-route.test.js",
+    "plugins/document-reader/document-reader.js",
+    "plugins/document-reader/index.js",
+    "plugins/document-reader/test/document-reader-capability.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/document-access.test.js",
+    "node-bot/test/reply-stream-route.test.js"
+  ],
+  "testCommand": "node --test test/document-access.test.js test/reply-stream-route.test.js",
+  "interface": "The merged change for PR #1378 is covered by test/document-access.test.js, test/reply-stream-route.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

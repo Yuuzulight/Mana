@@ -1,0 +1,23 @@
+{
+  "id": "1396-memory-vault-doctor-misplaced-facts-and-competing-lega",
+  "kind": "node-feature",
+  "pr": 1396,
+  "issue": 1396,
+  "base": "2eb0dc37e7226bdd8d48242aad8285e1d0f8a611",
+  "fix": "2c6215397b7044a96fa7db10d2780b4f8d3abe12",
+  "title": "Memory vault Doctor: misplaced facts and competing legacy output (#1389)",
+  "body": "Fixes #1389.\n\nI added a bounded, read-only walk in `memory-vault.js` (`scanHygiene`, surfaced as `getStatus().findings` as `{ kind, path, why, fix }` with vault-relative paths) and Doctor now warns per finding kind.\n\nWhat it finds:\n- fact-shaped notes (a valid header with Mana's `status`) outside Facts/, Facts/Pending and Facts/Archived, which are silently ignored today\n- missing Facts folders (and Views/ when views are enabled), only after the vault has synced once\n- an old top-level `Mana Memory.md`\n- Views files without Mana's marker\n\nLegacy and Reference folders (any case) are never looked into, nor are dot folders and Journal/. Doctor explains that marked Views files are Mana's and get rewritten, unmarked ones are mine and never overwritten, and that nothing is imported, moved or deleted. A reorganised vault with extra folders and plain notes stays healthy.\n\nBounds: 1000 entries, 4 levels deep, 50 findings, only .md files under 8 KB are read. Hitting the entry cap adds a note to the Doctor message.\n\nLeft out: entity-noise growth. There is no cheap data for it yet; it depends on #1387 (PR #1395). Also not covered: a fact-shaped note with no `status` header can't be told apart from an ordinary note, and unreadable subfolders are skipped silently.\n\nTests added in `test/memory-vault.test.js` and `test/doctor.test.js`; I did not run them locally, CI does.",
+  "fixFiles": [
+    "node-bot/doctor.js",
+    "node-bot/memory-vault.js",
+    "node-bot/test/doctor.test.js",
+    "node-bot/test/memory-vault.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/doctor.test.js",
+    "node-bot/test/memory-vault.test.js"
+  ],
+  "testCommand": "node --test test/doctor.test.js test/memory-vault.test.js",
+  "interface": "The merged change for PR #1396 is covered by test/doctor.test.js, test/memory-vault.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

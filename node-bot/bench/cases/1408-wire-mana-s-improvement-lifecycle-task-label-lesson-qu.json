@@ -1,0 +1,30 @@
+{
+  "id": "1408-wire-mana-s-improvement-lifecycle-task-label-lesson-qu",
+  "kind": "multi-file",
+  "pr": 1408,
+  "issue": 1408,
+  "base": "2040faa20975da3008b68552b74a8d41033e6bd5",
+  "fix": "7d044715029d74289ca99f4f54f935b71f2d7517",
+  "title": "Wire Mana's improvement lifecycle: task label, lesson quotes, post-deploy evals",
+  "body": "Closes #1407.\n\n- **Task label:** an improvement issue I approve is filed with `mana-task`, so she can pick it up. The label is in the payload I review, so the digest covers it, and the approval summary says so.\n- **Lessons in duplicate checks:** her proposals now check her open #1385 lessons. Main still had the \"no lessons yet\" stub.\n- **Lesson quotes:** when an issue runs out of tries, its explanation quotes her lesson: her guess, marked unverified, or else the last observed fact. In `end()` the lesson is now recorded before the end notice, so it exists by the time the lifecycle reads it. A broken lessons store is ignored.\n- **Post-deploy evals (`post-deploy-eval.js`):** when her live copy runs a merged PR of hers (the merge commit is an ancestor of HEAD), the behaviour evals run once for that HEAD. They run at below-normal priority with 3 repeats, against the newest passing report.\n  - They start only in the 20-minute idle slot, ahead of her own idle pick, and only when she isn't working, no game is running, RAM is under 90% and her chat model is unloaded.\n  - A failed gate marks the issue regressed, which holds it, and I get a tray notice. Nothing is reverted.\n  - An eval that can't run is retried in later idle periods. After 3 tries she tells me and stops.\n\nTests: new `post-deploy-eval.test.js` covers one run per deployed HEAD, a failed gate holding the issue, blocked or not-deployed meaning no run, and retries that then tell me. There's a new lifecycle test for the lesson quote, and the proposals test now checks the label.",
+  "fixFiles": [
+    "node-bot/issue-proposals.js",
+    "node-bot/post-deploy-eval.js",
+    "node-bot/self-improvement.js",
+    "node-bot/self-work.js",
+    "node-bot/server.js",
+    "node-bot/test/issue-proposals.test.js",
+    "node-bot/test/post-deploy-eval.test.js",
+    "node-bot/test/self-improvement.test.js",
+    "node-bot/test/self-work.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/issue-proposals.test.js",
+    "node-bot/test/post-deploy-eval.test.js",
+    "node-bot/test/self-improvement.test.js",
+    "node-bot/test/self-work.test.js"
+  ],
+  "testCommand": "node --test test/issue-proposals.test.js test/post-deploy-eval.test.js test/self-improvement.test.js test/self-work.test.js",
+  "interface": "The merged change for PR #1408 is covered by test/issue-proposals.test.js, test/post-deploy-eval.test.js, test/self-improvement.test.js, test/self-work.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

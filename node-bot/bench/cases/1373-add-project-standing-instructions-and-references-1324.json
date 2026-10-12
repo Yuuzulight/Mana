@@ -1,0 +1,43 @@
+{
+  "id": "1373-add-project-standing-instructions-and-references-1324",
+  "kind": "multi-file",
+  "pr": 1373,
+  "issue": 1373,
+  "base": "28151badda1c6e2c9ebb782b6baf1b9dcfe41be7",
+  "fix": "c7e97791cc5099fa2764717ad92d29185d75ee3d",
+  "title": "Add project standing instructions and references (#1324)",
+  "body": "## Scope\nCloses #1324.\n\nNative Windows project create/edit/rename/delete, grouped and filtered chat list, new-chat assignment, and move-to-project menu. Forked chats inherit project context unless explicitly detached.\n\nStanding instructions and scoped live-reference excerpts appear as separate prompt composition blocks. Picker-selected files/folders authorize ongoing read access; agent-requested links always require approval. Project tools cannot select another project. Edits, additions and deletions are refreshed before each search. Reference content uses shared untrusted framing and the tool risk gate.\n\nTransient indexes reuse the existing retriever ranking and local document extraction. No Docker, watcher, persistent reference-content cache, cloud embedding call or new model process. File and directory handles are closed. Canonical target/type changes require renewed selection or approval; unlinks are rechecked before returning search results.\n\n## Verification\nThree consecutive clean reviews completed after the final source changes: backend behavior and approval scope; native workflow and resource lifecycle; full integration and final PR diff.\n155 focused backend tests passed at final source revision.\nFull native suite: 1474 passed, 28 existing avatar-fixture skips. Native project editor rendering and layout tested offscreen at normal and minimum sizes; no live desktop interaction claimed.\nFull local Node run: 226 test files passed. Some final hardening landed during that run; exact-head GitHub full Node, desktop, native Windows, .NET, DCO and CodeQL checks all passed on 46d884cc6e1ecc7f717c6a9e5e6bbcab70cb404b.\n\n## Separation\nThis PR is only #1324, based on main after #500 and #1332. Existing unrelated AppContainer work and the primary checkout user changes are excluded.",
+  "fixFiles": [
+    "docs/projects.md",
+    "node-bot/ai/chat-reply.js",
+    "node-bot/ai/tool-risk.js",
+    "node-bot/capabilities/sessions-capability.js",
+    "node-bot/project-references.js",
+    "node-bot/projects-store.js",
+    "node-bot/routes/projects.js",
+    "node-bot/server.js",
+    "node-bot/test/project-references.test.js",
+    "node-bot/test/projects-routes.test.js",
+    "node-bot/test/projects-store.test.js",
+    "node-bot/test/prompt-composition-server-wiring.test.js",
+    "node-bot/test/server-routes.test.js",
+    "node-bot/test/sessions-capability.test.js",
+    "node-bot/tools/retriever-index.js",
+    "windows-native-launcher/ManaBackendClient.cs",
+    "windows-native-launcher/ManaNativeLauncher.Tests/ProjectTests.cs",
+    "windows-native-launcher/ProjectDialog.cs",
+    "windows-native-launcher/SessionListForm.Projects.cs",
+    "windows-native-launcher/SessionListForm.cs"
+  ],
+  "hiddenTests": [
+    "node-bot/test/project-references.test.js",
+    "node-bot/test/projects-routes.test.js",
+    "node-bot/test/projects-store.test.js",
+    "node-bot/test/prompt-composition-server-wiring.test.js",
+    "node-bot/test/server-routes.test.js",
+    "node-bot/test/sessions-capability.test.js"
+  ],
+  "testCommand": "node --test test/project-references.test.js test/projects-routes.test.js test/projects-store.test.js test/prompt-composition-server-wiring.test.js test/server-routes.test.js test/sessions-capability.test.js",
+  "interface": "The merged change for PR #1373 is covered by test/project-references.test.js, test/projects-routes.test.js, test/projects-store.test.js, test/prompt-composition-server-wiring.test.js, test/server-routes.test.js, test/sessions-capability.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

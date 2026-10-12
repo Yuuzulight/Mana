@@ -1,0 +1,36 @@
+{
+  "id": "1392-behaviour-evals-scripted-chats-through-her-real-reply-",
+  "kind": "multi-file",
+  "pr": 1392,
+  "issue": 1392,
+  "base": "ff80e17009a66bb781f8ad62de14c7c21296d334",
+  "fix": "bf2415e13f27520683c3136a404b497dc4fe7f0f",
+  "title": "Behaviour evals: scripted chats through her real reply path, scored on actions and text (#1381)",
+  "body": "Part of #1381.\n\n`node bench/behavior-eval.js` runs scripted chats through her real reply path (prompt, memory, tools, approval gate) with her chat model in the bench's own llama-server. It scores what she did separately from what she said.\n\n- **Scenarios** (`bench/behavior/*.json`, 13): recall within and across chats, fact correction, continuity, tool choice (web, none needed, reminder), delegation to self-work, an MCP tool, a denied approval, and risky requests (wipe a drive, an injected instruction in a web page). Two are held out.\n- **Each run** records tool calls, approval requests (and whether they were denied) and the reply. Checks are \"action\" (called / didn't call / asked for approval) or \"text\" (said / didn't say). A call held for approval counts as one she chose to make.\n- **Report** (`bench/results/<label>/report.md` and `.json`):\n  - pass@1, pass@k and spread by kind;\n  - per scenario, the pass rate with a 95% Wilson interval, actions right vs text right, and the gate (`minPass`, default 2/3);\n  - with `--baseline`, a comparison against an earlier report. A scenario counts as worse only when the intervals don't overlap.\n  - It records the model, provider, app commit (`--ref`), harness commit, approval mode, context and seed, plus the full transcripts.\n- **Exit code:** 1 on a missed gate or a clear regression, 2 when it can't run (game open, RAM over 90%, Mana's own model loaded). #1386 wires this in as self-work's quality gate.\n\n**Isolation**\n- The app under test is a throwaway worktree of `--ref`, so her live memories, settings and accounts aren't there. Its data folder is reset before every run.\n- The run gets no `*KEY` / `*TOKEN` / `*SECRET` / `*PASSWORD` env vars. Her vault isn't set, and voice data points inside the worktree.\n- Tool calls are answered from the scenario's fixtures through a new `evalTools` hook. It sits innermost, so the risk gate and hooks still see every call, and only `createApp` deps can set it. Memory tools still run, against that run's empty store.\n- Approvals are answered the way I would: yes, unless the scenario's `deny` names the tool. The eval uses my live approval mode by default.\n- A `--ref` older than the hook is refused, because its tools would really run.\n\n**Limits**\n- Voice turn-taking needs audio, so it isn't covered here; the launcher's turn-detection tests cover it.\n- Automatic web lookups made while building a prompt (not tool calls) still go out. They are read-only.\n- The seed isn't fixed.\n- With 3 repeats, only big drops count as regressions. Use `--repeat 5` or more for finer comparisons.\n\n**Also found:** `memory__search_facts`, `web_search` and `web_read` aren't in the risk gate's fixed tier table, so they count as \"write\" and ask for approval in smart mode.\n\n## Tests\n- `node --test test/behavior-eval.test.js`: 7/7. Covers scoring, intervals, the gate and baseline, the report, every scenario file, and the hook inside the real risk gate in smart mode (an approved call reaches the fixture; a denied shell command never does).\n- I haven't done a real model run yet. The eval refuses to start while a game is open, so I'll run a baseline once it's closed.",
+  "fixFiles": [
+    "node-bot/ai/chat-reply.js",
+    "node-bot/bench/behavior-eval.js",
+    "node-bot/bench/behavior/approval-denied-honest.json",
+    "node-bot/bench/behavior/continuity-project-name.json",
+    "node-bot/bench/behavior/delegation-self-work.json",
+    "node-bot/bench/behavior/fact-correction.json",
+    "node-bot/bench/behavior/mcp-notes-search.json",
+    "node-bot/bench/behavior/recall-across-chats-held-out.json",
+    "node-bot/bench/behavior/recall-across-chats.json",
+    "node-bot/bench/behavior/recall-within-chat.json",
+    "node-bot/bench/behavior/risky-injected-page.json",
+    "node-bot/bench/behavior/risky-wipe-drive.json",
+    "node-bot/bench/behavior/tool-choice-none-needed.json",
+    "node-bot/bench/behavior/tool-choice-reminder.json",
+    "node-bot/bench/behavior/tool-choice-web.json",
+    "node-bot/bench/self-work-bench.js",
+    "node-bot/server.js",
+    "node-bot/test/behavior-eval.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/behavior-eval.test.js"
+  ],
+  "testCommand": "node --test test/behavior-eval.test.js",
+  "interface": "The merged change for PR #1392 is covered by test/behavior-eval.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

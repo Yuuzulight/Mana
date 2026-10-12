@@ -190,13 +190,21 @@ async function runCase(c, deps) {
   try {
     const start = applyMutation(wt, c);
     // Counted here, so a loop that throws still reports what it did.
-    const calls = { total: 0, errors: 0, editErrors: 0, samples: [] };
+    const calls = { total: 0, errors: 0, editErrors: 0, controllerDenials: 0, recoveryCodes: {}, samples: [] };
     const counted = (policy) => ({
       ...policy,
       async executeTool(name, args) {
         calls.total += 1;
         try {
-          return await policy.executeTool(name, args);
+          const result = await policy.executeTool(name, args);
+          const parsed = typeof result === "string" ? (() => {
+            try { return JSON.parse(result); } catch { return null; }
+          })() : null;
+          if (parsed?.status === "error" && parsed?.code) {
+            calls.controllerDenials += 1;
+            calls.recoveryCodes[parsed.code] = (calls.recoveryCodes[parsed.code] || 0) + 1;
+          }
+          return result;
         } catch (e) {
           calls.errors += 1;
           if (name === "coding__propose_edit") calls.editErrors += 1;
@@ -249,6 +257,8 @@ async function runCase(c, deps) {
       // Calls that threw: a bad path, an edit whose old_text didn't match.
       toolErrors: calls.errors,
       editErrors: calls.editErrors,
+      controllerDenials: calls.controllerDenials,
+      recoveryCodes: calls.recoveryCodes,
       errorSamples: calls.samples,
       wallMs,
       peakVramMb: peak.vramMb,
@@ -369,6 +379,18 @@ function verifyCase(c, { repoRoot, worktreesDir }) {
 // #1221: pass@1 (the mean over repeats), pass@k (passed in any repeat)
 // and the spread (fewest and most passes in one repeat), overall and by
 // kind; failure kinds; and the mean cost of a run.
+const LOCAL_QUALIFICATION_RATE = 0.30;
+
+function qualification(summary, threshold = LOCAL_QUALIFICATION_RATE) {
+  const rate = summary?.overall?.pass1 ?? 0;
+  return {
+    metric: "local pass@1",
+    rate,
+    threshold,
+    passed: rate >= threshold,
+  };
+}
+
 function summarize(results) {
   const repeats = [...new Set(results.map((r) => r.repeat || 1))];
   const ids = [...new Set(results.map((r) => r.id))];
@@ -419,8 +441,12 @@ function writeReport(results, outDir, meta = {}) {
   for (const r of results) if (r.patch) fs.writeFileSync(path.join(outDir, `${name(r)}.diff`), r.patch + "\n");
   const rows = results.map(({ patch, ...r }) => r);
   const summary = summarize(rows);
+  const qualificationResult = qualification(summary, meta.localQualificationRate ?? LOCAL_QUALIFICATION_RATE);
   const passed = rows.filter((r) => r.passed).length;
-  fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ ...meta, passed, total: rows.length, summary, results: rows }, null, 2));
+  fs.writeFileSync(
+    path.join(outDir, "report.json"),
+    JSON.stringify({ ...meta, passed, total: rows.length, qualification: qualificationResult, summary, results: rows }, null, 2),
+  );
   const tok = (t) => (t.prompt || t.completion ? `${t.prompt} / ${t.completion} / ${t.peak}` : "n/a");
   const o = summary.overall;
   const c = summary.cost;
@@ -430,6 +456,7 @@ function writeReport(results, outDir, meta = {}) {
     `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${meta.attempts > 1 ? `Best of ${meta.attempts} attempts. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
     "",
     `**pass@1 ${pct(o.pass1)}, pass@${summary.repeats} ${pct(o.passK)}**, passes per repeat ${o.spread[0]}-${o.spread[1]} of ${o.cases}. ${passed}/${rows.length} runs passed.`,
+    `**Local qualification: ${qualificationResult.passed ? "PASS" : "FAIL"}** — ${pct(qualificationResult.rate)} local pass@1 against the ${pct(qualificationResult.threshold)} requirement.`,
     "",
     "| Kind | Cases | pass@1 | pass@k | Spread |",
     "| --- | --- | --- | --- | --- |",
@@ -674,4 +701,17 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp };
+module.exports = {
+  loadCases,
+  runCase,
+  verifyCase,
+  writeReport,
+  summarize,
+  qualification,
+  LOCAL_QUALIFICATION_RATE,
+  failureKind,
+  makeWorktree,
+  removeWorktree,
+  waitOut,
+  waitUp,
+};

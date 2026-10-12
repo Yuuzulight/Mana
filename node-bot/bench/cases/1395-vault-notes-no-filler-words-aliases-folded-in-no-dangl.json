@@ -1,0 +1,23 @@
+{
+  "id": "1395-vault-notes-no-filler-words-aliases-folded-in-no-dangl",
+  "kind": "node-feature",
+  "pr": 1395,
+  "issue": 1395,
+  "base": "93b73acb3e262af4153ac6bd2f6183882eb86fa7",
+  "fix": "b1bea0fda63562d482820fd57728707efdeaeeeb",
+  "title": "Vault notes: no filler words, aliases folded in, no dangling links (#1387)",
+  "body": "Fixes #1387.\n\n`memory-views.js` decides which remembered entities get a note in the vault's `Views/Entities/`, using what the store already knows. It adds no new ontology.\n- **Dropped:** entities typed `not_an_entity`.\n- **Aliases** (`canonicalKey`) fold into their canonical entity. Their mentions are merged, and the note keeps the canonical name.\n- **Untyped candidates:** a filler word (and, but, because, actually…) never gets a note. Any other single word needs two mentions; a multi-word name needs one. A typed entity always stays, even one named like a filler word. Only English filler is listed, so non-English names are never treated as filler.\n- **Links:** notes and Key Facts link only to notes that exist. Key Facts also match aliases.\n- **`GET /api/memory/notes/excluded`** lists what got no note and why.\n- **Cleanup:** `refreshViews` already removes obsolete notes Mana owns and never touches mine, so a filler note she made earlier is cleaned up on the next refresh.\n\nTests: `test/memory-views.test.js` covers filler words, words that are also real names, non-English names, typed vs untyped, aliases, and no dangling links. One existing Key Facts test now types its single-mention entity. All run in CI.",
+  "fixFiles": [
+    "node-bot/memory-views.js",
+    "node-bot/server.js",
+    "node-bot/test/memory-views.test.js",
+    "node-bot/test/server-routes.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/memory-views.test.js",
+    "node-bot/test/server-routes.test.js"
+  ],
+  "testCommand": "node --test test/memory-views.test.js test/server-routes.test.js",
+  "interface": "The merged change for PR #1395 is covered by test/memory-views.test.js, test/server-routes.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

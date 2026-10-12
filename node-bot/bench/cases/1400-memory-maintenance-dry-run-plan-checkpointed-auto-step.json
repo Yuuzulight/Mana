@@ -1,0 +1,26 @@
+{
+  "id": "1400-memory-maintenance-dry-run-plan-checkpointed-auto-step",
+  "kind": "multi-file",
+  "pr": 1400,
+  "issue": 1400,
+  "base": "0c6a34b10adc94652944891c65b32268853fc0e8",
+  "fix": "ff80e17009a66bb781f8ad62de14c7c21296d334",
+  "title": "Memory maintenance: dry-run plan, checkpointed auto steps and approval for the rest (#1390)",
+  "body": "Fixes #1390.\n\nI added `node-bot/memory-maintenance.js`, one coordinated retention pass over the memory stores. Authoritative data (sessions, facts) is never deleted: sessions are moved to `archive/sessions`, old fact-log lines to `archive/facts-log-<year>.jsonl`, and only derived indexes or approved graph history are dropped.\n\n**Runs on its own (auto)**\n- `reconcile-search`: removes search rows (keyword and vector) of sessions whose file no longer exists. New `listSessionIds()` / `removeSessions()` in session-search-index.js, one transaction.\n- `reconcile-entities`: drops entity-index mentions of deleted sessions (and entities left empty). Backed up first.\n- `archive-facts-log`: moves fact-log lines older than 180 days into the archive. `getFactHistory` now reads the archive files too, so history stays complete. Backed up first; unparseable lines stay in the live log and are reported.\n\n**Needs my approval (step id in `approve`)**\n- `archive-session`: moves sessions not updated in 365 days to `archive/sessions`. Kept (with the reason reported): sessions needed by an active, pending or pinned fact or a standing intent (via `sessionId` / `origin.sessionId`), parents of retained forks, corrupt files, and everything if facts.json can't be read.\n- `prune-graph-history`: deletes closed edge windows older than 365 days. `memory-graph.db` is backed up first with `db.backup`.\n\n**Measure only:** snapshots, self-work traces and the tool-call log are reported in `stores` with their existing bound, nothing is done to them.\n\n**Plan and run**\n- `plan()` is a dry run: store sizes, steps with kind/target/reason/bytes, and what is kept and why.\n- `run({ mode, approve, signal })` writes `maintenance/checkpoint.json` before and after each step, in order, with the step's backup in `maintenance/backup/<planId>/`. A step that throws is restored from its backup, marked failed, and the rest are skipped. A cancelled pass (signal) leaves the checkpoint and the next run resumes it; a step caught mid-way (process died) is restored and redone. Only the latest plan's backups are kept. Refuses to run while gaming.\n\n**Wiring**\n- server.js: after the pending-fact expiry in the idle consolidation, auto steps run at most once per 24 h, inside `resourceCoordinator.run({ owner: \"Memory maintenance\", background: true })` when it exists. Not built in tests.\n- `GET /admin/memory/maintenance` (the plan) and `POST /admin/memory/maintenance/run` `{ approve: [ids] }`, admin-protected, in memory-facts-capability.js.\n- Doctor: a \"Memory maintenance\" line (last run, failed step, proposals waiting).\n\n**Limits**\n- The graph prune is one SQL transaction, so a failure leaves the db unchanged; its backup is for me to restore by hand, not restored automatically. Archived sessions are not re-indexed if moved back by hand.\n- The approval is the step id, and the targets are re-derived when it runs (same rules), not a frozen list.\n- Measure-only stores are read from their default locations beside acp-memory; env overrides aren't followed.\n- A session file is parsed once per plan; fine for hundreds, would want an index for thousands.\n- The in-memory approval-gate queue is not consulted; sessions behind pending facts are kept, which is what pending approvals pin.\n\nTests: `node-bot/test/memory-maintenance.test.js` (temp dirs only) covers active/pinned/intent/pending references, corrupt log lines and session files, cancel then resume, a throwing step restored from backup, interrupted-step recovery, auto vs approved, fact history staying complete after archiving, search reconcile touching only deleted sessions, and graph prune needing approval and backing up first. I did not run the suite locally; CI does.",
+  "fixFiles": [
+    "node-bot/acp-memory-store.js",
+    "node-bot/capabilities/memory-facts-capability.js",
+    "node-bot/doctor.js",
+    "node-bot/memory-graph.js",
+    "node-bot/memory-maintenance.js",
+    "node-bot/server.js",
+    "node-bot/session-search-index.js",
+    "node-bot/test/memory-maintenance.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/memory-maintenance.test.js"
+  ],
+  "testCommand": "node --test test/memory-maintenance.test.js",
+  "interface": "The merged change for PR #1400 is covered by test/memory-maintenance.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

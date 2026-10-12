@@ -1,0 +1,20 @@
+{
+  "id": "1401-risk-gate-memory-search-and-self-work-s-worktree-reads",
+  "kind": "node-feature",
+  "pr": 1401,
+  "issue": 1401,
+  "base": "b2acfd02cd2f02c2914b561822aab06971573fce",
+  "fix": "c6faee7f08e19f05b11c2a0fcfb2e5f3f3e9efce",
+  "title": "Risk gate: memory search and self-work's worktree reads get the read tier (#1399)",
+  "body": "Fixes #1399.\n\n`memory__search_facts` and `self_work__files` / `read` / `search` / `plan` / `review` only read her memory or her worktree. They weren't in `BUILTIN_TIERS`, so they fell to \"write\" and asked me first in smart mode. They now have the read tier.\n\nUnchanged, still asking first: `analysis__run_python` (runs code), `mana_update__*` (changes her install), and `self_work__start` / `refresh` / `reply` (start or change runs that push PRs). `resources__status` gets its read tier in #1394.\n\nThis changes the approval gate, so it waits for my review before merging.\n\nTest: one in `test/tool-risk.test.js`, run in CI.",
+  "fixFiles": [
+    "node-bot/ai/tool-risk.js",
+    "node-bot/test/tool-risk.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/tool-risk.test.js"
+  ],
+  "testCommand": "node --test test/tool-risk.test.js",
+  "interface": "The merged change for PR #1401 is covered by test/tool-risk.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

@@ -1,0 +1,23 @@
+{
+  "id": "1404-improvement-proposals-check-for-duplicates-require-evi",
+  "kind": "node-feature",
+  "pr": 1404,
+  "issue": 1404,
+  "base": "da80aeefe2daecf0e9bd67b93d12bf496ce25788",
+  "fix": "0c6a34b10adc94652944891c65b32268853fc0e8",
+  "title": "Improvement proposals: check for duplicates, require evidence, bind approval to the reviewed issue (#1384)",
+  "body": "Fixes #1384.\n\nBefore I file an issue about my own improvement, `improvement__propose` now checks what already exists and needs evidence.\n\n- New `node-bot/issue-proposals.js`: `findRelated` looks at exact #N references, `gh issue/pr list --search` (open and closed), roadmap lines and (optionally, once #1385 lands) open lessons. Each match shows its score and why; a failed search is kept in `limits`.\n- Decision is only a suggestion: `link` (open match), `reopen-or-regression` (closed match) or `new`. Nothing is closed, reopened, merged or edited, and a match means nothing is filed; I tell the user and they decide.\n- `propose` needs at least one evidence item, refuses a duplicate of a pending proposal (plus an in-process lock per title), and files through its own `improvement-issue` approval type with forceReview, so git-github grants and the GitHub \"off\" setting don't cover it. The approval is bound to a sha256 digest of the exact title/body/labels; the executor recomputes it and refuses on mismatch.\n- Wiring: `improvement__propose` tool source in my own chat only (tier write, self-gated), small edits in server.js, ai/chat-reply.js and ai/tool-risk.js. `lessons` is left null until #1385 is merged.\n- Tests in `test/issue-proposals.test.js` with a fake gh: renamed title, exact reference, closed regression, unrelated proposal filed after approval, search failure, no evidence, concurrent proposals, digest mismatch, denial.",
+  "fixFiles": [
+    "node-bot/ai/chat-reply.js",
+    "node-bot/ai/tool-risk.js",
+    "node-bot/issue-proposals.js",
+    "node-bot/server.js",
+    "node-bot/test/issue-proposals.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/issue-proposals.test.js"
+  ],
+  "testCommand": "node --test test/issue-proposals.test.js",
+  "interface": "The merged change for PR #1404 is covered by test/issue-proposals.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

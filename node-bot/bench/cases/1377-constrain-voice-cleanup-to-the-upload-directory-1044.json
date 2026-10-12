@@ -1,0 +1,20 @@
+{
+  "id": "1377-constrain-voice-cleanup-to-the-upload-directory-1044",
+  "kind": "node-feature",
+  "pr": 1377,
+  "issue": 1377,
+  "base": "fcce507591ce80d5a8637d37a7eba402a3795e96",
+  "fix": "d24f8e8e99739244cf2599394055bcd8549ada38",
+  "title": "Constrain voice cleanup to the upload directory (#1044)",
+  "body": "Refs #1044. Repairs the existing cleanup path findings surfaced by #1371. Cleanup now uses the configured upload directory, refuses upload paths outside it, and removes only the exact random upload name and dotted sidecars. Adds outside-directory and unrelated-prefix regression tests. Seven cleanup and partial-transcription tests passed; full CI is required before merge. No security alerts are dismissed or suppressed.",
+  "fixFiles": [
+    "node-bot/server.js",
+    "node-bot/test/voice-upload-cleanup.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/voice-upload-cleanup.test.js"
+  ],
+  "testCommand": "node --test test/voice-upload-cleanup.test.js",
+  "interface": "The merged change for PR #1377 is covered by test/voice-upload-cleanup.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

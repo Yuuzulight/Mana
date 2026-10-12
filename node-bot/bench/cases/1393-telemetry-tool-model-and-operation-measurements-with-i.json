@@ -1,0 +1,23 @@
+{
+  "id": "1393-telemetry-tool-model-and-operation-measurements-with-i",
+  "kind": "node-feature",
+  "pr": 1393,
+  "issue": 1393,
+  "base": "03ffecd52246141374560de90d2401a2f497cefe",
+  "fix": "a3b872d2e86ab788c9fe935027edc38d5db26a6e",
+  "title": "Telemetry: tool, model and operation measurements with intervals, and advice-only routing (#1382)",
+  "body": "Fixes #1382.\n\n- **`telemetry.js`** (new) builds one versioned view from measurements Mana already makes:\n  - **Tool-call log:** each call now also records its task outcome (succeeded, returned, task-failed, denied, pending, threw) and the active model.\n  - **Bench and behaviour-eval reports:** from `bench/results/*/report.json`.\n  - **Operation timings:** this process's `perfMetrics`.\n- **Per tool and model:** samples, outcomes, transport failures vs task failures (with a 95% interval), p50/p95 latency, and a stale flag. A returned string counts as \"returned\", not as success.\n- **Per kind, model and context:** the newest pass rate with its interval. A config change gets its own row.\n- **Missing vs zero:** missing measurements are listed under `missing`, never shown as zero. User corrections aren't recorded anywhere yet, so they're listed there.\n- **`recommendRoute`** is advice only. It needs at least 10 fresh runs, and only recommends a model whose whole interval beats the current one's estimate. It respects local-only mode and never picks a cloud model that isn't an approved fallback. Nothing changes a setting, a model or an approval.\n- **`GET /telemetry`** (admin-key protected) returns the summary, recommendations and short planner lines for #1383. The route passes no approved fallbacks, so it never recommends a cloud model.\n- **Bounded:** the tool-call log is capped at 4 MB (keeps the newest half). Telemetry reads the last 30 days, at most 5000 calls and the newest 50 reports. Args stay redacted as before.\n\nTests: `test/telemetry.test.js`, run in CI.",
+  "fixFiles": [
+    "node-bot/ai/chat-reply.js",
+    "node-bot/server.js",
+    "node-bot/telemetry.js",
+    "node-bot/test/telemetry.test.js",
+    "node-bot/tool-call-log.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/telemetry.test.js"
+  ],
+  "testCommand": "node --test test/telemetry.test.js",
+  "interface": "The merged change for PR #1393 is covered by test/telemetry.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

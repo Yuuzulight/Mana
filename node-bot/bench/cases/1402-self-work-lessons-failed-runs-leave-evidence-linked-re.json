@@ -1,0 +1,24 @@
+{
+  "id": "1402-self-work-lessons-failed-runs-leave-evidence-linked-re",
+  "kind": "node-feature",
+  "pr": 1402,
+  "issue": 1402,
+  "base": "2c6215397b7044a96fa7db10d2780b4f8d3abe12",
+  "fix": "da80aeefe2daecf0e9bd67b93d12bf496ce25788",
+  "title": "Self-work lessons: failed runs leave evidence-linked records; standing rules need my approval (#1385)",
+  "body": "Fixes #1385.\n\nWhen one of my self-work runs ends without a PR (not-done, tests-failing, needs-you, failed, stuck), has a PR my reviewer refuted, or has its PR reverted, I now keep one lesson per issue in `self-work-lessons.json`: what was observed (end state, attempts and failing tests, the reviewer's refutation, no PR) separate from my own last words, which stay an unverified guess at low confidence. Repeats on the same issue add an occurrence instead of a new record. Everything is redacted, capped, and retention drops the oldest non-promoted lessons first.\n\n- Planning (`buildPrompt`) gets open lessons for the same issue or files, bounded, with my guess labelled unverified, plus any approved rules.\n- A guess can only become a standing rule through my approval: `promote` asks the gate for `self-work-lesson` with `forceReview`, so no grant or always-allow covers it; denial leaves the lesson open. Superseding keeps the record.\n- Routes (admin key): `GET /self-work/lessons`, `POST /self-work/lessons/:id/promote`, `POST /self-work/lessons/:id/supersede`. The revert route records a revert occurrence for PRs that have a training record.\n- Tests: new `self-work-lessons.test.js` plus a run-level test in `self-work.test.js` (a failing lessons store never stops a run).",
+  "fixFiles": [
+    "node-bot/self-work-lessons.js",
+    "node-bot/self-work.js",
+    "node-bot/server.js",
+    "node-bot/test/self-work-lessons.test.js",
+    "node-bot/test/self-work.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/self-work-lessons.test.js",
+    "node-bot/test/self-work.test.js"
+  ],
+  "testCommand": "node --test test/self-work-lessons.test.js test/self-work.test.js",
+  "interface": "The merged change for PR #1402 is covered by test/self-work-lessons.test.js, test/self-work.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

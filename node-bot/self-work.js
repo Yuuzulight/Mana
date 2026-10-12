@@ -44,6 +44,7 @@ const protectedPaths = require("./protected-paths");
 // #1182: the git safety helpers now live with her git tools.
 const { findSecret, runCommand, stripAttribution, testEnv } = require("./ai/git-tool-source");
 const { createGeminiFallback } = require("./gemini-fallback");
+const { createAgenticCodingController, compactAgenticResult } = require("./ai/agentic-coding-controller");
 
 // The label that makes an issue hers to work on. I add it (or starting a
 // run from the launcher adds it for me).
@@ -92,7 +93,7 @@ const DEFAULT_MAX_MINUTES = 120;
 // #1259: rounds to review and finish an attempt whose tests passed unfinished.
 const REVIEW_ROUNDS = 10;
 // What an attempt starts without: the last one's outcome and plan.
-const ATTEMPT_STATE = ["finished", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "judgeModes", "reviewedTree", "refutations", "conversations"];
+const ATTEMPT_STATE = ["finished", "finishAttempted", "lastTestPassed", "lastTestCommand", "plan", "noTestReason", "sawFailingTest", "judgeCommands", "judgeModes", "reviewedTree", "refutations", "conversations"];
 const TEST_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_READ_LINES = 250;
 // #1214: a read without end_line shows this many lines.
@@ -112,6 +113,18 @@ const RAM_WAIT_MS = 10 * 60 * 1000;
 // A run with this many tool calls in a row and no new change and no new
 // test result is stuck (on top of goal mode's 20-round cap).
 const MAX_STEPS_WITHOUT_PROGRESS = 8;
+
+// Keep local 9B work on tasks it can finish reliably. This is guidance for
+// the loop and escalation telemetry, not a hard refusal: a difficult task can
+// still be attempted locally before the existing fallback decides otherwise.
+function taskProfile(issue = {}) {
+  const text = `${issue.title || ""}\n${issue.body || ""}`.toLowerCase();
+  const files = new Set(text.match(/[\w./-]+\.(?:js|cs|ts|json|md|ps1|py)\b/g) || []).size;
+  const architecture = /architecture|refactor|migration|redesign|cross[- ]cutting|multiple packages|whole repo/.test(text);
+  const ambiguity = /investigate|explore|design|evaluate|support .* and .*|all of|complete system/.test(text);
+  const difficulty = architecture || files >= 4 || ambiguity ? "escalate-early" : files >= 2 ? "local-with-recovery" : "local-first";
+  return { difficulty, files, architecture, ambiguity };
+}
 
 function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
@@ -636,6 +649,7 @@ function createSelfWork(options = {}) {
   }
 
   async function work(r, issue) {
+    r.taskProfile = taskProfile(issue);
     log(r, `I'm starting on #${r.issue}: ${r.title}`, true);
     await git(["fetch", "origin", "main"]);
     await prepare(r, "origin/main");
@@ -666,7 +680,10 @@ function createSelfWork(options = {}) {
     }
     if (!closest && !r.lastTestPassed) return end(r, "tests-failing", `My tests aren't passing after my last change for #${r.issue}, so no PR.`);
     // #1213: a PR only with the tree my reviewer passed when I finished.
-    if (r.reviewedTree !== (await stagedTree(r.worktree))) {
+    // A closest-attempt draft is intentionally not a finished change; it is
+    // retained to show the human the best failing state. Only a ready PR must
+    // exactly match the tree that passed the review gate.
+    if (!closest && r.reviewedTree !== (await stagedTree(r.worktree))) {
       return end(r, "needs-you", `My diff for #${r.issue} isn't the one my reviewer passed when I finished, so no PR. It's in ${r.worktree}.`);
     }
     const vetted = await vet(r);
@@ -766,6 +783,7 @@ function createSelfWork(options = {}) {
   // back as error, with the run as far as it got.
   async function bench(issue, worktree, { attempts = 1 } = {}) {
     const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: roundBudget(issue.body) });
+    r.taskProfile = taskProfile(issue);
     try {
       if (nativeTests && !options.approvalGate) throw new Error('Windows benchmark tests require a human approval gate; no unrestricted benchmark fallback');
       return { reply: (await bestOf(r, issue, attempts)).reply, run: r };
@@ -1245,18 +1263,23 @@ How to work:
   }
 
   function buildPrompt(r, issue) {
+    const profile = r.taskProfile || taskProfile(issue);
     return `You're working on your own code, the Mana repo, to resolve issue #${r.issue} in your own git worktree (branch ${r.branch}). Nothing here touches your live copy.
 
 Issue #${r.issue}: ${r.title}
 ${String(issue.body || "").slice(0, 4000)}
 
 How to work:
+- This is a bounded agent loop. Take exactly one useful tool action at a time, then use its result to choose the next action. Never repeat an identical tool call; if it is rejected as repeated, change strategy.
+- Task profile: ${profile.difficulty} (${profile.files} named file${profile.files === 1 ? "" : "s"}). Prefer a local, narrow implementation for routine work. For architectural or ambiguous work, establish a minimal vertical slice and leave a clear failure record for escalation rather than thrashing.
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Aim to make your first edit within ${READ_BUDGET_LINES} lines of reading: search first and read only what the change needs; then make the change.
 - Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
 - If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail before you change the code.
 - Change files with ${CODING_EDIT_TOOL_NAME}. Keep the change small and in the style around it, and add or update a test that fails without it.
 - Run the tests you touched with ${CODING_TEST_TOOL_NAME} and fix what fails.
+- If verification fails, classify it before acting: missing fixture/dependency is an environment problem; a test assertion or syntax failure is a code problem; context, timeout, or resource errors are runtime problems. Address the category instead of blindly rerunning the same command.
+- After two failed recovery attempts on the same failure, stop changing unrelated code and report the exact failure and the smallest next escalation step.
 ${
   r.flagged
     ? `- ${ownerName()} flagged this run to allow changes to your guardrails (approval gate, hooks, tool risk, local-only mode, admin key, redaction). Change only what the issue needs there.`
@@ -1286,6 +1309,14 @@ Before it can be a PR:
   function worktreeTools(r, extra = {}) {
     const root = r.worktree;
     const goal = createSessionGoalToolSource();
+    const controller = createAgenticCodingController({
+      reviewPasses: Object.keys(reviewPasses).length,
+      reviewNames: Object.keys(reviewPasses),
+      canSkipVerification: () => Boolean(r.noTestReason),
+      repeatLimit: 2,
+      requirePlan: true,
+    });
+    r.controller = controller.snapshot();
     // #1007's no-progress detector: a step makes progress when it reads
     // something not read before, changes a file, or gets a new test result.
     let stepsWithoutProgress = 0;
@@ -1587,14 +1618,62 @@ Before it can be a PR:
         }
         stepsWithoutProgress += 1;
         progressed = false;
-        const result = await dispatch(name, args);
+        try {
+          controller.before(name, args);
+        } catch (e) {
+          if (e?.code !== "AGENTIC_CONTROLLER_DENIED" && e?.code !== "AGENTIC_CONTROLLER_BLOCKED") throw e;
+          // Preserve best-of-N bookkeeping: an attempted handoff with a
+          // failing verification is still a finished attempt for selecting
+          // the closest draft, but it is never considered passing.
+          if (name === SESSION_GOAL_FINISH_TOOL_NAME) {
+            r.finishAttempted = true;
+            r.finished = true;
+            // Preserve the established finish-tool error contract: callers
+            // use the text to decide whether to keep diagnosing or review.
+            throw e;
+          }
+          r.controller = controller.snapshot();
+          return JSON.stringify({
+            status: "error",
+            code: e.recoveryCode || e.code,
+            error: e.message,
+            next_actions: e.nextActions || r.controller.allowedActions,
+            recovery: "Choose one of next_actions; do not repeat the rejected action.",
+            controller: r.controller,
+          });
+        }
+        let result;
+        try {
+          result = await dispatch(name, args);
+        } catch (e) {
+          // A stale SEARCH/REPLACE block is recoverable model feedback, not a
+          // broken run. Keep the loop alive and direct the next turn toward
+          // locating the current source before attempting another edit.
+          if (name === CODING_EDIT_TOOL_NAME) {
+            r.controller = controller.snapshot();
+            return JSON.stringify({
+              status: "error",
+              code: "EDIT_NOT_APPLIED",
+              error: e.message,
+              next_actions: ["self_work__search", "self_work__read", CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME],
+              recovery: "The edit was not applied. Locate the current text, then submit one corrected edit.",
+              controller: r.controller,
+            });
+          }
+          throw e;
+        }
+        r.controller = controller.after(name, args, result);
         const key = `${name}:${JSON.stringify(args || {})}`;
         if (name.startsWith("self_work__") && !looked.has(key)) {
           looked.add(key);
           progressed = true;
         }
         if (progressed) stepsWithoutProgress = 0;
-        return result;
+        // Keep long test logs and diffs useful without allowing one tool
+        // response to consume the model's entire context window. The full
+        // result remains in the run log; only the model-facing response is
+        // compacted.
+        return compactAgenticResult(result);
       },
     };
   }

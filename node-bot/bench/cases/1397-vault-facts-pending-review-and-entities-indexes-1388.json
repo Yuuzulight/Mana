@@ -1,0 +1,24 @@
+{
+  "id": "1397-vault-facts-pending-review-and-entities-indexes-1388",
+  "kind": "node-feature",
+  "pr": 1397,
+  "issue": 1397,
+  "base": "b1bea0fda63562d482820fd57728707efdeaeeeb",
+  "fix": "b4a1ceb3760f35fab6fd14f4d9bc627583c26536",
+  "title": "Vault: Facts, Pending Review and Entities indexes (#1388)",
+  "body": "Fixes #1388.\n\nBuilds on #1395 (#1387); merge that first.\n\nI added three generated views in Views/: Facts Index.md (active facts linked to their notes), Pending Review.md (pending facts with links; it says plainly a link never approves anything) and Entities Index.md (grouped by the ontology's types with an Unclassified group, aliases shown, using the #1387 entity filter). They are sorted with no dates, so a refresh with nothing new rewrites nothing, and they go through the existing refreshViews ownership/pruning, so nothing user-authored is touched. Links only point at notes that are written (Facts/, Facts/Pending/, Views/Entities/).\n\nTests are in node-bot/test/memory-views.test.js; I did not run them locally, CI will.",
+  "fixFiles": [
+    "node-bot/memory-vault.js",
+    "node-bot/memory-views.js",
+    "node-bot/server.js",
+    "node-bot/test/memory-views.test.js",
+    "node-bot/test/server-routes.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/memory-views.test.js",
+    "node-bot/test/server-routes.test.js"
+  ],
+  "testCommand": "node --test test/memory-views.test.js test/server-routes.test.js",
+  "interface": "The merged change for PR #1397 is covered by test/memory-views.test.js, test/server-routes.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

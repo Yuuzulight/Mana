@@ -1,0 +1,21 @@
+{
+  "id": "1403-self-work-watch-ci-on-her-own-pr-and-fix-red-checks-13",
+  "kind": "node-feature",
+  "pr": 1403,
+  "issue": 1403,
+  "base": "bf2415e13f27520683c3136a404b497dc4fe7f0f",
+  "fix": "5607db4872b8cfea688df4662d6ba4d7273f3bc8",
+  "title": "Self-work: watch CI on her own PR and fix red checks (#1398)",
+  "body": "Fixes #1398. Part of #1202.\n\nAfter a self-work run ends `pr-open` or `pr-updated`, Mana watches that PR's CI: `gh pr checks <n>` every 60 s for up to 30 min.\n\n- All green: the watch ends with a log line only.\n- A red check: I read only the failing job's log tail (`gh run view --job <id> --log-failed`, last 3000 chars), scrubbed with sanitizeBridgeOutput and wrapped as untrusted, and run a refresh-style fix round (run kind `ci-fix`) on the same worktree and branch. It pushes through the existing refresh path, then the watch continues.\n- At most 2 fix tries per PR number, then the run ends `needs-you` naming the failing check and what she tried.\n- Gaming or RAM over the limit pauses the watch without counting. The open-PR limit part of `blocker()` is left out of the pause, since her own PR is open while she watches it (split into `resourceBlocker()`).\n- Only one watch at a time; a new run or stop cancels it. Opt-in via `watchCi` (on in server.js). The watch and the tries are in memory like runs, so a backend restart drops them.\n\nTests (`node-bot/test/self-work-ci-watch.test.js`): fake gh and fake clock; green ends quietly, red then fixed, red twice then needs-you, gaming pauses, stop cancels.",
+  "fixFiles": [
+    "node-bot/self-work.js",
+    "node-bot/server.js",
+    "node-bot/test/self-work-ci-watch.test.js"
+  ],
+  "hiddenTests": [
+    "node-bot/test/self-work-ci-watch.test.js"
+  ],
+  "testCommand": "node --test test/self-work-ci-watch.test.js",
+  "interface": "The merged change for PR #1403 is covered by test/self-work-ci-watch.test.js.",
+  "why": "Additional real merged-fix benchmark case selected to broaden the agentic coding evaluation."
+}

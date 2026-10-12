@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 const { execFileSync } = require("node:child_process");
 
-const { runCase, verifyCase, writeReport, summarize, failureKind } = require("../bench/self-work-bench");
+const { runCase, verifyCase, writeReport, summarize, qualification, LOCAL_QUALIFICATION_RATE, failureKind } = require("../bench/self-work-bench");
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe" }).trim();
@@ -191,6 +191,7 @@ test("the report has a row per case and each case's diff", async () => {
 
   assert.match(md, /Model: fake\.gguf\. 1 cases x 1 repeat\(s\)\./);
   assert.match(md, /\*\*pass@1 100%, pass@1 100%\*\*/);
+  assert.match(md, /Local qualification: PASS/);
   assert.match(md, /\| 1-add-subtracts \| - \| 1 \| pass \| finished \| - \| 6 \| 6 \(0\) \| \d+s \| 600 \/ 60 \/ 600 \| 0 \|/);
   const json = JSON.parse(fs.readFileSync(path.join(out, "report.json"), "utf8"));
   assert.equal(json.results[0].patch, undefined);
@@ -236,6 +237,13 @@ test("pass@1 is the mean over repeats, pass@k any repeat, the spread the fewest 
   assert.deepEqual(s.overall.spread, [0, 2]);
   assert.equal(s.byKind["node-bug"].pass1, 2 / 3);
   assert.equal(s.byKind.launcher.passK, 1);
+});
+
+test("local qualification uses pass@1 and requires at least 30%", () => {
+  assert.equal(LOCAL_QUALIFICATION_RATE, 0.30);
+  assert.equal(qualification({ overall: { pass1: 0.3 } }).passed, true);
+  assert.equal(qualification({ overall: { pass1: 0.29 } }).passed, false);
+  assert.equal(qualification({ overall: { pass1: 1 }, }, 1.1).passed, false);
 });
 
 test("each failed run gets one failure kind", () => {
