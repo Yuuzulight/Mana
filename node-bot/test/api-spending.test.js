@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { createApiSpending, createBalanceReader, runway, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, describeUsage } = require("../api-spending");
+const { createApiSpending, createBalanceReader, runway, createSpendingToolSource, isPeak, nextOffPeak, minutesToPeak, tokensOf, costOf, describeUsage } = require("../api-spending");
 
 const tmpFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mana-spending-")), "api-spending.json");
 // DeepSeek's usage block for 1M hit, 1M miss, 1M out of which 400k reasoning.
@@ -163,4 +163,11 @@ test("her chat tool reads the same summary", async () => {
   assert.equal(tool.isKnownToolName("api_spending__summary"), true);
   const out = JSON.parse(await tool.executeTool("api_spending__summary"));
   assert.equal(out.today.requests, 1);
+});
+
+test("minutesToPeak counts to the next peak window start, and is 0 inside one", () => {
+  assert.equal(minutesToPeak(new Date("2026-10-07T00:35:00Z")), 25, "25 min before 01:00");
+  assert.equal(minutesToPeak(new Date("2026-10-07T02:00:00Z")), 0, "inside the first window");
+  assert.equal(minutesToPeak(new Date("2026-10-07T04:10:00Z")), 110, "to 06:00");
+  assert.equal(minutesToPeak(new Date("2026-10-09T10:00:00Z")), 63 * 60, "Friday 10:00 to Monday 01:00: the weekend is off-peak");
 });

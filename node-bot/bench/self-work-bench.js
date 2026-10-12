@@ -51,7 +51,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { createSelfWork, testEnv, systemRamPercent } = require("../self-work");
-const { tokensOf, costOf, isPeak, createApiSpending } = require("../api-spending");
+const { tokensOf, costOf, isPeak, minutesToPeak, createApiSpending } = require("../api-spending");
 
 const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_DIR = path.join(__dirname, "hidden");
@@ -68,6 +68,7 @@ const EXPLORE_ROUNDS = 20;
 // A case's expected time: the rounds a run needs (the fix's, plus looking around) at the pace DeepSeek's thinking runs
 // went at in the 2026-10-11 run (6-86 s a round, 35 s on average, 45 s here to leave room), up to the next 5 minutes.
 const SECONDS_PER_ROUND = 45;
+const PEAK_HOLD_MINUTES = 30;
 function caseEstimateMs(c) {
   return Math.ceil(((c.minRounds || 0) + EXPLORE_ROUNDS) * SECONDS_PER_ROUND / 300) * 300 * 1000;
 }
@@ -829,9 +830,9 @@ async function main(argv) {
       // A run a game or RAM paused isn't her result: wait it out, run it again.
       let result = null;
       let why = null;
-      // DeepSeek bills double at peak hours: a case waits for off-peak instead of starting in them.
-      for (let said = false; remote && isPeak(); said = true) {
-        if (!said) console.log(`Peak hours: waiting for off-peak before ${c.id}.`);
+      // DeepSeek bills double at peak hours: a case waits for off-peak instead of starting in them or within 30 minutes of them.
+      for (let said = false; remote && minutesToPeak() < PEAK_HOLD_MINUTES; said = true) {
+        if (!said) console.log(`Peak hours (or under ${PEAK_HOLD_MINUTES} minutes away): waiting for off-peak before ${c.id}.`);
         await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
       }
       for (let tries = 0; tries < 3 && !result; tries += 1) {
