@@ -1686,7 +1686,12 @@ Before it can be a PR:
         // response to consume the model's entire context window. The full
         // result remains in the run log; only the model-facing response is
         // compacted.
-        return compactAgenticResult(result);
+        const controllerNote =
+          r.controller?.allowedActions?.length === 1 &&
+          r.controller.allowedActions[0] === CODING_EDIT_TOOL_NAME
+            ? `\n\nCONTROLLER: inspection is complete. Your next action must be ${CODING_EDIT_TOOL_NAME}; do not plan or inspect again.`
+            : "";
+        return compactAgenticResult(`${result}${controllerNote}`);
       },
     };
   }
