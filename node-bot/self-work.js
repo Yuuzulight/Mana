@@ -1608,6 +1608,7 @@ Before it can be a PR:
 
     return {
       tools: [...TOOL_SCHEMAS, ...(extra.schemas || []), ...GOAL_TOOL_SCHEMAS],
+      allowedActions: () => controller.allowedActions(),
       isKnownTool: (name) => name in executors || name === SESSION_GOAL_FINISH_TOOL_NAME,
       async executeTool(name, args) {
         const boundary = await coordinator?.acquire({ owner: 'Self-work safe boundary', background: true, estimate: {},

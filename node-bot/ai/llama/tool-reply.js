@@ -74,6 +74,15 @@ async function runToolAwareReply(
       extraMessages,
     );
 
+    function toolsForTurn() {
+      const allowed = typeof toolPolicy.allowedActions === "function"
+        ? toolPolicy.allowedActions()
+        : null;
+      if (!Array.isArray(allowed) || !allowed.length) return toolPolicy.tools;
+      const filtered = toolPolicy.tools.filter((tool) => allowed.includes(tool?.function?.name));
+      return filtered.length ? filtered : toolPolicy.tools;
+    }
+
     async function complete(toolsEnabled) {
       const generate = async () => {
       // Issue #417: a tool executed mid-loop (vision__look) can swap the
@@ -101,7 +110,7 @@ async function runToolAwareReply(
                 type: "json_schema",
                 json_schema: {
                   name: "single_goal_tool_call",
-                  schema: context.buildToolCallRepairSchema(toolPolicy.tools),
+                  schema: context.buildToolCallRepairSchema(toolsForTurn()),
                 },
               },
             }
@@ -253,7 +262,7 @@ async function runToolAwareReply(
         : [];
 
       if (!requestedToolCalls.length && structuredActions) {
-        requestedToolCalls = context.parseStructuredToolCalls(visibleContent, toolPolicy.tools);
+        requestedToolCalls = context.parseStructuredToolCalls(visibleContent, toolsForTurn());
       }
 
       if (!requestedToolCalls.length) {
