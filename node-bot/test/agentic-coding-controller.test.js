@@ -132,6 +132,24 @@ test("stops a local model after repeated recovery denials and requests escalatio
   assert.equal(c.snapshot().phase, PHASES.BLOCKED);
 });
 
+test("forces an edit after the inspection budget is exhausted", () => {
+  const c = createAgenticCodingController({ requirePlan: true, maxInspectionActions: 2 });
+  const plan = { steps: ["inspect", "edit and verify"] };
+  const read = { path: "src/add.js", start_line: 1, end_line: 5 };
+  c.after("self_work__plan", plan, "plan");
+  c.before("self_work__read", read);
+  c.after("self_work__read", read, "source");
+  const search = { text: "return", path: "src" };
+  c.before("self_work__search", search);
+  c.after("self_work__search", search, "match");
+  assert.deepEqual(c.snapshot().allowedActions, ["coding__propose_edit"]);
+  assert.throws(() => c.before("self_work__read", { ...read, end_line: 8 }), error => {
+    assert.equal(error.recoveryCode, "INSPECTION_LIMIT");
+    assert.deepEqual(error.nextActions, ["coding__propose_edit"]);
+    return true;
+  });
+});
+
 test("validates action payloads before they can reach workspace executors", () => {
   assert.throws(() => validateAction("self_work__read", { path: "src/a.js", start_line: 0 }), /positive line/);
   assert.throws(() => validateAction("self_work__search", { text: 3 }), /text must be a string/);

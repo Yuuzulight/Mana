@@ -17,6 +17,7 @@ const REVIEW_TOOLS = new Set(["self_work__review"]);
 const DEFAULT_MAX_EDITS_BEFORE_VERIFY = 3;
 const DEFAULT_REPEAT_LIMIT = 2;
 const DEFAULT_MAX_RECOVERY_DENIALS = 3;
+const DEFAULT_MAX_INSPECTION_ACTIONS = 4;
 
 const PHASES = Object.freeze({
   INSPECT: "inspect",
@@ -158,6 +159,8 @@ class AgenticCodingController {
     this.recoveryDenials = 0;
     this.recoveryKey = null;
     this.maxRecoveryDenials = Math.max(1, Number(options.maxRecoveryDenials) || DEFAULT_MAX_RECOVERY_DENIALS);
+    this.maxInspectionActions = Math.max(1, Number(options.maxInspectionActions) || DEFAULT_MAX_INSPECTION_ACTIONS);
+    this.inspectionActions = 0;
     this.requirePlan = Boolean(options.requirePlan);
   }
 
@@ -174,6 +177,7 @@ class AgenticCodingController {
       planned: this.planned,
       lastVerification: this.lastVerification,
       recoveryDenials: this.recoveryDenials,
+      inspectionActions: this.inspectionActions,
       allowedActions: this.allowedActions(),
     };
     if (this.blockedReason) snapshot.blockedReason = this.blockedReason;
@@ -199,6 +203,7 @@ class AgenticCodingController {
     }
     if (this.phase === PHASES.REVIEW) return ["self_work__review", "session_goal__finish"];
     if (this.phase === PHASES.DIAGNOSE) return ["self_work__search", "self_work__read", "coding__propose_edit", "coding__run_tests"];
+    if (this.planned && this.inspectionActions >= this.maxInspectionActions) return ["coding__propose_edit"];
     return ["self_work__files", "self_work__search", "self_work__read", "coding__propose_edit"];
   }
 
@@ -218,6 +223,7 @@ class AgenticCodingController {
       "ILLEGAL_ACTION",
       "PLAN_REQUIRED",
       "VERIFY_REQUIRED",
+      "INSPECTION_LIMIT",
     ]);
     if (recoveryCodes.has(details.recoveryCode)) {
       const key = `${this.currentActionName || "unknown"}:${details.recoveryCode}`;
@@ -267,6 +273,13 @@ class AgenticCodingController {
       throw this.deny("Create a short plan with self_work__plan before editing the workspace.", {
         recoveryCode: "PLAN_REQUIRED",
         nextActions: ["self_work__plan", "self_work__files", "self_work__search", "self_work__read"],
+      });
+    }
+    if (this.planned && this.phase === PHASES.INSPECT && this.inspectionActions >= this.maxInspectionActions &&
+        (PLAN_TOOLS.has(name) || READ_TOOLS.has(name))) {
+      throw this.deny(`Inspection reached its ${this.maxInspectionActions}-action budget. Make the smallest edit supported by the evidence before inspecting again.`, {
+        recoveryCode: "INSPECTION_LIMIT",
+        nextActions: ["coding__propose_edit"],
       });
     }
     const allowed = this.requirePlan ? this.allowedActions() : [];
@@ -364,12 +377,14 @@ class AgenticCodingController {
       this.phase = PHASES.INSPECT;
     } else if (READ_TOOLS.has(name)) {
       this.reads.set(key, this.version);
+      this.inspectionActions += 1;
       if (this.phase === PHASES.INSPECT) this.phase = PHASES.INSPECT;
     } else if (EDIT_TOOLS.has(name)) {
       if (parsed?.status === "error") return;
       this.edits += 1;
       this.editsSinceTest += 1;
       this.version += 1;
+      this.inspectionActions = 0;
       this.lastEditKey = key;
       this.lastTestPassed = false;
       this.reviewed = 0;
