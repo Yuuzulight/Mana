@@ -76,3 +76,23 @@ test("another provider (thinking null): only the model, and no key header withou
   assert.equal(requests[0].body.max_tokens, undefined);
   assert.equal(requests[0].headers.Authorization, undefined);
 });
+
+test("a remote loop with retries waits out an overloaded API and a network error, then goes on", async () => {
+  const sent = [];
+  const waits = [];
+  const fetch = async (url, init) => {
+    sent.push(JSON.parse(init.body));
+    if (sent.length === 1) return { ok: false, status: 503, text: async () => "busy" };
+    if (sent.length === 2) throw new Error("fetch failed");
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "done" } }], usage: {} }) };
+  };
+  const runtime = createLlamaServerRuntime({ env: {}, fetch, spawn: () => { throw new Error("no llama-server"); }, sleep: async (ms) => { waits.push(ms); }, registerExitHandlers: false });
+  const reply = await runtime.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "sk-test", model: "deepseek-flash", retries: 3 })("hi", policy);
+  assert.equal(reply.content, "done");
+  assert.equal(sent.length, 3);
+  assert.deepEqual(waits, [5000, 10000]);
+  // Without retries (chat) the first failure ends it, as before.
+  sent.length = 0;
+  await assert.rejects(() => runtime.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "sk-test", model: "deepseek-flash" })("hi", policy), /503/);
+  assert.equal(sent.length, 1);
+});

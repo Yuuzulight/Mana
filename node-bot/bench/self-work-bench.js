@@ -10,6 +10,10 @@
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
+//     [--reviewer <model>]   (with --remote: that DeepSeek model reviews her edits, so no local model is loaded)
+//     [--no-round-cap]   (no round limit: the run ends when it hands in, is stuck, fills its context or runs out of time)
+//     [--time-warn-only]   (with --time-by-estimate: only the warning at the estimate; --max-minutes is then the stop, a guard against a hang)
+//     [--time-by-estimate]   (each case's time: a warning at its estimate, a hard stop at twice that; --max-minutes is ignored)
 //     [--out <dir>] [--verify]
 //     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
 //     [--check]   (the preflight only: no model, no runs)
@@ -60,6 +64,12 @@ const BACKEND_LLAMA_PORT = 8090;
 const BENCH_MAX_RAM_PERCENT = 90;
 // #1467: rounds to look around and test on top of the least a case takes.
 const EXPLORE_ROUNDS = 20;
+// A case's expected time: the rounds a run needs (the fix's, plus looking around) at the pace DeepSeek's thinking runs
+// went at in the 2026-10-11 run (6-86 s a round, 35 s on average, 45 s here to leave room), up to the next 5 minutes.
+const SECONDS_PER_ROUND = 45;
+function caseEstimateMs(c) {
+  return Math.ceil(((c.minRounds || 0) + EXPLORE_ROUNDS) * SECONDS_PER_ROUND / 300) * 300 * 1000;
+}
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -274,12 +284,16 @@ async function runCase(c, deps) {
       },
     });
     const peaks = watchPeaks(deps.sample);
+    const estimateMs = deps.timeByEstimate ? caseEstimateMs(c) : null;
+    const caseMaxMs = estimateMs && !deps.timeWarnOnly ? 2 * estimateMs : deps.maxMs;
+    const overTimer = estimateMs ? setTimeout(() => console.log(`[bench ${c.id}] past its ${estimateMs / 60000}-minute estimate${deps.timeWarnOnly ? "" : `; it stops at ${2 * estimateMs / 60000} minutes`}`), estimateMs) : null;
+    overTimer?.unref();
     const selfWork = createSelfWork({
       repoRoot,
       worktreesDir,
       // A wall-clock cap per run (goal mode ends gracefully at it), so one
       // run of full-suite test runs can't hold the batch for an hour.
-      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), { ...opts, ...(deps.maxMs ? { maxMs: deps.maxMs } : {}), benchCase: c }),
+      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), { ...opts, ...(caseMaxMs ? { maxMs: caseMaxMs } : {}), benchCase: c }),
       reviewEdit: deps.reviewEdit,
       isGaming: deps.isGaming,
       ramPercent: deps.ramPercent,
@@ -290,14 +304,17 @@ async function runCase(c, deps) {
     });
     // The interface the hidden tests call (names, options, messages), when
     // the issue leaves it open, so a sound fix isn't failed on naming.
-    const body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
+    let body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
+    // The hidden tests are swapped in after the run and can't be edited: say so, so no round goes on trying.
+    if (c.hiddenTests?.length) body += `\n\n${c.hiddenTests.join(", ")} will be replaced by the real test${c.hiddenTests.length > 1 ? "s" : ""} and can't be edited: write any test of your own in a new file.`;
     const started = Date.now();
     // #1467: a case's minRounds is what its merged fix takes through her tools (the oracle); every run gets
     // that and EXPLORE_ROUNDS more, so a budget never decides a case on its own.
-    const issue = { number: c.issue, title: c.title, body, ...(c.minRounds ? { maxRounds: Math.round((c.minRounds + EXPLORE_ROUNDS) * (deps.roundScale || 1)) } : {}) };
+    const issue = { number: c.issue, title: c.title, body, ...(deps.noRoundCap ? { maxRounds: 1000 } : c.minRounds ? { maxRounds: Math.round((c.minRounds + EXPLORE_ROUNDS) * (deps.roundScale || 1)) } : {}) };
     // #1247: --attempts N is her best-of-N (where self-work has it).
     const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
+    clearTimeout(overTimer);
     const peak = await peaks.stop();
     const contextSize = deps.contextSize ? await deps.contextSize() : null;
     const diff = diffAgainst(wt, start);
@@ -320,6 +337,7 @@ async function runCase(c, deps) {
       // The harness failing her (the sandbox, the test runner), not the model.
       harnessErrors: calls.harness,
       wallMs,
+      ...(estimateMs ? { estimateMs, overEstimate: wallMs > estimateMs } : {}),
       peakVramMb: peak.vramMb,
       peakRamPercent: peak.ramPercent,
       contextSize,
@@ -508,7 +526,7 @@ function writeReport(results, outDir, meta = {}) {
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map(
       (r) =>
-        `| ${r.id} | ${r.kind || "-"} | ${r.repeat || 1} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.failure || "-"} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s | ${tok(r.tokens)} | ${r.tokens.textCalls ?? 0} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
+        `| ${r.id} | ${r.kind || "-"} | ${r.repeat || 1} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.failure || "-"} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s${r.estimateMs ? ` (est ${r.estimateMs / 60000}m${r.overEstimate ? ", over" : ""})` : ""} | ${tok(r.tokens)} | ${r.tokens.textCalls ?? 0} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
     ),
     "",
   ].join("\n");
@@ -522,6 +540,10 @@ function benchEnv(repoRoot) {
   return { ...process.env, ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {}) };
 }
 
+// The window her loop works to on a remote model: DeepSeek's documented 1M (v4-pro and flash), with replies up to
+// 128K tokens (their maximum is 384K).
+const REMOTE_CONTEXT = 1000000;
+const REMOTE_MAX_TOKENS = 131072;
 // #1406/#1411: her loop on a DeepSeek model, with her local reviewer (the
 // bench's own llama-server) and the key from Settings. spend adds up this
 // run's tokens and dollars; API spending gets each reply too (use: bench).
@@ -537,8 +559,32 @@ function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
     spend.usd = (spend.usd || 0) + (costOf(model, t, isPeak()) || 0);
     ledger.record({ model, use: "bench", usage: json?.usage || {} });
   };
-  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse });
-  return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, runLoop: loop };
+  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse, contextSize: REMOTE_CONTEXT, maxTokens: REMOTE_MAX_TOKENS, retries: 12 });
+  // The report's context-overflow check measures a run against the window its loop worked to: the remote model's,
+  // not the local reviewer's (--context only sizes that one).
+  // --reviewer <model>: that model reviews her edits through the same API (no thinking, short replies), and the bench
+  // loads no local model. Its tokens and dollars count in the run's spend.
+  const reviewer = local.reviewer;
+  if (reviewer) {
+    const { refuteEdit } = require("../ai/adversarial-verifier");
+    const review = async (prompt, maxTokens) => {
+      const resp = await globalThis.fetch(`${String(settings.baseUrl).replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+        body: JSON.stringify({ model: reviewer, messages: [{ role: "user", content: prompt }], max_tokens: maxTokens || 800, thinking: { type: "disabled" } }),
+      });
+      if (!resp.ok) return null;
+      const json = await resp.json();
+      const t = tokensOf(json?.usage || {});
+      for (const k of Object.keys(t)) spend[k] = (spend[k] || 0) + t[k];
+      spend.usd = (spend.usd || 0) + (costOf(reviewer, t, isPeak()) || 0);
+      ledger.record({ model: reviewer, use: "bench", usage: json?.usage || {} });
+      return json?.choices?.[0]?.message?.content ?? null;
+    };
+    const env = benchEnv(repoRoot);
+    return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${reviewer})`, runLoop: loop, contextSize: async () => REMOTE_CONTEXT, start: async () => {}, reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: review, env }) };
+  }
+  return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, runLoop: loop, contextSize: async () => REMOTE_CONTEXT };
 }
 
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
@@ -654,13 +700,13 @@ async function waitUp(server, healthy, sleep = (ms) => new Promise((resolve) => 
 // VRAM back; it's loaded again once the case can start (without
 // --server-args the runtime reloads it on the case's first request).
 // Returns why the case still can't start, or null.
-async function waitOut(c, gate, model, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
+async function waitOut(c, gate, model, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), { forever = false } = {}) {
   let why = await blocker(gate);
   if (!why) return null;
   await model.stop();
   // #1467: a game is waited out however long it lasts (a match runs past
   // 20 minutes); RAM and her chat model still stop the run after 20.
-  for (let waited = 0; why && (waited < 20 || why === GAMING); waited += 1) {
+  for (let waited = 0; why && (waited < 20 || why === GAMING || forever); waited += 1) {
     console.log(`Waiting before ${c.id}: ${why}.`);
     await sleep(60000);
     why = await blocker(gate);
@@ -687,18 +733,23 @@ async function main(argv) {
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
   const attempts = Math.max(1, Number(opt("--attempts")[0]) || 1);
   const roundScale = Number(opt("--round-scale")[0]) || 1;
+  const noRoundCap = process.argv.includes("--no-round-cap");
+  const timeByEstimate = process.argv.includes("--time-by-estimate");
+  const timeWarnOnly = process.argv.includes("--time-warn-only");
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
-  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
+  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], reviewer: opt("--reviewer")[0] };
   const remote = opt("--remote")[0];
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
   const maxUsd = Number(opt("--max-usd")[0]) || 0;
   const approvalGate = benchTestGate(worktreesDir);
+  // Her loop and her reviewer both on the API: nothing of the bench's takes the GPU, so a game or her chat model being up is no reason to wait.
+  const noLocalModel = Boolean(remote && config.reviewer);
   const gate = {
-    isGaming: () => isGamingNow(repoRoot),
+    isGaming: () => !noLocalModel && isGamingNow(repoRoot),
     ramPercent: systemRamPercent,
-    backendModelUp: () =>
+    backendModelUp: () => noLocalModel ? Promise.resolve(false) :
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
 
@@ -745,7 +796,7 @@ async function main(argv) {
     const bad = pre.serverArgsProblem(config.serverArgs, model.runtime.findLlamaServerBin());
     if (bad) throw new Error(`The bench's preflight failed: ${bad}`);
   }
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, roundScale, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, roundScale, noRoundCap, timeByEstimate, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of sound) runs.push({ c, repeat });
@@ -753,14 +804,20 @@ async function main(argv) {
     await model.start();
     const noCall = oracle ? null : await pre.toolCallProblem(model.runLoop);
     if (noCall) throw new Error(`The bench's preflight failed: ${noCall}`);
+    let harnessStreak = 0;
     for (const { c, repeat } of runs) {
       // A run a game or RAM paused isn't her result: wait it out, run it again.
       let result = null;
       let why = null;
+      // DeepSeek bills double at peak hours: a case waits for off-peak instead of starting in them.
+      for (let said = false; remote && isPeak(); said = true) {
+        if (!said) console.log(`Peak hours: waiting for off-peak before ${c.id}.`);
+        await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
+      }
       for (let tries = 0; tries < 3 && !result; tries += 1) {
-        why = await waitOut(c, gate, model);
+        why = await waitOut(c, gate, model, undefined, { forever: noLocalModel });
         if (why) break;
-        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, approvalGate, ...(oracle ? { prefix: "bench-oracle-" } : {}) });
+        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, noRoundCap, timeByEstimate, timeWarnOnly, approvalGate, ...(oracle ? { prefix: "bench-oracle-" } : {}) });
         if (result.ended === "paused") {
           console.log(`${c.id} was paused; running it again.`);
           result = null;
@@ -786,7 +843,9 @@ async function main(argv) {
         console.log(`Stopping after ${c.id}: $${spend.usd.toFixed(2)} spent, the cap is $${maxUsd}.`);
         break;
       }
-      if (result.harnessErrors.length) {
+      // The harness failing one case (not the model) doesn't end an unattended run; three in a row means it's broken.
+      harnessStreak = result.harnessErrors.length ? harnessStreak + 1 : 0;
+      if (result.harnessErrors.length && (!noLocalModel || harnessStreak >= 3)) {
         console.log(`Stopping at ${c.id}: the harness failed her, not the model: ${result.harnessErrors[0]}`);
         break;
       }
@@ -805,4 +864,5 @@ if (require.main === module) {
   });
 }
 
-module.exports = { HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+module.exports = {
+  caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };

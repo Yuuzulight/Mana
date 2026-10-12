@@ -1550,6 +1550,18 @@ test("#1467: search tries a grep-style pattern when the exact text isn't there",
   assert.match(results[3], /^node-bot\/util\.js:2:/, "an exact match stays as it was");
 });
 
+// A regex -E can't read (a lookahead) is searched as PCRE instead of failing the call.
+test("search with regex: true falls back to PCRE for a lookahead", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const calls = [["self_work__search", { text: "function add(?=\\()", regex: true }]];
+  const { sw } = selfWork(repos, { calls, plans: false, seen });
+  await sw.start(7);
+  await sw._current().done;
+  const result = seen.find((x) => x.name === "self_work__search");
+  assert.match(String(result.result ?? result.error), /^node-bot\/util\.js:1:function add/);
+});
+
 // #1467: a new feature can need a new folder: one level in a folder that exists, when the plan says it's new.
 test("#1467: a plan may name a file in a new folder when it says it's new", async () => {
   const repos = makeRepos();

@@ -1505,6 +1505,11 @@ Before it can be a PR:
       const args = ["grep", "-n", "-I", regex === true ? "-E" : "-F", "-e", String(text)];
       if (where) args.push("--", posix(inside(where)));
       let r2 = await exec("git", args, { cwd: root, env: gitEnv });
+      // A pattern -E rejects (a lookahead, \d, a lazy .*?) is PCRE.
+      if (r2.code > 1 && regex === true) {
+        args[3] = "-P";
+        r2 = await exec("git", args, { cwd: root, env: gitEnv });
+      }
       // #1467: models write grep patterns (a|b, a.*b, \.run\() without regex: true; a literal search
       // for one finds nothing, so it's tried as a pattern before saying so.
       let asPattern = false;

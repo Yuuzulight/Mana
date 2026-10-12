@@ -380,3 +380,10 @@ test("the bench pre-approves only sandboxed tests in its own worktrees", async (
   await assert.rejects(ask(path.join(root, "bench-1-add-subtracts", "..", "..", "Users")), /outside the bench's own worktrees/);
   assert.equal((await gate.requestApproval("memory-write", { payload: {} })).status, "blocked");
 });
+
+test("caseEstimateMs: the rounds a run needs at 45 s each, up to the next 5 minutes", () => {
+  const { caseEstimateMs } = require("../bench/self-work-bench");
+  assert.equal(caseEstimateMs({ minRounds: 9 }), 25 * 60 * 1000);
+  assert.equal(caseEstimateMs({ minRounds: 36 }), 45 * 60 * 1000);
+  assert.equal(caseEstimateMs({}), 15 * 60 * 1000);
+});

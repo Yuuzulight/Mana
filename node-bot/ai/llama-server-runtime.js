@@ -627,7 +627,7 @@ function createLlamaServerRuntime(options = {}) {
   // #1441: thinking true/false is DeepSeek's switch; null (other providers)
   // sends neither it nor max_tokens, which some providers refuse or name
   // differently. A provider on this PC needs no key.
-  function remoteToolReply({ baseUrl, apiKey, model, thinking = true, maxTokens = 32768, contextSize = 131072, onResponse = null }) {
+  function remoteToolReply({ baseUrl, apiKey, model, thinking = true, maxTokens = 32768, contextSize = 131072, retries = 0, onResponse = null }) {
     if (isLocalOnly(env)) throw new Error("local-only mode is on, so I can't use a remote model");
     if (!baseUrl || !model) throw new Error("a remote model needs a base URL and a model");
     const own = {
@@ -635,6 +635,7 @@ function createLlamaServerRuntime(options = {}) {
       requestHeaders: () => (apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       keepReasoning: thinking === true,
       onResponse,
+      remoteRetries: retries,
       ensureServer: async () => {},
       applyLoraAdapter: async () => {},
       state: { hasLoraAdapters: false },
