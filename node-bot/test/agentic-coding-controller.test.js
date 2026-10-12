@@ -105,6 +105,24 @@ test("does not allow a planned run to loop on plan summaries", () => {
   });
 });
 
+test("stops a local model after repeated recovery denials and requests escalation", () => {
+  const c = createAgenticCodingController({ maxRecoveryDenials: 2 });
+  const read = { path: "src/add.js", start_line: 1, end_line: 5 };
+  c.before("self_work__read", read);
+  c.after("self_work__read", read, "source");
+  assert.throws(() => c.before("self_work__read", read), error => {
+    assert.equal(error.recoveryCode, "DUPLICATE_ACTION");
+    return true;
+  });
+  assert.throws(() => c.before("self_work__read", read), error => {
+    assert.equal(error.recoveryCode, "LOCAL_MODEL_STALLED");
+    assert.equal(error.escalationRequired, true);
+    assert.deepEqual(error.nextActions, []);
+    return true;
+  });
+  assert.equal(c.snapshot().phase, PHASES.BLOCKED);
+});
+
 test("validates action payloads before they can reach workspace executors", () => {
   assert.throws(() => validateAction("self_work__read", { path: "src/a.js", start_line: 0 }), /positive line/);
   assert.throws(() => validateAction("self_work__search", { text: 3 }), /text must be a string/);

@@ -16,6 +16,7 @@ const TEST_TOOLS = new Set(["coding__run_tests"]);
 const REVIEW_TOOLS = new Set(["self_work__review"]);
 const DEFAULT_MAX_EDITS_BEFORE_VERIFY = 3;
 const DEFAULT_REPEAT_LIMIT = 2;
+const DEFAULT_MAX_RECOVERY_DENIALS = 3;
 
 const PHASES = Object.freeze({
   INSPECT: "inspect",
@@ -154,6 +155,8 @@ class AgenticCodingController {
     this.planned = false;
     this.lastVerification = null;
     this.recoveryAttempts = new Map();
+    this.recoveryDenials = 0;
+    this.maxRecoveryDenials = Math.max(1, Number(options.maxRecoveryDenials) || DEFAULT_MAX_RECOVERY_DENIALS);
     this.requirePlan = Boolean(options.requirePlan);
   }
 
@@ -169,6 +172,7 @@ class AgenticCodingController {
       failures: this.failures.slice(-3),
       planned: this.planned,
       lastVerification: this.lastVerification,
+      recoveryDenials: this.recoveryDenials,
       allowedActions: this.allowedActions(),
     };
     if (this.blockedReason) snapshot.blockedReason = this.blockedReason;
@@ -206,6 +210,26 @@ class AgenticCodingController {
   }
 
   deny(reason, details = {}) {
+    const recoveryCodes = new Set([
+      "PLAN_ALREADY_SET",
+      "DUPLICATE_ACTION",
+      "DUPLICATE_TEST",
+      "ILLEGAL_ACTION",
+      "PLAN_REQUIRED",
+      "VERIFY_REQUIRED",
+    ]);
+    if (recoveryCodes.has(details.recoveryCode)) this.recoveryDenials += 1;
+    if (this.recoveryDenials >= this.maxRecoveryDenials && recoveryCodes.has(details.recoveryCode)) {
+      this.phase = PHASES.BLOCKED;
+      details = {
+        ...details,
+        recoveryCode: "LOCAL_MODEL_STALLED",
+        escalationRequired: true,
+        recoveryDenials: this.recoveryDenials,
+        nextActions: [],
+      };
+      reason = `The local model made ${this.recoveryDenials} recovery attempts without meaningful progress. Escalate this task to the configured fallback model.`;
+    }
     const error = new Error(`${reason} ${this.context()}`);
     error.code = "AGENTIC_CONTROLLER_DENIED";
     Object.assign(error, details);
@@ -319,6 +343,7 @@ class AgenticCodingController {
   after(name, args = {}, result) {
     const key = `${name}:${stable(args)}`;
     const parsed = parseResult(result);
+    this.recoveryDenials = 0;
     this.actionCounts.set(key, (this.actionCounts.get(key) || 0) + 1);
     this.actionHistory.push({ name, key, version: this.version, at: new Date().toISOString() });
     if (this.actionHistory.length > 40) this.actionHistory.shift();

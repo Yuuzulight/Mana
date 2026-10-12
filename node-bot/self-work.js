@@ -1632,6 +1632,19 @@ Before it can be a PR:
             // use the text to decide whether to keep diagnosing or review.
             throw e;
           }
+          if (e.escalationRequired) {
+            r.halt ||= {
+              state: "escalate",
+              text: e.message,
+            };
+            return JSON.stringify({
+              status: "escalate",
+              code: e.recoveryCode || "LOCAL_MODEL_STALLED",
+              error: e.message,
+              escalation_required: true,
+              controller: controller.snapshot(),
+            });
+          }
           r.controller = controller.snapshot();
           return JSON.stringify({
             status: "error",
