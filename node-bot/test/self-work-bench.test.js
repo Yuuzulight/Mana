@@ -387,3 +387,23 @@ test("caseEstimateMs: the rounds a run needs at 45 s each, up to the next 5 minu
   assert.equal(caseEstimateMs({ minRounds: 36 }), 45 * 60 * 1000);
   assert.equal(caseEstimateMs({}), 15 * 60 * 1000);
 });
+
+test("addSpend keeps flat totals and a per-model split that agree", () => {
+  const { addSpend } = require("../bench/self-work-bench");
+  const spend = {};
+  addSpend(spend, "deepseek-flash", { cacheHit: 100, cacheMiss: 10, output: 5, reasoning: 2 }, 0.01);
+  addSpend(spend, "deepseek-flash", { cacheHit: 50, cacheMiss: 0, output: 5, reasoning: 0 }, 0.02);
+  addSpend(spend, "deepseek-v4-pro", { cacheHit: 1, cacheMiss: 2, output: 3, reasoning: 4 }, 0.5);
+  assert.equal(spend.byModel["deepseek-flash"].usd, 0.03);
+  assert.equal(spend.byModel["deepseek-flash"].cacheHit, 150);
+  assert.equal(spend.byModel["deepseek-v4-pro"].output, 3);
+  assert.equal(spend.usd, 0.53);
+  assert.equal(spend.output, 13);
+});
+
+test("worktreePrefix gives each setup its own bench- folder prefix", () => {
+  const { worktreePrefix } = require("../bench/self-work-bench");
+  assert.equal(worktreePrefix("flash"), "bench-flash-");
+  assert.equal(worktreePrefix(undefined), "bench-");
+  assert.equal(worktreePrefix("a b/../c"), "bench-a-b-c-");
+});

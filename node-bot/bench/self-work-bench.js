@@ -10,6 +10,7 @@
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
+//     [--setup <name>]   (worktree folders bench-<name>-<case>, so setups can run side by side)
 //     [--reviewer <model>]   (with --remote: that DeepSeek model reviews her edits, so no local model is loaded)
 //     [--no-round-cap]   (no round limit: the run ends when it hands in, is stuck, fills its context or runs out of time)
 //     [--time-warn-only]   (with --time-by-estimate: only the warning at the estimate; --max-minutes is then the stop, a guard against a hang)
@@ -540,6 +541,26 @@ function benchEnv(repoRoot) {
   return { ...process.env, ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {}) };
 }
 
+// What a run has spent: flat totals plus a split by model (a setup can use two). usd is the caller's price for these tokens.
+const SPEND_KEYS = ["cacheHit", "cacheMiss", "output", "reasoning"];
+function addSpend(spend, model, tokens, usd) {
+  const own = ((spend.byModel ||= {})[model] ||= { usd: 0, cacheHit: 0, cacheMiss: 0, output: 0, reasoning: 0 });
+  for (const k of SPEND_KEYS) {
+    const n = tokens[k] || 0;
+    spend[k] = (spend[k] || 0) + n;
+    own[k] += n;
+  }
+  spend.usd = (spend.usd || 0) + usd;
+  own.usd += usd;
+}
+
+// Each setup's worktrees get their own folder prefix (it must still start with "bench-" for benchTestGate), so setups
+// running side by side never share a folder for the same case.
+function worktreePrefix(setup) {
+  const name = String(setup || "").replace(/\W+/g, "-").replace(/^-+|-+$/g, "");
+  return name ? `bench-${name}-` : "bench-";
+}
+
 // The window her loop works to on a remote model: DeepSeek's documented 1M (v4-pro and flash), with replies up to
 // 128K tokens (their maximum is 384K).
 const REMOTE_CONTEXT = 1000000;
@@ -555,8 +576,7 @@ function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
   const base = realModel(repoRoot, tokens, local);
   const onResponse = (json) => {
     const t = tokensOf(json?.usage || {});
-    for (const k of Object.keys(t)) spend[k] = (spend[k] || 0) + t[k];
-    spend.usd = (spend.usd || 0) + (costOf(model, t, isPeak()) || 0);
+    addSpend(spend, model, t, costOf(model, t, isPeak()) || 0);
     ledger.record({ model, use: "bench", usage: json?.usage || {} });
   };
   const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse, contextSize: REMOTE_CONTEXT, maxTokens: REMOTE_MAX_TOKENS, retries: 12 });
@@ -576,8 +596,7 @@ function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
       if (!resp.ok) return null;
       const json = await resp.json();
       const t = tokensOf(json?.usage || {});
-      for (const k of Object.keys(t)) spend[k] = (spend[k] || 0) + t[k];
-      spend.usd = (spend.usd || 0) + (costOf(reviewer, t, isPeak()) || 0);
+      addSpend(spend, reviewer, t, costOf(reviewer, t, isPeak()) || 0);
       ledger.record({ model: reviewer, use: "bench", usage: json?.usage || {} });
       return json?.choices?.[0]?.message?.content ?? null;
     };
@@ -733,6 +752,7 @@ async function main(argv) {
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
   const attempts = Math.max(1, Number(opt("--attempts")[0]) || 1);
   const roundScale = Number(opt("--round-scale")[0]) || 1;
+  const setup = opt("--setup")[0];
   const noRoundCap = process.argv.includes("--no-round-cap");
   const timeByEstimate = process.argv.includes("--time-by-estimate");
   const timeWarnOnly = process.argv.includes("--time-warn-only");
@@ -817,7 +837,7 @@ async function main(argv) {
       for (let tries = 0; tries < 3 && !result; tries += 1) {
         why = await waitOut(c, gate, model, undefined, { forever: noLocalModel });
         if (why) break;
-        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, noRoundCap, timeByEstimate, timeWarnOnly, approvalGate, ...(oracle ? { prefix: "bench-oracle-" } : {}) });
+        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, noRoundCap, timeByEstimate, timeWarnOnly, approvalGate, prefix: oracle ? "bench-oracle-" : worktreePrefix(setup) });
         if (result.ended === "paused") {
           console.log(`${c.id} was paused; running it again.`);
           result = null;
@@ -865,4 +885,4 @@ if (require.main === module) {
 }
 
 module.exports = {
-  caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+  addSpend, worktreePrefix, caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
