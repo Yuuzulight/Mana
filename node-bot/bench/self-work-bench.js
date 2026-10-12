@@ -11,6 +11,7 @@
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
 //     [--setup <name>]   (worktree folders bench-<name>-<case>, so setups can run side by side)
+//     [--orchestrate <model> [--worker <model>]]   (her loop run by <model> with no edit tool and a delegate tool; the worker, flash unless named, makes the edits)
 //     [--helper-model <model>]   (with --remote: that model also does her goal check and tool-call repair, and reviews her edits unless --reviewer says otherwise; nothing local runs)
 //     [--reviewer <model>]   (with --remote: that DeepSeek model reviews her edits, so no local model is loaded)
 //     [--no-round-cap]   (no round limit: the run ends when it hands in, is stuck, fills its context or runs out of time)
@@ -309,6 +310,7 @@ async function runCase(c, deps) {
     // the issue leaves it open, so a sound fix isn't failed on naming.
     let body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
     // The hidden tests are swapped in after the run and can't be edited: say so, so no round goes on trying.
+    if (deps.orchestrated) body += `\n\n${ORCHESTRATOR_NOTE}`;
     if (c.hiddenTests?.length) body += `\n\n${c.hiddenTests.join(", ")} will be replaced by the real test${c.hiddenTests.length > 1 ? "s" : ""} and can't be edited: write any test of your own in a new file.`;
     const started = Date.now();
     // #1467: a case's minRounds is what its merged fix takes through her tools (the oracle); every run gets
@@ -563,6 +565,9 @@ function worktreePrefix(setup) {
   return name ? `bench-${name}-` : "bench-";
 }
 
+// What the orchestrator is told in the setup where it designs and a worker edits.
+const ORCHESTRATOR_NOTE = "You design the change and a worker makes it: you can read, search, plan and run tests, but you cannot edit. Work out the approach, then hand each piece to the worker with self_work__delegate and a brief that names the files, exactly what to change in each, and the tests that must pass. Check what comes back (run the tests yourself), delegate fixes, and finish only when the change is complete.";
+
 // The window her loop works to on a remote model: DeepSeek's documented 1M (v4-pro and flash), with replies up to
 // 128K tokens (their maximum is 384K).
 const REMOTE_CONTEXT = 1000000;
@@ -576,17 +581,28 @@ function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
   if (!settings.apiKey) throw new Error("there's no DeepSeek key in Settings");
   const ledger = createApiSpending({ file: path.join(process.env.MANA_ACP_MEMORY_DIR || path.join(repoRoot, "node-bot", "data", "acp-memory"), "api-spending.json") });
   const base = realModel(repoRoot, tokens, local);
-  const onResponse = (json) => {
-    const t = tokensOf(json?.usage || {});
-    addSpend(spend, model, t, costOf(model, t, isPeak()) || 0);
-    ledger.record({ model, use: "bench", usage: json?.usage || {} });
-  };
-  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse, contextSize: REMOTE_CONTEXT, maxTokens: REMOTE_MAX_TOKENS, retries: 12,
+  const loopFor = (m) => base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: m, thinking, contextSize: REMOTE_CONTEXT, maxTokens: REMOTE_MAX_TOKENS, retries: 12,
+    onResponse: (json) => {
+      const t = tokensOf(json?.usage || {});
+      addSpend(spend, m, t, costOf(m, t, isPeak()) || 0);
+      ledger.record({ model: m, use: "bench", usage: json?.usage || {} });
+    },
     ...(local.helperModel ? { helperModel: local.helperModel, onHelperResponse: (json) => {
       const t = tokensOf(json?.usage || {});
       addSpend(spend, local.helperModel, t, costOf(local.helperModel, t, isPeak()) || 0);
       ledger.record({ model: local.helperModel, use: "bench", usage: json?.usage || {} });
     } } : {}) });
+  // --orchestrate: the orchestrator's loop (no edit tool, a delegate tool) and a worker's, each priced as its own model.
+  const worker = local.orchestrate ? local.worker || "deepseek-flash" : null;
+  const loop = local.orchestrate
+    ? require("./orchestrate").orchestrate({
+        orchestratorLoop: loopFor(local.orchestrate),
+        workerLoop: loopFor(worker),
+        onDelegate: (d) => console.log(`[bench delegate] ${d.status}: ${d.files.join(", ") || "no files"} -- ${d.brief.slice(0, 120).replace(/\s+/g, " ")}`),
+      })
+    : loopFor(model);
+  const setupLabel = local.orchestrate ? `${local.orchestrate} orchestrating ${worker}` : model;
+  const orchestrated = Boolean(local.orchestrate);
   // The report's context-overflow check measures a run against the window its loop worked to: the remote model's,
   // not the local reviewer's (--context only sizes that one).
   // --reviewer <model>: that model reviews her edits through the same API (no thinking, short replies), and the bench
@@ -608,9 +624,9 @@ function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
       return json?.choices?.[0]?.message?.content ?? null;
     };
     const env = benchEnv(repoRoot);
-    return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${reviewer})`, runLoop: loop, contextSize: async () => REMOTE_CONTEXT, start: async () => {}, reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: review, env }) };
+    return { ...base, model: `${setupLabel} (thinking ${thinking ? "on" : "off"}; reviewer: ${reviewer})`, orchestrated, runLoop: loop, contextSize: async () => REMOTE_CONTEXT, start: async () => {}, reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: review, env }) };
   }
-  return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, runLoop: loop, contextSize: async () => REMOTE_CONTEXT };
+  return { ...base, model: `${setupLabel} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, orchestrated, runLoop: loop, contextSize: async () => REMOTE_CONTEXT };
 }
 
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
@@ -765,8 +781,8 @@ async function main(argv) {
   const timeWarnOnly = process.argv.includes("--time-warn-only");
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
-  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], helperModel: opt("--helper-model")[0], reviewer: opt("--reviewer")[0] || opt("--helper-model")[0] };
-  const remote = opt("--remote")[0];
+  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], orchestrate: opt("--orchestrate")[0], worker: opt("--worker")[0], helperModel: opt("--helper-model")[0], reviewer: opt("--reviewer")[0] || opt("--helper-model")[0] };
+  const remote = opt("--remote")[0] || opt("--orchestrate")[0];
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
   const maxUsd = Number(opt("--max-usd")[0]) || 0;
