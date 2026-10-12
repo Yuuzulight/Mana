@@ -106,10 +106,19 @@ test("does not allow a planned run to loop on plan summaries", () => {
 });
 
 test("stops a local model after repeated recovery denials and requests escalation", () => {
-  const c = createAgenticCodingController({ maxRecoveryDenials: 2 });
+  const c = createAgenticCodingController({ maxRecoveryDenials: 2, requirePlan: true });
   const read = { path: "src/add.js", start_line: 1, end_line: 5 };
   c.before("self_work__read", read);
   c.after("self_work__read", read, "source");
+  assert.throws(() => c.before("self_work__read", read), error => {
+    assert.equal(error.recoveryCode, "DUPLICATE_ACTION");
+    return true;
+  });
+  assert.throws(() => c.before("coding__propose_edit", edit), error => {
+    assert.equal(error.recoveryCode, "PLAN_REQUIRED");
+    return true;
+  });
+  assert.equal(c.snapshot().phase, PHASES.INSPECT);
   assert.throws(() => c.before("self_work__read", read), error => {
     assert.equal(error.recoveryCode, "DUPLICATE_ACTION");
     return true;

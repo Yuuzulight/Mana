@@ -156,6 +156,7 @@ class AgenticCodingController {
     this.lastVerification = null;
     this.recoveryAttempts = new Map();
     this.recoveryDenials = 0;
+    this.recoveryKey = null;
     this.maxRecoveryDenials = Math.max(1, Number(options.maxRecoveryDenials) || DEFAULT_MAX_RECOVERY_DENIALS);
     this.requirePlan = Boolean(options.requirePlan);
   }
@@ -218,7 +219,14 @@ class AgenticCodingController {
       "PLAN_REQUIRED",
       "VERIFY_REQUIRED",
     ]);
-    if (recoveryCodes.has(details.recoveryCode)) this.recoveryDenials += 1;
+    if (recoveryCodes.has(details.recoveryCode)) {
+      const key = `${this.currentActionName || "unknown"}:${details.recoveryCode}`;
+      this.recoveryDenials = this.recoveryKey === key ? this.recoveryDenials + 1 : 1;
+      this.recoveryKey = key;
+    } else {
+      this.recoveryDenials = 0;
+      this.recoveryKey = null;
+    }
     if (this.recoveryDenials >= this.maxRecoveryDenials && recoveryCodes.has(details.recoveryCode)) {
       this.phase = PHASES.BLOCKED;
       details = {
@@ -251,6 +259,7 @@ class AgenticCodingController {
 
   before(name, args = {}) {
     validateAction(name, args);
+    this.currentActionName = name;
     if (this.phase === PHASES.BLOCKED) throw this.reject(`Controller stopped this run: ${this.blockedReason}.`);
     if (this.phase === PHASES.COMPLETE) throw this.reject("The coding goal is already complete.");
 
@@ -344,6 +353,7 @@ class AgenticCodingController {
     const key = `${name}:${stable(args)}`;
     const parsed = parseResult(result);
     this.recoveryDenials = 0;
+    this.recoveryKey = null;
     this.actionCounts.set(key, (this.actionCounts.get(key) || 0) + 1);
     this.actionHistory.push({ name, key, version: this.version, at: new Date().toISOString() });
     if (this.actionHistory.length > 40) this.actionHistory.shift();
