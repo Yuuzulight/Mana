@@ -110,8 +110,8 @@
        history, then run pack-folio.ps1 (README, Quick Start). #1265: Mana
        does this herself once a day (node-bot/folio-update.js), as a PR. -->
   <PropertyGroup>
-    <FolioCommit>1ad71997140fe4c537c2fff554c1e3c7a257554a</FolioCommit>
-    <FolioVersion>0.1.0-m1.698</FolioVersion>
+    <FolioCommit>6c11b9c784672b0800d7b5e032b421283b785670</FolioCommit>
+    <FolioVersion>0.1.0-m1.$(FolioBuild).732</FolioVersion>
   </PropertyGroup>
 
   <ItemGroup>
