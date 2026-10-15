@@ -46,10 +46,10 @@ a message directing them to the Browser panel.
   restored on the next launch. This file contains authentication data and is
   kept within the profile, outside Git. An abruptly terminated host can lose
   changes made since the last normal close.
-- **Engine limitation:** Obscura v0.2.4 clears local/session storage on document
-  navigation. Local-storage-based login persistence is not supported by this
-  integration. The saved state is deliberately cookie-only. Use the explicit
-  default-browser action for sites that require unsupported storage behavior.
+- **Engine behavior:** Arcana's pinned Obscura revision keeps localStorage across
+  same-origin navigation and persists it in the managed profile. sessionStorage
+  remains scoped to the tab. Cookie and local-storage-based login persistence can
+  survive a restart when the managed profile is reused.
 - Playwright disconnect and process-tree cleanup are awaited before the profile
   lease is released. Engine logs are drained so a full pipe cannot stall it.
 

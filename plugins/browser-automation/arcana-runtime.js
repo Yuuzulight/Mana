@@ -101,8 +101,8 @@ function createArcanaBrowserType({ chromium, env = process.env }) {
           if (browser?.isConnected()) {
             try {
               if (context) {
-                // Obscura v0.2.4 resets local/session storage on document navigation.
-                // Persist the supported cookie jar without claiming reliable origin-storage restore.
+                // The pinned Obscura revision persists localStorage in the profile;
+                // sessionStorage remains scoped to this tab.
                 const state = { cookies: await context.cookies(), origins: [] };
                 const pending = path.join(profileDirectory, `.env.arcana-state-${randomBytes(8).toString('hex')}`);
                 fs.writeFileSync(pending, JSON.stringify(state), { mode: 0o600 });
