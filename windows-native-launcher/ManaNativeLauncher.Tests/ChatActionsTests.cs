@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
+using Folio;
 using Mana.NativeLauncher;
 using Xunit;
 
@@ -118,6 +119,28 @@ public class ChatActionsTests
     public void HtmlArtifact_SaysWhyAPageNeedsABrowser()
     {
         Assert.Equal("uses MathML", HtmlArtifact.BrowserReasons("<math><mi>x</mi></math>"));
+    }
+
+    [Fact]
+    public void ScriptedArtifactsUseFolioContentHostWhenInstalled()
+    {
+        var previous = Environment.GetEnvironmentVariable("MANA_FOLIO_CONTENT_HOST");
+        var host = Path.Combine(Path.GetTempPath(), $"folio-content-host-{Guid.NewGuid():N}.dll");
+        try
+        {
+            File.WriteAllText(host, "placeholder");
+            Environment.SetEnvironmentVariable("MANA_FOLIO_CONTENT_HOST", host);
+
+            Assert.Null(HtmlArtifact.BrowserReasons("<button onclick=go()>Run</button>"));
+            var options = HtmlArtifact.CreateFolioOptions();
+            Assert.Equal(ScriptingPolicy.ContentProcess, options.Scripting);
+            Assert.Equal(host, options.ContentProcessPath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MANA_FOLIO_CONTENT_HOST", previous);
+            File.Delete(host);
+        }
     }
 
     [Theory]
