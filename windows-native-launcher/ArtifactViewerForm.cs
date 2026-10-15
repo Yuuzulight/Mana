@@ -19,8 +19,9 @@ namespace Mana.NativeLauncher;
 // Mermaid content rendered natively (MermaidParser/MermaidLayout/
 // MermaidRenderer, flowcharts only -- sequence diagrams and everything
 // else fall back to raw source text, same as an unrecognized/malformed
-// diagram), static HTML drawn by Folio (#937; pages it can't draw open in
-// the default browser), everything else as a highlighted code page that
+// diagram), static HTML drawn by Folio (#937), scripted HTML drawn by
+// Folio's isolated content process (#1328/#592; pages requiring unsupported
+// browser features still open in the default browser), everything else as a highlighted code page that
 // Folio also draws (#1141, CodeArtifact).
 //
 // #686: like the reference, the chat opens this from a button on the
@@ -258,14 +259,14 @@ internal sealed class ArtifactView : Panel
     private readonly Font textFont = new("Consolas", 10F);
     private string? currentMermaidSource;
     private VersionedArtifact? currentCode; // shown as a code page
-    // #937: static HTML, drawn by Folio with the system's fonts. Folio loads
-    // nothing but data: images and runs no scripts; pages that need more go
-    // to the browser instead (HtmlArtifact.BrowserReasons).
+    // #937/#1328: static HTML is drawn in-process; scripted HTML uses Folio's
+    // isolated content host when it is installed. Pages requiring unsupported
+    // browser features still use the browser fallback.
     private readonly FolioView htmlView = new()
     {
         Dock = DockStyle.Fill,
         Visible = false,
-        Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() } },
+        Options = HtmlArtifact.CreateFolioOptions(),
         AccessibleName = "Artifact",
     };
 
@@ -417,7 +418,39 @@ internal static class HtmlArtifact
     // Why the page needs a browser (the classifier's reasons, e.g. "uses
     // MathML"), or null when Folio can draw it.
     public static string? BrowserReasons(string html) =>
-        ArtifactClassifier.Classify(html) is { Kind: not ArtifactKind.Static } c ? string.Join(", ", c.Reasons) : null;
+        ArtifactClassifier.Classify(html) is { } c && (c.Kind == ArtifactKind.NeedsBrowser || (c.Kind == ArtifactKind.Scripted && ContentProcessPath() is null))
+            ? string.Join(", ", c.Reasons)
+            : null;
+
+    internal static FolioOptions CreateFolioOptions()
+    {
+        var contentProcessPath = ContentProcessPath();
+        return new FolioOptions
+        {
+            Fonts = new FontSettings { Source = new SystemFontSource() },
+            Scripting = contentProcessPath is null ? ScriptingPolicy.Disabled : ScriptingPolicy.ContentProcess,
+            ContentProcessPath = contentProcessPath,
+        };
+    }
+
+    internal static string? ContentProcessPath()
+    {
+        var configured = Environment.GetEnvironmentVariable("MANA_FOLIO_CONTENT_HOST");
+        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return configured;
+
+        var baseDirectory = AppContext.BaseDirectory;
+        foreach (var candidate in new[]
+        {
+            Path.Combine(baseDirectory, "Folio.ContentHost.exe"),
+            Path.Combine(baseDirectory, "Folio.ContentHost.dll"),
+            Path.Combine(baseDirectory, "Folio", "Folio.ContentHost.exe"),
+            Path.Combine(baseDirectory, "Folio", "Folio.ContentHost.dll"),
+        })
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
 
     public static bool IsWebLink(Uri uri) => uri.Scheme is "http" or "https";
 
