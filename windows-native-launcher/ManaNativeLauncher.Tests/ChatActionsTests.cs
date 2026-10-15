@@ -78,7 +78,7 @@ public class ChatActionsTests
     [Theory]
     [InlineData("<b>hi</b>", true)]
     [InlineData("<script>alert(1)</script>", false)]
-    [InlineData("<canvas></canvas>", false)]
+    [InlineData("<canvas></canvas>", true)]
     public async Task AnHtmlArtifact_GetsAnOpenSplitButton_InManaOnlyWhenItCanBeDrawn(string page, bool inMana)
     {
         using var view = NewView();
@@ -106,7 +106,7 @@ public class ChatActionsTests
     [InlineData("<style>.a{display:grid}</style><div class=a>x</div>", false)] // Folio lays out grid and flex
     [InlineData("<SCRIPT src=x></SCRIPT>", true)]
     [InlineData("<button onclick=\"go()\">x</button>", true)]
-    [InlineData("<canvas></canvas>", true)]
+    [InlineData("<canvas></canvas>", false)]
     [InlineData("<svg><rect width=\"4\" height=\"4\"/></svg>", false)] // Folio draws inline SVG
     [InlineData("<math><mi>x</mi></math>", true)]
     [InlineData("<img src=\"https://example.com/a.png\">", true)] // Folio loads nothing from the network
