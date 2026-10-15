@@ -1,0 +1,47 @@
+name: Arcana browser integration
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/browser-automation/**'
+      - 'tools/install-arcana.ps1'
+      - 'tools/arcana.lock.json'
+      - '.github/workflows/arcana-browser.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/browser-automation/**'
+      - 'tools/install-arcana.ps1'
+      - 'tools/arcana.lock.json'
+      - '.github/workflows/arcana-browser.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: node-bot/package-lock.json
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install backend dependencies
+        working-directory: node-bot
+        run: npm ci
+      - name: Install pinned Arcana and verified engine
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/install-arcana.ps1
+      - name: Test real Arcana actions, preview, takeover, cookie persistence, and cleanup
+        shell: pwsh
+        run: |
+          $env:MANA_ARCANA_TEST_CLI = (Resolve-Path node-bot/runtime/arcana/Arcana.Cli.dll).Path
+          node --test --test-concurrency=1 plugins/browser-automation/test/*.test.js

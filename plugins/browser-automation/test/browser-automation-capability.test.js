@@ -39,17 +39,17 @@ function buildApp(deps) {
   return app;
 }
 
-test("resolveExecutablePath prefers MANA_BROWSER_EXECUTABLE_PATH over the Edge default", () => {
+test("resolveExecutablePath prefers MANA_ARCANA_EXECUTABLE_PATH over the bundled Arcana CLI", () => {
   const path = browserAutomationPlugin.resolveExecutablePath(
-    { MANA_BROWSER_EXECUTABLE_PATH: "C:\\custom\\chrome.exe" },
+    { MANA_ARCANA_EXECUTABLE_PATH: "C:\\custom\\chrome.exe" },
     { existsSync: () => true },
   );
   assert.equal(path, "C:\\custom\\chrome.exe");
 });
 
-test("resolveExecutablePath falls back to a detected Edge install, or null if none exists", () => {
+test("resolveExecutablePath discovers a bundled Arcana CLI, or null if none exists", () => {
   const found = browserAutomationPlugin.resolveExecutablePath({}, { existsSync: () => true });
-  assert.match(found, /msedge\.exe$/);
+  assert.match(found, /Arcana\.Cli\.dll$/);
 
   const notFound = browserAutomationPlugin.resolveExecutablePath({}, { existsSync: () => false });
   assert.equal(notFound, null);
@@ -87,7 +87,7 @@ test('#704: authenticated UI is required for manual input and personal-browser c
 
 test('#704: manual takeover permits page media without dropping ownership or launching another browser', async () => {
   const fake = createFakeChromium();
-  const deps = { chromium: fake.chromium, env: { MANA_BROWSER_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
+  const deps = { chromium: fake.chromium, env: { MANA_ARCANA_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
   const app = buildApp(deps);
   try {
     await browserAutomationPlugin.getSession(deps);
@@ -109,7 +109,7 @@ test('#704: manual takeover permits page media without dropping ownership or lau
 test("POST /browser/navigate surfaces a clear error when no browser executable is configured", async () => {
   const app = buildApp({
     isLocalRestartRequest: () => true,
-    env: { MANA_BROWSER_EXECUTABLE_PATH: "" },
+    env: { MANA_ARCANA_EXECUTABLE_PATH: "" },
     ramPercent: () => 50,
   });
   // Force "not found" by pointing at a path that can't exist.
@@ -121,7 +121,7 @@ test("POST /browser/navigate surfaces a clear error when no browser executable i
         url: "https://example.com",
       });
       assert.equal(response.status, 400);
-      assert.match(payload.error, /no browser executable found/);
+      assert.match(payload.error, /Arcana is not installed/);
     });
   } finally {
     require("fs").existsSync = originalExists;
@@ -166,7 +166,7 @@ function createFakeChromium(pageOverrides = {}) {
   return { chromium, launches, context, page };
 }
 
-const FAKE_ENV = { MANA_BROWSER_EXECUTABLE_PATH: "C:\\fake\\msedge.exe" };
+const FAKE_ENV = { MANA_ARCANA_EXECUTABLE_PATH: "C:\\fake\\msedge.exe" };
 
 test("POST /browser/navigate drives an injected fake chromium/page end to end", async () => {
   const { chromium } = createFakeChromium();
@@ -188,7 +188,7 @@ test("POST /browser/navigate drives an injected fake chromium/page end to end", 
   });
 });
 
-test("#1137: Edge starts lazily, once, on Mana's own profile with no GPU and one renderer", async () => {
+test("#1137: Arcana starts lazily, once, on Mana's own profile", async () => {
   browserAutomationPlugin._resetForTests();
   const { chromium, launches } = createFakeChromium();
   const deps = { env: FAKE_ENV, chromium, ramPercent: () => 50 };
@@ -200,11 +200,10 @@ test("#1137: Edge starts lazily, once, on Mana's own profile with no GPU and one
   assert.equal(await browserAutomationPlugin.getSession(deps), a);
   assert.equal(launches.length, 1);
   assert.equal(launches[0].dir, browserAutomationPlugin.PROFILE_DIR);
-  assert.match(launches[0].dir, /node-bot[\\/]data[\\/]browser-profile$/);
+  assert.match(launches[0].dir, /node-bot[\\/]data[\\/]arcana-profile$/);
   assert.deepEqual(launches[0].options, {
     executablePath: "C:\\fake\\msedge.exe",
     headless: true,
-    args: ["--disable-gpu", "--renderer-process-limit=1"],
   });
   await browserAutomationPlugin.closeSession();
 });
@@ -213,7 +212,7 @@ test("#704: an explicit profile is shared by automation and take-over", async ()
   browserAutomationPlugin._resetForTests();
   const { chromium, launches } = createFakeEdge();
   const profileDir = require("node:path").resolve("explicit-browser-profile");
-  const deps = { env: { ...FAKE_ENV, MANA_BROWSER_PROFILE_DIR: profileDir }, chromium, ramPercent: () => 50 };
+  const deps = { env: { ...FAKE_ENV, MANA_ARCANA_PROFILE_DIR: profileDir }, chromium, ramPercent: () => 50 };
   await browserAutomationPlugin.getSession(deps);
   await browserAutomationPlugin.takeOver(deps);
   assert.deepEqual(launches.map((launch) => launch.dir), [profileDir, profileDir]);
@@ -227,7 +226,7 @@ test("#704: relative profile paths fail before launching", async () => {
   browserAutomationPlugin._resetForTests();
   const { chromium, launches } = createFakeChromium();
   await assert.rejects(browserAutomationPlugin.getSession({
-    env: { ...FAKE_ENV, MANA_BROWSER_PROFILE_DIR: "relative" }, chromium, ramPercent: () => 50,
+    env: { ...FAKE_ENV, MANA_ARCANA_PROFILE_DIR: "relative" }, chromium, ramPercent: () => 50,
   }), /must be an absolute path/);
   assert.equal(launches.length, 0);
 });

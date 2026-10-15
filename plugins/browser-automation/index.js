@@ -6,22 +6,10 @@ const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
 const trayNotifier = require("../../node-bot/tray-notifier");
 const { isCredentialPath, trimEnd } = require("../../node-bot/ai/tool-policy");
-
-// Windows ships Edge (Chromium-based) on every install -- since Mana
-// targets Windows, this is the "already available" browser rather than
-// asking the user to separately install one. MANA_BROWSER_EXECUTABLE_PATH
-// overrides this (e.g. to point at Chrome, or a `playwright install
-// chromium`-downloaded browser) for anyone who wants something else.
-const DEFAULT_EDGE_PATHS = [
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-];
+const { resolveArcanaPath, createArcanaBrowserType } = require('./arcana-runtime');
 
 function resolveExecutablePath(env, fsLike = fs) {
-  if (env.MANA_BROWSER_EXECUTABLE_PATH) {
-    return env.MANA_BROWSER_EXECUTABLE_PATH;
-  }
-  return DEFAULT_EDGE_PATHS.find((p) => fsLike.existsSync(p)) || null;
+  return resolveArcanaPath(env, fsLike);
 }
 
 // Module-level singleton -- one ongoing browser session shared across
@@ -29,11 +17,8 @@ function resolveExecutablePath(env, fsLike = fs) {
 // independent one-shot calls), same pattern as cron-scheduler's scheduler
 // singleton.
 //
-// #1137: a persistent Edge profile of Mana's own, so a site I log in to
-// once stays logged in; started on her first browser call, one page, no
-// GPU, and closed again when idle, when a game starts or when RAM is high.
-const PROFILE_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "browser-profile");
-const LAUNCH_ARGS = ["--disable-gpu", "--renderer-process-limit=1"];
+// A dedicated Arcana profile, started lazily and closed when idle, gaming, or low on RAM.
+const PROFILE_DIR = path.join(__dirname, "..", "..", "node-bot", "data", "arcana-profile");
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 const IDLE_CLOSE_MS = 5 * 60 * 1000;
 // #1159: tabs she may have open at once (MANA_BROWSER_MAX_TABS, 1 to 5).
@@ -59,8 +44,7 @@ let lastUsedAt = 0;
 // The latest caller's deps: the game/RAM gates, the clock, and whether
 // the rail's Browser panel is watching.
 let gateDeps = {};
-// #1139: while I've taken over, the visible Edge window on her profile;
-// where she picks up after Done; and why she asked me to take over.
+// Legacy injected-window state; Arcana's real takeover uses manualControl below.
 let takenOver = null;
 let opening = false;
 let resumeUrl = null;
@@ -93,7 +77,7 @@ const manualControl = require('./manual-control').createManualControl({
       }
       if (starting) await starting;
       if (!context) {
-        starting ||= startSession({ ...deps, env: { ...(deps.env || process.env), MANA_BROWSER_HEADLESS: '1' } }).finally(() => { starting = null; });
+        starting ||= startSession(deps).finally(() => { starting = null; });
         await starting;
       }
       gateDeps = deps;
@@ -149,7 +133,7 @@ function hostOf(url) {
   }
 }
 
-// Mana's profile in installed Edge: headless for her, visible for me.
+// Arcana is the managed browser. Personal-browser connections remain a separate explicit flow.
 async function launch(deps, options) {
   const env = deps.env || process.env;
   // #670: the browser is its own program, outside node-bot's connection
@@ -158,18 +142,19 @@ async function launch(deps, options) {
   const executablePath = resolveExecutablePath(env);
   if (!executablePath) {
     throw new Error(
-      "no browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
+      "Arcana is not installed -- run tools/install-arcana.ps1 or set MANA_ARCANA_EXECUTABLE_PATH to the Arcana CLI",
     );
   }
 
   // playwright-core lives in node-bot's packages; a bare require from this
   // folder never found it.
-  const chromium = deps.chromium || require("../../node-bot/node_modules/playwright-core").chromium;
+  // deps.chromium preserves the existing injected context factory for deterministic tests.
+  const browserType = deps.chromium || createArcanaBrowserType({ env, chromium: deps.arcanaChromium || require("../../node-bot/node_modules/playwright-core").chromium });
   // A profile is locked while any browser has it open.
   await closing;
-  const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
-  if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
-  return chromium.launchPersistentContext(profileDir, { executablePath, args: LAUNCH_ARGS, ...options });
+  const profileDir = env.MANA_ARCANA_PROFILE_DIR || PROFILE_DIR;
+  if (!path.isAbsolute(profileDir)) throw new Error("MANA_ARCANA_PROFILE_DIR must be an absolute path");
+  return browserType.launchPersistentContext(profileDir, { executablePath, ...options });
 }
 
 // One tab: its page, with the resource blocking and health counters, and
@@ -219,17 +204,14 @@ async function setUpTab(page) {
     }
     return route.continue();
   });
-  // #704: her cursor shows while I'm watching: the Browser panel, or her
-  // window (MANA_BROWSER_HEADLESS=0). Take over closes this page, so my
-  // window never has it.
-  const cursor = () => Boolean(gateDeps.isWatched?.()) || (gateDeps.env || process.env).MANA_BROWSER_HEADLESS === "0";
+  // Her cursor shows while the Browser panel watches, outside manual control.
+  const cursor = () => Boolean(gateDeps.isWatched?.());
   return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }), pageLog: () => log, cursor }) };
 }
 
 async function startSession(deps) {
-  const env = deps.env || process.env;
-  const ctx = await launch(deps, { headless: env.MANA_BROWSER_HEADLESS !== "0" });
-  // Edge went away under us (crashed, killed): start fresh next call.
+  const ctx = await launch(deps, { headless: true });
+  // Arcana went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());
   let tab;
   try {
@@ -409,6 +391,7 @@ async function closeExtraTabs() {
 // CAPTCHA or payment there myself; nothing I type goes to the model. Not
 // gated on games or RAM: I asked for it.
 async function takeOver(deps = {}, fallbackUrl = null) {
+  if (!deps.chromium) throw new Error('Arcana takeover is inside Mana: use Take over in the Browser panel');
   if (manualControl.isActive()) throw new Error('Use Done in the Browser panel to hand back manual control');
   if (takenOver || opening) return;
   opening = true;
@@ -635,7 +618,7 @@ module.exports = {
   category: "Web",
   defaultEnabled: false,
   description:
-    "Navigate/click/type/read a live page via a local Chromium-family browser (Edge by default on Windows) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
+    "Navigate/click/type/read a live page in Arcana, with preview and takeover inside Mana. Local-only routes.",
   registerRoutes: registerBrowserAutomationRoutes,
   // Issue #188: exported so the tool-calling adapter
   // (browser-automation-tool-source.js) shares this exact singleton
@@ -649,8 +632,8 @@ module.exports = {
       status: executablePath ? "configured" : "unavailable",
       configured: Boolean(executablePath),
       message: executablePath
-        ? `Browser automation ready (${executablePath})`
-        : "No browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
+        ? `Arcana browser automation ready (${executablePath})`
+        : "Arcana is not installed -- run tools/install-arcana.ps1 or set MANA_ARCANA_EXECUTABLE_PATH",
     };
   },
   resolveExecutablePath,

@@ -1,7 +1,7 @@
 {
   "name": "mana-plugin-browser-automation",
   "version": "1.0.0",
-  "description": "Navigate/click/type/read a live page via a local Chromium-family browser.",
+  "description": "Navigate/click/type/read a live page in Arcana, with preview and takeover inside Mana.",
   "main": "index.js",
   "scripts": {
     "test": "node --test --test-concurrency=1 test/*.test.js"

@@ -6,42 +6,59 @@ already has a session for), not general search-and-extract (that's
 `web-access.js`'s job and stays untouched). Disabled by default (Settings
 > Plugins).
 
-## Browser: Edge by default, override with an env var
+## Browser: Arcana
 
-Windows ships Edge (Chromium-based) on every install, so this plugin
-launches it by default instead of asking anyone to separately install a
-browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
-`playwright install chromium`-downloaded browser, instead.
-`MANA_BROWSER_HEADLESS=0` shows the window instead of running headless.
-While I'm watching (the Browser panel, or that window), a pink cursor and
-outline show where she's about to click, type, select, hover or drag
-(#704). It takes no clicks, stays out of her snapshot, fades after a
-moment, and never appears in my Take over window.
+Arcana is the managed browser. Install the pinned CLI and checksum-verified
+Obscura engine once from the repository root (Windows x64, .NET 10 SDK):
 
-## One light, persistent session (#1137)
+```powershell
+./tools/install-arcana.ps1
+```
 
-The native launcher's Take over now keeps the interactive page inside Mana's
-Browser panel. Mouse, keyboard, and scrolling use a short-lived manual-control
-token; queued input is revoked before Done resumes the agent. Images and fonts
-are permitted while the user owns the page. Stop and backend shutdown await
-owned browser cleanup. Legacy clients' explicit window takeover remains supported.
+The installer publishes into `node-bot/runtime/arcana`, which the plugin
+finds automatically. `MANA_ARCANA_EXECUTABLE_PATH` can select another built
+Arcana CLI (`Arcana.Cli.dll` or its apphost). The old
+`MANA_BROWSER_EXECUTABLE_PATH` and `MANA_BROWSER_HEADLESS` settings no longer
+select or launch Edge/Chrome. If Arcana is absent or cannot handle a site,
+Mana reports the failure. The existing explicit "Open in my browser" action
+uses Windows' registered default handler (Opera GX when that is your default).
+It does not start a second managed browser.
 
-For selected personal Chrome tabs and existing logins, install the separate
+Playwright connects to a fresh authenticated loopback CDP endpoint from
+Arcana's ready file. The engine has one worker and at most 16 connections.
+Local/LAN navigation is blocked unless `MANA_ARCANA_ALLOW_PRIVATE_NETWORK=1`
+is explicitly configured. Personal Chrome connections through the separate
+extension remain an explicit, separately approved mode.
+
+## One light session and cookie persistence
+
+Arcana starts lazily on the first browser call. The native launcher's preview,
+Take over, and Done keep the same context and page. Mouse, keyboard, and
+scrolling use a short-lived manual-control token; Done revokes queued input
+before the agent resumes. Images and fonts are permitted during manual control.
+No external takeover window is launched; older clients requesting one receive
+a message directing them to the Browser panel.
+
+- Mana owns `node-bot/data/arcana-profile`, separate from the old Chromium profile.
+  `MANA_ARCANA_PROFILE_DIR` explicitly selects another absolute directory.
+- An exclusive profile lease prevents concurrent sessions from overwriting it.
+- Cookies are saved atomically in `mana-storage-state.json` on normal close and
+  restored on the next launch. This file contains authentication data and is
+  kept within the profile, outside Git. An abruptly terminated host can lose
+  changes made since the last normal close.
+- **Engine limitation:** Obscura v0.2.4 clears local/session storage on document
+  navigation. Local-storage-based login persistence is not supported by this
+  integration. The saved state is deliberately cookie-only. Use the explicit
+  default-browser action for sites that require unsupported storage behavior.
+- Playwright disconnect and process-tree cleanup are awaited before the profile
+  lease is released. Engine logs are drained so a full pipe cannot stall it.
+
+For selected personal Chrome tabs and existing logins, use the separate
 [Mana Browser Connection](../browser-control-extension/README.md) extension.
 Access is scoped to a confirmed chat session, optional exact-origin allowlist,
-and explicit tab selection. Every personal-browser click/type/submit and other
-mutating action needs fresh approval, regardless of remembered general grants.
-Disconnect detaches access without closing Chrome or the user's tabs.
+and explicit tab selection. Every personal-browser mutation needs fresh
+approval; disconnect leaves the user's browser and tabs open.
 
-- Mana's own profile in `node-bot/data/browser-profile`
-  (`launchPersistentContext`), so a site I log in to stays logged in.
-- `MANA_BROWSER_PROFILE_DIR` explicitly selects another persistent user-data
-  directory (an absolute path). Close any browser using it first. It grants
-  Mana access to that profile's signed-in sites; a separate automation profile
-  is recommended. Chromium may refuse automation of a normal default profile.
-  Take over and Done use the same configured directory.
-- Started on her first browser call; one context, one page.
-- `--disable-gpu` (no VRAM) and `--renderer-process-limit=1`.
 - Images, video and fonts are blocked (`page.route`) unless the rail's
   Browser panel is on screen, for its screenshot.
 - Ad and tracker domains (`ad-hosts.js`, a short hand-kept list) are always
@@ -168,7 +185,7 @@ interactive frames inside Mana. No additional browser window opens. I do
 the login, CAPTCHA or payment myself; manual input is not sent to the model.
 **Done** revokes the manual token and resumes Mana with a fresh agent handle
 at the page I finished on. While I have it, her browser calls wait.
-Legacy clients can still explicitly request the separate-window takeover.
+Separate-window takeover is not supported by Arcana.
 
 She never types credentials or pays: on a page with a password, one-time
 code or card field, a payment provider's iframe, or a checkout/payment/

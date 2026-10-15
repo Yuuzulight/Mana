@@ -24,6 +24,12 @@ npm install        # CI uses `npm ci`
 
 ## 3. Binaries and models (all under `tools/`, which is gitignored)
 
+Arcana browser automation is installed separately with `./tools/install-arcana.ps1`.
+This publishes the pinned Arcana CLI and verified engine into `node-bot/runtime/arcana`.
+See [the browser plugin guide](plugins/browser-automation/README.md) for profile,
+private-network, and current storage limitations. Browser fallback is an explicit
+action that opens the user's registered default browser.
+
 | What | Where Mana looks | Override |
 |---|---|---|
 | llama.cpp build | a `llama-bNNNNN-bin-win-cuda-12.4-x64` folder (plus its cudart DLLs) under `tools/llama/` | `LLAMA_BIN` (folder's `llama-cli.exe`; `llama-server.exe` is taken from the same folder) or `LLAMA_SERVER_BIN` |
