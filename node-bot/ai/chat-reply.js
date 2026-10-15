@@ -1,6 +1,7 @@
 const backendDir = require('node:path').join(__dirname, '..');
 const { wrapUntrusted } = require('./untrusted-content');
 const { createAnalysisToolSource } = require('./analysis-tool-source');
+const { createFileToolSource } = require('./file-creation-tool-source');
 const { normalizeAnalysisOutputs } = require('../tools/analysis-results');
 
 function createChatReply(context) {
@@ -990,6 +991,12 @@ async function buildAssistantReply(
                 analysisFiles.push(...(result.files || []).slice(0, 8 - analysisFiles.length));
                 analysisTables.push(...(result.tables || []).slice(0, 4 - analysisTables.length));
               },
+            })] : []),
+            ...(userChat ? [createFileToolSource({
+              env: context.deps.env || process.env,
+              runSandbox: context.deps.runAnalysisSandbox,
+              shouldStop: () => Boolean(activityRun?.stopRequested),
+              onFile: file => analysisFiles.push(file),
             })] : []),
             context.createSnapshotToolSource({
               approvalGate: context.activeApprovalGate,
