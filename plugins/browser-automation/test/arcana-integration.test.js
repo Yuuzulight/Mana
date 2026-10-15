@@ -75,16 +75,20 @@ test('real Arcana: Mana actions, preview, manual takeover, hand-back and cleanup
     await plugin.closeSession();
     const oldEndpoint = endpoints[0].replace('ws:', 'http:').replace('/devtools/browser', '/json/version');
     await assert.rejects(() => fetch(oldEndpoint), /fetch failed/, 'Owned engine must stop, not just disconnect Playwright');
-    const stored = JSON.parse(fs.readFileSync(path.join(temporary, 'profile/mana-storage-state.json'), 'utf8'));
+    const stateFile = path.join(temporary, 'profile/credentials.json');
+    const stored = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     assert.ok(stored.cookies.some(cookie => cookie.name === 'arcana_test'));
     assert.deepEqual(stored.origins, []);
+    const policy = require('../../../node-bot/ai/tool-policy').createToolPolicy({ allowedRoot: path.join(temporary, 'profile') });
+    assert.throws(() => policy.executeTool('read_file', { path: 'credentials.json' }), /credential-bearing/);
+    assert.deepEqual(plugin.offerFiles([stateFile]), [], 'Saved browser credentials cannot be offered for upload');
     assert.equal(plugin.takeOverStatus().active, false);
     const reopened = await plugin.getSession(deps);
     const restored = await reopened.navigate(url);
     assert.equal(restored.title, 'Arcana in Mana');
     assert.match(restored.text, /Persisted cookie state/);
     assert.equal(endpoints.length, 2);
-    const again = JSON.parse(fs.readFileSync(path.join(temporary, 'profile/mana-storage-state.json'), 'utf8'));
+    const again = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     assert.ok(again.cookies.some(cookie => cookie.name === 'arcana_test'));
   } finally {
     await plugin.closeSession();

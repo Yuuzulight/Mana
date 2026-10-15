@@ -76,7 +76,8 @@ function createArcanaBrowserType({ chromium, env = process.env }) {
       let releaseProfile;
       try { releaseProfile = claimProfile(profileDirectory); }
       catch (error) { fs.rmSync(temporary, { recursive: true, force: true }); throw error; }
-      const stateFile = path.join(profileDirectory, 'mana-storage-state.json');
+      // These basenames also trigger Mana's existing read/upload credential guards.
+      const stateFile = path.join(profileDirectory, 'credentials.json');
       const readyFile = path.join(temporary, 'ready.json');
       const token = randomBytes(32).toString('hex');
       const args = /\.dll$/i.test(executable) ? [executable] : [];
@@ -103,7 +104,7 @@ function createArcanaBrowserType({ chromium, env = process.env }) {
                 // Obscura v0.2.4 resets local/session storage on document navigation.
                 // Persist the supported cookie jar without claiming reliable origin-storage restore.
                 const state = { cookies: await context.cookies(), origins: [] };
-                const pending = path.join(profileDirectory, `mana-state-${randomBytes(8).toString('hex')}.tmp`);
+                const pending = path.join(profileDirectory, `.env.arcana-state-${randomBytes(8).toString('hex')}`);
                 fs.writeFileSync(pending, JSON.stringify(state), { mode: 0o600 });
                 fs.renameSync(pending, stateFile);
               }

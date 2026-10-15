@@ -42,7 +42,7 @@ a message directing them to the Browser panel.
 - Mana owns `node-bot/data/arcana-profile`, separate from the old Chromium profile.
   `MANA_ARCANA_PROFILE_DIR` explicitly selects another absolute directory.
 - An exclusive profile lease prevents concurrent sessions from overwriting it.
-- Cookies are saved atomically in `mana-storage-state.json` on normal close and
+- Cookies are saved atomically in `credentials.json` on normal close and
   restored on the next launch. This file contains authentication data and is
   kept within the profile, outside Git. An abruptly terminated host can lose
   changes made since the last normal close.
