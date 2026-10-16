@@ -59,7 +59,8 @@ async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
   const cli = resolveCli(env);
   if (!cli) throw new Error("Arcana isn't built -- set MANA_ARCANA_CLI, or build it at " + (env.MANA_ARCANA_DIR || DEFAULT_ARCANA_DIR));
   const port = await freePort();
-  const args = [cli, "serve", `--port=${port}`, "--quiet"];
+  // --arcana-parent-pid: Arcana stops itself if this process dies without cleaning up.
+  const args = [cli, "serve", `--port=${port}`, "--quiet", `--arcana-parent-pid=${process.pid}`];
   if (storageDir) {
     fs.mkdirSync(storageDir, { recursive: true });
     args.push(`--storage-dir=${storageDir}`);
