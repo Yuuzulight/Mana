@@ -111,6 +111,12 @@ test('real Arcana: frames, a file upload, a download, a drag, a table and form c
     snapshot = await session.navigate(site.url('/table.html'));
     assert.ok(snapshot.elements.some(line => /Go to child/.test(line)));
 
+    // a thread-sized table (a row per comment) reads in reasonable time
+    const started = Date.now();
+    snapshot = await session.navigate(site.url('/bigtable.html'));
+    assert.ok(snapshot.elements.length > 100, 'the big table has links');
+    assert.ok(Date.now() - started < 30000, `a 1,500-row table took ${Date.now() - started} ms`);
+
     // a dropdown shows its choices, and a number input steps with the arrow keys
     snapshot = await session.navigate(site.url('/controls.html'));
     assert.ok(snapshot.elements.some(line => /^option "One"/.test(line)) && snapshot.elements.some(line => /^option "Two"/.test(line)));

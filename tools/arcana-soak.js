@@ -27,6 +27,11 @@ const BUSY = (process.env.ARCANA_SOAK_SKIP_PROCESSES || "ffxiv_dx11.exe,League o
 
 const refOf = (line) => (line ? /\[ref=([^\]]+)\]/.exec(line)?.[1] : null);
 const find = (re) => (state) => state.elements.find((line) => re.test(line));
+// A story whose thread is a normal size: the one on top can have two thousand comments, which any engine reads slowly.
+const smallThread = (state) => state.elements.find((line) => {
+  const count = /link "(\d+)\s*comments?"/.exec(line);
+  return count && Number(count[1]) >= 3 && Number(count[1]) <= 150;
+}) || find(/link "\d+\s*comments?"/)(state);
 const links = (state) => state.elements.filter((line) => /^link/.test(line)).length;
 
 // What each site is asked to do: [step, act(browser, state), check(state)].
@@ -37,7 +42,7 @@ const SITES = [
   ] },
   { site: "Hacker News", steps: [
     ["open the front page", (b) => b.navigate("https://news.ycombinator.com/"), (s) => /Hacker News/.test(s.title) && s.elements.length > 40],
-    ["open a comments page", (b, s) => b.click(refOf(find(/link "\d+\s*comments?"/)(s))), (s) => /item\?id=/.test(s.url)],
+    ["open a comments page", (b, s) => b.click(refOf(smallThread(s))), (s) => /item\?id=/.test(s.url)],
   ] },
   { site: "Wikipedia", steps: [
     ["open the main page", (b) => b.navigate("https://en.wikipedia.org/wiki/Main_Page"), (s) => /Wikipedia/.test(s.title)],
@@ -65,10 +70,9 @@ const SITES = [
 ];
 
 // Failures that match a known Arcana issue, so a regression stands out from a gap already filed.
-const KNOWN_ERRORS = [
-  { re: /ariaSnapshot|Cannot read properties of undefined \(reading 'length'\)/, issue: "Arcana#5" },
-  { re: /intercepts pointer events|done scrolling|locator\.click: Timeout/, issue: "Arcana#6" },
-];
+// Failures that match a filed gap. Tables (Arcana#5) and clicks (Arcana#6) are fixed, so a stall or a click
+// that fails now is unexplained and counts against the week.
+const KNOWN_ERRORS = [];
 const BLOCKED = /Just a moment|Attention Required|Access Denied|unusual traffic|verify you are not a bot|Performing security verification|Welcome to Reddit/i;
 
 function classify(site, error, state, ms) {
