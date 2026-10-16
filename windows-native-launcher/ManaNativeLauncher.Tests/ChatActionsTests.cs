@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
+using Folio;
 using Mana.NativeLauncher;
 using Xunit;
 
@@ -77,7 +78,7 @@ public class ChatActionsTests
     [Theory]
     [InlineData("<b>hi</b>", true)]
     [InlineData("<script>alert(1)</script>", false)]
-    [InlineData("<canvas></canvas>", false)]
+    [InlineData("<canvas></canvas>", true)]
     public async Task AnHtmlArtifact_GetsAnOpenSplitButton_InManaOnlyWhenItCanBeDrawn(string page, bool inMana)
     {
         using var view = NewView();
@@ -105,7 +106,7 @@ public class ChatActionsTests
     [InlineData("<style>.a{display:grid}</style><div class=a>x</div>", false)] // Folio lays out grid and flex
     [InlineData("<SCRIPT src=x></SCRIPT>", true)]
     [InlineData("<button onclick=\"go()\">x</button>", true)]
-    [InlineData("<canvas></canvas>", true)]
+    [InlineData("<canvas></canvas>", false)]
     [InlineData("<svg><rect width=\"4\" height=\"4\"/></svg>", false)] // Folio draws inline SVG
     [InlineData("<math><mi>x</mi></math>", true)]
     [InlineData("<img src=\"https://example.com/a.png\">", true)] // Folio loads nothing from the network
@@ -118,6 +119,28 @@ public class ChatActionsTests
     public void HtmlArtifact_SaysWhyAPageNeedsABrowser()
     {
         Assert.Equal("uses MathML", HtmlArtifact.BrowserReasons("<math><mi>x</mi></math>"));
+    }
+
+    [Fact]
+    public void ScriptedArtifactsUseFolioContentHostWhenInstalled()
+    {
+        var previous = Environment.GetEnvironmentVariable("MANA_FOLIO_CONTENT_HOST");
+        var host = Path.Combine(Path.GetTempPath(), $"folio-content-host-{Guid.NewGuid():N}.dll");
+        try
+        {
+            File.WriteAllText(host, "placeholder");
+            Environment.SetEnvironmentVariable("MANA_FOLIO_CONTENT_HOST", host);
+
+            Assert.Null(HtmlArtifact.BrowserReasons("<button onclick=go()>Run</button>"));
+            var options = HtmlArtifact.CreateFolioOptions();
+            Assert.Equal(ScriptingPolicy.ContentProcess, options.Scripting);
+            Assert.Equal(host, options.ContentProcessPath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MANA_FOLIO_CONTENT_HOST", previous);
+            File.Delete(host);
+        }
     }
 
     [Theory]
