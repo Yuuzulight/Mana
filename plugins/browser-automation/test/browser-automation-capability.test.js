@@ -690,3 +690,14 @@ test("her browser is Arcana; Edge only when Arcana can't start or Take over need
   assert.equal(launches.length, 1);
   browserAutomationPlugin._resetForTests();
 });
+
+test("Arcana is told which process to outlive, so a crashed Mana can't leave it running", async () => {
+  const { startArcana } = require("../arcana-engine");
+  let seen = null;
+  const fakeChild = { pid: 0, exitCode: null, once(ev, fn) { if (ev === "exit") fn(); } };
+  await assert.rejects(
+    startArcana({ MANA_ARCANA_CLI: __filename }, { spawnFn: (cmd, args) => ((seen = args), fakeChild) }),
+    /didn't start/,
+  );
+  assert.ok(seen.includes(`--arcana-parent-pid=${process.pid}`));
+});
