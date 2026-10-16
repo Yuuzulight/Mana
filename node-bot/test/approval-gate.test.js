@@ -27,7 +27,7 @@ test("an unrecognized action type pauses as a pending request instead of running
 
 test("a request made within a chat's turn names that chat", async () => {
   const gate = createApprovalGate({ dataDir: createTempDir() });
-  await gate.withOrigin({ sessionId: "chat-1" }, () => gate.requestApproval("skill-write", { summary: "Create skill X", payload: {} }));
+  await gate.withOrigin({ sessionId: "chat-1" }, () => gate.requestApproval("skill-write", { summary: "Create skill X", payload: {}, wait: false }));
   await gate.requestApproval("skill-write", { summary: "Create skill Y", payload: {} });
   assert.deepEqual(gate.listPending().map((p) => p.sessionId), ["chat-1", undefined]);
 });
@@ -426,4 +426,43 @@ test("#669 forceReview skips the Guardian and never creates a grant", async () =
   assert.equal((await gate.decide(first.requestId, "always-allow")).status, "approved");
   assert.equal(gate.isGranted("tool-destructive"), false);
   assert.equal((await gate.requestApproval("tool-destructive", { payload: {}, forceReview: true })).status, "pending");
+});
+
+test("inside a chat turn a request waits, with no limit, for the human's answer", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  gate.registerExecutor("skill-write", () => "created");
+  let settled = null;
+  const asking = gate.withOrigin({ sessionId: "chat-1" }, () => gate.requestApproval("skill-write", { summary: "Create skill X", payload: {} }))
+    .then((outcome) => (settled = outcome));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(settled, null, "still waiting");
+  const [request] = gate.listPending();
+  await gate.decide(request.id, "allow-once");
+  await asking;
+  assert.equal(settled.status, "approved");
+  assert.equal(settled.result, "created");
+  assert.equal(gate.listPending().length, 0);
+});
+
+test("a chat turn waiting on a request hears a no, and a never, as blocked", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  gate.registerExecutor("skill-write", () => "created");
+  const ask = () => gate.withOrigin({ sessionId: "chat-1" }, () => gate.requestApproval("skill-write", { summary: "Create skill X", payload: {} }));
+
+  const first = ask();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await gate.decide(gate.listPending()[0].id, "deny");
+  assert.deepEqual([(await first).status, (await first).denied, (await first).reason], ["blocked", true, "the user said no"]);
+
+  const second = ask();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await gate.decide(gate.listPending()[0].id, "never");
+  assert.deepEqual([(await second).status, (await second).never], ["blocked", true]);
+});
+
+test("outside a chat turn, or with wait:false, a request still returns pending at once", async () => {
+  const gate = createApprovalGate({ dataDir: createTempDir() });
+  assert.equal((await gate.requestApproval("skill-write", { summary: "background", payload: {} })).status, "pending");
+  const inChat = await gate.withOrigin({ sessionId: "chat-1" }, () => gate.requestApproval("skill-write", { summary: "chat, no wait", payload: {}, wait: false }));
+  assert.equal(inChat.status, "pending");
 });

@@ -647,3 +647,18 @@ test("#1161: run_js asks for the site on its own, even where clicking is always 
   await assert.rejects(() => source.executeTool("browser_automation__devtools", { do: "run_js", code: "1" }), /said never for running JavaScript on mysite\.test/);
   await source.executeTool("browser_automation__click", { ref: "e2" }); // clicking still allowed
 });
+
+test("in a chat turn the first-use approval waits for the user, and even allow-once lets that action through", async () => {
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const { source } = createSource({ approvalGate });
+  let result = null;
+  const running = approvalGate.withOrigin({ sessionId: "chat-1" }, () => source.executeTool("browser_automation__navigate", { url: "https://example.com" }))
+    .then((value) => (result = value));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(result, null, "waiting for the user");
+  const [pending] = approvalGate.listPending();
+  assert.equal(pending.actionType, APPROVAL_ACTION_TYPE);
+  await approvalGate.decide(pending.id, "allow-once");
+  await running;
+  assert.match(result, /Title: Fake Page/);
+});

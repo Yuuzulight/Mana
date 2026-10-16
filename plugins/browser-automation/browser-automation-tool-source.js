@@ -320,11 +320,15 @@ function createBrowserAutomationToolSource(options = {}) {
         summary: "Allow Mana to use browser-automation (open, read, click, type, select, scroll, back, hand over) as a tool during replies",
         payload: null,
       });
-      throw new Error(
-        result.status === "pending"
-          ? `browser-automation tool use needs approval first (request ${result.requestId}) -- see GET /approvals/pending`
-          : "browser-automation tool use is not approved",
-      );
+      // In a chat turn the request waits for the user, so "approved" here
+      // is their answer, including "allow once": go on with this one action.
+      if (result.status !== "approved") {
+        throw new Error(
+          result.status === "pending"
+            ? `browser-automation tool use needs approval first (request ${result.requestId}) -- see GET /approvals/pending`
+            : "browser-automation tool use is not approved",
+        );
+      }
     }
 
     const action = qualifiedName.slice(BROWSER_TOOL_PREFIX.length);
