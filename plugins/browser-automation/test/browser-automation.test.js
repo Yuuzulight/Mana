@@ -165,7 +165,7 @@ test("click acts by aria-ref and, on the same page, returns only what changed", 
   page.state.text = "after click";
 
   const result = await session.click("e5");
-  assert.deepEqual(actions(page)[1], ["click", "aria-ref=e5", { timeout: 5000 }]);
+  assert.deepEqual(actions(page)[1], ["click", "aria-ref=e5", { timeout: 5000, noWaitAfter: true }]);
   assert.deepEqual(result, {
     url: "https://example.com/",
     title: "Fake Page",
@@ -295,7 +295,7 @@ test("#1139: on a password or payment page she reads, but never clicks, types or
   page.state.sensitive = null;
   await session.back();
   await session.click("e5");
-  assert.deepEqual(actions(page).slice(1), [["back"], ["click", "aria-ref=e5", { timeout: 5000 }]]);
+  assert.deepEqual(actions(page).slice(1), [["back"], ["click", "aria-ref=e5", { timeout: 5000, noWaitAfter: true }]]);
 });
 
 test("#1139: sensitiveInPage spots password, one-time-code and card fields, and checkout URLs", () => {
@@ -751,4 +751,103 @@ test("#704: the cursor overlay takes no clicks, is hidden from her snapshot and 
   assert.ok(made.every((n) => !n.textContent && !n.innerText));
   timers.forEach((fn) => fn());
   assert.equal(root.removed, true);
+});
+
+test("a click that starts a page load waits for the new page, and a blocked hover only moves the pointer", async () => {
+  const page = createFakePage();
+  const real = page.ariaSnapshot.bind(page);
+  let failures = 2;
+  page.ariaSnapshot = async (options) => {
+    if (failures-- > 0) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
+    return real(options);
+  };
+  const session = createBrowserSession({ page });
+  const result = await session.click("e5");
+  assert.ok(result.elements || result.added, "the settled page is read after the load");
+  assert.equal(failures, -1);
+
+  const calls = [];
+  const covered = createFakePage();
+  covered.locator = (selector) => ({
+    hover: async (o) => {
+      calls.push(o);
+      if (!o.force) throw new Error("locator.hover: Timeout 5000ms exceeded. <li> subtree intercepts pointer events");
+    },
+    evaluate: async () => null,
+    selector,
+  });
+  await createBrowserSession({ page: covered }).hover("e7");
+  assert.deepEqual(calls.map((o) => Boolean(o.force)), [false, true]);
+  // some other hover failure still fails
+  covered.locator = () => ({ hover: async () => { throw new Error("locator.hover: Timeout 5000ms exceeded: element is not visible"); }, evaluate: async () => null });
+  await assert.rejects(() => createBrowserSession({ page: covered }).hover("e7"), /not visible/);
+});
+
+test("a snapshot line whose name has a colon is quoted by the snapshot, and still counts as an element", async () => {
+  const aria = [
+    "- generic [ref=e1]:",
+    "  - 'link \"Compare Pliers CO₂: A B C $12.01\" [ref=e5]':",
+    "    - /url: /product/1",
+    "  - 'button \"Don''t: stop\" [ref=e6]'",
+    "  - link \"Plain\" [ref=e7]:",
+  ].join("\n");
+  const { elements } = await createBrowserSession({ page: createFakePage({ aria }) }).snapshot();
+  assert.deepEqual(elements, ['link "Compare Pliers CO₂: A B C $12.01" [ref=e5]', "button \"Don't: stop\" [ref=e6]", 'link "Plain" [ref=e7]']);
+});
+
+test("on Arcana scroll and drag happen inside the page", async () => {
+  const page = createFakePage();
+  page.context = () => ({ arcana: true });
+  const seen = [];
+  const real = page.evaluate.bind(page);
+  page.evaluate = async (fn, arg) => {
+    if (typeof fn === "function" && fn.name === "dragInPage") { seen.push(["drag", arg.length]); return; }
+    if (typeof fn === "function" && /__arcanaScrollBy/.test(String(fn))) { seen.push(["scroll", arg]); return; }
+    if (typeof fn === "function" && /__arcanaInlineCustom/.test(String(fn))) return;
+    return real(fn, arg);
+  };
+  const locator = page.locator;
+  page.locator = (selector) => ({ ...locator(selector), elementHandle: async () => ({ selector }) });
+  const session = createBrowserSession({ page });
+  await session.navigate("https://example.com/");
+  await session.scroll("down");
+  await session.drag("e5", "e6");
+  assert.deepEqual(seen, [["scroll", 400], ["drag", 2]]);
+  assert.equal(actions(page).filter((a) => a[0] === "drag").length, 0, "no Playwright drag on Arcana");
+});
+
+test("on Arcana a click on something below the first screen clicks the element itself", async () => {
+  async function run(arcana, message) {
+    const page = createFakePage();
+    if (arcana) page.context = () => ({ arcana: true });
+    const calls = [];
+    const locator = page.locator;
+    page.locator = (selector) => ({ ...locator(selector), click: async () => { throw new Error(message); }, evaluate: async (fn) => { calls.push("dom-click"); return null; } });
+    const session = createBrowserSession({ page });
+    await session.navigate("https://example.com/");
+    return { calls, outcome: await session.click("e5").then(() => "clicked", (e) => e.message) };
+  }
+  const below = "locator.click: Timeout 5000ms exceeded. - element is outside of the viewport";
+  assert.deepEqual(await run(true, below), { calls: ["dom-click"], outcome: "clicked" });
+  // another browser keeps its own behavior, and so does any other failure
+  assert.match((await run(false, below)).outcome, /outside of the viewport/);
+  assert.match((await run(true, "locator.click: Timeout 5000ms exceeded. - element is not enabled")).outcome, /not enabled/);
+});
+
+test("on Arcana a click that stalls after the element was found actionable goes ahead through the element", async () => {
+  async function run(arcana, message) {
+    const page = createFakePage();
+    if (arcana) page.context = () => ({ arcana: true });
+    const calls = [];
+    const locator = page.locator;
+    page.locator = (selector) => ({ ...locator(selector), click: async () => { throw new Error(message); }, evaluate: async (fn) => { if (!/closest/.test(String(fn))) calls.push("dom-click"); return fn === undefined ? null : null; } });
+    const session = createBrowserSession({ page });
+    await session.navigate("https://example.com/");
+    return { calls, outcome: await session.click("e5").then(() => "clicked", (e) => e.message) };
+  }
+  const stuck = "locator.click: Timeout 5000ms exceeded. - element is visible, enabled and stable - scrolling into view if needed";
+  assert.deepEqual(await run(true, stuck), { calls: ["dom-click"], outcome: "clicked" });
+  // not Arcana, or a click that was never actionable: unchanged
+  assert.match((await run(false, stuck)).outcome, /scrolling into view/);
+  assert.match((await run(true, "locator.click: Timeout 5000ms exceeded. - element is not enabled")).outcome, /not enabled/);
 });

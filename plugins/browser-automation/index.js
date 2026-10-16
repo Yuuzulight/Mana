@@ -221,6 +221,24 @@ async function setUpTab(page) {
   page.on("download", (download) => {
     Promise.resolve(gateDeps.onDownload ? gateDeps.onDownload(download) : download.cancel()).catch(() => {});
   });
+  // Arcana sends no download events: a page load answered with an attachment becomes one here.
+  if (page.context?.().arcana) {
+    page.on("response", (response) => {
+      if (!response.request().isNavigationRequest()) return;
+      const disposition = response.headers()["content-disposition"] || "";
+      if (!/^\s*attachment/i.test(disposition)) return;
+      const named = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
+      let name = named || path.basename(new URL(response.url()).pathname) || "download";
+      try { name = decodeURIComponent(name); } catch { /* keep it as sent */ }
+      const download = {
+        suggestedFilename: () => name,
+        url: () => response.url(),
+        saveAs: async (to) => fs.promises.writeFile(to, await response.body()),
+        cancel: async () => {},
+      };
+      Promise.resolve(gateDeps.onDownload ? gateDeps.onDownload(download) : null).catch(() => {});
+    });
+  }
   // Images, video and fonts only while the rail's Browser panel is
   // watching, for its screenshot; she reads and acts without them. Ad
   // and tracker domains never (#1168).
