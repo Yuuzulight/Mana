@@ -7,6 +7,7 @@ const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work"
 const trayNotifier = require("../../node-bot/tray-notifier");
 const { isCredentialPath, trimEnd } = require("../../node-bot/ai/tool-policy");
 const { resolveArcanaPath, createArcanaBrowserType } = require('./arcana-runtime');
+const { createArcanaApiBrowserType } = require('./arcana-api');
 
 function resolveExecutablePath(env, fsLike = fs) {
   return resolveArcanaPath(env, fsLike);
@@ -149,7 +150,9 @@ async function launch(deps, options) {
   // playwright-core lives in node-bot's packages; a bare require from this
   // folder never found it.
   // deps.chromium preserves the existing injected context factory for deterministic tests.
-  const browserType = deps.chromium || createArcanaBrowserType({ env, chromium: deps.arcanaChromium || require("../../node-bot/node_modules/playwright-core").chromium });
+  // Production Arcana uses the versioned page API directly. Playwright remains
+  // available only for injected test doubles and the personal-browser path.
+  const browserType = deps.chromium || createArcanaApiBrowserType({ env });
   // A profile is locked while any browser has it open.
   await closing;
   const profileDir = env.MANA_ARCANA_PROFILE_DIR || PROFILE_DIR;
