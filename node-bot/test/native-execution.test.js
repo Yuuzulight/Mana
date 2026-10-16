@@ -3,7 +3,19 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { prepareTestExecution, prepareTestExecutionAsync, launchNativeProcess, runSandboxedTestCommand, copyTree, parseArgs } = require('../tools/native-execution');
+const { prepareTestExecution, prepareTestExecutionAsync, launchNativeProcess, runSandboxedTestCommand, copyTree, parseArgs, executionTempDir } = require('../tools/native-execution');
+
+test('SYSTEM execution scratch uses the .NET SystemTemp directory', { skip: process.platform !== 'win32' }, t => {
+  const previousUser = process.env.USERNAME;
+  const previousRoot = process.env.SystemRoot;
+  process.env.USERNAME = 'SYSTEM';
+  process.env.SystemRoot = previousRoot || 'C:\\Windows';
+  try { assert.equal(executionTempDir().toLowerCase(), path.join(process.env.SystemRoot || 'C:\\Windows', 'SystemTemp').toLowerCase()); }
+  finally {
+    if (previousUser === undefined) delete process.env.USERNAME; else process.env.USERNAME = previousUser;
+    if (previousRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = previousRoot;
+  }
+});
 
 test('Terminal Stop cancels workspace setup without starting the test process', { skip: process.platform !== 'win32' }, async t => {
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-stop-setup-'));
