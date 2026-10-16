@@ -8,7 +8,7 @@
 // Progress: node-bot/data/arcana-gate/streak.json (read it, or tail streak.log).
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA = process.env.ARCANA_GATE_DIR || path.join(ROOT, "node-bot", "data", "arcana-gate");
@@ -19,6 +19,8 @@ const STATE = path.join(DATA, "streak.json");
 const LOG = path.join(DATA, "streak.log");
 
 fs.mkdirSync(DATA, { recursive: true });
+// Five long runs must not be cut short by the PC going to sleep: a helper holds it awake until this process ends.
+spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", path.join(__dirname, "keep-awake.ps1"), "-ParentPid", String(process.pid)], { stdio: "ignore", windowsHide: true }).unref();
 const note = (message) => {
   const line = `${new Date().toISOString()} ${message}`;
   console.log(line);

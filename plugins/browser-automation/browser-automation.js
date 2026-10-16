@@ -265,6 +265,7 @@ function createBrowserSession(options = {}) {
   }
 
   async function snapshot() {
+    if (page.context?.().arcana) await page.evaluate(() => window.__arcanaInlineCustom?.()).catch(() => {});
     const [aria, text, title, url, sensitive] = await Promise.all([
       page.ariaSnapshot({ mode: "ai", depth: SNAPSHOT_DEPTH }),
       page.evaluate(extractTextInPage, maxTextChars),
@@ -363,7 +364,11 @@ function createBrowserSession(options = {}) {
     try {
       await acting(() => target.click({ timeout: ACTION_TIMEOUT_MS, noWaitAfter: true }));
     } catch (e) {
-      if (!(await followLinkInstead(target, e))) throw e;
+      if (!(await followLinkInstead(target, e))) {
+        // Arcana never scrolls, so anything below the first screen stays "outside of the viewport": click the element itself.
+        if (!page.context?.().arcana || !/outside of the viewport|intercepts pointer events/.test(e?.message || "")) throw e;
+        await acting(() => target.evaluate((el) => el.click(), undefined, { timeout: ACTION_TIMEOUT_MS }));
+      }
     }
     return afterAction();
   }
@@ -408,7 +413,7 @@ function createBrowserSession(options = {}) {
     await cursorAt(target);
     // Another element's box over this one (no real layout under Arcana) must not stop a hover; it only moves the pointer.
     await acting(() => target.hover({ timeout: ACTION_TIMEOUT_MS }).catch((e) => {
-      if (!/intercepts pointer events/.test(e?.message || "")) throw e;
+      if (!/intercepts pointer events|outside of the viewport/.test(e?.message || "")) throw e;
       return target.hover({ timeout: ACTION_TIMEOUT_MS, force: true });
     }));
     return afterAction();
@@ -441,6 +446,8 @@ function createBrowserSession(options = {}) {
   // #1158: a file I pointed her to (index.js checks that) into a file
   // input, or through the file chooser a button opens.
   async function upload(ref, file) {
+    // Arcana can't set a file on a page (no way for Playwright to hand it one), so say so, not a protocol error.
+    if (page.context?.().arcana) throw new Error("this browser can't put a file into a page yet; the user can do it for her with Take over");
     await refuseIfSensitive();
     const target = page.locator(refSelector(ref));
     await cursorAt(target);

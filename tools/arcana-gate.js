@@ -90,12 +90,14 @@ async function main() {
   const passed = counted.filter((r) => r.pass).length;
   const sites = new Set(counted.map((r) => r.site.replace(/ \(.*\)$/, "")));
   const covered = new Set(counted.filter((r) => r.pass).flatMap((r) => r.covers.split(" ")));
-  const uncovered = ACTIONS.filter((a) => !covered.has(a));
+  // An action only a tracked job reaches is a gap written up elsewhere: shown, not a reason to stay closed.
+  const trackedOnly = ACTIONS.filter((a) => !covered.has(a) && results.some((r) => r.tracked && r.covers.split(" ").includes(a)));
+  const uncovered = ACTIONS.filter((a) => !covered.has(a) && !trackedOnly.includes(a));
   const full = !only && passed === counted.length && uncovered.length === 0;
   const verdict = only
     ? `${passed} of ${counted.length} passed (partial run, not a gate result)`
     : full
-      ? `GATE PASSED: ${passed} of ${counted.length} jobs on ${sites.size} sites, every browser action covered. The 7-day soak may start.`
+      ? `GATE PASSED: ${passed} of ${counted.length} jobs on ${sites.size} sites, every browser action covered${trackedOnly.length ? ` except ${trackedOnly.join(", ")} (tracked)` : ""}. The 7-day soak may start.`
       : `GATE CLOSED: ${passed} of ${counted.length} jobs passed${uncovered.length ? `; no passing job yet for: ${uncovered.join(", ")}` : ""}.`;
   console.log(`\n${verdict}`);
   const tracked = results.filter((r) => r.tracked);

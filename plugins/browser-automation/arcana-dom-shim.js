@@ -126,6 +126,21 @@ const script = String.raw`(() => {
     el.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
+  // A custom element (<fa-icon>, <app-card>) is inline in a browser until the page says otherwise; here it is
+  // block, which makes a button named by its content lose its name. Mana calls this before it reads the page;
+  // :where() keeps the page's own rules winning.
+  const customTags = new Set();
+  const customStyle = document.createElement("style");
+  Object.defineProperty(window, "__arcanaInlineCustom", {
+    value: () => {
+      const known = customTags.size;
+      for (const el of document.getElementsByTagName("*")) if (el.localName.includes("-")) customTags.add(el.localName);
+      if (customTags.size === known) return;
+      customStyle.textContent = ":where(" + [...customTags].join(",") + "){display:inline}";
+      if (!customStyle.isConnected) (document.head || document.documentElement).appendChild(customStyle);
+    },
+  });
+
   // <option> reports display:none here, which hides every dropdown choice from the page snapshot.
   const addStyle = () => {
     const style = document.createElement("style");

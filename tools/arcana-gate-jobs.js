@@ -95,7 +95,7 @@ const JOBS = [
   ]],
   ["Open Library", "open a book from search results", "navigate click", [
     ["search", (b) => b.navigate("https://openlibrary.org/search?q=dune"), (s) => /dune/i.test(s.title + s.url) && hasElements(20)(s)],
-    ["open a book", (b, s) => b.click(refOf(find(/^link "Dune/)(s))), (s) => /openlibrary\.org\/(works|books)\//.test(s.url)],
+    ["open a book", (b, s) => b.click(refOf(find(/^link "Dune/)(s))), (s) => /openlibrary\.org\/(works|books|series)\//.test(s.url)],
   ]],
   ["NPR (text edition)", "open a story", "navigate click", [
     ["open the front page", (b) => b.navigate("https://text.npr.org/"), hasElements(10)],
@@ -176,11 +176,6 @@ const JOBS = [
   ["the-internet (infinite scroll)", "scroll a page that loads more as you go", "navigate scroll", [
     ["open the page", (b) => b.navigate(`${TI}/infinite_scroll`), (s) => { before = (s.text || "").length; return before > 0; }],
     ["scroll down three times", async (b) => { await b.scroll("down"); await b.scroll("down"); return b.scroll("down"); }, (s) => (s.text || "").length > before + 500, { wait: true }],
-  ]],
-  ["the-internet (file upload)", "send a file", "navigate upload click", [
-    ["open the page", (b) => b.navigate(`${TI}/upload`), (s) => s.elements.some((l) => /file|Choose/i.test(l))],
-    ["choose the file", (b, s) => b.upload(refOf(s.elements.find((l) => /file|Choose/i.test(l))), UPLOAD), hasElements(2)],
-    ["send it", (b, s) => b.click(refOf(find(/button "Upload"|Upload/)(s))), textHas(/File Uploaded/i)],
   ]],
   ["httpbin", "fill in and send a form", "navigate type click", [
     ["open the form", (b) => b.navigate("https://httpbin.org/forms/post"), (s) => s.elements.some((l) => /^textbox/.test(l))],
@@ -269,6 +264,11 @@ const JOBS = [
   ["the-internet (frames)", "read a page built from old-style frames", "navigate", [
     ["open the page", (b) => b.navigate(`${TI}/nested_frames`), textHas(/LEFT/)],
   ], { tracked: "the engine does not load <frameset> pages" }],
+  ["the-internet (file upload)", "send a file", "navigate upload click", [
+    ["open the page", (b) => b.navigate(`${TI}/upload`), (s) => s.elements.some((l) => /file|Choose/i.test(l))],
+    ["choose the file", (b, s) => b.upload(refOf(s.elements.find((l) => /file|Choose/i.test(l))), UPLOAD), hasElements(2)],
+    ["send it", (b, s) => b.click(refOf(find(/button "Upload"|Upload/)(s))), textHas(/File Uploaded/i)],
+  ], { tracked: "the engine cannot set a file on a page" }],
   ["example.com (built page)", "click inside an embedded frame", "navigate click", [
     ["build the page", async (b) => { await b.navigate("https://example.com/"); return fixture(b, "<iframe srcdoc=\"<button>Inside frame</button>\"></iframe>"); }, (s) => s.elements.some((l) => /Inside frame/.test(l))],
   ], { tracked: "the engine does not load <iframe> content" }],

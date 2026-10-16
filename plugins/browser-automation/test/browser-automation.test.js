@@ -782,3 +782,55 @@ test("a click that starts a page load waits for the new page, and a blocked hove
   covered.locator = () => ({ hover: async () => { throw new Error("locator.hover: Timeout 5000ms exceeded: element is not visible"); }, evaluate: async () => null });
   await assert.rejects(() => createBrowserSession({ page: covered }).hover("e7"), /not visible/);
 });
+
+test("a snapshot line whose name has a colon is quoted by the snapshot, and still counts as an element", async () => {
+  const aria = [
+    "- generic [ref=e1]:",
+    "  - 'link \"Compare Pliers CO₂: A B C $12.01\" [ref=e5]':",
+    "    - /url: /product/1",
+    "  - 'button \"Don''t: stop\" [ref=e6]'",
+    "  - link \"Plain\" [ref=e7]:",
+  ].join("\n");
+  const { elements } = await createBrowserSession({ page: createFakePage({ aria }) }).snapshot();
+  assert.deepEqual(elements, ['link "Compare Pliers CO₂: A B C $12.01" [ref=e5]', "button \"Don't: stop\" [ref=e6]", 'link "Plain" [ref=e7]']);
+});
+
+test("on Arcana a file can't be uploaded (said plainly), and scroll and drag happen inside the page", async () => {
+  const page = createFakePage();
+  page.context = () => ({ arcana: true });
+  const seen = [];
+  const real = page.evaluate.bind(page);
+  page.evaluate = async (fn, arg) => {
+    if (typeof fn === "function" && fn.name === "dragInPage") { seen.push(["drag", arg.length]); return; }
+    if (typeof fn === "function" && /__arcanaScrollBy/.test(String(fn))) { seen.push(["scroll", arg]); return; }
+    if (typeof fn === "function" && /__arcanaInlineCustom/.test(String(fn))) return;
+    return real(fn, arg);
+  };
+  const locator = page.locator;
+  page.locator = (selector) => ({ ...locator(selector), elementHandle: async () => ({ selector }) });
+  const session = createBrowserSession({ page });
+  await session.navigate("https://example.com/");
+  await assert.rejects(() => session.upload("e5", "C:\cv.pdf"), /can't put a file into a page/);
+  await session.scroll("down");
+  await session.drag("e5", "e6");
+  assert.deepEqual(seen, [["scroll", 400], ["drag", 2]]);
+  assert.equal(actions(page).filter((a) => a[0] === "drag").length, 0, "no Playwright drag on Arcana");
+});
+
+test("on Arcana a click on something below the first screen clicks the element itself", async () => {
+  async function run(arcana, message) {
+    const page = createFakePage();
+    if (arcana) page.context = () => ({ arcana: true });
+    const calls = [];
+    const locator = page.locator;
+    page.locator = (selector) => ({ ...locator(selector), click: async () => { throw new Error(message); }, evaluate: async (fn) => { calls.push("dom-click"); return null; } });
+    const session = createBrowserSession({ page });
+    await session.navigate("https://example.com/");
+    return { calls, outcome: await session.click("e5").then(() => "clicked", (e) => e.message) };
+  }
+  const below = "locator.click: Timeout 5000ms exceeded. - element is outside of the viewport";
+  assert.deepEqual(await run(true, below), { calls: ["dom-click"], outcome: "clicked" });
+  // another browser keeps its own behavior, and so does any other failure
+  assert.match((await run(false, below)).outcome, /outside of the viewport/);
+  assert.match((await run(true, "locator.click: Timeout 5000ms exceeded. - element is not enabled")).outcome, /not enabled/);
+});
