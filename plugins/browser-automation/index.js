@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
+const { launchArcana } = require("./arcana-engine");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
@@ -155,13 +156,6 @@ async function launch(deps, options) {
   // #670: the browser is its own program, outside node-bot's connection
   // guard, and any page can pull from the internet.
   refuseIfLocalOnly("browser automation", env);
-  const executablePath = resolveExecutablePath(env);
-  if (!executablePath) {
-    throw new Error(
-      "no browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
-    );
-  }
-
   // playwright-core lives in node-bot's packages; a bare require from this
   // folder never found it.
   const chromium = deps.chromium || require("../../node-bot/node_modules/playwright-core").chromium;
@@ -169,6 +163,21 @@ async function launch(deps, options) {
   await closing;
   const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
   if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
+  // Arcana is her browser. Edge is for what Arcana can't do yet -- a visible
+  // window (Take over) -- or when MANA_BROWSER_ENGINE=edge or Arcana won't start.
+  if (options.headless !== false && env.MANA_BROWSER_ENGINE !== "edge") {
+    try {
+      return await (deps.launchArcana || launchArcana)(chromium, env, { storageDir: path.join(profileDir, "arcana") });
+    } catch (e) {
+      console.warn(`[browser-automation] Arcana unavailable, using Edge: ${e.message}`);
+    }
+  }
+  const executablePath = resolveExecutablePath(env);
+  if (!executablePath) {
+    throw new Error(
+      "no browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
+    );
+  }
   return chromium.launchPersistentContext(profileDir, { executablePath, args: LAUNCH_ARGS, ...options });
 }
 

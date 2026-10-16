@@ -6,6 +6,17 @@ already has a session for), not general search-and-extract (that's
 `web-access.js`'s job and stays untouched). Disabled by default (Settings
 > Plugins).
 
+## Engine: Arcana first, Edge for Take over
+
+Her browser is [Arcana](https://github.com/Yuuzulight/Arcana) (Obscura inside):
+`arcana-engine.js` runs its `serve` endpoint on a free loopback port and
+Playwright attaches over CDP, so everything below works unchanged. Headless
+only, with private-network pages off and local storage kept in
+`browser-profile/arcana`. Edge opens only for Take over, or when Arcana isn't
+built or won't start (one warning in the log), or `MANA_BROWSER_ENGINE=edge`.
+Point `MANA_ARCANA_CLI` at an `Arcana.Cli.dll`, or `MANA_ARCANA_DIR` at a
+checkout (default `C:\ManaAI\Arcana`, Release or Debug build).
+
 ## Browser: Edge by default, override with an env var
 
 Windows ships Edge (Chromium-based) on every install, so this plugin

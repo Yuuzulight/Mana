@@ -87,7 +87,7 @@ test('#704: authenticated UI is required for manual input and personal-browser c
 
 test('#704: manual takeover permits page media without dropping ownership or launching another browser', async () => {
   const fake = createFakeChromium();
-  const deps = { chromium: fake.chromium, env: { MANA_BROWSER_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
+  const deps = { chromium: fake.chromium, env: { MANA_BROWSER_ENGINE: 'edge', MANA_BROWSER_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
   const app = buildApp(deps);
   try {
     await browserAutomationPlugin.getSession(deps);
@@ -671,4 +671,22 @@ test("#1204: pathsIn finds POSIX paths too, quoted or not, on any platform", () 
     "/home/me/notes.txt",
   ]);
   assert.deepEqual(browserAutomationPlugin.pathsIn("and/or https://a.test/x"), []);
+});
+
+test("her browser is Arcana; Edge only when Arcana can't start or Take over needs a window", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches, context } = createFakeChromium();
+  const arcanaCalls = [];
+  const env = { MANA_BROWSER_EXECUTABLE_PATH: "C:\fake\msedge.exe" };
+  const deps = { env, chromium, ramPercent: () => 50, launchArcana: async (_c, _e, o) => (arcanaCalls.push(o), context) };
+  await browserAutomationPlugin.getSession(deps);
+  assert.equal(arcanaCalls.length, 1);
+  assert.match(arcanaCalls[0].storageDir, /arcana$/);
+  assert.equal(launches.length, 0);
+
+  browserAutomationPlugin._resetForTests();
+  const down = { ...deps, launchArcana: async () => { throw new Error("Arcana isn't built"); } };
+  await browserAutomationPlugin.getSession(down);
+  assert.equal(launches.length, 1);
+  browserAutomationPlugin._resetForTests();
 });
