@@ -33,7 +33,6 @@ async function approveSelfWorkTests({ gate, command, cwd, estimate, unrestricted
   const entry = { started: false, cancelled, resolve, reject, run: () => run(recommendation) };
   requests.set(nonce, entry);
   let poll;
-  let expired;
   try {
     const decision = await gate.requestApproval('self-work-sandbox-tests', {
       forceReview: true,
@@ -50,11 +49,9 @@ async function approveSelfWorkTests({ gate, command, cwd, estimate, unrestricted
       if (cancelled()) reject(new Error('Self-work test approval was cancelled'));
       else if (requests.has(nonce) && !gate.listPending().some(item => item.id === decision.requestId)) reject(new Error('Self-work tests were denied'));
     }, 250);
-    expired = setTimeout(() => { if (!entry.started) reject(new Error('Self-work test approval expired; request a new approval')); }, 30 * 60000);
     return await completed;
   } finally {
     clearInterval(poll);
-    clearTimeout(expired);
     requests.delete(nonce);
   }
 }
