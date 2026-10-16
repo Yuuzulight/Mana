@@ -296,10 +296,11 @@ function createBrowserSession(options = {}) {
   }
 
   // An engine with no real layout (Arcana) can aim the click at another
-  // element ("... intercepts pointer events"). A link then goes where it
-  // points, which is all clicking it would do; anything else still fails.
+  // element ("... intercepts pointer events"), or never finish it after the
+  // link was visible, enabled and scrolled into view. A link then goes where
+  // it points, which is all clicking it would do; anything else still fails.
   async function followLinkInstead(target, error) {
-    if (!/intercepts pointer events/.test(error?.message || "")) return false;
+    if (!/intercepts pointer events|done scrolling/.test(error?.message || "")) return false;
     const href = await target.evaluate((el) => el.closest("a[href]")?.href ?? null).catch(() => null);
     if (!/^https?:/i.test(href || "")) return false;
     await acting(() => page.goto(href));

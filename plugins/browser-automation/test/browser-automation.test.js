@@ -190,6 +190,10 @@ test("a click aimed at another element follows the link it was meant for", async
   assert.equal(followed.outcome, "followed");
   assert.deepEqual(actions(followed.page).at(-1), ["goto", "https://example.com/next"]);
 
+  // visible and scrolled into view, but the click never finished
+  const stuck = await run("https://example.com/next", new Error("Timeout 5000ms exceeded. - scrolling into view if needed - done scrolling"));
+  assert.equal(stuck.outcome, "followed");
+
   // not a link, a script link, or a click that failed for another reason: unchanged
   assert.match((await run(null)).outcome, /intercepts pointer events/);
   assert.match((await run("javascript:alert(1)")).outcome, /intercepts pointer events/);
