@@ -165,7 +165,7 @@ test("click acts by aria-ref and, on the same page, returns only what changed", 
   page.state.text = "after click";
 
   const result = await session.click("e5");
-  assert.deepEqual(actions(page)[1], ["click", "aria-ref=e5", { timeout: 5000 }]);
+  assert.deepEqual(actions(page)[1], ["click", "aria-ref=e5", { timeout: 5000, noWaitAfter: true }]);
   assert.deepEqual(result, {
     url: "https://example.com/",
     title: "Fake Page",
@@ -295,7 +295,7 @@ test("#1139: on a password or payment page she reads, but never clicks, types or
   page.state.sensitive = null;
   await session.back();
   await session.click("e5");
-  assert.deepEqual(actions(page).slice(1), [["back"], ["click", "aria-ref=e5", { timeout: 5000 }]]);
+  assert.deepEqual(actions(page).slice(1), [["back"], ["click", "aria-ref=e5", { timeout: 5000, noWaitAfter: true }]]);
 });
 
 test("#1139: sensitiveInPage spots password, one-time-code and card fields, and checkout URLs", () => {
@@ -751,4 +751,34 @@ test("#704: the cursor overlay takes no clicks, is hidden from her snapshot and 
   assert.ok(made.every((n) => !n.textContent && !n.innerText));
   timers.forEach((fn) => fn());
   assert.equal(root.removed, true);
+});
+
+test("a click that starts a page load waits for the new page, and a blocked hover only moves the pointer", async () => {
+  const page = createFakePage();
+  const real = page.ariaSnapshot.bind(page);
+  let failures = 2;
+  page.ariaSnapshot = async (options) => {
+    if (failures-- > 0) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
+    return real(options);
+  };
+  const session = createBrowserSession({ page });
+  const result = await session.click("e5");
+  assert.ok(result.elements || result.added, "the settled page is read after the load");
+  assert.equal(failures, -1);
+
+  const calls = [];
+  const covered = createFakePage();
+  covered.locator = (selector) => ({
+    hover: async (o) => {
+      calls.push(o);
+      if (!o.force) throw new Error("locator.hover: Timeout 5000ms exceeded. <li> subtree intercepts pointer events");
+    },
+    evaluate: async () => null,
+    selector,
+  });
+  await createBrowserSession({ page: covered }).hover("e7");
+  assert.deepEqual(calls.map((o) => Boolean(o.force)), [false, true]);
+  // some other hover failure still fails
+  covered.locator = () => ({ hover: async () => { throw new Error("locator.hover: Timeout 5000ms exceeded: element is not visible"); }, evaluate: async () => null });
+  await assert.rejects(() => createBrowserSession({ page: covered }).hover("e7"), /not visible/);
 });

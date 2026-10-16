@@ -2,6 +2,7 @@
 // `serve` CDP endpoint and attach Playwright to it, so the session code in
 // browser-automation.js reads and acts on it as on any Chromium. Headless
 // only -- Take over still opens Edge (index.js).
+const domShim = require("./arcana-dom-shim");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
@@ -105,6 +106,8 @@ async function launchArcana(chromium, env, options = {}) {
   try {
     const browser = await chromium.connectOverCDP(arcana.endpoint);
     const ctx = browser.contexts()[0] || (await browser.newContext());
+    await ctx.addInitScript(domShim.script);
+    ctx.arcana = true;
     const close = ctx.close.bind(ctx);
     let closing = false;
     ctx.close = async () => {

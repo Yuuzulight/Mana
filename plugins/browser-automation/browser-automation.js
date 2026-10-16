@@ -58,7 +58,10 @@ function pageKey(key) {
 // acted on, so they go too.
 function interactiveElements(ariaSnapshot) {
   const lines = [];
-  for (const raw of String(ariaSnapshot || "").split("\n")) {
+  for (const rawLine of String(ariaSnapshot || "").split("\n")) {
+    // A name with a colon in it (`CO₂: A B C`) makes the snapshot quote the whole line: `- 'link "…" [ref=e5]':`.
+    const quoted = /^(\s*- )'(.*)'(:?)$/.exec(rawLine);
+    const raw = quoted ? `${quoted[1]}${quoted[2].replace(/''/g, "'")}${quoted[3]}` : rawLine;
     const match = /^\s*- (\w+)\b(.*)$/.exec(raw);
     if (!match || !INTERACTIVE_ROLES.has(match[1]) || !/\[ref=/.test(match[2])) continue;
     lines.push((match[1] + match[2].replace(/ \[cursor=pointer\]/g, "")).replace(/:$/, ""));
@@ -107,6 +110,41 @@ function findElements(elements, description) {
 
 // A plain, token-efficient text extraction -- not a screenshot or raw
 // HTML dump.
+// A drag done with the page's own events, for Arcana (see drag()): mouse down, moves and up, plus the
+// drag events a draggable element gets. Runs in the page.
+function dragInPage([source, target]) {
+  const where = (el, along = 0) => {
+    const r = el.getBoundingClientRect();
+    return { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, along };
+  };
+  const mouse = (el, type, buttons, point = where(el)) =>
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0, buttons, clientX: point.clientX, clientY: point.clientY }));
+  let transfer = null;
+  try { transfer = new DataTransfer(); } catch { /* no DataTransfer here */ }
+  const data = {};
+  const fakeTransfer = { setData: (k, v) => { data[k] = v; }, getData: (k) => data[k] || "", effectAllowed: "all", dropEffect: "move", types: [], files: [], items: [] };
+  const dnd = (el, type) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, ...where(el) });
+    Object.defineProperty(event, "dataTransfer", { value: transfer || fakeTransfer });
+    el.dispatchEvent(event);
+  };
+  const from = where(source);
+  const to = where(target);
+  mouse(source, "mousedown", 1, from);
+  for (const t of [0.25, 0.5, 0.75]) {
+    mouse(source, "mousemove", 1, { clientX: from.clientX + (to.clientX - from.clientX) * t, clientY: from.clientY + (to.clientY - from.clientY) * t });
+  }
+  if (source.closest("[draggable=true]")) {
+    dnd(source, "dragstart");
+    dnd(target, "dragenter");
+    dnd(target, "dragover");
+    dnd(target, "drop");
+    dnd(source, "dragend");
+  }
+  mouse(target, "mousemove", 1, to);
+  mouse(target, "mouseup", 0, to);
+}
+
 function extractTextInPage(maxChars) {
   return (document.body?.innerText || "").trim().replace(/\n{3,}/g, "\n\n").slice(0, maxChars);
 }
@@ -254,7 +292,18 @@ function createBrowserSession(options = {}) {
   // (or when most of it changed), a fresh snapshot.
   async function afterAction() {
     const before = last;
-    const now = await snapshot();
+    // A click that starts a page load returns before the load is done; look again once it has settled.
+    let now;
+    for (let tries = 0; ; tries += 1) {
+      try {
+        now = await snapshot();
+        break;
+      } catch (e) {
+        if (tries >= 30 || !/Execution context was destroyed|navigat/i.test(e?.message || "")) throw e;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await page.waitForLoadState?.("domcontentloaded", { timeout: 10000 }).catch(() => {});
+      }
+    }
     if (!before || before.url !== now.url) return now;
     const was = new Set(before.elements);
     const is = new Set(now.elements);
@@ -312,7 +361,7 @@ function createBrowserSession(options = {}) {
     const target = page.locator(refSelector(ref));
     await cursorAt(target);
     try {
-      await acting(() => target.click({ timeout: ACTION_TIMEOUT_MS }));
+      await acting(() => target.click({ timeout: ACTION_TIMEOUT_MS, noWaitAfter: true }));
     } catch (e) {
       if (!(await followLinkInstead(target, e))) throw e;
     }
@@ -346,7 +395,10 @@ function createBrowserSession(options = {}) {
     if (direction !== "up" && direction !== "down") throw new Error('direction must be "up" or "down"');
     const { width, height } = page.viewportSize?.() || { width: 1280, height: 720 };
     await page.mouse.move(width / 2, height / 2);
-    await page.mouse.wheel(0, (direction === "down" ? 0.8 : -0.8) * height);
+    const dy = (direction === "down" ? 0.8 : -0.8) * height;
+    await page.mouse.wheel(0, dy);
+    // Arcana doesn't scroll, so a page that loads more on scroll never hears of it: move the shim's offset.
+    if (page.context?.().arcana) await page.evaluate((by) => window.__arcanaScrollBy?.(by), dy).catch(() => {});
     return afterAction();
   }
 
@@ -354,7 +406,11 @@ function createBrowserSession(options = {}) {
   async function hover(ref) {
     const target = page.locator(refSelector(ref));
     await cursorAt(target);
-    await acting(() => target.hover({ timeout: ACTION_TIMEOUT_MS }));
+    // Another element's box over this one (no real layout under Arcana) must not stop a hover; it only moves the pointer.
+    await acting(() => target.hover({ timeout: ACTION_TIMEOUT_MS }).catch((e) => {
+      if (!/intercepts pointer events/.test(e?.message || "")) throw e;
+      return target.hover({ timeout: ACTION_TIMEOUT_MS, force: true });
+    }));
     return afterAction();
   }
 
@@ -372,7 +428,13 @@ function createBrowserSession(options = {}) {
     const to = page.locator(refSelector(toRef));
     await refuseIfSensitive();
     await cursorAt(from);
-    await acting(() => from.dragTo(to, { timeout: ACTION_TIMEOUT_MS }));
+    if (page.context?.().arcana) {
+      // Arcana lacks the protocol call Playwright's drag needs, so the drag happens in the page.
+      const [source, target] = await Promise.all([from.elementHandle({ timeout: ACTION_TIMEOUT_MS }), to.elementHandle({ timeout: ACTION_TIMEOUT_MS })]);
+      await acting(() => page.evaluate(dragInPage, [source, target]));
+      return afterAction();
+    }
+    await acting(() => from.dragTo(to, { timeout: ACTION_TIMEOUT_MS, noWaitAfter: true }));
     return afterAction();
   }
 
