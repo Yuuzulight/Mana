@@ -14,8 +14,14 @@ Playwright attaches over CDP, so everything below works unchanged. Headless
 only, with private-network pages off and local storage kept in
 `browser-profile/arcana`. Edge opens only for Take over, or when Arcana isn't
 built or won't start (one warning in the log), or `MANA_BROWSER_ENGINE=edge`.
-Point `MANA_ARCANA_CLI` at an `Arcana.Cli.dll`, or `MANA_ARCANA_DIR` at a
-checkout (default `C:\ManaAI\Arcana`, Release or Debug build).
+Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
+`tools/arcana.lock.json` (the CLI, plus the engine built from its pinned source commit; needs git,
+.NET 10 and a Rust toolchain) into
+`node-bot/runtime/arcana`. To use another build, point `MANA_ARCANA_CLI` at an
+`Arcana.Cli.dll`, or `MANA_ARCANA_DIR` at a checkout (default
+`C:\ManaAI\Arcana`, Release or Debug build). Set
+`MANA_ARCANA_ALLOW_PRIVATE_NETWORK=1` to let pages reach localhost and LAN
+hosts, for example a dev server (off by default).
 
 ## Browser: Edge by default, override with an env var
 

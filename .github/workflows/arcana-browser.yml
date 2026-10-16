@@ -1,0 +1,55 @@
+name: Arcana browser
+
+# Installs the Arcana commit pinned in tools/arcana.lock.json, with the engine
+# built from its pinned source, and drives Mana's browser plugin against it.
+on:
+  pull_request:
+    paths:
+      - 'plugins/browser-automation/**'
+      - 'tools/install-arcana.ps1'
+      - 'tools/arcana.lock.json'
+      - '.github/workflows/arcana-browser.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/browser-automation/**'
+      - 'tools/install-arcana.ps1'
+      - 'tools/arcana.lock.json'
+      - '.github/workflows/arcana-browser.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  real-engine:
+    name: Real Arcana engine
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: node-bot/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install backend dependencies
+        working-directory: node-bot
+        run: npm ci
+      - name: Set up Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install pinned Arcana and its engine
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/install-arcana.ps1
+      - name: Drive the browser plugin against the real engine
+        shell: pwsh
+        run: |
+          $env:MANA_ARCANA_TEST_REAL = '1'
+          node --test --test-concurrency=1 plugins/browser-automation/test/arcana-real-engine.test.js
