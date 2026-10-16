@@ -175,6 +175,27 @@ test("click acts by aria-ref and, on the same page, returns only what changed", 
   });
 });
 
+test("a click aimed at another element follows the link it was meant for", async () => {
+  const blocked = () => new Error("locator.click: Timeout 5000ms exceeded. <header> subtree intercepts pointer events");
+  async function run(href, error = blocked()) {
+    const page = createFakePage();
+    const locator = page.locator;
+    page.locator = (selector) => ({ ...locator(selector), click: async () => { throw error; }, evaluate: async () => href });
+    const session = createBrowserSession({ page });
+    await session.navigate("https://example.com/");
+    return { page, outcome: await session.click("e3").then(() => "followed", (e) => e.message) };
+  }
+
+  const followed = await run("https://example.com/next");
+  assert.equal(followed.outcome, "followed");
+  assert.deepEqual(actions(followed.page).at(-1), ["goto", "https://example.com/next"]);
+
+  // not a link, a script link, or a click that failed for another reason: unchanged
+  assert.match((await run(null)).outcome, /intercepts pointer events/);
+  assert.match((await run("javascript:alert(1)")).outcome, /intercepts pointer events/);
+  assert.match((await run("https://example.com/next", new Error("Timeout 5000ms exceeded: element is not visible"))).outcome, /not visible/);
+});
+
 test("an action that leaves the text alone doesn't repeat it", async () => {
   const page = createFakePage();
   const session = createBrowserSession({ page });
