@@ -651,9 +651,9 @@ module.exports = {
   key: "browserAutomation",
   name: "Browser Automation",
   category: "Web",
-  defaultEnabled: false,
+  defaultEnabled: true,
   description:
-    "Navigate/click/type/read a live page via a local Chromium-family browser (Edge by default on Windows) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
+    "Navigate/click/type/read a live page in Arcana (Edge for Take over, or if Arcana will not start) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
   registerRoutes: registerBrowserAutomationRoutes,
   // Issue #188: exported so the tool-calling adapter
   // (browser-automation-tool-source.js) shares this exact singleton

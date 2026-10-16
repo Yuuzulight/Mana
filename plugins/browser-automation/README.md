@@ -3,8 +3,8 @@
 Navigate/click/type/read a live page -- for driving a specific site
 interaction (a form-gated result, paging through results, a site the user
 already has a session for), not general search-and-extract (that's
-`web-access.js`'s job and stays untouched). Disabled by default (Settings
-> Plugins).
+`web-access.js`'s job and stays untouched). On by default; switch it off in
+Settings > Plugins.
 
 ## Engine: Arcana first, Edge for Take over
 
@@ -28,8 +28,8 @@ Every engine choice is appended to `arcana-events.jsonl` in the browser profile
 `arcana_disconnected` (Arcana died unasked) and `edge_requested` (Take over or
 `MANA_BROWSER_ENGINE=edge`). `tools/m2-fallback-report.ps1` summarises the last
 seven days for Arcana's M2 exit, a week with no unexplained fallback to Edge. It
-reports `insufficient_observation` until the log is a week old and Arcana has run
-in it, so an empty or new log is never read as a clean week.
+reports `insufficient_observation` until the log is a week old and Arcana has
+started at least five times in it (`-MinStarts`), so an empty or new log is never read as a clean week.
 
 ## Browser: Edge by default, override with an env var
 
