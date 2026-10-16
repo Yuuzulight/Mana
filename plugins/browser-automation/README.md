@@ -23,6 +23,14 @@ Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
 `MANA_ARCANA_ALLOW_PRIVATE_NETWORK=1` to let pages reach localhost and LAN
 hosts, for example a dev server (off by default).
 
+Every engine choice is appended to `arcana-events.jsonl` in the browser profile
+(or `MANA_ARCANA_EVENTS_FILE`): `arcana_started`, `arcana_start_failed`,
+`arcana_disconnected` (Arcana died unasked) and `edge_requested` (Take over or
+`MANA_BROWSER_ENGINE=edge`). `tools/m2-fallback-report.ps1` summarises the last
+seven days for Arcana's M2 exit, a week with no unexplained fallback to Edge. It
+reports `insufficient_observation` until the log is a week old and Arcana has run
+in it, so an empty or new log is never read as a clean week.
+
 ## Browser: Edge by default, override with an env var
 
 Windows ships Edge (Chromium-based) on every install, so this plugin

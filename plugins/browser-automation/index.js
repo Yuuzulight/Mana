@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
-const { launchArcana } = require("./arcana-engine");
+const { launchArcana, recordEvent } = require("./arcana-engine");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
@@ -165,12 +165,21 @@ async function launch(deps, options) {
   if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
   // Arcana is her browser. Edge is for what Arcana can't do yet -- a visible
   // window (Take over) -- or when MANA_BROWSER_ENGINE=edge or Arcana won't start.
+  // Each engine choice is logged (arcana-events.jsonl, or MANA_ARCANA_EVENTS_FILE;
+  // tools/m2-fallback-report.ps1 reads it). A test double never writes the real log.
+  const eventsFile = env.MANA_ARCANA_EVENTS_FILE || (deps.chromium ? null : path.join(profileDir, "arcana-events.jsonl"));
+  const event = (type, details) => recordEvent(eventsFile, type, details);
   if (options.headless !== false && env.MANA_BROWSER_ENGINE !== "edge") {
     try {
-      return await (deps.launchArcana || launchArcana)(chromium, env, { storageDir: path.join(profileDir, "arcana") });
+      const ctx = await (deps.launchArcana || launchArcana)(chromium, env, { storageDir: path.join(profileDir, "arcana"), onEvent: event });
+      event("arcana_started");
+      return ctx;
     } catch (e) {
+      event("arcana_start_failed", { reason: String(e.message) });
       console.warn(`[browser-automation] Arcana unavailable, using Edge: ${e.message}`);
     }
+  } else {
+    event("edge_requested", { reason: options.headless === false ? "take over or visible window" : "MANA_BROWSER_ENGINE=edge" });
   }
   const executablePath = resolveExecutablePath(env);
   if (!executablePath) {
