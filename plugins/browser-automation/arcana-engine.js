@@ -87,20 +87,36 @@ async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
   return { endpoint: `http://127.0.0.1:${port}`, stop, child };
 }
 
+// One JSON line per engine event, so a week of use can be counted (Arcana's M2
+// exit: no unexplained fallback to Edge). Logging must never break browsing.
+function recordEvent(file, type, details = {}) {
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), type, ...details }) + "\n");
+  } catch { /* best effort */ }
+}
+
 // A Playwright context on Arcana. close() also stops the engine; the
-// context's own "close" fires when Arcana goes away.
+// context's own "close" fires when Arcana goes away. onEvent hears
+// "arcana_disconnected" when Arcana dies without being asked to close.
 async function launchArcana(chromium, env, options = {}) {
   const arcana = await startArcana(env, options);
   try {
     const browser = await chromium.connectOverCDP(arcana.endpoint);
     const ctx = browser.contexts()[0] || (await browser.newContext());
     const close = ctx.close.bind(ctx);
+    let closing = false;
     ctx.close = async () => {
+      closing = true;
       await close().catch(() => {});
       await browser.close().catch(() => {});
       await arcana.stop();
     };
-    browser.once("disconnected", () => arcana.stop());
+    browser.once("disconnected", () => {
+      if (!closing) options.onEvent?.("arcana_disconnected");
+      arcana.stop();
+    });
     return ctx;
   } catch (e) {
     await arcana.stop();
@@ -108,4 +124,4 @@ async function launchArcana(chromium, env, options = {}) {
   }
 }
 
-module.exports = { launchArcana, startArcana, resolveCli };
+module.exports = { launchArcana, startArcana, resolveCli, recordEvent };
