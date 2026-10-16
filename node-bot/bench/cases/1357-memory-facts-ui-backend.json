@@ -1,5 +1,6 @@
 {
   "id": "1357-memory-facts-ui-backend",
+  "minRounds": 15,
   "kind": "node-feature",
   "pr": 1357,
   "issue": 1331,

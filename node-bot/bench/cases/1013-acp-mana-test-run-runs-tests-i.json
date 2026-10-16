@@ -1,5 +1,6 @@
 {
   "id": "1013-acp-mana-test-run-runs-tests-i",
+  "minRounds": 9,
   "kind": "node-bug",
   "pr": 1013,
   "issue": 1003,

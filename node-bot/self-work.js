@@ -116,6 +116,43 @@ const RAM_WAIT_MS = 10 * 60 * 1000;
 // A run with this many tool calls in a row and no new change and no new
 // test result is stuck (on top of goal mode's 20-round cap).
 const MAX_STEPS_WITHOUT_PROGRESS = 8;
+// #1467: she thinks on each round of her self-work (nobody's waiting to hear
+// it), up to this many tokens a round; MANA_SELF_WORK_THINKING=0 turns it off.
+const SELF_WORK_THINKING = 512;
+// #1467: after this many steps with nothing new she's told to change course
+// (MAX_STEPS_WITHOUT_PROGRESS still stops the run).
+const STUCK_NUDGE_AFTER = 4;
+
+// #1467: an old_text that isn't in the file word for word, matched line by
+// line ignoring each line's leading and trailing whitespace. The lines it
+// covers, or null unless exactly one place matches.
+function looseMatch(lines, oldText) {
+  const want = String(oldText).split(/\r?\n/).map((l) => l.trim());
+  while (want.length && !want[0]) want.shift();
+  while (want.length && !want.at(-1)) want.pop();
+  if (!want.length) return null;
+  const at = [];
+  for (let i = 0; i + want.length <= lines.length; i += 1) {
+    if (want.every((w, j) => lines[i + j].trim() === w)) at.push(i);
+  }
+  return at.length === 1 ? { from: at[0], to: at[0] + want.length } : null;
+}
+
+// Where old_text was probably meant: the line most like its first one, with
+// a few lines around it, numbered, for her error.
+function closestLines(lines, oldText) {
+  const first = String(oldText).split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
+  const words = new Set(first.split(/\W+/).filter(Boolean));
+  let best = -1;
+  let bestScore = 0;
+  lines.forEach((line, i) => {
+    const score = line.split(/\W+/).filter((w) => words.has(w)).length;
+    if (score > bestScore) [best, bestScore] = [i, score];
+  });
+  if (best < 0) return "";
+  const from = Math.max(0, best - 2);
+  return lines.slice(from, best + 4).map((l, i) => `${from + i + 1}: ${l}`).join("\n");
+}
 
 function systemRamPercent() {
   return Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
@@ -181,11 +218,16 @@ const TOOL_SCHEMAS = [
     function: {
       name: "self_work__plan",
       description:
-        "Your plan for the issue. Before your first edit, set 2 to 6 short steps; as you finish steps, mark them done by number. Returns the plan.",
+        "Your plan for the issue. Before your first edit, set 2 to 6 short steps and the files the change belongs in; as you finish steps, mark them done by number. Returns the plan.",
       parameters: {
         type: "object",
         properties: {
           steps: { type: "array", items: { type: "string" }, description: "The steps in order; replaces the plan." },
+          files: {
+            type: "array",
+            items: { type: "string" },
+            description: 'The files your change belongs in, each as "path: why", found with self_work__search or self_work__files first. Adds to the list.',
+          },
           done: { type: "array", items: { type: "integer" }, description: "Numbers of the steps you've finished." },
           no_test: { type: "string", description: "Only when the issue has nothing a test can check: why." },
         },
@@ -204,7 +246,7 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "self_work__search",
-      description: "Search the worktree's tracked files for an exact text, or a regular expression with regex: true. Returns path:line: text matches (at most 60).",
+      description: "Search the worktree's tracked files for an exact text, or a regular expression with regex: true (a text that looks like one, such as a|b or a.*b, is tried as one when it has no exact match). Returns path:line: text matches (at most 60).",
       parameters: {
         type: "object",
         properties: {
@@ -886,6 +928,8 @@ function createSelfWork(options = {}) {
       },
       maxMs: Infinity,
       maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
+      thinking: Number(env.MANA_SELF_WORK_THINKING ?? SELF_WORK_THINKING) || false,
+      modelCard: true,
       overrideSystemPrompt:
         "You are Mana, working on your own source code as a careful, minimal software engineer. Use the tools; don't guess at code you haven't read.",
     }).then(keep);
@@ -896,7 +940,8 @@ function createSelfWork(options = {}) {
   // PR. A loop that throws (where a real run would end "failed") comes
   // back as error, with the run as far as it got.
   async function bench(issue, worktree, { attempts = 1 } = {}) {
-    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: roundBudget(issue.body) });
+    // #1467: the bench may give more rounds (a case whose merged fix alone takes most of the budget).
+    const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: Math.max(roundBudget(issue.body), Number(issue.maxRounds) || 0) });
     try {
       if (nativeTests && !options.approvalGate) throw new Error('Windows benchmark tests require a human approval gate; no unrestricted benchmark fallback');
       return { reply: (await bestOf(r, issue, attempts)).reply, run: r };
@@ -1359,7 +1404,7 @@ ${r.priorFacts ? `\nEarlier attempts at this issue didn't pass. What they found:
 How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Aim to make your first edit within ${READ_BUDGET_LINES} lines of reading: search first and read only what the change needs; then make the change.
-- Before your first edit, write a short plan with self_work__plan (2 to 6 steps), and mark each step done when you finish it.
+- Before your first edit, write a short plan with self_work__plan: 2 to 6 steps, and in files the existing files your change belongs in, each as "path: why", that you found with self_work__search or self_work__files. Mark each step done when you finish it.
 - If a file doesn't exist yet, create it with ${CODING_EDIT_TOOL_NAME} (path and new_text, no old_text) rather than searching for it.
 - Write tests with Node's own runner, require("node:test") and require("node:assert"); chai, mocha and other test libraries aren't installed.
 - If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail before you change the code.
@@ -1416,6 +1461,12 @@ Before it can be a PR:
     let progressed = false;
     let lastTestOutcome = null;
     const looked = new Set();
+    // #1462: files she has seen named in a list, a search or a read.
+    const found = new Set();
+    // #1467: an edit since her last test run, and the plan step the round
+    // budget last nudged her about.
+    let editedSinceTest = false;
+    let nudgedAtStep = -1;
     // #1245: lines read before her first edit, and whether she's made one.
     let readLines = 0;
     // A review round (#1259) reviews an attempt's edits, so its reads aren't budgeted.
@@ -1448,6 +1499,7 @@ Before it can be a PR:
       const name = (f) => (needle.includes("/") ? f : path.posix.basename(f));
       const all = (await git(["ls-files"], root)).split(/\r?\n/);
       const hits = all.filter((f) => (glob ? glob.test(name(f)) : f.toLowerCase().includes(needle)));
+      for (const f of hits.slice(0, MAX_LIST)) found.add(f);
       return hits.slice(0, MAX_LIST).join("\n") + (hits.length > MAX_LIST ? `\n...and ${hits.length - MAX_LIST} more` : "");
     }
 
@@ -1455,16 +1507,26 @@ Before it can be a PR:
       if (!text) throw new Error("text is required");
       const args = ["grep", "-n", "-I", regex === true ? "-E" : "-F", "-e", String(text)];
       if (where) args.push("--", posix(inside(where)));
-      const r2 = await exec("git", args, { cwd: root, env: gitEnv });
+      let r2 = await exec("git", args, { cwd: root, env: gitEnv });
+      // #1467: models write grep patterns (a|b, a.*b, \.run\() without regex: true; a literal search
+      // for one finds nothing, so it's tried as a pattern before saying so.
+      let asPattern = false;
+      if (r2.code === 1 && regex !== true && /\||\.\*|\\[.(\[)\]sbdw]/.test(String(text))) {
+        args[3] = "-E";
+        const again = await exec("git", args, { cwd: root, env: gitEnv });
+        if (again.code === 0) [r2, asPattern] = [again, true];
+      }
       if (r2.code === 1) return "No matches.";
       if (r2.code !== 0) throw new Error(r2.stderr.trim());
       const lines = r2.stdout.split(/\r?\n/).filter(Boolean);
-      return lines.slice(0, 60).map((l) => l.slice(0, 300)).join("\n") + (lines.length > 60 ? `\n...${lines.length - 60} more` : "");
+      for (const l of lines.slice(0, 60)) found.add(l.split(":")[0]);
+      return (asPattern ? "(No literal match; matched as a pattern.)\n" : "") + lines.slice(0, 60).map((l) => l.slice(0, 300)).join("\n") + (lines.length > 60 ? `\n...${lines.length - 60} more` : "");
     }
 
     function read({ path: rel, start_line, end_line }) {
       const full = inside(rel);
       if (isCredentialPath(path.basename(full))) throw new Error("refusing to read a credential file");
+      found.add(posix(full));
       const budgeted = !isRefresh(r) && !madeEdit;
       const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
       const from = Math.max(1, Number(start_line) || 1);
@@ -1481,13 +1543,47 @@ Before it can be a PR:
       return `${rel} lines ${from}-${to} of ${lines.length}\n${shown}${note}`;
     }
 
+    // #1462: the files she names for her change must be ones she found
+    // (search, file list or read) or new ones in a folder that exists, and at
+    // least one must be existing code, not only a test: in the #1202
+    // comparison she edited files she'd made up, or wrote a test and never
+    // reached the fix. Each "path: why" (or { path, why }).
+    function locate(entries) {
+      const named = [];
+      for (const entry of [].concat(entries || [])) {
+        const text = typeof entry === "string" ? entry : `${entry?.path || ""}: ${entry?.why || ""}`;
+        const [, rel, why] = text.match(/^\s*([^:\s][^:]*?)\s*(?::\s*(.*))?$/s) || [];
+        if (!rel) continue;
+        if (!String(why || "").trim()) throw new Error(`say why ${rel} is part of the change ("${rel}: why")`);
+        const relPath = posix(inside(rel));
+        if (fs.existsSync(path.join(root, relPath))) {
+          if (!found.has(relPath)) throw new Error(`find ${relPath} first with self_work__search or self_work__files, so you know it's the right place`);
+        } else if (!fs.existsSync(path.dirname(path.join(root, relPath)))) {
+          // #1467: a new feature can need a new folder: one level, in a folder that exists, when she says it's new.
+          const parent = path.dirname(path.dirname(path.join(root, relPath)));
+          if (!/\bnew\b/i.test(why) || !fs.existsSync(parent)) {
+            throw new Error(`${relPath} doesn't exist and neither does its folder: find where this code really lives with self_work__search, or if it's a new folder say so ("${rel}: new ...")`);
+          }
+        }
+        named.push(relPath);
+      }
+      if (!named.length) throw new Error('name the files your change belongs in, each as "path: why"');
+      const all = new Set([...(r.files || []), ...named]);
+      const code = [...all].some((f) => !TEST_PATH_RE.test(f) && fs.existsSync(path.join(root, f)));
+      if (!code) throw new Error("name the existing code your change goes in too, not only tests: find it with self_work__search");
+      r.files = [...all];
+    }
+
     // #1211: her plan, on the run (so status() shows it) and with each edit.
-    const planText = () => r.plan.map((s, i) => `${s.done ? "[x]" : "[ ]"} ${i + 1}. ${s.text}`).join("\n");
-    function plan({ steps, done, no_test: noTest }) {
+    const planText = () =>
+      r.plan.map((s, i) => `${s.done ? "[x]" : "[ ]"} ${i + 1}. ${s.text}`).join("\n") + (r.files?.length ? `\nFiles: ${r.files.join(", ")}` : "");
+    function plan({ steps, done, files: located, no_test: noTest }) {
       if (String(noTest || "").trim()) r.noTestReason = String(noTest).trim();
+      if (located !== undefined) locate(located);
       if (steps !== undefined) {
         const clean = [].concat(steps).map((s) => String(s).trim()).filter(Boolean);
         if (clean.length < 2 || clean.length > 6) throw new Error("a plan has 2 to 6 steps");
+        if (!r.files && !isRefresh(r)) throw new Error('name the files your change belongs in with files, each as "path: why", found with self_work__search first');
         r.plan = clean.map((text) => ({ text, done: false }));
       }
       if (!r.plan) throw new Error("set your steps first");
@@ -1496,7 +1592,9 @@ Before it can be a PR:
         if (!step) throw new Error(`there's no step ${n}`);
         step.done = true;
       }
-      return planText();
+      // #1467: tests after each step, not only at the end.
+      const check = [].concat(done ?? []).length && editedSinceTest ? `\nRun the tests for this step with ${CODING_TEST_TOOL_NAME} before you start the next one.` : "";
+      return planText() + check;
     }
 
     async function edit({ path: rel, old_text: oldText = "", new_text: newText, summary }) {
@@ -1514,7 +1612,14 @@ Before it can be a PR:
         ownWork && !TEST_PATH_RE.test(relPath) && !r.sawFailingTest && !r.noTestReason && ![...edited].some((f) => TEST_PATH_RE.test(f));
       const refusal = writeRefusal(r, full, relPath);
       if (refusal) throw new Error(refusal);
+      // #1467: a new file outside the ones she located is refused (in the
+      // #1202 comparison she wrote into made-up paths); a change to an
+      // existing one goes through with a nudge to add it.
+      const unlocated = ownWork && r.files && !r.files.includes(relPath) && !TEST_PATH_RE.test(relPath);
       const exists = fs.existsSync(full);
+      if (unlocated && !exists) {
+        throw new Error(`${relPath} doesn't exist and isn't one of the files you located (${r.files.join(", ")}). Find where this code really lives with self_work__search; if it needs a new file, add it with self_work__plan files ("${relPath}: why") first.`);
+      }
       const original = exists ? fs.readFileSync(full, "utf8") : "";
       const eol = original.includes("\r\n") ? "\r\n" : "\n";
       const norm = (s) => String(s).replace(/\r?\n/g, eol);
@@ -1529,8 +1634,24 @@ Before it can be a PR:
         next = norm(newText);
       } else if (exists) {
         const parts = original.split(norm(oldText));
-        if (parts.length !== 2) throw new Error(`old_text must match ${relPath} exactly once (found ${parts.length - 1})`);
-        next = parts.join(norm(newText));
+        const lines = original.split(/\r?\n/);
+        if (parts.length === 2) {
+          next = parts.join(norm(newText));
+        } else if (parts.length > 2) {
+          throw new Error(`old_text is in ${relPath} ${parts.length - 1} times: include a line or two more around the place you mean so it matches once`);
+        } else {
+          // #1467: the same lines with different indentation or trailing spaces still count.
+          const loose = looseMatch(lines, oldText);
+          if (!loose) {
+            const near = closestLines(lines, oldText);
+            throw new Error(`old_text isn't in ${relPath}.${near ? ` The closest lines:\n${near}\n` : " "}Copy old_text from the file as it is (self_work__read shows it with line numbers).`);
+          }
+          // A new line she sent with no indentation takes the matching old line's.
+          const indent = (l) => /^\s*/.exec(l)[0];
+          const span = lines.slice(loose.from, loose.to);
+          const newLines = String(newText).split(/\r?\n/).map((l, j) => (!l.trim() || indent(l) ? l : indent(span[Math.min(j, span.length - 1)]) + l));
+          next = [...lines.slice(0, loose.from), ...newLines, ...lines.slice(loose.to)].join(eol);
+        }
       } else {
         if (oldText) throw new Error(`${relPath} doesn't exist yet: leave old_text empty to create it`);
         next = norm(newText);
@@ -1549,6 +1670,7 @@ Before it can be a PR:
       if (next !== original) {
         progressed = true;
         madeEdit = true;
+        editedSinceTest = true;
         // A new change needs reviewing again.
         reviewed.clear();
         edited.add(relPath);
@@ -1559,6 +1681,7 @@ Before it can be a PR:
         relativePath: relPath,
         diff: proposal.diff.slice(0, 2000),
         plan: r.plan ? planText() : undefined,
+        located: unlocated ? `${relPath} isn't one of the files you located; add it with self_work__plan files ("${relPath}: why") if the change belongs there, or undo this edit.` : undefined,
         warning: untested
           ? `Test first: you changed code without a test for it yet. Write or find a test for the behaviour and run it with ${CODING_TEST_TOOL_NAME}; your change goes up as a PR only once the tests pass after your last edit. If the issue has nothing a test can check, say why in self_work__plan's no_test.`
           : undefined,
@@ -1639,6 +1762,7 @@ Before it can be a PR:
     }
 
     async function tests({ path: rel, estimate, execution }) {
+      editedSinceTest = false;
       let target = rel ? posix(inside(rel)) : "";
       // #1420: test/x.test.js without node-bot/ means hers, unless the repo root has it.
       if (/^test\/[\w.-]+\.test\.js$/.test(target) && !fs.existsSync(path.join(root, target)) && fs.existsSync(path.join(root, "node-bot", target))) {
@@ -1726,8 +1850,22 @@ Before it can be a PR:
           looked.add(key);
           progressed = true;
         }
+        let note = "";
         if (progressed) stepsWithoutProgress = 0;
-        return result;
+        else if (stepsWithoutProgress === STUCK_NUDGE_AFTER) {
+          // #1467: in the #1202 comparison the 7B coder repeated itself until the run stopped.
+          note += `\n[That's ${STUCK_NUDGE_AFTER} steps with nothing new: the same calls or the same results. Change course: re-read the last failing test output, look at a different file, or go back to your plan. ${MAX_STEPS_WITHOUT_PROGRESS - STUCK_NUDGE_AFTER} more like this and the run stops.]`;
+        }
+        // #1467: each plan step's share of the rounds; past it, a reminder.
+        const steps = r.plan?.length || 0;
+        if (steps && !extra.mustReview && r.maxRounds && r.round) {
+          const doneCount = r.plan.filter((step) => step.done).length;
+          if (doneCount < steps && r.round > (r.maxRounds * (doneCount + 1)) / steps && nudgedAtStep !== doneCount) {
+            nudgedAtStep = doneCount;
+            note += `\n[Round ${r.round} of ${r.maxRounds}, and step ${doneCount + 1} of ${steps} isn't done. Finish it now (the edit, then its test), or mark it done if it is.]`;
+          }
+        }
+        return note && typeof result === "string" ? result + note : result;
       },
     };
   }

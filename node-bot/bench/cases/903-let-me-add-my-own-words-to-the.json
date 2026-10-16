@@ -1,5 +1,6 @@
 {
   "id": "903-let-me-add-my-own-words-to-the",
+  "minRounds": 15,
   "kind": "node-feature",
   "pr": 903,
   "issue": 901,

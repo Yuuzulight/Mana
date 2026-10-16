@@ -1,5 +1,6 @@
 {
   "id": "1358-chat-export-markdown-html",
+  "minRounds": 16,
   "kind": "multi-file",
   "pr": 1358,
   "issue": 1323,
@@ -19,6 +20,6 @@
     "node-bot/test/sessions-capability.test.js"
   ],
   "testCommand": "node --test test/session-export.test.js test/sessions-capability.test.js",
-  "interface": "session export supports format=markdown/html/jsonl and optional tools/thoughts flags.",
+  "interface": "session export supports format=markdown/html/jsonl and optional tools/thoughts flags. The tests call: `node-bot/session-export.js` exports `exportSessionAsMarkdown(session, { includeTools, includeThoughts, now })`.",
   "why": "Export and data-portability work is a realistic multi-file backend plus launcher feature."
 }
