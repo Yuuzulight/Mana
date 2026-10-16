@@ -9,11 +9,15 @@ const http = require("http");
 const { spawn, execFile } = require("child_process");
 
 const DEFAULT_ARCANA_DIR = "C:\\ManaAI\\Arcana";
+// What tools/install-arcana.ps1 publishes.
+const INSTALLED_CLI = path.resolve(__dirname, "../../node-bot/runtime/arcana/Arcana.Cli.dll");
 const READY_TIMEOUT_MS = 15000;
 
-// MANA_ARCANA_CLI: the Arcana.Cli.dll to run; else a build under ARCANA_DIR.
+// MANA_ARCANA_CLI: the Arcana.Cli.dll to run; else a build under
+// MANA_ARCANA_DIR; else the pinned install; else a build at the default dir.
 function resolveCli(env, fsLike = fs) {
   if (env.MANA_ARCANA_CLI) return fsLike.existsSync(env.MANA_ARCANA_CLI) ? env.MANA_ARCANA_CLI : null;
+  if (!env.MANA_ARCANA_DIR && fsLike.existsSync(INSTALLED_CLI)) return INSTALLED_CLI;
   const bin = path.join(env.MANA_ARCANA_DIR || DEFAULT_ARCANA_DIR, "src", "Arcana.Cli", "bin");
   for (const config of ["Release", "Debug"]) {
     const dll = path.join(bin, config, "net10.0", "Arcana.Cli.dll");
@@ -57,7 +61,7 @@ function killTree(child) {
 // a page can't reach Mana's own services. storageDir keeps local storage.
 async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
   const cli = resolveCli(env);
-  if (!cli) throw new Error("Arcana isn't built -- set MANA_ARCANA_CLI, or build it at " + (env.MANA_ARCANA_DIR || DEFAULT_ARCANA_DIR));
+  if (!cli) throw new Error("Arcana isn't installed -- run tools/install-arcana.ps1, set MANA_ARCANA_CLI, or build it at " + (env.MANA_ARCANA_DIR || DEFAULT_ARCANA_DIR));
   const port = await freePort();
   // --arcana-parent-pid: Arcana stops itself if this process dies without cleaning up.
   const args = [cli, "serve", `--port=${port}`, "--quiet", `--arcana-parent-pid=${process.pid}`];
@@ -65,6 +69,8 @@ async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
     fs.mkdirSync(storageDir, { recursive: true });
     args.push(`--storage-dir=${storageDir}`);
   }
+  // Off unless asked for: a page must not reach Mana's own services.
+  if (env.MANA_ARCANA_ALLOW_PRIVATE_NETWORK === "1") args.push("--allow-private-network");
   const child = spawnFn("dotnet", args, { stdio: "ignore", windowsHide: true });
   let exited = false;
   child.once("exit", () => (exited = true));

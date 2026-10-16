@@ -185,3 +185,6 @@ tools/analysis-sandbox/helper-launch.lock/
 
 # #1420: her live skills (use counts, status); shipped ones are in node-bot/skills-default/.
 node-bot/skills/
+
+# Pinned Arcana CLI and its separately downloaded engine (tools/install-arcana.ps1).
+node-bot/runtime/arcana/
