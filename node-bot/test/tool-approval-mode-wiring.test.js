@@ -36,8 +36,13 @@ test("#669 the reply's tool gate uses the saved approval mode (smart by default)
     // smart: a read-tier built-in runs without a prompt
     assert.doesNotMatch(String(await finishGoalWith(gate)), /"pending"/);
 
+    // ask: inside a reply the call waits for the user's answer, then hears it
     gate.setToolApprovalMode("ask");
-    assert.equal(JSON.parse(await finishGoalWith(gate)).status, "pending");
+    const asked = finishGoalWith(gate);
+    for (let i = 0; i < 100 && !gate.listPending().length; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(gate.listPending().length, 1, "the call is waiting for the user");
+    await gate.decide(gate.listPending()[0].id, "deny");
+    assert.equal(JSON.parse(await asked).status, "blocked");
 
     // #699: a heartbeat check's own gate replaces the risk gate.
     let wrappedWith = null;
