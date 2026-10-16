@@ -50,16 +50,40 @@ class ArcanaLocator {
 }
 
 class ArcanaApiPage {
-  constructor(client, id) { this.client = client; this.id = id; this.listeners = new Map(); this.refs = new Map(); this.mouse = { move: async () => {}, click: (x, y) => this._action('click-at', { x, y }), wheel: (x, y) => this._action('mouse-wheel', { deltaX: x, deltaY: y }) }; this.keyboard = { insertText: text => this._action('type', { value: text }), press: key => this._action('key', { key }) }; }
+  constructor(client, id) { this.client = client; this.id = id; this.listeners = new Map(); this.refs = new Map(); this.routes = []; this.mouse = { move: async () => {}, click: (x, y) => this._action('click-at', { x, y }), wheel: (x, y) => this._action('mouse-wheel', { deltaX: x, deltaY: y }) }; this.keyboard = { insertText: text => this._action('type', { value: text }), press: key => this._action('key', { key }) }; }
   on(event, listener) { this.listeners.set(event, listener); }
+  async _connectEvents() {
+    const url = new URL(`v1/events?pageId=${this.id}`, this.client.endpoint); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.events = new WebSocket(url, { headers: { Authorization: `Bearer ${this.client.token}` } });
+    await new Promise((resolve, reject) => { this.events.addEventListener('open', resolve, { once: true }); this.events.addEventListener('error', reject, { once: true }); });
+    this.events.addEventListener('message', ({ data }) => { try { this._event(JSON.parse(String(data))); } catch {} });
+  }
+  _event(message) {
+    const data = message.data || {};
+    if (message.name === 'Runtime.consoleAPICalled') this.listeners.get('console')?.({ type: () => data.type || 'log', text: () => (data.args || []).map(arg => arg.value ?? '').join(' ') });
+    if (message.name === 'Runtime.exceptionThrown') this.listeners.get('pageerror')?.(new Error(data.exceptionDetails?.text || 'Page exception'));
+    if (message.name === 'Page.frameNavigated') this.listeners.get('framenavigated')?.(this);
+    if (message.name === 'Fetch.requestPaused') this._route(data).catch(() => {});
+  }
+  async _route(data) {
+    const url = data.request?.url || '';
+    const route = this.routes.find(item => item.pattern === '**/*' || item.pattern === '*' || url.includes(item.pattern.replace(/^\*\*/, '')));
+    const api = { request: () => ({ url: () => url, method: () => data.request?.method || 'GET', resourceType: () => data.resourceType || 'Other' }), abort: () => this.client.post(`v1/pages/${this.id}/cdp`, { method: 'Fetch.failRequest', parameters: { requestId: data.requestId, errorReason: 'Aborted' } }), continue: () => this.client.post(`v1/pages/${this.id}/cdp`, { method: 'Fetch.continueRequest', parameters: { requestId: data.requestId } }) };
+    if (route) await route.handler(api); else await api.continue();
+  }
   mainFrame() { return this; }
   async _action(name, body) { return this.client.post(`v1/pages/${this.id}/${name}`, body); }
   _resolveRef(ref) { const key = String(ref).replace(/^aria-ref=/, ''); return this.refs.get(key) || key; }
   async _snapshot() { const snapshot = await this.client.get(`v1/pages/${this.id}/snapshot`); this.refs.clear(); for (const element of snapshot.elements || []) { const short = `e${this.refs.size + 1}`; this.refs.set(short, element.reference); } return snapshot; }
   async goto(url) { await this._action('navigate', { url }); return this; }
+  async waitForLoadState(state = 'load', options = {}) {
+    if (state === 'networkidle') return this._action('wait', { condition: 'networkidle', value: '', timeoutMs: options.timeout || 10000 });
+    if (state === 'domcontentloaded') return this._action('wait', { condition: 'expression', value: "document.readyState !== 'loading'", timeoutMs: options.timeout || 10000 });
+    return this._action('wait', { condition: 'expression', value: "document.readyState === 'complete'", timeoutMs: options.timeout || 10000 });
+  }
   async goBack() { await this._action('back'); }
   async goForward() { await this._action('forward'); }
-  async close() { await this.client.request(`v1/pages/${this.id}`, { method: 'DELETE' }); this.closed = true; }
+  async close() { this.events?.close(); await this.client.request(`v1/pages/${this.id}`, { method: 'DELETE' }); this.closed = true; }
   isClosed() { return Boolean(this.closed); }
   async ariaSnapshot() { const snapshot = await this._snapshot(); return (snapshot.elements || []).map((e, i) => `- ${e.role === 'input' ? 'textbox' : e.role} "${String(e.name || '').replaceAll('"', '\\"')}" [ref=e${i + 1}]`).join('\n'); }
   async evaluate(fn, arg) { return this.client.post(`v1/pages/${this.id}/evaluate`, { expression: functionExpression(fn, arg) }); }
@@ -70,7 +94,7 @@ class ArcanaApiPage {
   viewportSize() { return { width: 1280, height: 720 }; }
   async setViewportSize(size) { await this._action('viewport', size); }
   async emulateMedia() { /* v1 keeps the engine default media scheme */ }
-  async route() { /* request interception is the next API extension */ }
+  async route(pattern, handler) { this.routes.push({ pattern, handler }); await this.client.post(`v1/pages/${this.id}/cdp`, { method: 'Fetch.enable', parameters: { patterns: [{ urlPattern: '*' }] } }); }
   async waitForEvent() { throw new Error('Arcana v1 does not expose file chooser events'); }
   request = { head: async (url) => ({ status: () => 200, url: () => url }) };
 }
@@ -78,7 +102,7 @@ class ArcanaApiPage {
 class ArcanaApiContext {
   constructor(client, child, profileDirectory) { this.client = client; this.child = child; this.profileDirectory = profileDirectory; this._pages = []; this.listeners = new Map(); }
   pages() { return this._pages.filter(page => !page.closed); }
-  async newPage() { const created = await this.client.post('v1/pages', {}); const page = new ArcanaApiPage(this.client, created.pageId); this._pages.push(page); return page; }
+  async newPage() { const created = await this.client.post('v1/pages', {}); const page = new ArcanaApiPage(this.client, created.pageId); await page._connectEvents(); this._pages.push(page); return page; }
   on(event, listener) { this.listeners.set(event, listener); }
   async cookies() { return (await this.client.get(`v1/pages/${this.pages()[0]?.id}/cookies`)).cookies || []; }
   async close() {
