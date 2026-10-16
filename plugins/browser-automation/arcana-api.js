@@ -40,9 +40,12 @@ class ArcanaLocator {
   selectOption(value) { return this.page._action('select', { ref: this.page._resolveRef(this.ref), value: typeof value === 'string' ? value : value?.value }); }
   press(key) { return this.page._action('press', { ref: this.page._resolveRef(this.ref), key }); }
   hover() { return this.page.evaluate((ref) => document.querySelector(`[aria-ref="${ref}"]`)?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })), this.page._resolveRef(this.ref)); }
-  evaluate(fn, arg) { return this.page.evaluate((input) => { const el = document.querySelector(`[aria-ref="${input.ref}"]`); return input.fn(el); }, { ref: this.page._resolveRef(this.ref), fn }); }
+  evaluate(fn, arg) {
+    const source = typeof fn === 'function' ? fn.toString() : String(fn);
+    return this.page.evaluate(`(${source})(document.querySelector('[aria-ref="${this.page._resolveRef(this.ref)}"]'), ${arg === undefined ? 'undefined' : JSON.stringify(arg)})`);
+  }
   boundingBox() { return this.page.evaluate((ref) => { const r = document.querySelector(`[aria-ref="${ref}"]`)?.getBoundingClientRect(); return r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null; }, this.page._resolveRef(this.ref)); }
-  setInputFiles() { throw new Error('Arcana API upload is not available in v1 yet'); }
+  setInputFiles(file) { return this.page._action('upload', { ref: this.page._resolveRef(this.ref), path: Array.isArray(file) ? file[0] : file }); }
   dragTo() { throw new Error('Arcana API drag is not available in v1 yet'); }
 }
 
