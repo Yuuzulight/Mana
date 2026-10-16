@@ -10,6 +10,8 @@
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--out <dir>] [--verify]
+//     [--status-file <path>]  (durable live status for external monitors)
+//     [--preflight]     (verify selected cases before loading the model)
 //     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
@@ -47,6 +49,43 @@ const BACKEND_LLAMA_PORT = 8090;
 // The bench's own limit for starting a case (self-work's 85% inside her
 // run is unchanged).
 const BENCH_MAX_RAM_PERCENT = 90;
+
+// A deliberately small, dependency-free status contract for long-running
+// remote benchmarks. Consumers can read this file without parsing console
+// output; the last completed result remains available after a crash.
+function createStatusReporter(file, initial = {}) {
+  if (!file) return { update: () => {}, event: () => {} };
+  const target = path.resolve(file);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const events = `${target}.events.ndjson`;
+  let state = { schema: 1, state: "starting", updatedAt: new Date().toISOString(), ...initial };
+  const write = () => {
+    state.updatedAt = new Date().toISOString();
+    const tmp = `${target}.${process.pid}.tmp`;
+    const fd = fs.openSync(tmp, "w");
+    try {
+      fs.writeFileSync(fd, JSON.stringify(state, null, 2));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try { fs.renameSync(tmp, target); }
+    catch { fs.rmSync(target, { force: true }); fs.renameSync(tmp, target); }
+  };
+  const update = (changes) => {
+    state = { ...state, ...changes };
+    write();
+  };
+  const event = (name, details = {}) => {
+    const entry = { at: new Date().toISOString(), event: name, ...details };
+    state.lastEvent = entry;
+    state.eventsWritten = (state.eventsWritten || 0) + 1;
+    write();
+    fs.appendFileSync(events, JSON.stringify(entry) + "\n", "utf8");
+  };
+  write();
+  return { update, event, path: target };
+}
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -376,6 +415,25 @@ function verifyCase(c, { repoRoot, worktreesDir }) {
   }
 }
 
+// Never turn a broken benchmark fixture into a model failure. A selected case
+// must fail at its base and pass with the recorded reference fix before a
+// model run is allowed to score it.
+function preflightCases(cases, { repoRoot, worktreesDir }) {
+  const results = [];
+  for (const c of cases) results.push(verifyCase(c, { repoRoot, worktreesDir }));
+  const invalid = results.filter((r) => !r.ok);
+  if (invalid.length) {
+    const detail = invalid.map((r) => {
+      const reasons = [];
+      if (!r.failsAtBase) reasons.push("base did not fail");
+      if (r.passesWithFix === false) reasons.push("reference fix did not pass");
+      return `${r.id}: ${reasons.join(", ") || "verification failed"}`;
+    }).join("; ");
+    throw new Error(`benchmark preflight rejected ${invalid.length} case(s): ${detail}`);
+  }
+  return results;
+}
+
 // #1221: pass@1 (the mean over repeats), pass@k (passed in any repeat)
 // and the spread (fewest and most passes in one repeat), overall and by
 // kind; failure kinds; and the mean cost of a run.
@@ -504,6 +562,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   const { createLlamaServerRuntime } = require("../ai/llama-server-runtime");
   const { refuteEdit } = require("../ai/adversarial-verifier");
   const env = benchEnv(repoRoot);
+  const externalBaseUrl = String(env.MANA_BENCH_ENDPOINT || "").replace(/\/$/, "");
   env.LLAMA_SERVER_PORT = BENCH_LLAMA_PORT;
   // Text only: no vision projector taking VRAM, and no host-RAM prompt
   // cache (one conversation at a time reuses its slot's KV cache anyway).
@@ -540,7 +599,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   };
   // Its VRAM check would only see the bench's own server holding the card.
   if (serverArgs) env.LLAMA_SERVER_VRAM_GUARD = "0";
-  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(serverArgs ? { spawn: refuse } : {}) });
+  const runtime = createLlamaServerRuntime({ env, threads: env.LLAMA_THREADS, fetch, ...(externalBaseUrl ? { externalBaseUrl } : {}), ...(serverArgs ? { spawn: refuse } : {}) });
   let server = null;
   // A server the bench starts itself (a model whose experts sit in RAM)
   // is killed the moment RAM passes the bench's limit; the run then stops.
@@ -564,7 +623,7 @@ function realModel(repoRoot, tokens, { model, context, serverArgs } = {}) {
   }
   return {
     start,
-    model: path.basename(runtime.findLlamaModel("default") || env.LLAMA_MODEL || "?"),
+    model: externalBaseUrl ? `external:${externalBaseUrl}` : path.basename(runtime.findLlamaModel("default") || env.LLAMA_MODEL || "?"),
     runLoop: (...args) => runtime.runToolAwareReply(...args),
     reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: runtime.runLocalReplyIfSafelyLoaded, env }),
     contextSize: () => runtime.getContextSize(),
@@ -633,6 +692,7 @@ async function main(argv) {
   const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
   const attempts = Math.max(1, Number(opt("--attempts")[0]) || 1);
+  const statusFile = opt("--status-file")[0] || process.env.MANA_BENCH_STATUS_FILE;
   // The cap is per attempt.
   const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
@@ -643,6 +703,7 @@ async function main(argv) {
     // Gemini runs in the cloud: her chat model's VRAM isn't in its way.
     backendModelUp: () =>
       !useGemini &&
+      !env.MANA_BENCH_ENDPOINT &&
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
 
@@ -655,41 +716,109 @@ async function main(argv) {
     return;
   }
 
+  if (argv.includes("--preflight")) {
+    const verified = preflightCases(cases, { repoRoot, worktreesDir });
+    console.log(`Benchmark preflight passed for ${verified.length} case(s).`);
+  }
+
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   const model = useGemini ? await geminiModel(repoRoot) : realModel(repoRoot, tokens, config);
   const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000 };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
+  const status = createStatusReporter(statusFile, {
+    state: "prepared",
+    pid: process.pid,
+    model: model.model,
+    label,
+    reportDir: outDir,
+    totalCases: runs.length,
+    completed: 0,
+    passed: 0,
+    failed: 0,
+    currentCase: null,
+    currentCaseIndex: 0,
+    cleanupVerified: false,
+    startedAt: null,
+    finishedAt: null,
+  });
+  let terminalState = "running";
+  status.event("prepared", { totalCases: runs.length, cases: cases.length, repeats });
   try {
+    status.update({ state: "starting", startedAt: new Date().toISOString() });
+    status.event("model_starting", { model: model.model });
     await model.start();
+    status.update({ state: "running", modelLoaded: true });
+    status.event("model_started", { model: model.model });
     for (const { c, repeat } of runs) {
+      const index = results.length + 1;
+      status.update({ state: "case_starting", currentCase: c.id, currentCaseIndex: index, repeat });
+      status.event("case_started", { id: c.id, index, repeat });
       const why = await waitOut(c, gate, model);
       if (why) {
         console.log(`Stopping before ${c.id}: ${why}.`);
+        terminalState = "blocked";
+        status.update({ state: terminalState, stopReason: why });
+        status.event("blocked", { id: c.id, reason: why });
         break;
       }
       const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts });
       if (model.aborted()) {
         console.log(`Stopping at ${c.id}: ${model.aborted()}.`);
+        terminalState = "stopped";
+        status.update({ state: terminalState, stopReason: model.aborted() });
+        status.event("stopped", { id: c.id, reason: model.aborted() });
         break;
       }
       // No room for the model (the backend's chat model is loaded, say):
       // not her result, so the run stops here instead of scoring it.
       if (/refusing to load/.test(result.error || "")) {
         console.log(`Stopping at ${c.id}: ${result.error}`);
+        terminalState = "blocked";
+        status.update({ state: terminalState, stopReason: result.error });
+        status.event("blocked", { id: c.id, reason: result.error });
         break;
       }
       results.push(result);
+      status.update({
+        state: "running",
+        completed: results.length,
+        passed: results.filter((r) => r.passed === true).length,
+        failed: results.filter((r) => r.passed === false).length,
+        lastCompletedCase: c.id,
+        lastResult: { id: result.id, passed: result.passed, ended: result.ended, failure: result.failure || null },
+      });
+      status.event("case_completed", { id: c.id, index, repeat, passed: result.passed, ended: result.ended, failure: result.failure || null });
       if (result.ended === "quota") {
         console.log(`Stopping at ${c.id}: Gemini CLI is out of quota.`);
+        terminalState = "quota";
+        status.update({ state: terminalState, stopReason: "Gemini CLI is out of quota." });
+        status.event("quota", { id: c.id });
         break;
       }
       writeReport(results, outDir, meta);
     }
+    if (results.length === runs.length) terminalState = "completed";
+    status.update({ state: terminalState, finishedAt: terminalState === "completed" ? new Date().toISOString() : null });
+  } catch (error) {
+    terminalState = "failed";
+    status.update({ state: terminalState, error: String(error.message || error) });
+    status.event("failed", { error: String(error.message || error) });
+    throw error;
   } finally {
-    await model.stop();
+    try {
+      await model.stop();
+      status.update({ cleanupVerified: true, modelLoaded: false });
+      status.event("cleanup_verified", { completed: results.length });
+    } catch (error) {
+      status.update({ state: "cleanup_failed", cleanupVerified: false, cleanupError: String(error.message || error) });
+      status.event("cleanup_failed", { error: String(error.message || error) });
+      throw error;
+    }
   }
+  status.update({ state: terminalState, finishedAt: terminalState === "completed" ? new Date().toISOString() : null, cleanupVerified: true });
+  status.event(terminalState === "completed" ? "finished" : "stopped_after_cleanup", { completed: results.length, passed: results.filter((r) => r.passed === true).length });
   console.log(writeReport(results, outDir, meta).split("\n").slice(0, 14).join("\n"));
   console.log(`Report: ${outDir}`);
 }
@@ -705,6 +834,7 @@ module.exports = {
   loadCases,
   runCase,
   verifyCase,
+  preflightCases,
   writeReport,
   summarize,
   qualification,
@@ -714,4 +844,5 @@ module.exports = {
   removeWorktree,
   waitOut,
   waitUp,
+  createStatusReporter,
 };
