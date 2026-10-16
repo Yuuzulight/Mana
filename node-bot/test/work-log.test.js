@@ -12,6 +12,7 @@ const test = require("node:test");
 process.env.MANA_ACP_MEMORY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mana-work-log-"));
 
 const { createApp } = require("../server");
+const { createApprovalGate } = require("../approval-gate");
 const { createAgentActivity } = require("../agent-activity");
 const { TOOL_NARRATION_PROMPT, launchedTask } = require("../ai/step-description");
 
@@ -25,13 +26,19 @@ test("a narrated tool round streams first, joins the reply, and its steps are sa
   try {
     const calls = [];
     let rounds = true;
+    const approvalGate = createApprovalGate({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-work-log-gate-")) });
     const app = createApp({
+      approvalGate,
       llamaServerRuntime: { isEnabled: () => true },
       runToolAwareReply: async (prompt, toolPolicy, opts) => {
         calls.push(opts);
         if (!rounds) return { content: "Just an answer.", toolCalls: [], rounds: 1 };
         await opts.onRoundText("Next I'm checking the logs to see why it failed.");
-        await Promise.resolve(toolPolicy.executeTool("no_such_tool", {})).catch(() => {});
+        // Inside a chat the call waits for the user: answer it, as they would.
+        const asking = Promise.resolve(toolPolicy.executeTool("no_such_tool", {})).catch(() => {});
+        await waitFor(() => approvalGate.listPending().length === 1);
+        await approvalGate.decide(approvalGate.listPending()[0].id, "deny");
+        await asking;
         return { content: "Found it: a typo.", toolCalls: [], rounds: 2 };
       },
     });
