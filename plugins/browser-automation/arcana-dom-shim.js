@@ -93,6 +93,19 @@ const script = String.raw`(() => {
     }
   }
 
+  // YouTube's component polyfill (ShadyDOM) calls the window's own event methods under these names and
+  // expects them to exist.
+  for (const name of ["addEventListener", "removeEventListener", "dispatchEvent"]) {
+    const key = "__shady_native_" + name;
+    if (typeof window[key] !== "function") {
+      Object.defineProperty(window, key, {
+        value: function () { return EventTarget.prototype[name].apply(this || window, arguments); },
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+
   // The engine never scrolls: scrollY stays 0, so a page that loads more near the bottom never does.
   // Mana's scroll moves a virtual offset the page can read, and sends the scroll event.
   if (!window.__arcanaScrollBy) {

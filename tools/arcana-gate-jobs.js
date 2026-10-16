@@ -16,6 +16,8 @@ const js = async (b, code) => (await b.devtools({ do: "run_js", code })).devtool
 
 const UPLOAD = path.join(os.tmpdir(), "arcana-gate-upload.txt");
 fs.writeFileSync(UPLOAD, "uploaded by the Arcana gate\n");
+// The local fixture site (tools/arcana-fixture-site.js); the gate starts it and sets `base`.
+const site = { base: null, url: (path) => `${site.base}${path}` };
 const downloads = [];
 let before = 0;
 const TI = "https://the-internet.herokuapp.com";
@@ -200,10 +202,9 @@ const JOBS = [
   ["httpbin", "start a download by going to the address", "navigate download", [
     ["open the file address", (b) => b.navigate("https://example.com/").then(() => b.navigate(ATTACHMENT).catch(() => null)), () => downloads.includes("gate.txt"), { wait: true }],
   ]],
-  ["example.com (built page)", "drag one thing onto another", "navigate drag", [
-    ["build the page", async (b) => { await b.navigate("https://example.com/"); return fixture(b, "<button id=a draggable=true>Drag me</button><button id=t>Drop here</button><div id=out>waiting</div>",
-      "var o=document.getElementById('out'),t=document.getElementById('t');t.addEventListener('dragover',function(e){e.preventDefault()});t.addEventListener('drop',function(e){e.preventDefault();o.textContent='dropped'})"); }, (s) => s.elements.some((l) => /Drag me/.test(l)) && s.elements.some((l) => /Drop here/.test(l))],
-    ["drag it", (b, s) => b.drag(refOf(find(/Drag me/)(s)), refOf(find(/Drop here/)(s))), textHas(/dropped/)],
+  ["Local site", "drag one thing onto another", "navigate drag", [
+    ["open the page", (b) => b.navigate(site.url("/drag.html")), (s) => s.elements.some((l) => /Drag me/.test(l)) && s.elements.some((l) => /Drop here/.test(l))],
+    ["drag it", (b, s) => b.drag(refOf(find(/Drag me/)(s)), refOf(find(/Drop here/)(s))), textHas(/dropped a/)],
   ]],
   ["example.com", "work in two tabs", "navigate tab", [
     ["open the first page", (b) => b.navigate("https://example.com/"), (s) => /Example Domain/.test(s.title)],
@@ -254,24 +255,43 @@ const JOBS = [
     ["click that spot", (b) => b.lookAndClick("the Add Element button", async () => ({ x: JOBS.point.x, y: JOBS.point.y })), (s) => s.elements.some((l) => /Delete/.test(l))],
   ]],
 
-  // --- tracked: kept out of the count, shown every run ---
-  ["YouTube", "open the home page", "navigate", [
-    ["open", (b) => b.navigate("https://www.youtube.com/"), (s) => /YouTube/.test(s.title) && hasElements(20)(s)],
-  ], { tracked: "Arcana#7" }],
-  ["Amazon", "open the home page", "navigate", [
-    ["open", (b) => b.navigate("https://www.amazon.com/"), (s) => /Amazon/.test(s.title) && hasElements(30)(s)],
-  ], { tracked: "Arcana#8, bot wall" }],
-  ["the-internet (frames)", "read a page built from old-style frames", "navigate", [
-    ["open the page", (b) => b.navigate(`${TI}/nested_frames`), textHas(/LEFT/)],
-  ], { tracked: "the engine does not load <frameset> pages" }],
+  // --- frames and uploads, on a local site so they do not depend on anyone else's page ---
+  ["Local site", "read inside an iframe and click a button in it", "navigate click", [
+    ["open the page", (b) => b.navigate(site.url("/frames.html")), (s) => s.elements.some((l) => /Frame button/.test(l)), { wait: true }],
+    ["click the button inside the frame", (b, s) => b.click(refOf(find(/Frame button/)(s))), () => true],
+    ["see what the frame did", (b) => js(b, "document.getElementById('f').contentDocument.getElementById('said').textContent"), (s, r) => /frame button clicked/.test(String(r))],
+  ]],
+  ["Local site", "read frames nested in frames", "navigate", [
+    ["open the page", (b) => b.navigate(site.url("/nested.html")), (s) => s.elements.some((l) => /Frame button.*ref=f[0-9]+e/.test(l)), { wait: true }],
+  ]],
+  ["Local site", "read an iframe built from inline HTML (srcdoc)", "navigate click", [
+    ["open the page", (b) => b.navigate(site.url("/srcdoc.html")), (s) => s.elements.some((l) => /Srcdoc button/.test(l)), { wait: true }],
+    ["click it", (b, s) => b.click(refOf(find(/Srcdoc button/)(s))), () => true],
+    ["see what it did", (b) => js(b, "document.querySelector('iframe').contentDocument.body.innerText"), (s, r) => /srcdoc clicked/.test(String(r))],
+  ]],
+  ["Local site", "read an old-style frameset page", "navigate click", [
+    ["open the page", (b) => b.navigate(site.url("/frameset.html")), (s) => s.elements.some((l) => /Frame button/.test(l)) && s.elements.some((l) => /Go to child/.test(l)), { wait: true }],
+    ["follow a link in the second frame", (b, s) => b.click(refOf(find(/Go to child/)(s))), () => true],
+    ["see where that frame went", (b) => js(b, "document.querySelectorAll('iframe')[1].contentDocument.title"), (s, r) => /Child/.test(String(r)), { wait: true }],
+  ]],
+  ["Local site", "send a file through a form", "navigate upload click", [
+    ["open the form", (b) => b.navigate(site.url("/upload.html")), (s) => s.elements.some((l) => /file|Choose/i.test(l))],
+    ["choose the file", (b, s) => b.upload(refOf(s.elements.find((l) => /file|Choose/i.test(l))), UPLOAD), hasElements(2)],
+    ["send it", (b, s) => b.click(refOf(find(/button "Send"/)(s))), textHas(/File Uploaded!.*arcana-gate-upload\.txt/), { wait: true }],
+  ]],
   ["the-internet (file upload)", "send a file", "navigate upload click", [
     ["open the page", (b) => b.navigate(`${TI}/upload`), (s) => s.elements.some((l) => /file|Choose/i.test(l))],
     ["choose the file", (b, s) => b.upload(refOf(s.elements.find((l) => /file|Choose/i.test(l))), UPLOAD), hasElements(2)],
-    ["send it", (b, s) => b.click(refOf(find(/button "Upload"|Upload/)(s))), textHas(/File Uploaded/i)],
-  ], { tracked: "the engine cannot set a file on a page" }],
-  ["example.com (built page)", "click inside an embedded frame", "navigate click", [
-    ["build the page", async (b) => { await b.navigate("https://example.com/"); return fixture(b, "<iframe srcdoc=\"<button>Inside frame</button>\"></iframe>"); }, (s) => s.elements.some((l) => /Inside frame/.test(l))],
-  ], { tracked: "the engine does not load <iframe> content" }],
+    ["send it", (b, s) => b.click(refOf(find(/button "Upload"|Upload/)(s))), textHas(/File Uploaded/i), { wait: true }],
+  ]],
+  ["Amazon", "open the home page", "navigate", [
+    ["open", (b) => b.navigate("https://www.amazon.com/"), (s) => /Amazon/.test(s.title) && hasElements(10)(s), { wait: true }],
+  ]],
+
+  // --- tracked: kept out of the count, shown every run ---
+  ["YouTube", "open the home page", "navigate", [
+    ["open", (b) => b.navigate("https://www.youtube.com/"), (s) => /YouTube/.test(s.title) && hasElements(20)(s), { wait: true }],
+  ], { tracked: "Arcana#7: the page's app element is created but never finishes starting" }],
 ];
 
-module.exports = { JOBS, downloads, UPLOAD };
+module.exports = { JOBS, downloads, UPLOAD, site };

@@ -795,7 +795,7 @@ test("a snapshot line whose name has a colon is quoted by the snapshot, and stil
   assert.deepEqual(elements, ['link "Compare Pliers CO₂: A B C $12.01" [ref=e5]', "button \"Don't: stop\" [ref=e6]", 'link "Plain" [ref=e7]']);
 });
 
-test("on Arcana a file can't be uploaded (said plainly), and scroll and drag happen inside the page", async () => {
+test("on Arcana scroll and drag happen inside the page", async () => {
   const page = createFakePage();
   page.context = () => ({ arcana: true });
   const seen = [];
@@ -810,7 +810,6 @@ test("on Arcana a file can't be uploaded (said plainly), and scroll and drag hap
   page.locator = (selector) => ({ ...locator(selector), elementHandle: async () => ({ selector }) });
   const session = createBrowserSession({ page });
   await session.navigate("https://example.com/");
-  await assert.rejects(() => session.upload("e5", "C:\cv.pdf"), /can't put a file into a page/);
   await session.scroll("down");
   await session.drag("e5", "e6");
   assert.deepEqual(seen, [["scroll", 400], ["drag", 2]]);

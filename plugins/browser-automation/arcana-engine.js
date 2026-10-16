@@ -72,6 +72,12 @@ async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
   }
   // Off unless asked for: a page must not reach Mana's own services.
   if (env.MANA_ARCANA_ALLOW_PRIVATE_NETWORK === "1") args.push("--allow-private-network");
+  // Putting a file into a page needs the engine allowed to read it. The engine's port refuses any
+  // connection that carries a browser Origin or a rebound host, and the upload tool only takes a file
+  // the user offered. MANA_ARCANA_FILE_ACCESS=0 turns it off.
+  if (env.MANA_ARCANA_FILE_ACCESS !== "0") args.push("--allow-file-access");
+  // The engine's stealth build presents a browser-like network and page fingerprint, which some sites need.
+  if (env.MANA_ARCANA_STEALTH === "1") args.push("--stealth");
   const child = spawnFn("dotnet", args, { stdio: "ignore", windowsHide: true });
   let exited = false;
   child.once("exit", () => (exited = true));
@@ -104,7 +110,8 @@ function recordEvent(file, type, details = {}) {
 async function launchArcana(chromium, env, options = {}) {
   const arcana = await startArcana(env, options);
   try {
-    const browser = await chromium.connectOverCDP(arcana.endpoint);
+    // isLocal: Arcana is on this machine, so a file input is given the file's path, which the engine reads.
+    const browser = await chromium.connectOverCDP(arcana.endpoint, { isLocal: true });
     const ctx = browser.contexts()[0] || (await browser.newContext());
     await ctx.addInitScript(domShim.script);
     ctx.arcana = true;

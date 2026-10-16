@@ -50,3 +50,77 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
+
+// Frames, uploads, downloads, drags, tables and form controls: what the engine and the plugin's Arcana
+// adapter have to cover for the pages Mana meets. Uses the same local site as the gate.
+test('real Arcana: frames, a file upload, a download, a drag, a table and form controls', { skip: !real, timeout: 150000 }, async () => {
+  assert.ok(resolveCli(process.env), 'Arcana CLI not found: run tools/install-arcana.ps1 or set MANA_ARCANA_CLI');
+  const { startSite } = require('../../../tools/arcana-fixture-site');
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-real-frames-'));
+  const site = await startSite();
+  const upload = path.join(temporary, 'arcana-gate-upload.txt');
+  fs.writeFileSync(upload, 'uploaded by the test\n');
+  const downloads = [];
+  const deps = {
+    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
+    ramPercent: () => 50, isGaming: () => false,
+    onDownload: async download => { downloads.push(download.suggestedFilename()); await download.cancel().catch(() => {}); },
+  };
+  const ref = (snapshot, pattern) => /\[ref=([^\]]+)\]/.exec(snapshot.elements.find(line => pattern.test(line)))[1];
+  const run = (session, code) => session.devtools({ do: 'run_js', code }).then(result => result.devtools[0]);
+  const settle = async (check, what) => {
+    for (let i = 0; i < 20; i += 1) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 500)); }
+    assert.fail(`never saw: ${what}`);
+  };
+  plugin._resetForTests();
+  try {
+    const session = await plugin.getSession(deps);
+
+    // an iframe is read, and a button in it can be clicked
+    let snapshot = await session.navigate(site.url('/frames.html'));
+    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Frame button/.test(line)), 'the iframe button');
+    await session.click(ref(snapshot, /Frame button/));
+    assert.match(await run(session, "document.getElementById('f').contentDocument.getElementById('said').textContent"), /frame button clicked/);
+
+    // frames inside frames, an inline-HTML frame, and a frameset
+    snapshot = await session.navigate(site.url('/nested.html'));
+    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Frame button.*ref=f[0-9]+e/.test(line)), 'the button two frames down');
+    snapshot = await session.navigate(site.url('/srcdoc.html'));
+    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Srcdoc button/.test(line)), 'the srcdoc button');
+    snapshot = await session.navigate(site.url('/frameset.html'));
+    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Go to child/.test(line)), 'the link in the second frame');
+
+    // a file goes through a multipart form to the server
+    snapshot = await session.navigate(site.url('/upload.html'));
+    plugin.offerFiles([upload]);
+    await session.upload(ref(snapshot, /file|Choose/i), upload);
+    await session.click(ref(snapshot, /button "Send"/));
+    await settle(async () => /File Uploaded!.*arcana-gate-upload\.txt/.test((await session.snapshot()).text), 'the uploaded file name');
+
+    // a download starts from a page load answered with an attachment
+    await session.navigate(site.url('/download.html'));
+    await session.click(ref(await session.snapshot(), /Get the file/));
+    await settle(async () => downloads.includes('fixture.txt'), 'the download');
+
+    // a drag between two buttons
+    snapshot = await session.navigate(site.url('/drag.html'));
+    await session.drag(ref(snapshot, /Drag me/), ref(snapshot, /Drop here/));
+    assert.match((await session.snapshot()).text, /dropped a/);
+
+    // a table page reads, and its link can be followed
+    snapshot = await session.navigate(site.url('/table.html'));
+    assert.ok(snapshot.elements.some(line => /Go to child/.test(line)));
+
+    // a dropdown shows its choices, and a number input steps with the arrow keys
+    snapshot = await session.navigate(site.url('/controls.html'));
+    assert.ok(snapshot.elements.some(line => /^option "One"/.test(line)) && snapshot.elements.some(line => /^option "Two"/.test(line)));
+    await session.select(ref(snapshot, /^combobox/), 'Two');
+    assert.ok((await session.snapshot()).elements.some(line => /^option "Two" \[selected\]/.test(line)));
+    await session.press('ArrowUp', ref(snapshot, /^spinbutton/));
+    assert.match((await session.snapshot()).text, /count 6/);
+  } finally {
+    await plugin.closeSession();
+    await site.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});

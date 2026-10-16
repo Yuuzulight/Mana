@@ -12,15 +12,17 @@ action Mana has is named by at least one job, and the report says which ones no 
   contains the text (a partial run is never a gate result).
 - Results go to `node-bot/data/arcana-gate`: `gate.jsonl` (a line per job) and `gate-report.md`.
 - A job marked `tracked` runs and is printed every time but is not counted: a site that stops Edge too, or a
-  gap in the engine that is written up. Today those are YouTube, Amazon, `<frameset>` pages, content inside an
-  iframe, and putting a file into a page.
+  gap in the engine that is written up. Today that is YouTube alone (its app element is created but never
+  finishes starting).
+- Frames, framesets, a file upload and a drag are tested on a small local site (`tools/arcana-fixture-site.js`),
+  not on someone else's page. The same site backs the real-engine test in CI.
 - `node tools/arcana-gate-streak.js --runs 5 --then "<command>"` runs the gate until it has passed that many
   full runs in a row, keeps the PC awake meanwhile, and then runs the command (the weekly soak is registered
   that way). One failure resets the count and stops.
 
 ## What the engine leaves out, and how the plugin covers it
 
-Arcana's engine has no layout or scrolling to speak of, and some DOM is missing. `plugins/browser-automation/arcana-dom-shim.js`
+Arcana's engine has no layout or scrolling to speak of, and some DOM is missing; the bigger gaps (child frames, file uploads) are fixed in the engine itself, as patches Arcana applies when it builds it (Arcana `docs/engine-patches.md`). `plugins/browser-automation/arcana-dom-shim.js`
 is injected into every Arcana page and fills in: the table API; the box of an inline link; `<option>`; jQuery's own
 selectors throwing as they do in a browser; stepping number and range inputs with the arrow keys; a scroll offset
 the page can read; and inline display for custom elements. The plugin turns an attachment response into a

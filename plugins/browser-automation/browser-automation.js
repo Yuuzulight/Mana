@@ -361,6 +361,11 @@ function createBrowserSession(options = {}) {
     await refuseIfSensitive();
     const target = page.locator(refSelector(ref));
     await cursorAt(target);
+    // An element inside a frame is a ref like f1e3. Arcana can't aim a pointer into a frame, so click the element itself.
+    if (page.context?.().arcana && /^f\d+e\d+$/.test(String(ref))) {
+      await acting(() => target.evaluate((el) => el.click(), undefined, { timeout: ACTION_TIMEOUT_MS }));
+      return afterAction();
+    }
     try {
       await acting(() => target.click({ timeout: ACTION_TIMEOUT_MS, noWaitAfter: true }));
     } catch (e) {
@@ -446,8 +451,6 @@ function createBrowserSession(options = {}) {
   // #1158: a file I pointed her to (index.js checks that) into a file
   // input, or through the file chooser a button opens.
   async function upload(ref, file) {
-    // Arcana can't set a file on a page (no way for Playwright to hand it one), so say so, not a protocol error.
-    if (page.context?.().arcana) throw new Error("this browser can't put a file into a page yet; the user can do it for her with Take over");
     await refuseIfSensitive();
     const target = page.locator(refSelector(ref));
     await cursorAt(target);

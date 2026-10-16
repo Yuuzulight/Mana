@@ -12,7 +12,8 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { JOBS, downloads, UPLOAD } = require("./arcana-gate-jobs");
+const { JOBS, downloads, UPLOAD, site } = require("./arcana-gate-jobs");
+const { startSite } = require("./arcana-fixture-site");
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA = process.env.ARCANA_GATE_DIR || path.join(ROOT, "node-bot", "data", "arcana-gate");
@@ -33,9 +34,13 @@ async function main() {
   fs.mkdirSync(DATA, { recursive: true });
   const used = 100 - (100 * os.freemem()) / os.totalmem();
   if (used >= Number(process.env.ARCANA_GATE_MAX_RAM || 85)) { console.log(`not run: RAM ${used.toFixed(0)}% is too high`); process.exit(2); }
+  // A fresh profile every run: some sites (a WAF challenge) remember failed attempts in it.
+  fs.rmSync(path.join(DATA, "profile"), { recursive: true, force: true });
+  const fixtureSite = await startSite();
+  site.base = fixtureSite.url("");
   const plugin = require(path.join(ROOT, "plugins", "browser-automation", "index.js"));
   const deps = {
-    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(DATA, "profile"), MANA_ARCANA_EVENTS_FILE: EVENTS },
+    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(DATA, "profile"), MANA_ARCANA_EVENTS_FILE: EVENTS, MANA_ARCANA_ALLOW_PRIVATE_NETWORK: "1" },
     ramPercent: () => 50,
     isGaming: () => false,
     // A download only needs to start; this drops the file the way the HTTP routes do.
@@ -105,6 +110,7 @@ async function main() {
 
   const rows = results.map((r) => `| ${r.pass ? "pass" : r.tracked ? "tracked" : "FAIL"} | ${r.site} | ${r.job} | ${(r.ms / 1000).toFixed(1)} | ${r.pass ? "" : `${r.step}: ${r.error}`} |`);
   fs.writeFileSync(path.join(DATA, "gate-report.md"), [`# Arcana gate - ${at}`, "", verdict, "", `Actions with a passing job: ${[...covered].sort().join(", ")}`, "", "| Result | Site | Job | Seconds | Where it stopped |", "|---|---|---|---|---|", ...rows, ""].join("\n"));
+  await fixtureSite.close();
   process.exit(full || only ? 0 : 1);
 }
 
