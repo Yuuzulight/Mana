@@ -343,7 +343,7 @@ test("#1137: Edge closing under her (crash) means a fresh start next call", asyn
 test("plugin metadata matches the shape other Mana plugins use", () => {
   assert.equal(browserAutomationPlugin.key, "browserAutomation");
   assert.equal(browserAutomationPlugin.category, "Web");
-  assert.equal(browserAutomationPlugin.defaultEnabled, false);
+  assert.equal(browserAutomationPlugin.defaultEnabled, true);
 });
 
 // Separate fakes for her headless Edge and my visible window, handed out
