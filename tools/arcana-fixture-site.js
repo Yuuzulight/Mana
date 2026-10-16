@@ -30,7 +30,8 @@ t.addEventListener('drop',function(e){e.preventDefault();out.textContent='droppe
 };
 
 function parseMultipart(body, contentType) {
-  const boundary = /boundary=(.+)$/.exec(contentType || "")?.[1];
+  const at = String(contentType || "").indexOf("boundary=");
+  const boundary = at < 0 ? "" : String(contentType).slice(at + "boundary=".length);
   if (!boundary) return [];
   return body.toString("latin1").split(`--${boundary}`).slice(1, -1).map((part) => {
     const [head, ...rest] = part.split("\r\n\r\n");
