@@ -56,6 +56,13 @@ let epoch = 0;
 const agentActions = new Set();
 let personalBrowser = null;
 let personalRequest = null;
+function operationalEvent(type, details = {}, env = process.env) {
+  const file = env.MANA_ARCANA_OBSERVABILITY_FILE || path.join(PROFILE_DIR, 'm2-events.jsonl');
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), type, ...details }) + '\n', { mode: 0o600 });
+  } catch { /* observability must never break browser work */ }
+}
 function runAgent(action) {
   const running = Promise.resolve().then(action);
   agentActions.add(running);
@@ -211,7 +218,14 @@ async function setUpTab(page) {
 }
 
 async function startSession(deps) {
-  const ctx = await launch(deps, { headless: true });
+  let ctx;
+  try {
+    ctx = await launch(deps, { headless: true });
+    operationalEvent('arcana_started', { executable: resolveExecutablePath(deps.env || process.env) }, deps.env || process.env);
+  } catch (error) {
+    operationalEvent('arcana_start_failed', { reason: String(error?.message || error) }, deps.env || process.env);
+    throw error;
+  }
   // Arcana went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());
   let tab;
@@ -397,6 +411,7 @@ async function takeOver(deps = {}, fallbackUrl = null) {
   if (takenOver || opening) return;
   opening = true;
   try {
+    operationalEvent('explicit_edge_takeover', { reason: 'user_requested' }, deps.env || process.env);
     let url = currentPage() ? await currentPage().url() : null;
     if (!/^https?:/i.test(url || "")) url = /^https?:/i.test(fallbackUrl || "") ? fallbackUrl : null;
     await closeSession();
