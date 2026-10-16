@@ -833,3 +833,21 @@ test("on Arcana a click on something below the first screen clicks the element i
   assert.match((await run(false, below)).outcome, /outside of the viewport/);
   assert.match((await run(true, "locator.click: Timeout 5000ms exceeded. - element is not enabled")).outcome, /not enabled/);
 });
+
+test("on Arcana a click that stalls after the element was found actionable goes ahead through the element", async () => {
+  async function run(arcana, message) {
+    const page = createFakePage();
+    if (arcana) page.context = () => ({ arcana: true });
+    const calls = [];
+    const locator = page.locator;
+    page.locator = (selector) => ({ ...locator(selector), click: async () => { throw new Error(message); }, evaluate: async (fn) => { if (!/closest/.test(String(fn))) calls.push("dom-click"); return fn === undefined ? null : null; } });
+    const session = createBrowserSession({ page });
+    await session.navigate("https://example.com/");
+    return { calls, outcome: await session.click("e5").then(() => "clicked", (e) => e.message) };
+  }
+  const stuck = "locator.click: Timeout 5000ms exceeded. - element is visible, enabled and stable - scrolling into view if needed";
+  assert.deepEqual(await run(true, stuck), { calls: ["dom-click"], outcome: "clicked" });
+  // not Arcana, or a click that was never actionable: unchanged
+  assert.match((await run(false, stuck)).outcome, /scrolling into view/);
+  assert.match((await run(true, "locator.click: Timeout 5000ms exceeded. - element is not enabled")).outcome, /not enabled/);
+});

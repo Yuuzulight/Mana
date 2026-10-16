@@ -95,7 +95,7 @@ test('real Arcana: frames, a file upload, a download, a drag, a table and form c
     plugin.offerFiles([upload]);
     await session.upload(ref(snapshot, /file|Choose/i), upload);
     await session.click(ref(snapshot, /button "Send"/));
-    await settle(async () => /File Uploaded!.*arcana-gate-upload\.txt/.test((await session.snapshot()).text), 'the uploaded file name');
+    await settle(async () => /File Uploaded![\s\S]*arcana-gate-upload\.txt/.test((await session.snapshot()).text), 'the uploaded file name');
 
     // a download starts from a page load answered with an attachment
     await session.navigate(site.url('/download.html'));

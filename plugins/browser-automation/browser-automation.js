@@ -350,7 +350,7 @@ function createBrowserSession(options = {}) {
   // link was visible, enabled and scrolled into view. A link then goes where
   // it points, which is all clicking it would do; anything else still fails.
   async function followLinkInstead(target, error) {
-    if (!/intercepts pointer events|done scrolling/.test(error?.message || "")) return false;
+    if (!/intercepts pointer events|done scrolling|element is visible, enabled and stable/.test(error?.message || "")) return false;
     const href = await target.evaluate((el) => el.closest("a[href]")?.href ?? null).catch(() => null);
     if (!/^https?:/i.test(href || "")) return false;
     await acting(() => page.goto(href));
@@ -371,7 +371,7 @@ function createBrowserSession(options = {}) {
     } catch (e) {
       if (!(await followLinkInstead(target, e))) {
         // Arcana never scrolls, so anything below the first screen stays "outside of the viewport": click the element itself.
-        if (!page.context?.().arcana || !/outside of the viewport|intercepts pointer events/.test(e?.message || "")) throw e;
+        if (!page.context?.().arcana || !/outside of the viewport|intercepts pointer events|element is visible, enabled and stable/.test(e?.message || "")) throw e;
         await acting(() => target.evaluate((el) => el.click(), undefined, { timeout: ACTION_TIMEOUT_MS }));
       }
     }
