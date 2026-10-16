@@ -27,7 +27,9 @@ It does not start a second managed browser.
 M2 operational evidence is written as JSONL to `m2-events.jsonl` in the Arcana
 profile (or `MANA_ARCANA_OBSERVABILITY_FILE`). `tools/m2-fallback-report.ps1`
 summarizes the last seven days, separating explicit user takeovers from Arcana
-startup failures.
+startup failures. It reports `insufficient_observation` until the log spans the
+full requested window, so an empty or newly created log cannot be mistaken for
+a clean week.
 
 Playwright connects to a fresh authenticated loopback CDP endpoint from
 Arcana's ready file. The engine has one worker and at most 16 connections.
