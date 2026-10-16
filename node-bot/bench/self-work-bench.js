@@ -7,7 +7,7 @@
 // chat model in a llama-server of the bench's own (never the backend's).
 //
 //   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
-//     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
+//     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--no-time-limit] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
 //     [--setup <name>]   (worktree folders bench-<name>-<case>, so setups can run side by side)
@@ -17,6 +17,9 @@
 //     [--no-round-cap]   (no round limit: the run ends when it hands in, is stuck, fills its context or runs out of time)
 //     [--time-warn-only]   (with --time-by-estimate: only the warning at the estimate; --max-minutes is then the stop, a guard against a hang)
 //     [--time-by-estimate]   (each case's time: a warning at its estimate, a hard stop at twice that; --max-minutes is ignored)
+//     [--no-time-limit]   (no wall-clock stop per case; estimates remain warnings only)
+//     [--no-ram-pause]   (remote-only runs: keep measuring RAM, but do not pause the agent loop for host RAM)
+//     [--ignore-peak-hours]   (remote runs may start and continue during peak pricing hours)
 //     [--out <dir>] [--verify]
 //     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
 //     [--check]   (the preflight only: no model, no runs)
@@ -59,6 +62,10 @@ const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_DIR = path.join(__dirname, "hidden");
 const RESULTS_DIR = path.join(__dirname, "results");
 const HIDDEN_TEST_TIMEOUT_MS = 10 * 60 * 1000;
+// Preflight must not hold an entire remote run hostage to one broken or slow
+// hidden test. A timeout excludes that case with evidence; it never blocks the
+// model benchmark indefinitely.
+const PREFLIGHT_TEST_TIMEOUT_MS = 2 * 60 * 1000;
 // Not the backend's 8090, so the two never share a server.
 const BENCH_LLAMA_PORT = "8097";
 const BACKEND_LLAMA_PORT = 8090;
@@ -196,19 +203,31 @@ function copyHiddenTests(repoRoot, wt, c) {
   }
 }
 
-function runHiddenTests(wt, c) {
+function runHiddenTests(wt, c, timeoutMs = HIDDEN_TEST_TIMEOUT_MS) {
   const started = Date.now();
-  const r = spawnSync(c.testCommand, {
-    cwd: path.join(wt, "node-bot"),
-    shell: true,
-    windowsHide: true,
-    encoding: "utf8",
-    env: testEnv(process.env),
-    timeout: HIDDEN_TEST_TIMEOUT_MS,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  let r;
+  try {
+    r = spawnSync(c.testCommand, {
+      cwd: path.join(wt, "node-bot"),
+      shell: true,
+      windowsHide: true,
+      encoding: "utf8",
+      env: testEnv(process.env),
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error) {
+    const output = `${error.stdout || ""}${error.stderr || ""}`;
+    const timedOut = error.code === "ETIMEDOUT" || /timed out/i.test(error.message || "");
+    return {
+      passed: false,
+      timedOut,
+      ms: Date.now() - started,
+      tail: `${timedOut ? `test timed out after ${timeoutMs}ms` : error.message}\n${output}`.slice(-1500),
+    };
+  }
   const output = `${r.stdout || ""}${r.stderr || ""}`;
-  return { passed: r.status === 0, ms: Date.now() - started, tail: output.slice(-1500) };
+  return { passed: r.status === 0, timedOut: false, ms: Date.now() - started, tail: output.slice(-1500) };
 }
 
 // Everything she changed against the base, as the PR would carry it.
@@ -437,16 +456,16 @@ function sampleMachine() {
 
 // The case itself is sound: its hidden tests fail at the base and pass
 // once the fix's own files are in.
-function verifyCase(c, { repoRoot, worktreesDir }) {
-  const wt = path.join(worktreesDir, `bench-verify-${c.id}`);
+function verifyCase(c, { repoRoot, worktreesDir, verifyPrefix }) {
+  const wt = path.join(worktreesDir, `${verifyPrefix || "bench-verify-"}${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
   try {
     applyMutation(wt, c);
     copyHiddenTests(repoRoot, wt, c);
-    const atBase = runHiddenTests(wt, c);
-    if (!c.fix) return { id: c.id, ok: !atBase.passed, failsAtBase: !atBase.passed, passesWithFix: null, tail: atBase.tail };
+    const atBase = runHiddenTests(wt, c, PREFLIGHT_TEST_TIMEOUT_MS);
+    if (!c.fix) return { id: c.id, ok: !atBase.passed && !atBase.timedOut, failsAtBase: !atBase.passed, passesWithFix: null, tail: atBase.tail };
     git(wt, "checkout", c.fix, "--", ...c.fixFiles);
-    const withFix = runHiddenTests(wt, c);
+    const withFix = runHiddenTests(wt, c, PREFLIGHT_TEST_TIMEOUT_MS);
     return { id: c.id, ok: !atBase.passed && withFix.passed, failsAtBase: !atBase.passed, passesWithFix: withFix.passed, tail: withFix.passed ? "" : withFix.tail };
   } finally {
     removeWorktree(repoRoot, wt);
@@ -807,10 +826,13 @@ async function main(argv) {
   const roundScale = Number(opt("--round-scale")[0]) || 1;
   const setup = opt("--setup")[0];
   const noRoundCap = process.argv.includes("--no-round-cap");
+  const noTimeLimit = process.argv.includes("--no-time-limit");
+  const noRamPause = process.argv.includes("--no-ram-pause");
+  const ignorePeakHours = process.argv.includes("--ignore-peak-hours");
   const timeByEstimate = process.argv.includes("--time-by-estimate");
   const timeWarnOnly = process.argv.includes("--time-warn-only");
   // The cap is per attempt.
-  const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
+  const maxMs = noTimeLimit ? Infinity : (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
   const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], orchestrate: opt("--orchestrate")[0], worker: opt("--worker")[0], helperModel: opt("--helper-model")[0], reviewer: opt("--reviewer")[0] || opt("--helper-model")[0] };
   const remote = opt("--remote")[0] || opt("--orchestrate")[0];
   const thinking = opt("--thinking")[0] !== "off";
@@ -819,9 +841,10 @@ async function main(argv) {
   const approvalGate = benchTestGate(worktreesDir);
   // Her loop and her reviewer both on the API: nothing of the bench's takes the GPU, so a game or her chat model being up is no reason to wait.
   const noLocalModel = Boolean(remote && config.reviewer && config.helperModel);
+  const ignoreRamPause = Boolean(remote && noRamPause);
   const gate = {
     isGaming: () => !noLocalModel && isGamingNow(repoRoot),
-    ramPercent: systemRamPercent,
+    ramPercent: ignoreRamPause ? () => 0 : systemRamPercent,
     backendModelUp: () => noLocalModel ? Promise.resolve(false) :
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
@@ -831,7 +854,8 @@ async function main(argv) {
   const problems = [pre.copySourcesProblem(repoRoot), pre.helperProblem()];
   if (config.model && !fs.existsSync(config.model)) problems.push(`no model file at ${config.model}`);
   if (!problems.some(Boolean)) {
-    const wt = path.join(worktreesDir, "bench-preflight");
+    const preflightName = setup ? `bench-preflight-${worktreePrefix(setup).slice(6, -1)}` : `bench-preflight-${process.pid}`;
+    const wt = path.join(worktreesDir, preflightName);
     makeWorktree(repoRoot, wt, cases[0].base);
     try {
       problems.push(await pre.sandboxProblem(wt));
@@ -845,7 +869,7 @@ async function main(argv) {
     for (const c of cases) {
       const why = await blocker(gate);
       if (why) throw new Error(`not verifying ${c.id}: ${why}`);
-      console.log(JSON.stringify(verifyCase(c, { repoRoot, worktreesDir })));
+      console.log(JSON.stringify(verifyCase(c, { repoRoot, worktreesDir, verifyPrefix: `bench-verify-${setup || process.pid}-` })));
     }
     return;
   }
@@ -853,7 +877,8 @@ async function main(argv) {
   // A case the oracle showed can't pass without changing her guardrails says so in its "guarded" (a fix that
   // also touches one, but passes without it, stays in).
   const guarded = (c) => (c.guarded ? `it needs a change to ${c.guarded}, one of her guardrails, which only a PR I approve may change` : null);
-  const { sound, skipped } = await pre.soundCases(cases, (c) => verifyCase(c, { repoRoot, worktreesDir }), { guarded });
+  const verifyPrefix = `bench-verify-${setup || process.pid}-`;
+  const { sound, skipped } = await pre.soundCases(cases, (c) => verifyCase(c, { repoRoot, worktreesDir, verifyPrefix }), { guarded });
   for (const s of skipped) console.log(`Leaving out ${s.id}: ${s.why}.`);
   if (!sound.length) throw new Error("no sound cases to run");
   if (argv.includes("--check")) {
@@ -869,7 +894,7 @@ async function main(argv) {
     const bad = pre.serverArgsProblem(config.serverArgs, model.runtime.findLlamaServerBin());
     if (bad) throw new Error(`The bench's preflight failed: ${bad}`);
   }
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, roundScale, noRoundCap, timeByEstimate, maxMinutes: maxMs / 60000, skipped, ...(remote ? { spend } : {}) };
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, roundScale, noRoundCap, noTimeLimit, noRamPause: ignoreRamPause, ignorePeakHours, timeByEstimate, maxMinutes: Number.isFinite(maxMs) ? maxMs / 60000 : null, skipped, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of sound) runs.push({ c, repeat });
@@ -884,7 +909,7 @@ async function main(argv) {
       let result = null;
       let why = null;
       // DeepSeek bills double at peak hours: a case waits for off-peak instead of starting in them or within 30 minutes of them.
-      for (let said = false; remote && minutesToPeak() < PEAK_HOLD_MINUTES; said = true) {
+      for (let said = false; remote && !ignorePeakHours && minutesToPeak() < PEAK_HOLD_MINUTES; said = true) {
         if (!said) console.log(`Peak hours (or under ${PEAK_HOLD_MINUTES} minutes away): waiting for off-peak before ${c.id}.`);
         await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
       }

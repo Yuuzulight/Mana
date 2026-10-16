@@ -151,12 +151,18 @@ async function soundCases(cases, verify, { file = VERIFIED_FILE, log = console.l
     let v = cache[c.id]?.key === key ? cache[c.id] : null;
     if (!v) {
       log(`Checking case ${c.id}...`);
-      const r = await verify(c);
-      v = { key, ok: r.ok, failsAtBase: r.failsAtBase, passesWithFix: r.passesWithFix };
+      let r;
+      try {
+        r = await verify(c);
+      } catch (error) {
+        r = { ok: false, failsAtBase: false, passesWithFix: false, tail: error.stack || String(error) };
+      }
+      v = { key, ok: r.ok, failsAtBase: r.failsAtBase, passesWithFix: r.passesWithFix, tail: r.tail || "" };
       cache[c.id] = v;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify(cache, null, 2));
     }
+    if (!v.ok && v.tail) log(`Skipping ${c.id}: ${v.tail.slice(-600).replace(/\s+/g, " ")}`);
     if (v.ok) sound.push(c);
     else skipped.push({ id: c.id, why: !v.failsAtBase ? "its hidden tests already pass at the base (a free pass)" : "its hidden tests don't pass with the fix" });
   }
