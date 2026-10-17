@@ -156,6 +156,10 @@ function makeWorktree(repoRoot, wt, base) {
   git(repoRoot, "worktree", "add", "--detach", wt, base);
   const modules = path.join(repoRoot, "node-bot", "node_modules");
   if (fs.existsSync(modules)) fs.symlinkSync(fs.realpathSync(modules), path.join(wt, "node-bot", "node_modules"), "junction");
+  // #937: the launcher restores Folio from folio-feed\, which is gitignored, so a fresh worktree has none and
+  // NuGet fails on the missing source (NU1301). A copy, not a link: it's a few packages and stays inside the worktree.
+  const feed = path.join(repoRoot, "windows-native-launcher", "folio-feed");
+  if (fs.existsSync(feed)) fs.cpSync(feed, path.join(wt, "windows-native-launcher", "folio-feed"), { recursive: true });
 }
 
 // The junction goes first and on its own, so nothing recurses into the

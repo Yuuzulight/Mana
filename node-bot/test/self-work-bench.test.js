@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 const { execFileSync } = require("node:child_process");
 
-const { runCase, verifyCase, writeReport, summarize, failureKind } = require("../bench/self-work-bench");
+const { runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree } = require("../bench/self-work-bench");
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe" }).trim();
@@ -95,6 +95,19 @@ test('Windows benchmark refuses to run model work without its human test-approva
   const result = await runner.bench({ number: 1, title: 'Fixture', body: '' }, r.repo);
   assert.match(result.error, /human approval gate/);
   assert.equal(called, false);
+});
+
+test("a bench worktree gets a copy of the launcher's gitignored Folio feed, and removing it leaves the original", () => {
+  const { repo, worktrees, c } = makeRepo();
+  const feed = path.join(repo, "windows-native-launcher", "folio-feed");
+  fs.mkdirSync(feed, { recursive: true });
+  fs.writeFileSync(path.join(feed, "Folio.1.0.0.nupkg"), "pkg");
+  const wt = path.join(worktrees, "feed");
+  makeWorktree(repo, wt, c.base);
+  assert.equal(fs.readFileSync(path.join(wt, "windows-native-launcher", "folio-feed", "Folio.1.0.0.nupkg"), "utf8"), "pkg");
+  removeWorktree(repo, wt);
+  assert.equal(fs.existsSync(wt), false);
+  assert.equal(fs.existsSync(path.join(feed, "Folio.1.0.0.nupkg")), true);
 });
 
 test("a case that fixes the bug passes its hidden test, and the worktree is gone after", async () => {
