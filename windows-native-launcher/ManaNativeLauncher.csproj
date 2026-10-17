@@ -111,8 +111,8 @@
        formal release. #1267: Mana does this herself once a day
        (node-bot/folio-update.js), as a PR. -->
   <PropertyGroup>
-    <FolioCommit>ca2dd9e425bf422ad5aecb9b0b0f58202721a204</FolioCommit>
-    <FolioVersion>0.1.0-m1.988</FolioVersion>
+    <FolioCommit>7af2cf28c9fd9b229d7a0acbf5ade8b54c81ca80</FolioCommit>
+    <FolioVersion>0.1.0-m1.1031</FolioVersion>
     <!-- Set this to the complete Folio.ContentHost publish directory for a
          launcher package. Its files are copied under Folio\ beside Mana. -->
     <FolioContentHostDirectory Condition="'$(FolioContentHostDirectory)' == ''">$(MANA_FOLIO_CONTENT_HOST_DIRECTORY)</FolioContentHostDirectory>
