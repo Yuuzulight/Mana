@@ -22,6 +22,13 @@ function createLifecycle({ file, now = () => new Date().toISOString(), maxAttemp
   } catch {
     // A broken file starts fresh rather than stopping self-work.
   }
+  // A run that was going when she stopped didn't end: say so rather than
+  // showing it as working forever.
+  for (const r of Object.values(data.records)) {
+    if (r.state !== "working") continue;
+    r.state = "waiting";
+    r.history.push({ at: now(), state: "waiting", why: "interrupted: I restarted while working on it" });
+  }
 
   function save() {
     const ids = Object.keys(data.records);
@@ -46,6 +53,18 @@ function createLifecycle({ file, now = () => new Date().toISOString(), maxAttemp
     if (r.history.length > MAX_HISTORY) r.history.splice(0, r.history.length - MAX_HISTORY);
     save();
     return r;
+  }
+
+  // An improvement issue I approved was filed as one of her tasks (#1384).
+  function onFiled({ issue, title }) {
+    if (!issue || data.records[String(issue)]) return null;
+    return move(issue, "approved", "filed as one of her tasks after my approval", { title: title || null });
+  }
+
+  // Self-work started on it.
+  function onRunStart(run) {
+    if (!run?.issue) return null;
+    return move(run.issue, "working", "started a run", { title: run.title || data.records[String(run.issue)]?.title || null });
   }
 
   // From self-work's end notice: run = { issue, title, state, prUrl, kind, step }.
@@ -121,7 +140,7 @@ function createLifecycle({ file, now = () => new Date().toISOString(), maxAttemp
   const list = () => Object.values(data.records).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   const get = (issue) => data.records[String(issue)] || null;
 
-  return { onRunEnd, onMerged, verify, skip, retry, list, get };
+  return { onFiled, onRunStart, onRunEnd, onMerged, verify, skip, retry, list, get };
 }
 
 module.exports = { createLifecycle, FAILED, HOLD };

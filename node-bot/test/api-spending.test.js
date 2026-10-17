@@ -171,3 +171,26 @@ test("minutesToPeak counts to the next peak window start, and is 0 inside one", 
   assert.equal(minutesToPeak(new Date("2026-10-07T04:10:00Z")), 110, "to 06:00");
   assert.equal(minutesToPeak(new Date("2026-10-09T10:00:00Z")), 63 * 60, "Friday 10:00 to Monday 01:00: the weekend is off-peak");
 });
+
+// #1441: prices I set for other providers' models.
+test("prices I set: cost from then on, never doubled at DeepSeek's peak; unpriced models listed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-prices-"));
+  const peak = new Date("2026-10-07T02:00:00Z");
+  const s = createApiSpending({ file: path.join(dir, "spending.json"), now: () => peak });
+  const usage = { prompt_tokens: 1e6, completion_tokens: 1e6 };
+  assert.equal(s.record({ model: "openai/gpt-5", use: "self-work", usage, at: peak }).usd, null);
+  assert.deepEqual(s.prices(), { set: {}, unpriced: ["openai/gpt-5"] });
+  s.setPrice("openai/gpt-5", { in: 1.25, out: 10 });
+  const priced = s.record({ model: "openai/gpt-5", use: "self-work", usage, at: peak });
+  assert.equal(priced.usd, 11.25);
+  assert.equal(priced.peak, false);
+  assert.deepEqual(s.prices(), { set: { "openai/gpt-5": { hit: 1.25, miss: 1.25, out: 10 } }, unpriced: [] });
+  assert.throws(() => s.setPrice("deepseek-flash", { in: 1, out: 1 }), /built in/);
+  assert.throws(() => s.setPrice("x", { in: -1, out: 1 }), /0 to 1000/);
+  s.setPrice("openai/gpt-5", null);
+  assert.deepEqual(s.prices().set, {});
+  // Kept across restarts.
+  s.setPrice("qwen/qwen3-coder", { in: 0.2, out: 0.8, cachedIn: 0.02 });
+  const again = createApiSpending({ file: path.join(dir, "spending.json"), now: () => peak });
+  assert.deepEqual(again.prices().set["qwen/qwen3-coder"], { hit: 0.02, miss: 0.2, out: 0.8 });
+});

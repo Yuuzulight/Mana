@@ -54,6 +54,7 @@ internal sealed class SettingsPanel : UserControl
     private readonly SettingsSwitch keepFolioCheck = new() { AccessibleName = "Keep Folio up to date" };
     private readonly Label folioStatusLabel = new() { AutoSize = true, ForeColor = DarkTheme.Muted, Margin = new Padding(3, 8, 3, 3), AccessibleName = "Folio check result" };
     private readonly ComboBox voiceProviderCombo = new SettingsCombo();
+    private readonly Label voiceStatus = SettingsRows.Status();
     private readonly TextBox logsTextBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer logRefreshTimer = new() { Interval = 1000 };
     private readonly Label perfSummaryLabel = new() { AutoSize = true };
@@ -1509,6 +1510,8 @@ internal sealed class SettingsPanel : UserControl
             SwitchRow("Echo cancellation", "Stops her hearing herself through your speakers", "aec feedback speakers",
                 saved.EchoCancellation ?? true, on => Save(s => s.EchoCancellation = on), EnvironmentWins("MANA_VOICE_AEC")),
             SettingsRows.Section("Listening"),
+            SwitchRow("Wake word", "On: she answers only after you say her name. Off: she answers everything while she's listening", "wake word name hotword always on sleep",
+                saved.WakeWordRequired ?? false, on => Save(s => s.WakeWordRequired = on), EnvironmentWins("MANA_WAKE_WORD")),
             ChoiceRow("Wake-word filter", "Ignores speech that doesn't sound like her name. Applies next launch", "wake word hotword prefilter",
                 new[] { "Off", "Loose", "Normal" }, Math.Max(0, Array.IndexOf(WakePrefilterModes, saved.WakePrefilter)),
                 i => Save(s => s.WakePrefilter = i == 0 ? null : WakePrefilterModes[i]), status: EnvironmentWins("MANA_WAKE_PREFILTER")),
@@ -1529,7 +1532,7 @@ internal sealed class SettingsPanel : UserControl
                 new[] { "After two words", "Straight away", "Never, she finishes first" }, (int)BargeInPolicy.Resolve(null, saved.BargeInMode),
                 i => Save(s => s.BargeInMode = i == 0 ? null : BargeInModes[i]), status: EnvironmentWins("MANA_BARGE_IN_MODE")),
             ChoiceRow("Voice engine", "Which voice she speaks with", "tts text to speech fish kokoro sovits",
-                TtsProviderLabels, 0, i => _ = SaveVoiceProviderAsync(i), voiceProviderCombo),
+                TtsProviderLabels, 0, i => _ = SaveVoiceProviderAsync(i), voiceProviderCombo, voiceStatus),
             SettingsRows.Section("Your voice"),
             ChoiceRow("Only your voice can", "Other people's speech is ignored for these", "voiceprint speaker gate only me",
                 new[] { "Nothing, anyone can", "Wake her", "Wake her or talk over her", "Wake her, talk over her or give commands" },
@@ -2682,12 +2685,61 @@ internal sealed class SettingsPanel : UserControl
         }
     }
 
-    // #583: "Auto" (null override) plus the 4 providers server.js's
+    // #583: "Auto" (null override) plus the providers server.js's
     // TTS_OVERRIDE_PROVIDERS allow-lists -- selecting it clears the
-    // override rather than sending an invalid 5th value.
+    // override rather than sending an invalid extra value.
     private const string AutoProviderLabel = "Auto (gaming-based)";
-    private static readonly string[] TtsProviders = { AutoProviderLabel, "fish", "kokoro", "gpt_sovits", "cli" };
-    private static readonly string[] TtsProviderLabels = { "Automatic", "Fish Speech", "Kokoro", "GPT-SoVITS", "Command line" };
+    private static readonly string[] TtsProviders = { AutoProviderLabel, "cosyvoice3", "qwen3tts", "fish", "kokoro", "gpt_sovits", "cli" };
+    private static readonly string[] TtsProviderLabels = { "Automatic", "CosyVoice3", "Qwen3-TTS", "Fish Speech", "Kokoro", "GPT-SoVITS", "Command line" };
+
+    // Starts the chosen local voice (and stops the other one) before the
+    // backend is told to use it; false when it didn't come up. Set by
+    // ManaApplicationContext, which owns the voice services.
+    public Func<string?, Task<bool>>? EnsureVoiceService { get; set; }
+
+    // "ready", "warming", "off" or "n/a" for a voice engine (ManaProcessManager.TtsServiceStateAsync).
+    public Func<string?, Task<string>>? VoiceServiceState { get; set; }
+    private int voiceStatusRound;
+
+    // The status beside the Voice engine dropdown. Keeps reading while the voice
+    // warms up; a newer pick or refresh takes over from an older one.
+    private async Task ShowVoiceStatusAsync(string? provider)
+    {
+        var round = ++voiceStatusRound;
+        while (!IsDisposed && round == voiceStatusRound)
+        {
+            var state = "n/a";
+            try
+            {
+                state = VoiceServiceState is { } read ? await read(provider) : "n/a";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SettingsPanel: voice status failed. {ex.Message}");
+            }
+            if (IsDisposed || round != voiceStatusRound)
+            {
+                return;
+            }
+            SetVoiceStatus(state);
+            if (state != "warming")
+            {
+                return;
+            }
+            await Task.Delay(3000);
+        }
+    }
+
+    private void SetVoiceStatus(string state)
+    {
+        (voiceStatus.Text, voiceStatus.ForeColor) = state switch
+        {
+            "ready" => ("\u2713 Ready", Color.SeaGreen),
+            "warming" => ("Warming up\u2026", DarkTheme.Muted),
+            "off" => ("Not running", Color.OrangeRed),
+            _ => ("", DarkTheme.Muted),
+        };
+    }
 
     private readonly Func<HotkeyAction, Keys?, string?>? bindHotkey;
 
@@ -3238,13 +3290,33 @@ internal sealed class SettingsPanel : UserControl
 
     private async Task SaveVoiceProviderAsync(int index)
     {
+        var provider = index == 0 ? null : TtsProviders[index];
+        voiceProviderCombo.Enabled = false; // a local voice can take a minute to load
+        UseWaitCursor = true;
+        voiceStatusRound++; // stops an older status read from overwriting this
+        if (provider is null or "cosyvoice3" or "qwen3tts")
+        {
+            SetVoiceStatus("warming");
+        }
         try
         {
-            await backendClient.SetTtsOverrideAsync(index == 0 ? null : TtsProviders[index]);
+            if (EnsureVoiceService is { } ensure && !await ensure(provider))
+            {
+                MessageBox.Show(this, "That voice didn't start. Its log is in tools\\cosyvoice or tools\\qwen3-tts (service.err.log).", "Voice", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                await RefreshVoiceTabAsync();
+                return;
+            }
+            await backendClient.SetTtsOverrideAsync(provider);
+            _ = ShowVoiceStatusAsync(provider);
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Couldn't change her voice: {BackendError.Describe(ex)}", "Voice", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            voiceProviderCombo.Enabled = true;
         }
     }
 
@@ -3267,6 +3339,7 @@ internal sealed class SettingsPanel : UserControl
         loadingRows = true;
         voiceProviderCombo.SelectedIndex = Math.Max(0, Array.IndexOf(TtsProviders, overrideProvider ?? AutoProviderLabel));
         loadingRows = false;
+        _ = ShowVoiceStatusAsync(overrideProvider);
     }
 
     // #582: "live" -- a self-driving 1s timer, not just a refresh-on-open
@@ -3532,6 +3605,14 @@ internal sealed class SettingsPanel : UserControl
     private Control? escalationFirstRow;
     private Control? escalationSecondRow;
     private ManaEscalationSettings? escalationNow;
+    // #1441: prices I set for models without built-in ones.
+    private readonly ComboBox priceModel = new SettingsCombo() { AccessibleName = "Model to price" };
+    private readonly TextBox priceIn = SettingsRows.Box("Input price, dollars per million tokens", 64, "$");
+    private readonly TextBox priceOut = SettingsRows.Box("Output price, dollars per million tokens", 64, "$");
+    private readonly Button priceRemove = SettingsRows.Action("Remove", () => { });
+    private readonly Label pricesStatus = SettingsRows.Status();
+    private Control? pricesRow;
+    private ManaPrices prices = new();
     private const string NoFirstModel = "Pick a model";
     private const string NoSecondModel = "Nothing, stop there";
     private readonly RowList scanResults = new() { Height = 190, NameWidth = 260, AccessibleName = "Models found on this PC" };
@@ -3546,6 +3627,11 @@ internal sealed class SettingsPanel : UserControl
     internal ComboBox EscalationFirst => escalationFirst; // tests
     internal ComboBox EscalationSecond => escalationSecond; // tests
     internal string EscalationFirstSaid => escalationFirstSaid.Text; // tests
+    internal ComboBox PriceModel => priceModel; // tests
+    internal TextBox PriceIn => priceIn; // tests
+    internal TextBox PriceOut => priceOut; // tests
+    internal Control? PricesRow => pricesRow; // tests
+    internal Task SavePriceForTestAsync() => SavePriceAsync(); // tests
 
     // A use's choice: "this PC" / "off", or one of the providers.
     private sealed record Source(string? ProviderId, string Label)
@@ -3558,7 +3644,7 @@ internal sealed class SettingsPanel : UserControl
         providersPanel = new ProvidersPanel(backendClient);
         providersPanel.Changed += () => _ = RefreshModelTabAsync();
 
-        foreach (var combo in new[] { mainSource, fallbackSource, escalationSource, escalationFirst, escalationSecond, modelProfileCombo })
+        foreach (var combo in new[] { mainSource, fallbackSource, escalationSource, escalationFirst, escalationSecond, priceModel, modelProfileCombo })
         {
             combo.DropDownStyle = ComboBoxStyle.DropDownList;
             combo.BackColor = DarkTheme.Panel;
@@ -3581,6 +3667,8 @@ internal sealed class SettingsPanel : UserControl
         var wait = SettingsRows.Choice("Fall back", ["After 10 seconds", "After 30 seconds", "After 60 seconds", "Only when it fails"], 3, fallbackWait);
         wait.SelectionChangeCommitted += async (_, _) => await SaveFallbackAsync(askFirst: false);
         escalationSource.SelectionChangeCommitted += async (_, _) => await SaveEscalationAsync();
+        priceModel.SelectedIndexChanged += (_, _) => ShowPrice();
+        priceRemove.Click += async (_, _) => await RemovePriceAsync();
         escalationFirst.SelectionChangeCommitted += async (_, _) => await SaveEscalationModelsAsync();
         escalationSecond.SelectionChangeCommitted += async (_, _) => await SaveEscalationModelsAsync();
         escalationFirst.SelectedIndexChanged += (_, _) => escalationFirstSaid.Text = ModelSaid(escalationFirst);
@@ -3663,6 +3751,12 @@ internal sealed class SettingsPanel : UserControl
             visionMmprojPathBox, SettingsRows.Action("Browse…", () => _ = PickVisionAsync(visionMmprojPathBox))));
         parts.Add(SettingsRows.Section("Spending"));
         parts.Add(new SettingsRow("API spending", "What her API use has cost", "spending cost money balance tokens price", below: true, spending));
+        var savePrice = SettingsRows.Action("Save", () => _ = SavePriceAsync());
+        SettingsRows.MakePrimary(savePrice);
+        Label Unit(string text) => new() { Text = text, AutoSize = true, ForeColor = DarkTheme.Muted, BackColor = Color.Transparent, Margin = new Padding(0, 6, 10, 0), UseMnemonic = false };
+        pricesRow = Said(pricesStatus, new SettingsRow("Set prices", "Dollars per million tokens. Counts from now on", "price prices cost per million tokens set in out",
+            priceModel, priceIn, Unit("in"), priceOut, Unit("out"), savePrice, priceRemove));
+        parts.Add(pricesRow);
         parts.Add(SettingsRows.Section("Engine"));
         parts.Add(new SettingsRow("Coding mode", "Loads the bigger 14B engineering model for coding work, and unloads it when you switch this off", "coding 14b engineering code programming",
             codingModeStatus, codingModeCheck));
@@ -3820,6 +3914,92 @@ internal sealed class SettingsPanel : UserControl
             return;
         }
         await RefreshModelTabAsync();
+    }
+
+    // #1441: the models to price: ones she used without a price, then ones I priced.
+    private async Task RefreshPricesAsync()
+    {
+        try
+        {
+            prices = await backendClient.GetPricesAsync();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            pricesStatus.Text = $"Couldn't load the prices: {BackendError.Describe(ex)}";
+            return;
+        }
+        if (IsDisposed)
+        {
+            return;
+        }
+        var keep = priceModel.SelectedItem as string;
+        var models = prices.Unpriced.Concat(prices.Set.Keys.Order()).Distinct().ToList();
+        priceModel.Items.Clear();
+        priceModel.Items.AddRange(models.ToArray<object>());
+        priceModel.SelectedIndex = models.Count == 0 ? -1 : Math.Max(0, models.IndexOf(keep ?? ""));
+        if (models.Count > 0)
+        {
+            priceModel.Width = Math.Max(190, models.Max(m => TextRenderer.MeasureText(m, priceModel.Font).Width) + 30);
+        }
+        if (pricesRow is not null)
+        {
+            pricesRow.Visible = models.Count > 0; // nothing she used needs one
+        }
+        ShowPrice();
+    }
+
+    private void ShowPrice()
+    {
+        var set = priceModel.SelectedItem is string model && prices.Set.TryGetValue(model, out var price) ? price : null;
+        priceIn.Text = set is null ? "" : set.Miss.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        priceOut.Text = set is null ? "" : set.Out.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        priceRemove.Visible = set is not null;
+        pricesStatus.Text = priceModel.SelectedItem is string m && set is null && prices.Unpriced.Contains(m) ? $"{m} has no price yet, so it shows tokens only" : "";
+    }
+
+    private async Task SavePriceAsync()
+    {
+        if (priceModel.SelectedItem is not string model)
+        {
+            return;
+        }
+        static double? Usd(string text) =>
+            double.TryParse(text.Trim().TrimStart('$'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 0 ? v : null;
+        if (Usd(priceIn.Text) is not { } input || Usd(priceOut.Text) is not { } output)
+        {
+            pricesStatus.Text = "Type both prices in dollars per million tokens, like 0.25";
+            return;
+        }
+        try
+        {
+            await backendClient.SetPriceAsync(model, input, output);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            pricesStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshPricesAsync();
+        pricesStatus.Text = $"Saved {model}'s prices";
+        await (apiSpending?.ReloadAsync() ?? Task.CompletedTask);
+    }
+
+    private async Task RemovePriceAsync()
+    {
+        if (priceModel.SelectedItem is not string model)
+        {
+            return;
+        }
+        try
+        {
+            await backendClient.SetPriceAsync(model, null, null);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            pricesStatus.Text = BackendError.Describe(ex);
+            return;
+        }
+        await RefreshPricesAsync();
     }
 
     // Beside a picked model: how it has done at escalation.
@@ -4270,6 +4450,7 @@ internal sealed class SettingsPanel : UserControl
         visionModelPathBox.Text = status.VisionModelPath;
         visionMmprojPathBox.Text = status.VisionMmprojPath;
         await (apiSpending?.ReloadAsync() ?? Task.CompletedTask);
+        await RefreshPricesAsync();
     }
 
     // #569: TOTP secret enrollment has no API endpoint at all

@@ -429,6 +429,73 @@ public class ManaProcessManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_WithCosyVoice3_StartsItInsteadOfFishSpeech()
+    {
+        // TTS_PROVIDER=qwen3tts checks (and would start) only
+        // CosyVoice3; with nothing installed under the root it reads
+        // Unavailable, and Fish Speech is never checked or reported.
+        Environment.SetEnvironmentVariable("TTS_PROVIDER", "cosyvoice3");
+        try
+        {
+            var requested = new ConcurrentBag<string>();
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                requested.Add(request.RequestUri!.GetLeftPart(UriPartial.Path));
+                return new HttpResponseMessage(request.RequestUri.Port == 5005 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable);
+            });
+            using var manager = new ManaProcessManager(@"C:\does-not-exist", handler);
+            var reported = new ConcurrentDictionary<string, bool>();
+
+            await manager.StartAsync((key, available) => reported[key] = available);
+
+            Assert.False(reported["cosyvoice3"]);
+            Assert.False(manager.IsCosyVoice3Available);
+            Assert.Contains("http://127.0.0.1:5013/health", requested);
+            Assert.False(reported.ContainsKey("fish-speech"));
+            Assert.DoesNotContain(requested, url => new Uri(url).Port == 8080);
+            Assert.Equal(
+                ManaApplicationContext.ServiceRowsFor(manager).Select(row => row.Key).OrderBy(key => key),
+                reported.Keys.OrderBy(key => key));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TTS_PROVIDER", null);
+        }
+    }
+
+    [Fact]
+    public async Task TtsServiceState_ReadsReadyOffAndNotApplicable()
+    {
+        // Nothing answers: a voice that isn't running is "off"; the others aren't tracked.
+        using (var manager = new ManaProcessManager(@"C:\does-not-exist", new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))))
+        {
+            Assert.Equal("off", await manager.TtsServiceStateAsync("cosyvoice3"));
+            Assert.Equal("off", await manager.TtsServiceStateAsync("qwen3tts"));
+            Assert.Equal("n/a", await manager.TtsServiceStateAsync("fish"));
+            Assert.Equal("n/a", await manager.TtsServiceStateAsync("kokoro"));
+            Assert.Equal("n/a", await manager.TtsServiceStateAsync(null)); // neither is the configured voice
+        }
+        // Only CosyVoice3's port answers its health check.
+        using var running = new ManaProcessManager(@"C:\does-not-exist", new FakeHttpMessageHandler(request =>
+            new HttpResponseMessage(request.RequestUri!.Port == 5013 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable)));
+        Assert.Equal("ready", await running.TtsServiceStateAsync("cosyvoice3"));
+        Assert.Equal("off", await running.TtsServiceStateAsync("qwen3tts"));
+    }
+
+    [Fact]
+    public async Task EnsureTtsService_WithAnotherProviderOrNoSetup_DoesNothingOrFails()
+    {
+        using var manager = new ManaProcessManager(@"C:\does-not-exist", new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
+
+        // Fish, Kokoro and the rest are not started by the switch.
+        Assert.True(await manager.EnsureTtsServiceAsync("fish"));
+        Assert.True(await manager.EnsureTtsServiceAsync("kokoro"));
+        // A local voice that isn't installed can't start, so the caller keeps the old voice.
+        Assert.False(await manager.EnsureTtsServiceAsync("cosyvoice3"));
+        Assert.False(manager.IsCosyVoice3Available);
+    }
+
+    [Fact]
     public async Task WaitForFishSpeechReady_ReturnsTrueOnceFishAnswers()
     {
         // Healthy at launch (so it counts as available), then warming up
@@ -495,7 +562,7 @@ public class ManaProcessManagerTests
             {
                 ["backend"] = true, ["fish-speech"] = true, ["embedder"] = true,
                 ["websearch"] = true, ["retriever"] = true, ["gpt-sovits"] = true,
-                ["qwen3-tts"] = true,
+                ["qwen3-tts"] = true, ["cosyvoice3"] = true,
             },
             new Dictionary<string, bool>(reported));
     }

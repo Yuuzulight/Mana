@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
+const { launchArcana, recordEvent } = require("./arcana-engine");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
@@ -155,13 +156,6 @@ async function launch(deps, options) {
   // #670: the browser is its own program, outside node-bot's connection
   // guard, and any page can pull from the internet.
   refuseIfLocalOnly("browser automation", env);
-  const executablePath = resolveExecutablePath(env);
-  if (!executablePath) {
-    throw new Error(
-      "no browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
-    );
-  }
-
   // playwright-core lives in node-bot's packages; a bare require from this
   // folder never found it.
   const chromium = deps.chromium || require("../../node-bot/node_modules/playwright-core").chromium;
@@ -169,6 +163,30 @@ async function launch(deps, options) {
   await closing;
   const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
   if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
+  // Arcana is her browser. Edge is for what Arcana can't do yet -- a visible
+  // window (Take over) -- or when MANA_BROWSER_ENGINE=edge or Arcana won't start.
+  // Each engine choice is logged (arcana-events.jsonl, or MANA_ARCANA_EVENTS_FILE;
+  // tools/m2-fallback-report.ps1 reads it). A test double never writes the real log.
+  const eventsFile = env.MANA_ARCANA_EVENTS_FILE || (deps.chromium ? null : path.join(profileDir, "arcana-events.jsonl"));
+  const event = (type, details) => recordEvent(eventsFile, type, details);
+  if (options.headless !== false && env.MANA_BROWSER_ENGINE !== "edge") {
+    try {
+      const ctx = await (deps.launchArcana || launchArcana)(chromium, env, { storageDir: path.join(profileDir, "arcana"), onEvent: event });
+      event("arcana_started");
+      return ctx;
+    } catch (e) {
+      event("arcana_start_failed", { reason: String(e.message) });
+      console.warn(`[browser-automation] Arcana unavailable, using Edge: ${e.message}`);
+    }
+  } else {
+    event("edge_requested", { reason: options.headless === false ? "take over or visible window" : "MANA_BROWSER_ENGINE=edge" });
+  }
+  const executablePath = resolveExecutablePath(env);
+  if (!executablePath) {
+    throw new Error(
+      "no browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
+    );
+  }
   return chromium.launchPersistentContext(profileDir, { executablePath, args: LAUNCH_ARGS, ...options });
 }
 
@@ -203,6 +221,24 @@ async function setUpTab(page) {
   page.on("download", (download) => {
     Promise.resolve(gateDeps.onDownload ? gateDeps.onDownload(download) : download.cancel()).catch(() => {});
   });
+  // Arcana sends no download events: a page load answered with an attachment becomes one here.
+  if (page.context?.().arcana) {
+    page.on("response", (response) => {
+      if (!response.request().isNavigationRequest()) return;
+      const disposition = response.headers()["content-disposition"] || "";
+      if (!/^\s*attachment/i.test(disposition)) return;
+      const named = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
+      let name = named || path.basename(new URL(response.url()).pathname) || "download";
+      try { name = decodeURIComponent(name); } catch { /* keep it as sent */ }
+      const download = {
+        suggestedFilename: () => name,
+        url: () => response.url(),
+        saveAs: async (to) => fs.promises.writeFile(to, await response.body()),
+        cancel: async () => {},
+      };
+      Promise.resolve(gateDeps.onDownload ? gateDeps.onDownload(download) : null).catch(() => {});
+    });
+  }
   // Images, video and fonts only while the rail's Browser panel is
   // watching, for its screenshot; she reads and acts without them. Ad
   // and tracker domains never (#1168).
@@ -633,9 +669,9 @@ module.exports = {
   key: "browserAutomation",
   name: "Browser Automation",
   category: "Web",
-  defaultEnabled: false,
+  defaultEnabled: true,
   description:
-    "Navigate/click/type/read a live page via a local Chromium-family browser (Edge by default on Windows) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
+    "Navigate/click/type/read a live page in Arcana (Edge for Take over, or if Arcana will not start) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
   registerRoutes: registerBrowserAutomationRoutes,
   // Issue #188: exported so the tool-calling adapter
   // (browser-automation-tool-source.js) shares this exact singleton

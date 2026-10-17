@@ -110,6 +110,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
         ("retriever", "Retriever"),
         ("gpt-sovits", "GPT-SoVITS TTS"),
         ("qwen3-tts", "Qwen3-TTS"),
+        ("cosyvoice3", "CosyVoice3"),
     };
 
     // #691: the opt-in services only get a row when they're turned on,
@@ -121,6 +122,7 @@ internal sealed class ManaApplicationContext : ApplicationContext
             "retriever" => manager.UsesRetriever,
             "gpt-sovits" => manager.UsesGptSovits,
             "qwen3-tts" => manager.UsesQwen3Tts,
+            "cosyvoice3" => manager.UsesCosyVoice3,
             _ => true,
         }).ToArray();
 
@@ -299,6 +301,8 @@ internal sealed class ManaApplicationContext : ApplicationContext
             .ToArray());
         sessionListForm.BindHotkey = (action, keys) => globalHotkeys.Bind(action.Id, keys);
         sessionListForm.DictateAnywhereChanged = on => dictationService.IsEnabled = on; // #1426: from Settings > Voice
+        sessionListForm.EnsureVoiceService = processManager.EnsureTtsServiceAsync; // from Settings > Voice's CosyVoice3 / Qwen3-TTS pick
+        sessionListForm.VoiceServiceState = processManager.TtsServiceStateAsync; // the Ready / Warming up status beside it
         sessionListForm.AvatarSettingsChanged = () => RunOnUi(ApplyAvatarSettings); // #1426: from Settings > General > Avatar
         sessionListForm.SwitchCharacter = SwitchCharacterAsync; // #1426: from Settings > Memory > Characters
         sessionListForm.RevertMergedPr = PromptRevertPr; // #1426: from Settings > Advanced > Developer
@@ -585,6 +589,12 @@ internal sealed class ManaApplicationContext : ApplicationContext
                 overlay.SetRowStatus("qwen3-tts", "Warming up...", RowState.Starting);
                 var qwenReady = await processManager.WaitForQwen3TtsReadyAsync(TimeSpan.FromMinutes(2));
                 overlay.SetRowStatus("qwen3-tts", qwenReady ? "Ready" : "Not ready yet", qwenReady ? RowState.Ready : RowState.Warn);
+            }
+            if (processManager.IsBackendLocal && processManager.IsCosyVoice3Available)
+            {
+                overlay.SetRowStatus("cosyvoice3", "Warming up...", RowState.Starting);
+                var cosyReady = await processManager.WaitForCosyVoice3ReadyAsync(TimeSpan.FromMinutes(4));
+                overlay.SetRowStatus("cosyvoice3", cosyReady ? "Ready" : "Not ready yet", cosyReady ? RowState.Ready : RowState.Warn);
             }
             await RefreshTrayStatusAsync();
             await sessionListForm.ReopenLastSessionAsync(); // #687

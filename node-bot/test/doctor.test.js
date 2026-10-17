@@ -10,6 +10,7 @@ const {
   runDoctorChecksAsync,
   checkVramBudgets,
   checkCodingSession,
+  checkSelfWorkSandbox,
 } = require("../doctor");
 const { withServer, withRawServer, useTestAdminToken } = require("./helpers");
 
@@ -588,6 +589,45 @@ test("async doctor probes Qwen3-TTS's /health when it's the provider", async () 
   });
 });
 
+test("async doctor probes CosyVoice3's /health when it's the provider", async () => {
+  await withRawServer((req, res) => {
+    res.writeHead(req.url === "/health" ? 200 : 404);
+    res.end();
+  }, async ({ url }) => {
+    const result = await runDoctorChecksAsync({
+      env: {
+        MANA_ALLOW_REMOTE_AI: "0",
+        LLAMA_BIN: "",
+        LLAMA_MODEL: "",
+        WHISPER_BIN: "",
+        WHISPER_MODEL: "",
+        MOBILE_PASSCODE_HASH: "",
+        MOBILE_SESSION_SECRET: "",
+        TTS_PROVIDER: "cosyvoice3",
+        COSYVOICE3_TTS_URL: url,
+        FISH_TTS_URL: "http://127.0.0.1:1",
+      },
+      paths: {
+        dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-cosy-")),
+      },
+      whisperToolsDir: fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-cosy-whisper-")),
+      ports: [],
+      versions: { node: "v22.19.0" },
+    });
+
+    const tts = result.checks.find((check) => check.id === "tts-services");
+    assert.equal(tts.status, "pass");
+    assert.deepEqual(tts.details.services, [
+      { id: "cosyvoice3", url: `${url}/health`, ok: true, statusCode: 200 },
+    ]);
+
+    fs.rmSync(result.checks.find((check) => check.id === "storage").details.dataDir, {
+      recursive: true,
+      force: true,
+    });
+  });
+});
+
 test("async doctor probes configured TTS health URLs", async () => {
   await withRawServer((req, res) => {
     if (req.url === "/health") {
@@ -898,4 +938,28 @@ test("doctor memory vault row warns per finding kind with paths, reason and reco
   assert.match(check.message, /Fact notes Mana can't see: Facts\/A\/x\.md, Facts\/A\/y\.md\. Why\. Do this\./);
   assert.match(check.message, /Your files in Views\/: Views\/Mine\.md/);
   assert.match(check.message, /never overwritten/);
+});
+
+// #1467: her self-work tests need the sandbox's helper and her packages approved.
+test("doctor self-work tests row: helper, copy-source approval and her packages", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-doctor-sandbox-"));
+  const helper = path.join(dir, "Mana.AnalysisSandbox.exe");
+  const modulesDir = path.join(dir, "node_modules");
+  fs.mkdirSync(modulesDir);
+  const row = (over) => checkSelfWorkSandbox({ platform: "win32", helper, modulesDir, loadCopySources: () => ({ dependencyRoots: [modulesDir] }), ...over });
+
+  assert.equal(checkSelfWorkSandbox(undefined), null, "only when asked");
+  assert.equal(row({ platform: "linux" }).status, "pass");
+  assert.match(row({}).message, /helper is missing/);
+  fs.writeFileSync(helper, "");
+  assert.equal(row({}).status, "pass");
+  const broken = row({ loadCopySources: () => { throw new Error("Invalid sandbox copy-source configuration"); } });
+  assert.equal(broken.status, "fail");
+  assert.match(broken.message, /is invalid \(Invalid sandbox copy-source configuration\)/);
+  const uncovered = row({ loadCopySources: () => ({ dependencyRoots: [] }) });
+  assert.equal(uncovered.status, "fail");
+  assert.match(uncovered.message, /can't copy her packages.*Add .*node_modules to dependencyRoots/);
 });

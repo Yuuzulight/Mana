@@ -63,6 +63,15 @@ function createApprovalGate(options = {}) {
   // card in that chat as well as in "Waiting for you".
   const origin = new AsyncLocalStorage();
   const withOrigin = (where, fn) => origin.run(where, fn);
+  // requestId -> settle(outcome) for a request made inside a chat turn: that
+  // turn waits, with no time limit, for the human's answer.
+  const waiters = new Map();
+  const settleWaiter = (requestId, outcome) => {
+    const settle = waiters.get(requestId);
+    if (!settle) return;
+    waiters.delete(requestId);
+    settle(outcome);
+  };
   const dataDir = options.dataDir || DEFAULT_DATA_DIR;
   const alwaysAllowPath = path.join(dataDir, "always-allow.json");
   // #1154: "never" answers, remembered like always-allow ones.
@@ -224,9 +233,15 @@ function createApprovalGate(options = {}) {
   //                  it never creates a grant (destructive calls).
   //   details     -- plain JSON shown with the pending request (risk tier,
   //                  destructive reasons, hosts it will contact).
+  //   wait        -- true: resolve only once the human decides (approved with
+  //                  the executor's result, or blocked), however long that
+  //                  takes. Default: true inside a chat turn (withOrigin
+  //                  {sessionId}), so a reply carries on after the user
+  //                  answers; false everywhere else (background jobs get the
+  //                  immediate pending and resume later).
   async function requestApproval(
     actionType,
-    { summary, payload, scanText, grantKey, forceReview = false, details } = {},
+    { summary, payload, scanText, grantKey, forceReview = false, details, wait } = {},
   ) {
     if (!actionType) throw new Error("actionType is required");
     const key = grantKey || actionType;
@@ -307,13 +322,15 @@ function createApprovalGate(options = {}) {
       ...(forceReview ? { forceReview: true } : {}),
       ...(details ? { details } : {}),
     });
-    return {
+    const pendingOutcome = {
       status: "pending",
       requestId: id,
       summary: summary || "",
       flags,
       ...(guardian ? { guardian } : {}),
     };
+    if (!(wait ?? Boolean(origin.getStore()?.sessionId))) return pendingOutcome;
+    return new Promise((resolve) => waiters.set(id, resolve));
   }
 
   function listPending() {
@@ -352,6 +369,14 @@ function createApprovalGate(options = {}) {
         summary: entry.summary,
       });
       if (onDeny) onDeny(entry.actionType);
+      settleWaiter(requestId, {
+        status: "blocked",
+        requestId,
+        actionType: entry.actionType,
+        denied: true,
+        ...(decision === "never" ? { never: true } : {}),
+        reason: decision === "never" ? "you said never for this" : "the user said no",
+      });
       return { status: "denied", requestId, actionType: entry.actionType, deniedCount };
     }
     if (!["allow-once", "allow-session", "always-allow"].includes(decision)) {
@@ -394,7 +419,9 @@ function createApprovalGate(options = {}) {
       decision,
       summary: entry.summary,
     });
-    return { status: "approved", requestId, actionType: entry.actionType, result };
+    const approved = { status: "approved", requestId, actionType: entry.actionType, result };
+    settleWaiter(requestId, approved);
+    return approved;
   }
 
   return {

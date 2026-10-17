@@ -409,3 +409,26 @@ test("maxIterations refuses mana/agent/run calls past the limit, per session", a
   assert.deepEqual(await run("pb-iter"), { status: "error", error: "max_iterations_reached", cap: 2 });
   assert.equal((await run("pb-iter-other")).status, "conversational");
 });
+
+test("with no time limit set, an ask rule keeps waiting until a person answers", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-pb-ask-wait-"));
+  const saved = { dir: process.env.MANA_PENDING_WRITES_DIR, timeout: process.env.FILE_WRITE_APPROVAL_TIMEOUT_MS };
+  process.env.MANA_PENDING_WRITES_DIR = dir;
+  delete process.env.FILE_WRITE_APPROVAL_TIMEOUT_MS;
+  try {
+    const hooksStore = hooksWith({ phase: "pre", action: "ask", toolName: "file_read", reason: "check reads" });
+    let settled = false;
+    const running = executeAutonomousStep(step("file_read", { path: "README.md" }), "pb-ask-wait", { hooksStore }).then((out) => ((settled = true), out));
+    const pendingFile = await waitForPendingFile(dir);
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    assert.equal(settled, false, "still waiting after 2.5 s");
+    fs.writeFileSync(path.join(dir, pendingFile.replace(/\.json$/, ".approved.json")), JSON.stringify({ approver: "test" }));
+    assert.equal((await running).results[0].status, "ok");
+  } finally {
+    for (const [key, value] of [["MANA_PENDING_WRITES_DIR", saved.dir], ["FILE_WRITE_APPROVAL_TIMEOUT_MS", saved.timeout]]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

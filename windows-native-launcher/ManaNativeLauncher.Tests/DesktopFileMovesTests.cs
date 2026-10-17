@@ -90,6 +90,30 @@ public sealed class DesktopFileMovesTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(outside, "Cats")));
     }
 
+    // Undo of that move: the new folder is reported, and goes again once
+    // it's empty -- never while something is in it, never an allowed folder.
+    [Fact]
+    public void RemoveEmptyFolder_TakesAwayOnlyTheEmptyFolderAMoveMade()
+    {
+        var a = Touch(downloads, "shot1.png");
+        var cats = Path.Combine(pictures, "Cats");
+
+        var result = Json(DesktopActions.MoveFiles(new[] { a }, cats, exact: false, Roots, newFolder: true));
+        Assert.Contains($"\"created\":{JsonSerializer.Serialize(cats)}", result);
+        Assert.Contains("\"created\":null", Json(DesktopActions.MoveFiles(new[] { Touch(downloads, "shot2.png") }, cats, exact: false, Roots)));
+
+        Assert.Throws<IOException>(() => DesktopActions.RemoveEmptyFolder(cats, Roots));
+        Assert.True(File.Exists(Path.Combine(cats, "shot1.png")));
+        DesktopActions.MoveFiles(new[] { Path.Combine(cats, "shot1.png") }, a, exact: true, Roots);
+        DesktopActions.MoveFiles(new[] { Path.Combine(cats, "shot2.png") }, Path.Combine(downloads, "shot2.png"), exact: true, Roots);
+
+        Assert.Contains("\"removed\":true", Json(DesktopActions.RemoveEmptyFolder(cats, Roots)));
+        Assert.False(Directory.Exists(cats));
+        Assert.Contains("\"removed\":false", Json(DesktopActions.RemoveEmptyFolder(cats, Roots)));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.RemoveEmptyFolder(pictures, Roots));
+        Assert.Throws<InvalidOperationException>(() => DesktopActions.RemoveEmptyFolder(Path.Combine(outside, "x"), Roots));
+    }
+
     [Fact]
     public void MoveFiles_NeverLeavesTheAllowedFoldersOrOverwrites()
     {

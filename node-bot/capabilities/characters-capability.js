@@ -10,6 +10,7 @@ const {
   sendValidationError,
 } = require("../request-validation");
 const { CharacterError, handoffLine } = require("../characters");
+const { stripEmotionTags } = require("../utils/emotion-tags");
 
 const KEY = "characters";
 
@@ -114,7 +115,10 @@ function createCharactersCapability(characters) {
           const { character, previous } = switched;
           return res.json({
             character: summary(character),
-            handoff: character.id === previous.id ? null : handoffLine(character, previous),
+            // The launcher speaks this as is, so a tag in a custom handoff line
+            // ("[sad] ...") would be read out; it goes, and the launcher's own
+            // handoff emotion stays. ponytail: pass the tag's emotion along if wanted.
+            handoff: character.id === previous.id ? null : stripEmotionTags(handoffLine(character, previous)).text,
           });
         } catch (e) {
           if (e instanceof ValidationError) return sendValidationError(res, e);

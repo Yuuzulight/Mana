@@ -87,7 +87,7 @@ test('#704: authenticated UI is required for manual input and personal-browser c
 
 test('#704: manual takeover permits page media without dropping ownership or launching another browser', async () => {
   const fake = createFakeChromium();
-  const deps = { chromium: fake.chromium, env: { MANA_BROWSER_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
+  const deps = { chromium: fake.chromium, env: { MANA_BROWSER_ENGINE: 'edge', MANA_BROWSER_EXECUTABLE_PATH: 'browser-test' }, ramPercent: () => 50, isLocalRestartRequest: () => true };
   const app = buildApp(deps);
   try {
     await browserAutomationPlugin.getSession(deps);
@@ -343,7 +343,7 @@ test("#1137: Edge closing under her (crash) means a fresh start next call", asyn
 test("plugin metadata matches the shape other Mana plugins use", () => {
   assert.equal(browserAutomationPlugin.key, "browserAutomation");
   assert.equal(browserAutomationPlugin.category, "Web");
-  assert.equal(browserAutomationPlugin.defaultEnabled, false);
+  assert.equal(browserAutomationPlugin.defaultEnabled, true);
 });
 
 // Separate fakes for her headless Edge and my visible window, handed out
@@ -671,4 +671,65 @@ test("#1204: pathsIn finds POSIX paths too, quoted or not, on any platform", () 
     "/home/me/notes.txt",
   ]);
   assert.deepEqual(browserAutomationPlugin.pathsIn("and/or https://a.test/x"), []);
+});
+
+test("her browser is Arcana; Edge only when Arcana can't start or Take over needs a window", async () => {
+  browserAutomationPlugin._resetForTests();
+  const { chromium, launches, context } = createFakeChromium();
+  const arcanaCalls = [];
+  const env = { MANA_BROWSER_EXECUTABLE_PATH: "C:\fake\msedge.exe" };
+  const deps = { env, chromium, ramPercent: () => 50, launchArcana: async (_c, _e, o) => (arcanaCalls.push(o), context) };
+  await browserAutomationPlugin.getSession(deps);
+  assert.equal(arcanaCalls.length, 1);
+  assert.match(arcanaCalls[0].storageDir, /arcana$/);
+  assert.equal(launches.length, 0);
+
+  browserAutomationPlugin._resetForTests();
+  const down = { ...deps, launchArcana: async () => { throw new Error("Arcana isn't built"); } };
+  await browserAutomationPlugin.getSession(down);
+  assert.equal(launches.length, 1);
+  browserAutomationPlugin._resetForTests();
+});
+
+test("Arcana is told which process to outlive, so a crashed Mana can't leave it running", async () => {
+  const { startArcana } = require("../arcana-engine");
+  let seen = null;
+  const fakeChild = { pid: 0, exitCode: null, once(ev, fn) { if (ev === "exit") fn(); } };
+  await assert.rejects(
+    startArcana({ MANA_ARCANA_CLI: __filename }, { spawnFn: (cmd, args) => ((seen = args), fakeChild) }),
+    /didn't start/,
+  );
+  assert.ok(seen.includes(`--arcana-parent-pid=${process.pid}`));
+});
+
+test("every engine choice is logged, so a week of use can be counted", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { recordEvent } = require("../arcana-engine");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-arcana-events-"));
+  const file = path.join(dir, "events.jsonl");
+  const events = () => fs.readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  try {
+    const { chromium, context } = createFakeChromium();
+    const env = { MANA_BROWSER_EXECUTABLE_PATH: "C:\fake\msedge.exe", MANA_ARCANA_EVENTS_FILE: file };
+    const deps = { env, chromium, ramPercent: () => 50, launchArcana: async () => context };
+
+    browserAutomationPlugin._resetForTests();
+    await browserAutomationPlugin.getSession(deps);
+    browserAutomationPlugin._resetForTests();
+    await browserAutomationPlugin.getSession({ ...deps, launchArcana: async () => { throw new Error("Arcana isn't built"); } });
+    browserAutomationPlugin._resetForTests();
+    await browserAutomationPlugin.getSession({ ...deps, env: { ...env, MANA_BROWSER_ENGINE: "edge" } });
+    browserAutomationPlugin._resetForTests();
+
+    const seen = events();
+    assert.deepEqual(seen.map((e) => e.type), ["arcana_started", "arcana_start_failed", "edge_requested"]);
+    assert.equal(seen[1].reason, "Arcana isn't built");
+    assert.ok(seen.every((e) => !Number.isNaN(Date.parse(e.at))));
+    // Logging never breaks browsing: an unwritable path is ignored.
+    assert.doesNotThrow(() => recordEvent(path.join(file, "nested", "x.jsonl"), "arcana_started"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

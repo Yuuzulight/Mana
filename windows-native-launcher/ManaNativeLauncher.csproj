@@ -104,15 +104,26 @@
 
   <!-- #937: Folio, from the local package folder in nuget.config.
        pack-folio.ps1 builds the packages from FolioCommit and checks that
-       they come out as FolioVersion; CI runs it before restoring. To bump
-       Folio: set FolioCommit to a Folio commit on main, set FolioVersion to
-       0.1.0-m1.N, where N is the number of commits in that commit's
-       history, then run pack-folio.ps1 (README, Quick Start). #1265: Mana
-       does this herself once a day (node-bot/folio-update.js), as a PR. -->
+       they come out as FolioVersion; CI runs it before restoring. For a
+       published Folio release, set FolioCommit to the release tag's commit
+       and FolioVersion to its semantic version, such as 1.0.0. Development
+       pins may use Folio's 0.1.0-m1.N commit-count version until the next
+       formal release. #1267: Mana does this herself once a day
+       (node-bot/folio-update.js), as a PR. -->
   <PropertyGroup>
-    <FolioCommit>a623f01ac875598c1965d64130e6a136b2d58656</FolioCommit>
-    <FolioVersion>0.1.0-m1.629</FolioVersion>
+    <FolioCommit>ca2dd9e425bf422ad5aecb9b0b0f58202721a204</FolioCommit>
+    <FolioVersion>0.1.0-m1.988</FolioVersion>
+    <!-- Set this to the complete Folio.ContentHost publish directory for a
+         launcher package. Its files are copied under Folio\ beside Mana. -->
+    <FolioContentHostDirectory Condition="'$(FolioContentHostDirectory)' == ''">$(MANA_FOLIO_CONTENT_HOST_DIRECTORY)</FolioContentHostDirectory>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(FolioContentHostDirectory)' != '' and Exists('$(FolioContentHostDirectory)')">
+    <Content Include="$(FolioContentHostDirectory)\**\*"
+             Link="Folio\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="ManaNativeLauncher.Tests" />

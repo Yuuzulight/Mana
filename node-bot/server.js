@@ -2988,6 +2988,7 @@ function registerRoutes(app, upload, deps = {}) {
         whisperLanguage: whisperLanguage(),
         gamingWatch,
         stickyCodingSession: codingSessionManager,
+        selfWorkSandbox: {}, // #1467
       });
       return res.status(result.ok ? 200 : 503).json(result);
     } catch (error) {
@@ -3099,7 +3100,11 @@ function registerRoutes(app, upload, deps = {}) {
   const improvementTools =
     deps.improvementTools ||
     createImprovementToolSource(
-      createIssueProposals({ approvalGate: activeApprovalGate, lessons: { listOpen: () => lessons.list().filter((l) => l.status === "open") } }),
+      createIssueProposals({
+        approvalGate: activeApprovalGate,
+        lessons: { listOpen: () => lessons.list().filter((l) => l.status === "open") },
+        onFiled: (filed) => selfImprovement.onFiled(filed),
+      }),
     );
   // #1006: Mana works one of my issues in her own worktree and opens a PR.
   const selfWork =
@@ -3237,6 +3242,22 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/api-spending", async (req, res) => {
     if (!checkAdminAuth(req, res)) return;
     return res.json(await spendingReport({ days: 90 }));
+  });
+  // #1441: prices I set for models that aren't DeepSeek's ($ per 1M tokens),
+  // and the models she used that have none.
+  app.get("/api-spending/prices", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    return res.json(apiSpending.prices());
+  });
+  // { model, in, out, cachedIn? } sets one; { model, remove: true } removes it.
+  app.post("/api-spending/prices", (req, res) => {
+    if (!checkAdminAuth(req, res)) return;
+    const { model, remove, ...price } = req.body || {};
+    try {
+      return res.json(apiSpending.setPrice(model, remove === true ? null : price));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
   });
   // #1406: Settings' and her chat's spending report: the ledger with each
   // issue's outcome from her lifecycle, the DeepSeek balance and how long it lasts.
@@ -3649,7 +3670,7 @@ function registerRoutes(app, upload, deps = {}) {
     }
   });
 
-  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "gpt_sovits", "cli"];
+  const TTS_OVERRIDE_PROVIDERS = ["fish", "kokoro", "gpt_sovits", "qwen3tts", "cosyvoice3", "cli"];
 
   app.get("/tts/override", (req, res) => {
     res.json({ ok: true, override: ttsRuntime.getProviderOverride() });

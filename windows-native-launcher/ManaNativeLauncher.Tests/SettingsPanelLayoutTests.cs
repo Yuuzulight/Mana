@@ -456,6 +456,45 @@ public class SettingsPanelLayoutTests
         });
     }
 
+    // #1441: prices I set for models without built-in ones.
+    [Fact]
+    public void Models_SetPrices_ListsUnpricedAndPricedModels_AndSaves()
+    {
+        ToolPanelHostTests.RunSta(() =>
+        {
+            string? posted = null;
+            var client = new ManaBackendClient(new FakeHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api-spending/prices")
+                {
+                    posted = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                }
+                var json = request.RequestUri!.AbsolutePath switch
+                {
+                    "/models/status" => "{\"activeProfile\":\"default\",\"profiles\":{\"default\":{}},\"brain\":{\"type\":\"local\"},\"fallback\":{\"enabled\":false,\"timeoutSeconds\":0},\"loadIntoVram\":true}",
+                    "/self-work/escalation" => "{\"enabled\":false,\"hasKey\":false,\"localOnly\":false}",
+                    "/models/providers" => "{\"presets\":[],\"providers\":[]}",
+                    "/api-spending/prices" => "{\"set\":{\"openai/gpt-5\":{\"hit\":0.125,\"miss\":1.25,\"out\":10}},\"unpriced\":[\"qwen/qwen3-coder\"]}",
+                    _ => null,
+                };
+                return json is null
+                    ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+            }));
+            using var panel = new SettingsPanel(client, new BackendLogBuffer()) { Dock = DockStyle.None, Size = new System.Drawing.Size(900, 900) };
+            panel.RefreshModelTabAsync().GetAwaiter().GetResult();
+            Assert.Equal(new[] { "qwen/qwen3-coder", "openai/gpt-5" }, panel.PriceModel.Items.Cast<object>().Select(i => i.ToString()!).ToArray());
+            Assert.Equal("", panel.PriceIn.Text); // no price yet
+            panel.PriceModel.SelectedItem = "openai/gpt-5";
+            Assert.Equal(("1.25", "10"), (panel.PriceIn.Text, panel.PriceOut.Text));
+            panel.PriceModel.SelectedItem = "qwen/qwen3-coder";
+            panel.PriceIn.Text = "0.2";
+            panel.PriceOut.Text = "$0.8";
+            panel.SavePriceForTestAsync().GetAwaiter().GetResult();
+            Assert.Equal("{\"model\":\"qwen/qwen3-coder\",\"in\":0.2,\"out\":0.8}", posted);
+        });
+    }
+
     [Fact]
     public void EscalationSaid_NotRunYet_OrFixedAndCost()
     {

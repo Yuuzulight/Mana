@@ -3,8 +3,33 @@
 Navigate/click/type/read a live page -- for driving a specific site
 interaction (a form-gated result, paging through results, a site the user
 already has a session for), not general search-and-extract (that's
-`web-access.js`'s job and stays untouched). Disabled by default (Settings
-> Plugins).
+`web-access.js`'s job and stays untouched). On by default; switch it off in
+Settings > Plugins.
+
+## Engine: Arcana first, Edge for Take over
+
+Her browser is [Arcana](https://github.com/Yuuzulight/Arcana) (Obscura inside):
+`arcana-engine.js` runs its `serve` endpoint on a free loopback port and
+Playwright attaches over CDP, so everything below works unchanged. Headless
+only, with private-network pages off and local storage kept in
+`browser-profile/arcana`. Edge opens only for Take over, or when Arcana isn't
+built or won't start (one warning in the log), or `MANA_BROWSER_ENGINE=edge`.
+Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
+`tools/arcana.lock.json` (the CLI, plus the engine built from its pinned source commit; needs git,
+.NET 10 and a Rust toolchain) into
+`node-bot/runtime/arcana`. To use another build, point `MANA_ARCANA_CLI` at an
+`Arcana.Cli.dll`, or `MANA_ARCANA_DIR` at a checkout (default
+`C:\ManaAI\Arcana`, Release or Debug build). Set
+`MANA_ARCANA_ALLOW_PRIVATE_NETWORK=1` to let pages reach localhost and LAN
+hosts, for example a dev server (off by default).
+
+Every engine choice is appended to `arcana-events.jsonl` in the browser profile
+(or `MANA_ARCANA_EVENTS_FILE`): `arcana_started`, `arcana_start_failed`,
+`arcana_disconnected` (Arcana died unasked) and `edge_requested` (Take over or
+`MANA_BROWSER_ENGINE=edge`). `tools/m2-fallback-report.ps1` summarises the last
+seven days for Arcana's M2 exit, a week with no unexplained fallback to Edge. It
+reports `insufficient_observation` until the log is a week old and Arcana has
+started at least five times in it (`-MinStarts`), so an empty or new log is never read as a clean week.
 
 ## Browser: Edge by default, override with an env var
 

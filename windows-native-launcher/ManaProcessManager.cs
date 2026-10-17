@@ -26,6 +26,7 @@ internal sealed class ManaProcessManager : IDisposable
     private Process? retrieverProcess;
     private Process? gptSovitsProcess;
     private Process? qwen3TtsProcess;
+    private Process? cosyVoice3Process;
     private bool fishRestarting;
 
     public string RootDirectory { get; }
@@ -50,6 +51,10 @@ internal sealed class ManaProcessManager : IDisposable
     // port from.
     private readonly string qwen3TtsHealthUrl =
         $"{(Environment.GetEnvironmentVariable("QWEN3_TTS_URL") ?? "http://127.0.0.1:5012").TrimEnd('/')}/health";
+    // CosyVoice3 (tools/cosyvoice3_service.py): the same shape, port 5013.
+    public bool UsesCosyVoice3 { get; } = Environment.GetEnvironmentVariable("TTS_PROVIDER") == "cosyvoice3";
+    private readonly string cosyVoice3HealthUrl =
+        $"{(Environment.GetEnvironmentVariable("COSYVOICE3_TTS_URL") ?? "http://127.0.0.1:5013").TrimEnd('/')}/health";
 
     // #582: only captures output for a backend process THIS launcher
     // spawned -- if StartAsync's health check found node-bot already
@@ -75,6 +80,7 @@ internal sealed class ManaProcessManager : IDisposable
     public bool IsFishSpeechAvailable { get; private set; }
     // Same meaning for Qwen3-TTS: running already, or launched by this run.
     public bool IsQwen3TtsAvailable { get; private set; }
+    public bool IsCosyVoice3Available { get; private set; }
 
     // False when the configured backend URL points at another machine --
     // that machine runs its own node-bot and its own TTS services.
@@ -118,7 +124,7 @@ internal sealed class ManaProcessManager : IDisposable
 
     // onServiceReady, when given, fires once per service (key "backend"/
     // "embedder"/"websearch", plus "fish-speech"/"retriever"/"gpt-sovits"/
-    // "qwen3-tts" when in use) the moment its own health-check-then-start
+    // "qwen3-tts"/"cosyvoice3" when in use) the moment its own health-check-then-start
     // resolves -- lets a caller (the startup overlay) flip that row from
     // "Starting..." to "Ready"/"Unavailable" live instead of only knowing
     // "all three are done" after StartAsync itself returns. Fires on
@@ -218,10 +224,13 @@ internal sealed class ManaProcessManager : IDisposable
         var qwen3TtsTask = UsesQwen3Tts
             ? StartAndReport("qwen3-tts", qwen3TtsHealthUrl, () => Task.FromResult(isBackendLocal ? StartQwen3Tts() : null))
             : notUsed;
+        var cosyVoice3Task = UsesCosyVoice3
+            ? StartAndReport("cosyvoice3", cosyVoice3HealthUrl, () => Task.FromResult(isBackendLocal ? StartCosyVoice3() : null))
+            : notUsed;
 
         try
         {
-            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask, searxngTask, retrieverTask, gptSovitsTask, qwen3TtsTask);
+            await Task.WhenAll(fishSpeechTask, backendTask, embedderTask, searxngTask, retrieverTask, gptSovitsTask, qwen3TtsTask, cosyVoice3Task);
         }
         finally
         {
@@ -247,6 +256,11 @@ internal sealed class ManaProcessManager : IDisposable
             {
                 qwen3TtsProcess = qwen3TtsTask.Result.Process;
                 IsQwen3TtsAvailable = qwen3TtsTask.Result.Available;
+            }
+            if (cosyVoice3Task.IsCompletedSuccessfully)
+            {
+                cosyVoice3Process = cosyVoice3Task.Result.Process;
+                IsCosyVoice3Available = cosyVoice3Task.Result.Available;
             }
         }
     }
@@ -330,6 +344,8 @@ internal sealed class ManaProcessManager : IDisposable
             && File.Exists(Path.Combine(RootDirectory, "tools", "fish_speech_native_server.py")),
         "qwen3-tts" => File.Exists(ResolveVenvPython(Path.Combine(RootDirectory, "tools", "qwen3-tts"), ".venv"))
             && File.Exists(Path.Combine(RootDirectory, "tools", "qwen3tts_service.py")),
+        "cosyvoice3" => ResolveCosyVoice3Python() is not null
+            && File.Exists(Path.Combine(RootDirectory, "tools", "cosyvoice3_service.py")),
         "embedder" => Environment.GetEnvironmentVariable("MANA_START_EMBEDDER") != "0"
             && File.Exists(Path.Combine(RootDirectory, "node-bot", "tools", "local_embedder.py")),
         "retriever" => File.Exists(Path.Combine(RootDirectory, "tools", "retriever_service.py")),
@@ -405,7 +421,7 @@ internal sealed class ManaProcessManager : IDisposable
         if (healthy)
         {
             foreach (var (service, child) in new[] { ("fish-speech", fishSpeechProcess), ("embedder", embedderProcess),
-                ("retriever", retrieverProcess), ("gpt-sovits", gptSovitsProcess), ("qwen3-tts", qwen3TtsProcess) })
+                ("retriever", retrieverProcess), ("gpt-sovits", gptSovitsProcess), ("qwen3-tts", qwen3TtsProcess), ("cosyvoice3", cosyVoice3Process) })
             {
                 if (child is null || child.HasExited) continue;
                 try { using var recovered = await PostResourceAsync("recover", new { service, pid = child.Id }); }
@@ -427,6 +443,11 @@ internal sealed class ManaProcessManager : IDisposable
     // model is loaded and its CUDA graphs captured (~12 s).
     public Task<bool> WaitForQwen3TtsReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null) =>
         WaitForHealthyAsync(IsQwen3TtsAvailable, qwen3TtsHealthUrl, timeout, pollInterval);
+
+    // Likewise for CosyVoice3: its /health answers once the model is loaded
+    // and the reference registered and CUDA graphs captured (~1 minute).
+    public Task<bool> WaitForCosyVoice3ReadyAsync(TimeSpan timeout, TimeSpan? pollInterval = null) =>
+        WaitForHealthyAsync(IsCosyVoice3Available, cosyVoice3HealthUrl, timeout, pollInterval);
 
     private async Task<bool> WaitForHealthyAsync(bool available, string healthUrl, TimeSpan timeout, TimeSpan? pollInterval, Process? process = null)
     {
@@ -697,6 +718,108 @@ internal sealed class ManaProcessManager : IDisposable
             Console.WriteLine($"Qwen3-TTS failed to start: {ex.Message}");
             return null;
         }
+    }
+
+    // The python tools/cosyvoice3_service.py runs under (docs/cosyvoice3_tts.md):
+    // a venv at tools/cosyvoice/.venv, or the conda-style tools/cosyvoice/env.
+    internal string? ResolveCosyVoice3Python()
+    {
+        var dir = Path.Combine(RootDirectory, "tools", "cosyvoice");
+        return new[] { ResolveVenvPython(dir, ".venv"), Path.Combine(dir, "env", "python.exe") }.FirstOrDefault(File.Exists);
+    }
+
+    // CosyVoice3 (tools/cosyvoice3_service.py), only with
+    // TTS_PROVIDER=cosyvoice3 or after Settings > Voice picks it. Logs like
+    // Qwen3-TTS's; BelowNormal so synthesis never competes with a game.
+    private Process? StartCosyVoice3()
+    {
+        var cosyDir = Path.Combine(RootDirectory, "tools", "cosyvoice");
+        var python = ResolveCosyVoice3Python();
+        var serviceScript = Path.Combine(RootDirectory, "tools", "cosyvoice3_service.py");
+        if (python is null || !HasModelSetup("cosyvoice3"))
+        {
+            Console.WriteLine($"CosyVoice3 not set up at {cosyDir}; see docs/cosyvoice3_tts.md.");
+            return null;
+        }
+        try
+        {
+            var process = StartHiddenProcess(
+                python,
+                Quote(serviceScript),
+                cosyDir,
+                stdoutLogPath: Path.Combine(cosyDir, "service.out.log"),
+                stderrLogPath: Path.Combine(cosyDir, "service.err.log"),
+                environment: new() { ["PYTHONUTF8"] = "1", ["PYTHONIOENCODING"] = "utf-8" });
+            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+            return process;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"CosyVoice3 failed to start: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Settings > Voice's switch between the two local cloning voices. They
+    // don't fit in VRAM next to each other and the chat model, so this stops
+    // the other one and starts the chosen one (through the same resource
+    // coordinator as at launch), or leaves it be when it already answers.
+    // null means the configured voice (TTS_PROVIDER). Any other provider needs
+    // nothing started here. True once the chosen voice answers its health check.
+    public async Task<bool> EnsureTtsServiceAsync(string? provider)
+    {
+        provider ??= UsesCosyVoice3 ? "cosyvoice3" : UsesQwen3Tts ? "qwen3tts" : null;
+        if (!isBackendLocal || provider is not ("qwen3tts" or "cosyvoice3"))
+        {
+            return true;
+        }
+        var cosy = provider == "cosyvoice3";
+        var key = cosy ? "cosyvoice3" : "qwen3-tts";
+        var healthUrl = cosy ? cosyVoice3HealthUrl : qwen3TtsHealthUrl;
+        if (await IsServiceRunningAsync(healthUrl))
+        {
+            return true;
+        }
+        var other = cosy ? qwen3TtsProcess : cosyVoice3Process;
+        if (other is { HasExited: false })
+        {
+            StopProcess(other);
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                await other.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) { }
+            // The coordinator notices a stopped process on its next poll; starting before that
+            // would reserve the VRAM the other voice still seems to hold.
+            await Task.Delay(TimeSpan.FromSeconds(6));
+        }
+        if (cosy) { qwen3TtsProcess = null; IsQwen3TtsAvailable = false; }
+        else { cosyVoice3Process = null; IsCosyVoice3Available = false; }
+        Func<Process?> start = cosy ? StartCosyVoice3 : StartQwen3Tts;
+        var started = HasModelSetup(key) ? await StartCoordinatedModelAsync(key, () => Task.FromResult(start())) : start();
+        if (cosy) { cosyVoice3Process = started; IsCosyVoice3Available = started is not null; }
+        else { qwen3TtsProcess = started; IsQwen3TtsAvailable = started is not null; }
+        return started is not null && await WaitForHealthyAsync(true, healthUrl, TimeSpan.FromMinutes(3), null, started);
+    }
+
+    // What Settings > Voice shows beside the voice engine: "ready" once the
+    // voice answers its health check, "warming" while its process is up but
+    // doesn't yet, "off" when it isn't running, "n/a" for voices this
+    // doesn't manage (Fish, Kokoro, ...). null is the configured voice.
+    public async Task<string> TtsServiceStateAsync(string? provider)
+    {
+        provider ??= UsesCosyVoice3 ? "cosyvoice3" : UsesQwen3Tts ? "qwen3tts" : null;
+        if (!isBackendLocal || provider is not ("qwen3tts" or "cosyvoice3"))
+        {
+            return "n/a";
+        }
+        var cosy = provider == "cosyvoice3";
+        if (await IsServiceRunningAsync(cosy ? cosyVoice3HealthUrl : qwen3TtsHealthUrl))
+        {
+            return "ready";
+        }
+        return (cosy ? cosyVoice3Process : qwen3TtsProcess) is { HasExited: false } ? "warming" : "off";
     }
 
     // A launch failure of an optional service is logged, never fatal.
@@ -1027,7 +1150,8 @@ internal sealed class ManaProcessManager : IDisposable
             StopAndReport("websearch", searxngProcess),
             StopAndReport("retriever", retrieverProcess),
             StopAndReport("gpt-sovits", gptSovitsProcess),
-            StopAndReport("qwen3-tts", qwen3TtsProcess));
+            StopAndReport("qwen3-tts", qwen3TtsProcess),
+            StopAndReport("cosyvoice3", cosyVoice3Process));
     }
 
     private bool disposed;
@@ -1044,6 +1168,7 @@ internal sealed class ManaProcessManager : IDisposable
         StopProcess(retrieverProcess);
         StopProcess(gptSovitsProcess);
         StopProcess(qwen3TtsProcess);
+        StopProcess(cosyVoice3Process);
         backendJob?.Dispose();
     }
 

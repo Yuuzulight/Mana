@@ -59,9 +59,9 @@ function resolveWithinRepo(requestedPath) {
 function getApprovalConfig() {
   const requireApproval =
     (process.env.FILE_WRITE_REQUIRE_APPROVAL || "1") !== "0";
-  const approvalTimeoutMs = Number(
-    process.env.FILE_WRITE_APPROVAL_TIMEOUT_MS || 5 * 60 * 1000,
-  );
+  // 0 (the default) waits for the human with no time limit; set
+  // FILE_WRITE_APPROVAL_TIMEOUT_MS to a positive number to give up after that.
+  const approvalTimeoutMs = Number(process.env.FILE_WRITE_APPROVAL_TIMEOUT_MS) || 0;
   // A getter, so asking only for requireApproval never trips the test guard
   // in pendingWritesDir() (#1187).
   return {
@@ -124,7 +124,7 @@ async function waitForApprovalResult(id, timeoutMs) {
   const paths = approvalPaths(id);
   const start = Date.now();
   const maxWait = typeof timeoutMs === "number" ? timeoutMs : approvalTimeoutMs;
-  while (Date.now() - start < maxWait) {
+  while (!(maxWait > 0) || Date.now() - start < maxWait) {
     try {
       if (fs.existsSync(paths.approved)) {
         const txt = await fs.promises.readFile(paths.approved, {

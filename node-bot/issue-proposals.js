@@ -57,7 +57,7 @@ function ghRunner(repoRoot) {
 
 // gh: async (args) => stdout, throws on failure (a fake in tests).
 // lessons: optional (#1385's store, open ones only): { listOpen(): [{ title, observed }] }.
-function createIssueProposals({ gh, repoRoot = path.join(__dirname, ".."), approvalGate, lessons = null, env = process.env } = {}) {
+function createIssueProposals({ gh, repoRoot = path.join(__dirname, ".."), approvalGate, lessons = null, onFiled = null, env = process.env } = {}) {
   if (!approvalGate) throw new Error("approvalGate is required");
   const run = gh || ghRunner(repoRoot);
   const msg = (e) => String(e?.message || e).slice(0, 200);
@@ -208,7 +208,12 @@ function createIssueProposals({ gh, repoRoot = path.join(__dirname, ".."), appro
   approvalGate.registerExecutor(IMPROVEMENT_ISSUE_ACTION, async (p) => {
     if (!p || digestOf(p) !== p.digest) throw new Error("the issue changed after it was reviewed, so I didn't file it");
     const out = await run(["issue", "create", `--title=${p.title}`, `--body=${p.body}`, ...p.labels.map((l) => `--label=${l}`)]);
-    return `Opened ${out.trim().split(/\s+/).pop()}`;
+    const url = out.trim().split(/\s+/).pop();
+    // #1386: the lifecycle starts at my approval.
+    try {
+      onFiled?.({ issue: Number(/\/issues\/(\d+)/.exec(url)?.[1]) || null, title: p.title });
+    } catch {}
+    return `Opened ${url}`;
   });
 
   return { findRelated, propose };

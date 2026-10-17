@@ -85,6 +85,19 @@ test("state survives a restart; a broken file starts fresh instead of stopping h
   assert.deepEqual(createLifecycle({ file }).list(), []);
 });
 
+test("my approval starts the record, a run start marks it working, and a restart mid-run says it was interrupted", () => {
+  const file = tmpFile();
+  const l = createLifecycle({ file });
+  assert.equal(l.onFiled({ issue: 42, title: "Fix the tray icon" }).state, "approved");
+  assert.equal(l.onRunStart({ issue: 42, title: "Fix the tray icon" }).state, "working");
+  assert.equal(l.onFiled({ issue: 42, title: "again" }), null, "an existing record isn't restarted");
+  const after = createLifecycle({ file }).get(42);
+  assert.equal(after.state, "waiting");
+  assert.deepEqual(after.history.map((h) => h.state), ["approved", "working", "waiting"]);
+  assert.match(after.history.at(-1).why, /interrupted/);
+  assert.equal(after.attempts, 0, "an interrupted run isn't counted against the budget");
+});
+
 test("retention keeps held records and drops the oldest finished ones", () => {
   let t = 0;
   const life = createLifecycle({ file: tmpFile(), now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)).toISOString() });
