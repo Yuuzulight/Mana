@@ -58,6 +58,8 @@ const GUARDRAIL_LABEL = "mana-guardrail";
 // #1212: a test file, which she may write before she's seen a test fail.
 const TEST_PATH_RE = /(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i;
 const NEVER_WRITE_RE = /(^|\/)(\.git|\.github|node_modules)(\/|$)/i;
+// Without it a probe file she wrote could only be blanked, never removed.
+const DELETE_TOOL_NAME = "self_work__delete";
 // #1253: a comment line in a whole-file rewrite that stands in for code
 // ("// ... rest unchanged", "# existing code omitted", a bare "// ...").
 const ELIDED_RE = /^\s*(?:\/\/|#|\/\*|<!--)\s*(?:\.\.\.|…|(?:rest|remainder)\b|.*\b(?:existing|remaining|rest of|other|previous|original|same)\b.*\b(?:unchanged|omitted|as before)\b)/i;
@@ -289,6 +291,22 @@ const TOOL_SCHEMAS = [
           summary: { type: "string", description: "One line on what the change does." },
         },
         required: ["path", "new_text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: DELETE_TOOL_NAME,
+      description:
+        "Delete a file in your worktree: a probe or scratch file you made, or one the change removes. Your guardrails, credential files and the bench's tests can't be deleted; your reviewer sees the deletion in your diff.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          summary: { type: "string", description: "One line on why it goes." },
+        },
+        required: ["path"],
       },
     },
   },
@@ -1402,7 +1420,7 @@ How to work:
 - Find code with self_work__files and self_work__search, then read the lines around what you found with self_work__read (start_line/end_line) rather than whole files: your context is limited.
 - Aim to make your first edit within ${READ_BUDGET_LINES} lines of reading: search first and read only what the change needs; then make the change.
 - Before your first edit, write a short plan with self_work__plan: 2 to 6 steps, and in files the existing files your change belongs in, each as "path: why", that you found with self_work__search or self_work__files. Mark each step done when you finish it.
-- If a file doesn't exist yet, create it with ${CODING_EDIT_TOOL_NAME} (path and new_text, no old_text) rather than searching for it.
+- If a file doesn't exist yet, create it with ${CODING_EDIT_TOOL_NAME} (path and new_text, no old_text) rather than searching for it. Remove a file (a probe you're done with) with ${DELETE_TOOL_NAME}.
 - Write tests with Node's own runner, require("node:test") and require("node:assert"); chai, mocha and other test libraries aren't installed.
 - If the issue names a behaviour, first write a test for it (or find the one that covers it) and run it to see it fail before you change the code.
 - Change files with ${CODING_EDIT_TOOL_NAME}; marking a plan step done changes nothing on disk. Keep the change small and in the style around it, and add or update a test that fails without it.
@@ -1690,6 +1708,25 @@ Before it can be a PR:
       });
     }
 
+    // The same rules as an edit: her worktree only, no guardrails, credentials or hidden tests.
+    async function remove({ path: rel, summary }) {
+      if (!r.plan && !isRefresh(r)) throw new Error("Write a short plan with self_work__plan before your first edit.");
+      const full = inside(rel);
+      const relPath = posix(full);
+      const refusal = writeRefusal(r, full, relPath);
+      if (refusal) throw new Error(refusal);
+      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) throw new Error(`${relPath} isn't a file in your worktree`);
+      fs.rmSync(full);
+      r.lastTestPassed = false;
+      progressed = true;
+      madeEdit = true;
+      editedSinceTest = true;
+      reviewed.clear();
+      edited.add(relPath);
+      log(r, `Deleted ${relPath}${summary ? `: ${summary}` : ""}`);
+      return JSON.stringify({ status: "ok", relativePath: relPath, deleted: true, plan: r.plan ? planText() : undefined });
+    }
+
     const diffNow = (...paths) => worktreeDiff(root, ...paths);
 
     async function review({ pass }) {
@@ -1816,6 +1853,7 @@ Before it can be a PR:
       self_work__search: search,
       self_work__read: read,
       [CODING_EDIT_TOOL_NAME]: edit,
+      [DELETE_TOOL_NAME]: remove,
       [CODING_TEST_TOOL_NAME]: tests,
       ...extra.executors,
     };
@@ -1904,4 +1942,4 @@ Before it can be a PR:
   return { start, startIdle, refresh, stop, status, chatToolSource, bench, traces, lessons, escalation, _current: () => current };
 }
 
-module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT };
+module.exports = { createSelfWork, roundBudget, slugify, stripAttribution, findSecret, testEnv, TASK_LABEL, systemRamPercent, MAX_RAM_PERCENT, DELETE_TOOL_NAME };

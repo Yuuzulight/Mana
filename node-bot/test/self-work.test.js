@@ -93,6 +93,40 @@ function scriptedLoop(calls, answer, seen = []) {
   };
 }
 
+test("she can delete a probe file she made, and deletes meet the same guards as her writes", async () => {
+  const repos = makeRepos();
+  const seen = [];
+  const { sw } = selfWork(repos, {
+    calls: [
+      ["coding__propose_edit", { path: "node-bot/test/zz-probe.test.js", new_text: "// probe\n" }],
+      ["self_work__delete", { path: "node-bot/test/zz-probe.test.js", summary: "done probing" }],
+      ["self_work__delete", { path: "node-bot/approval-gate.js" }],
+      ["self_work__delete", { path: "node-bot/node_modules/dep/index.js" }],
+      ["self_work__delete", { path: "../live/node-bot/util.js" }],
+      ["self_work__delete", { path: "node-bot/.env" }],
+      ["self_work__delete", { path: ".github/workflows/ci.yml" }],
+      ["self_work__delete", { path: "node-bot/missing.js" }],
+    ],
+    labels: [{ name: "mana-task" }],
+    seen,
+  });
+  await sw.start(7);
+  await sw._current().done;
+  const deletes = seen.filter((s) => s.name === "self_work__delete");
+  assert.equal(deletes[0].error, undefined);
+  assert.match(deletes[1].error, /one of my guardrails/);
+  assert.match(deletes[2].error, /outside my worktree/);
+  assert.match(deletes[3].error, /escapes/);
+  assert.match(deletes[4].error, /credential/);
+  assert.match(deletes[5].error, /isn't mine to write/);
+  assert.match(deletes[6].error, /isn't a file in your worktree/);
+  const worktree = path.join(repos.worktrees, "mana-7");
+  assert.ok(!fs.existsSync(path.join(worktree, "node-bot", "test", "zz-probe.test.js")));
+  assert.ok(fs.existsSync(path.join(worktree, "node-bot", "approval-gate.js")));
+  assert.equal(fs.readFileSync(path.join(repos.live, "node-bot", "node_modules", "dep", "index.js"), "utf8"), "// live\n");
+  assert.equal(sw.status().state, "no-change");
+});
+
 const fix = ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: "return a + b;", summary: "add adds" }];
 const runTests = ["coding__run_tests", { path: "node-bot/test/util.test.js" }];
 const finish = ["session_goal__finish", { reason: "fixed" }];

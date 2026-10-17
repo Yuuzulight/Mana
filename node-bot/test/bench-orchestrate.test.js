@@ -6,13 +6,14 @@ const test = require("node:test");
 const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME } = require("../ai/coding-tool-source");
 const { SESSION_GOAL_FINISH_TOOL_NAME } = require("../ai/session-goal-tool-source");
 const { orchestrate, DELEGATE_TOOL } = require("../bench/orchestrate");
+const { DELETE_TOOL_NAME } = require("../self-work");
 
 const tool = (name) => ({ type: "function", function: { name, description: name, parameters: { type: "object", properties: {} } } });
 const names = (policy) => policy.tools.map((t) => t.function.name);
 
 function basePolicy(log = [], overrides = {}) {
   return {
-    tools: ["self_work__read", CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME, SESSION_GOAL_FINISH_TOOL_NAME].map(tool),
+    tools: ["self_work__read", CODING_EDIT_TOOL_NAME, DELETE_TOOL_NAME, CODING_TEST_TOOL_NAME, SESSION_GOAL_FINISH_TOOL_NAME].map(tool),
     async executeTool(name, args) {
       log.push([name, args]);
       if (overrides[name]) return overrides[name](args);
@@ -42,9 +43,9 @@ test("the orchestrator sees delegate and no edit tool; the worker sees the edit 
   });
   await run("issue text", basePolicy(), {});
   assert.ok(orchestratorTools.includes(DELEGATE_TOOL));
-  assert.ok(!orchestratorTools.includes(CODING_EDIT_TOOL_NAME));
+  assert.ok(!orchestratorTools.includes(CODING_EDIT_TOOL_NAME) && !orchestratorTools.includes(DELETE_TOOL_NAME));
   assert.ok(orchestratorTools.includes(CODING_TEST_TOOL_NAME) && orchestratorTools.includes(SESSION_GOAL_FINISH_TOOL_NAME));
-  assert.ok(workerTools.includes(CODING_EDIT_TOOL_NAME));
+  assert.ok(workerTools.includes(CODING_EDIT_TOOL_NAME) && workerTools.includes(DELETE_TOOL_NAME));
   assert.ok(!workerTools.includes(DELEGATE_TOOL));
 });
 

@@ -5,6 +5,8 @@
 // real run: only the orchestrator finishes the case.
 const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME } = require("../ai/coding-tool-source");
 const { SESSION_GOAL_FINISH_TOOL_NAME } = require("../ai/session-goal-tool-source");
+const { DELETE_TOOL_NAME } = require("../self-work");
+const WRITE_TOOLS = new Set([CODING_EDIT_TOOL_NAME, DELETE_TOOL_NAME]);
 
 const DELEGATE_TOOL = "self_work__delegate";
 const DELEGATE_SCHEMA = {
@@ -46,7 +48,7 @@ function orchestrate({ orchestratorLoop, workerLoop, onDelegate = null }) {
           const out = await policy.executeTool(name, args);
           const parsed = parse(out);
           if (parsed.status === "blocked") seen.blocked = true;
-          if (name === CODING_EDIT_TOOL_NAME && parsed.status === "ok" && args?.path) seen.edits.add(args.path);
+          if (WRITE_TOOLS.has(name) && parsed.status === "ok" && args?.path) seen.edits.add(args.path);
           if (name === CODING_TEST_TOOL_NAME && typeof parsed.passed === "boolean") seen.lastTest = { passed: parsed.passed, output: String(parsed.output || "").slice(-1500) };
           return out;
         },
@@ -67,11 +69,11 @@ function orchestrate({ orchestratorLoop, workerLoop, onDelegate = null }) {
 
     const orchestratorPolicy = {
       ...policy,
-      tools: [...policy.tools.filter((t) => t.function?.name !== CODING_EDIT_TOOL_NAME), DELEGATE_SCHEMA],
+      tools: [...policy.tools.filter((t) => !WRITE_TOOLS.has(t.function?.name)), DELEGATE_SCHEMA],
       isKnownTool: (name) => name === DELEGATE_TOOL || Boolean(policy.isKnownTool?.(name)),
       async executeTool(name, args) {
         if (name === DELEGATE_TOOL) return delegate(args);
-        if (name === CODING_EDIT_TOOL_NAME) throw new Error("you can't edit files in this setup: write a brief and delegate the change with self_work__delegate");
+        if (WRITE_TOOLS.has(name)) throw new Error("you can't edit files in this setup: write a brief and delegate the change with self_work__delegate");
         return policy.executeTool(name, args);
       },
     };
