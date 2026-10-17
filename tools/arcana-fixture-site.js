@@ -18,6 +18,8 @@ const PAGES = {
   "/upload.html": page("Upload", `<h1>Upload</h1><form method="post" action="/upload" enctype="multipart/form-data"><input type="file" name="file" id="file"><button type="submit">Send</button></form>`),
   "/download.html": page("Download", `<h1>Download</h1><a href="/file.txt">Get the file</a>`),
   "/table.html": page("Table", `<h1>Table</h1><table><thead><tr><th>Name</th><th>Size</th></tr></thead><tbody><tr><td>Alpha</td><td>1</td></tr><tr><td>Beta</td><td>2</td></tr></tbody></table><a href="/child.html">Go to child</a>`),
+  // A comment thread the way a forum builds it: one table with a row per comment.
+  "/bigtable.html": page("Big table", `<h1>Thread</h1><table id="t"><tbody>${Array.from({ length: 1500 }, (_, i) => `<tr class="c"><td><a href="/child.html#${i}">comment ${i}</a></td><td>text of comment ${i}</td></tr>`).join("")}</tbody></table>`),
   "/controls.html": page("Controls", `<h1>Controls</h1><select id="s" aria-label="Pick"><option value="1">One</option><option value="2">Two</option></select><input id="n" type="number" aria-label="Count" value="5"><div id="out">waiting</div>
 <script>document.getElementById('n').addEventListener('input',function(e){document.getElementById('out').textContent='count '+e.target.value})</script>`),
   "/drag.html": page("Drag", `<h1>Drag</h1><button id="a" draggable="true">Drag me</button><button id="t">Drop here</button><p id="out">waiting</p>

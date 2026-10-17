@@ -9,6 +9,11 @@ const fs = require("node:fs");
 
 const refOf = (line) => (line ? /\[ref=([^\]]+)\]/.exec(line)?.[1] : null);
 const find = (re) => (s) => s.elements.find((line) => re.test(line));
+// A story whose thread is a normal size: the one on top can have two thousand comments, which any engine reads slowly.
+const smallThread = (s) => s.elements.find((line) => {
+  const count = /link "([0-9]+)\s*comments?"/.exec(line);
+  return count && Number(count[1]) >= 3 && Number(count[1]) <= 150;
+}) || find(/link "[0-9]+\s*comments?"/)(s);
 const hasElements = (n) => (s) => s.elements.length >= n;
 const textHas = (re) => (s) => re.test(`${s.text || ""}\n${s.elements.join("\n")}`);
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,7 +39,7 @@ const JOBS = [
   ]],
   ["Hacker News", "open a story's comments", "navigate click", [
     ["open the front page", (b) => b.navigate("https://news.ycombinator.com/"), (s) => /Hacker News/.test(s.title) && hasElements(40)(s)],
-    ["open comments", (b, s) => b.click(refOf(find(/link "\d+\s*comments?"/)(s))), (s) => /item\?id=/.test(s.url)],
+    ["open comments", (b, s) => b.click(refOf(smallThread(s))), (s) => /item\?id=/.test(s.url)],
   ]],
   ["Hacker News", "page through the list", "navigate scroll click find", [
     ["open the front page", (b) => b.navigate("https://news.ycombinator.com/"), hasElements(40)],

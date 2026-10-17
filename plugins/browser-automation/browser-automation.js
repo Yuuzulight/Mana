@@ -14,6 +14,7 @@ const MAX_ELEMENTS = 150;
 const SNAPSHOT_DEPTH = 40;
 // A stale ref fails fast instead of waiting out Playwright's 30 seconds.
 const ACTION_TIMEOUT_MS = 5000;
+const ARCANA_SNAPSHOT_TIMEOUT_MS = 90000;
 const INTERACTIVE_ROLES = new Set([
   "button", "link", "textbox", "searchbox", "combobox", "listbox", "option", "checkbox", "radio",
   "switch", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
@@ -267,7 +268,7 @@ function createBrowserSession(options = {}) {
   async function snapshot() {
     if (page.context?.().arcana) await page.evaluate(() => window.__arcanaInlineCustom?.()).catch(() => {});
     const [aria, text, title, url, sensitive] = await Promise.all([
-      page.ariaSnapshot({ mode: "ai", depth: SNAPSHOT_DEPTH }),
+      page.ariaSnapshot(snapshotOptions()),
       page.evaluate(extractTextInPage, maxTextChars),
       page.title(),
       page.url(),
@@ -283,9 +284,13 @@ function createBrowserSession(options = {}) {
 
   // #1156: the best-fitting elements for a description, from a fresh look
   // at the whole page (not just the 150 a snapshot shows).
+  // Arcana reads a very large page (a forum thread of two thousand comments) in tens of seconds, where a
+  // browser takes a fraction of one; give it room rather than fail a page it would have read.
+  const snapshotOptions = () => ({ mode: "ai", depth: SNAPSHOT_DEPTH, ...(page.context?.().arcana ? { timeout: ARCANA_SNAPSHOT_TIMEOUT_MS } : {}) });
+
   async function find(description) {
     if (!String(description || "").trim()) throw new Error("say what to look for, like \"the Sign in button\"");
-    const [aria, title, url] = await Promise.all([page.ariaSnapshot({ mode: "ai", depth: SNAPSHOT_DEPTH }), page.title(), page.url()]);
+    const [aria, title, url] = await Promise.all([page.ariaSnapshot(snapshotOptions()), page.title(), page.url()]);
     return { url, title, description: String(description), matches: findElements(interactiveElements(aria), description) };
   }
 

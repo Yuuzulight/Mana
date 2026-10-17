@@ -851,3 +851,17 @@ test("on Arcana a click that stalls after the element was found actionable goes 
   assert.match((await run(false, stuck)).outcome, /scrolling into view/);
   assert.match((await run(true, "locator.click: Timeout 5000ms exceeded. - element is not enabled")).outcome, /not enabled/);
 });
+
+test("on Arcana a snapshot is given room to read a very large page", async () => {
+  async function timeoutOf(arcana) {
+    const page = createFakePage();
+    if (arcana) page.context = () => ({ arcana: true });
+    const seen = [];
+    const real = page.ariaSnapshot.bind(page);
+    page.ariaSnapshot = async (options) => { seen.push(options.timeout); return real(options); };
+    await createBrowserSession({ page }).navigate("https://example.com/");
+    return seen[0];
+  }
+  assert.equal(await timeoutOf(true), 90000);
+  assert.equal(await timeoutOf(false), undefined);
+});
