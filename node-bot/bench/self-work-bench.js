@@ -179,7 +179,8 @@ function removeWorktree(repoRoot, wt) {
   try {
     git(repoRoot, "worktree", "remove", "--force", wt);
   } catch {
-    fs.rmSync(wt, { recursive: true, force: true });
+    // Windows frees a dotnet test host's files a moment after it exits (EBUSY/ENOTEMPTY).
+    fs.rmSync(wt, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
     git(repoRoot, "worktree", "prune");
   }
 }
@@ -472,7 +473,12 @@ function verifyCase(c, { repoRoot, worktreesDir, verifyPrefix }) {
     const withFix = runHiddenTests(wt, c, PREFLIGHT_TEST_TIMEOUT_MS);
     return { id: c.id, ok: !atBase.passed && withFix.passed, failsAtBase: !atBase.passed, passesWithFix: withFix.passed, tail: withFix.passed ? "" : withFix.tail };
   } finally {
-    removeWorktree(repoRoot, wt);
+    // A worktree left behind is a disk problem, not the case's verdict.
+    try {
+      removeWorktree(repoRoot, wt);
+    } catch (e) {
+      console.warn(`Couldn't remove ${wt}: ${e.message}`);
+    }
   }
 }
 
