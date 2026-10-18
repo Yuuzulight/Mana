@@ -160,6 +160,15 @@ function makeWorktree(repoRoot, wt, base) {
   // NuGet fails on the missing source (NU1301). A copy, not a link: it's a few packages and stays inside the worktree.
   const feed = path.join(repoRoot, "windows-native-launcher", "folio-feed");
   if (fs.existsSync(feed)) fs.cpSync(feed, path.join(wt, "windows-native-launcher", "folio-feed"), { recursive: true });
+  // Its build fetches its ONNX models when they're missing (gitignored); a fetch outlives a timed-out test run
+  // and locks the next build out of its own files. The main checkout's copies make that a no-op.
+  const assets = path.join(repoRoot, "windows-native-launcher", "assets");
+  for (const rel of fs.existsSync(assets) ? fs.readdirSync(assets, { recursive: true }) : []) {
+    const to = path.join(wt, "windows-native-launcher", "assets", rel);
+    if (!rel.endsWith(".onnx") || fs.existsSync(to)) continue;
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(path.join(assets, rel), to);
+  }
 }
 
 // The junction goes first and on its own, so nothing recurses into the

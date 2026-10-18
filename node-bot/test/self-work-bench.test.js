@@ -97,14 +97,19 @@ test('Windows benchmark refuses to run model work without its human test-approva
   assert.equal(called, false);
 });
 
-test("a bench worktree gets a copy of the launcher's gitignored Folio feed, and removing it leaves the original", () => {
+test("a bench worktree gets copies of the launcher's gitignored Folio feed and models, and removing it leaves the originals", () => {
   const { repo, worktrees, c } = makeRepo();
   const feed = path.join(repo, "windows-native-launcher", "folio-feed");
   fs.mkdirSync(feed, { recursive: true });
   fs.writeFileSync(path.join(feed, "Folio.1.0.0.nupkg"), "pkg");
+  // And its fetched (gitignored) models, so its build doesn't download them.
+  const models = path.join(repo, "windows-native-launcher", "assets", "speaker");
+  fs.mkdirSync(models, { recursive: true });
+  fs.writeFileSync(path.join(models, "voxceleb.onnx"), "model");
   const wt = path.join(worktrees, "feed");
   makeWorktree(repo, wt, c.base);
   assert.equal(fs.readFileSync(path.join(wt, "windows-native-launcher", "folio-feed", "Folio.1.0.0.nupkg"), "utf8"), "pkg");
+  assert.equal(fs.readFileSync(path.join(wt, "windows-native-launcher", "assets", "speaker", "voxceleb.onnx"), "utf8"), "model");
   removeWorktree(repo, wt);
   assert.equal(fs.existsSync(wt), false);
   assert.equal(fs.existsSync(path.join(feed, "Folio.1.0.0.nupkg")), true);
