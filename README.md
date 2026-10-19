@@ -97,6 +97,7 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Desktop avatar support**: Mana emotes through a built-in Live2D avatar with lip sync and emotion reactions. See [docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md).
 - **Editor coding handoff**: Mana can open projects or files in Zed or VS Code and propose edits for review. See [Editor Integration](#editor-integration).
 - **Memory between conversations**: memories link across sessions and are consolidated while she's idle, so what she learns outlives one chat.
+- **Browser automation (in progress)**: Mana's browser plugin is being moved onto Arcana, a lightweight browser runtime, with your installed Edge as the fallback. A week-long soak test is still running, so treat it as unfinished.
 - **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools talk to Mana's local backend. See [Backend API](#backend-api).
 
 More features, including gaming mode, Deep Research, the MCP server and the plugins, are listed in [docs/features.md](docs/features.md).
@@ -151,6 +152,7 @@ Mana can work issues on her own code ("self-work") with her local coding model. 
 - **Tiers and limits.** Escalation tries the models you pick in Settings > Models, one tier at a time (DeepSeek Flash, then DeepSeek Pro, until you choose others), one run per tier per issue, at most 5 escalation runs a day. DeepSeek runs are held for its cheaper off-peak hours unless you say "go ahead" on that issue. A "go ahead" also lets one run past the daily cap.
 - **Providers.** DeepSeek is the default. Settings > Models offers twelve provider presets (DeepSeek, OpenAI, Anthropic, Google Gemini, xAI, Mistral, OpenRouter, Groq, Ollama, LM Studio, llama.cpp server, and Custom). Models without built-in prices can be given per-token prices, and Settings keeps outcome stats per model.
 - **Asking for it in chat.** Mana only hands a coding request in chat to DeepSeek when you explicitly ask her to. It uses the same DeepSeek switch and key, its edits are proposals you review, and its cost is counted under chat rather than against self-work's daily limit.
+- **No dollar cap.** There is no spending limit in dollars. The only limits are the 5 escalation runs a day for self-work (chat requests are not counted against that), so check the spending page.
 - **Spending.** Settings > Models > Spending shows what cloud use has cost, in tokens and dollars: per issue or PR, a monthly projection, a daily chart, and, for DeepSeek, a balance estimate with a low-balance warning.
 
 Her own local runs are the only ones kept as training records; a change from a cloud model never is (see [docs/self_work_training_traces.md](docs/self_work_training_traces.md)).
