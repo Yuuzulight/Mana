@@ -169,6 +169,15 @@ function makeWorktree(repoRoot, wt, base) {
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.copyFileSync(path.join(assets, rel), to);
   }
+  // A case's base can predate the .gitignore lines for these copies; they're never part of her diff.
+  const exclude = path.resolve(wt, git(wt, "rev-parse", "--git-path", "info/exclude"));
+  const lines = ["/windows-native-launcher/folio-feed/", "/windows-native-launcher/assets/**/*.onnx"];
+  const have = fs.existsSync(exclude) ? fs.readFileSync(exclude, "utf8") : "";
+  const missing = lines.filter((l) => !have.split(/\r?\n/).includes(l));
+  if (missing.length) {
+    fs.mkdirSync(path.dirname(exclude), { recursive: true });
+    fs.appendFileSync(exclude, `${have && !have.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`);
+  }
 }
 
 // The junction goes first and on its own, so nothing recurses into the

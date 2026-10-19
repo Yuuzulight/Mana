@@ -110,6 +110,8 @@ test("a bench worktree gets copies of the launcher's gitignored Folio feed and m
   makeWorktree(repo, wt, c.base);
   assert.equal(fs.readFileSync(path.join(wt, "windows-native-launcher", "folio-feed", "Folio.1.0.0.nupkg"), "utf8"), "pkg");
   assert.equal(fs.readFileSync(path.join(wt, "windows-native-launcher", "assets", "speaker", "voxceleb.onnx"), "utf8"), "model");
+  // Even where the base doesn't ignore them, the copies aren't changes of hers.
+  assert.equal(git(wt, "status", "--porcelain", "--untracked-files=all"), "");
   removeWorktree(repo, wt);
   assert.equal(fs.existsSync(wt), false);
   assert.equal(fs.existsSync(path.join(feed, "Folio.1.0.0.nupkg")), true);
