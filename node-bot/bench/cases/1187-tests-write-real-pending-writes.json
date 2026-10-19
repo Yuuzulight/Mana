@@ -1,5 +1,7 @@
 {
   "id": "1187-tests-write-real-pending-writes",
+  "guarded": "node-bot/acp-autonomous-loop.js",
+  "minRounds": 36,
   "kind": "live",
   "pr": 1271,
   "issue": 1187,

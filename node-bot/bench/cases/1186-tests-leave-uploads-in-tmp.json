@@ -1,5 +1,6 @@
 {
   "id": "1186-tests-leave-uploads-in-tmp",
+  "minRounds": 36,
   "kind": "live",
   "pr": 1271,
   "issue": 1186,

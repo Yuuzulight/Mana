@@ -102,6 +102,7 @@ const FALLBACKS = {
   analysis__run_python: () => "Run Python analysis",
   coding__run_tests: (a) => (fileName(a) ? `Run the tests in ${fileName(a)}` : "Run the tests"),
   coding__propose_edit: (a) => `Draft an edit to ${fileName(a) || "a file"}`,
+  self_work__delete: (a) => `Delete ${fileName(a) || "a file"}`,
   git__read: (a) => `Read git ${word(a.action) || "state"}`,
   git__change: (a) => `Git ${word(a.action) || "change"}`,
   git__push: () => "Push a branch",
