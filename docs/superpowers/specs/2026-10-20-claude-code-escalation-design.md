@@ -28,9 +28,9 @@ same, for Yuuzulight's own use.
 - Her guardrails hold exactly as they do for DeepSeek: protected paths,
   credential files and the case's hidden tests are never written, tests run
   only in her sandbox, and the result goes through her reviewer, her tests
-  and a PR they approve.
+  and a PR she approves.
 - The self-work bench can run the escalation locally (Flash first, Claude
-  on failure), so the hard cases can be measured on their PC once their limits
+  on failure), so the hard cases can be measured on her PC once her limits
   reset.
 
 ## Non-goals
@@ -38,7 +38,7 @@ same, for Yuuzulight's own use.
 - Claude for every task. Flash goes first; Claude is the step up.
 - A DeepSeek Pro tier in the default chain (the benchmark showed it isn't
   worth its cost). It stays pickable in Settings.
-- Opus by default. Pro's five-hour and weekly limits are shared with their own
+- Opus by default. Pro's five-hour and weekly limits are shared with her own
   Claude and Claude Code use, and Opus drains them about twice as fast as
   Sonnet. The model is a setting; the default is Sonnet 5.5.
 - Running Claude on the AWS benchmark instance.
@@ -48,11 +48,11 @@ same, for Yuuzulight's own use.
 - Mana ever reading, storing, copying or forwarding Claude credentials or
   session tokens. Sign-in happens only in Claude Code's own `/login`.
 - Offering Claude sign-in to anyone but Yuuzulight, or as a product feature.
-  It's documented as personal use of their own subscription.
+  It's documented as personal use of her own subscription.
 - Claude Code getting its own unrestricted shell, or writing outside the
   worktree, or touching a guardrail.
 - Mana switching to paid usage credits or retrying when a limit is hit.
-- A handoff that quietly uses up their limits: every one is asked first, with
+- A handoff that quietly uses up her limits: every one is asked first, with
   an estimate.
 
 ## The design (decided)
@@ -66,13 +66,13 @@ when it fails, the run ends as today ("needs you").
 
 **The handoff ask.** Through her existing approval gate, like a test run:
 issue, what DeepSeek tried and why it failed, the model, and a rough share
-of their five-hour window. Declining ends the run as a normal failure. The
+of her five-hour window. Declining ends the run as a normal failure. The
 5-runs-a-day remote cap counts Claude runs too.
 
 **Running Claude Code.** Mana is an ACP client of the open-source Claude
 Code ACP adapter (the one Zed uses), started as a child process in the
-issue's worktree. They install Claude Code and sign in once with `/login`;
-Mana checks only "is Claude Code installed and signed in" and tells them to
+issue's worktree. She installs Claude Code and signs in once with `/login`;
+Mana checks only "is Claude Code installed and signed in" and tells her to
 run `/login` if not. `ANTHROPIC_API_KEY` is removed from the child's
 environment so it can't silently switch to API billing.
 
@@ -102,7 +102,7 @@ credits, no retry loop.
 **Bench.** A new setup, `flash-claude`: each case runs Flash; on failure it
 escalates to Claude in the same worktree with the brief above. Starting
 the bench with that setup is the approval for its handoffs (one yes per run,
-not per case). It runs on their PC only and stops cleanly at a usage limit,
+not per case). It runs on her PC only and stops cleanly at a usage limit,
 resumable with the cases that are left. Reports show the Flash and Claude
 parts separately (pass, and Claude usage instead of dollars).
 
