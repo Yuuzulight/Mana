@@ -1,6 +1,6 @@
 <h1 align="center">Mana</h1>
 
-<p align="center">A local-first AI companion for Windows — she listens, thinks, remembers, and talks back without your voice or your conversations ever leaving your PC.</p>
+<p align="center">A local-first AI companion for Windows — she listens, thinks, remembers, and talks back, and by default your voice and your conversations never leave your PC.</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Yuuzulight/Mana.svg?style=flat&colorA=080f12&colorB=1fa669" alt="License"></a>
@@ -30,7 +30,7 @@
 
 **Live2D Cubism Core** is proprietary to Live2D Inc., is not part of this repository, and is fetched at setup time under Live2D's own terms; see THIRD_PARTY.md.
 
-Talking to a cloud AI assistant means handing your voice, your screen, and every conversation to someone else's servers. Character platforms and cloud VTuber stacks get you a voice and a face, but the moment their servers go down or the subscription lapses, so does the companion. Mana takes the other path: transcription, replies, TTS, memory, and screen awareness all run on your own Windows PC, so the assistant is actually yours — it works offline, it doesn't meter you, and nothing you say to it leaves the machine unless you explicitly turn that on.
+Talking to a cloud AI assistant means handing your voice, your screen, and every conversation to someone else's servers. Character platforms and cloud VTuber stacks get you a voice and a face, but the moment their servers go down or the subscription lapses, so does the companion. Mana takes the other path: transcription, replies, TTS, memory, and screen awareness all run on your own Windows PC, so the assistant is actually yours — the local path works without an internet connection and doesn't meter you, and nothing you say to it leaves the machine unless you explicitly turn on a cloud feature (see [Optional cloud escalation](#optional-cloud-escalation-for-self-work)).
 
 Mana is a personal project: it's built for one Windows setup, with local models by default, clear setup checks, and optional companion features when you want phone access or avatar control. It's shared openly, and it's meant to grow into something other people can install. That's future work, not a promise.
 
@@ -40,7 +40,7 @@ Mana is for people who want an always-listening voice assistant on their desktop
 
 ### How is Mana different?
 
-- 🔒 **Privacy-first, not privacy-optional** — local `llama.cpp` replies, local Whisper transcription, local TTS, and local OCR by default; `OPENAI_API_KEY` is ignored unless you explicitly opt into remote AI.
+- 🔒 **Privacy-first, not privacy-optional** — local `llama.cpp` replies, local Whisper transcription, local TTS, and local OCR by default; `OPENAI_API_KEY` is ignored unless you explicitly opt into remote AI, and the one optional cloud feature for her own coding work is off until you switch it on.
 - 🎙️ **Voice-native, not one-shot** — she's awake the whole time she's listening, so you just keep talking (turn on Settings > Voice > Wake word to make her wait for `Mana` or `wake up` first), instead of re-triggering per question like a push-to-talk command. Talk over her mid-reply (hotkey or just your voice) and she stops to listen, instead of finishing a sentence you already interrupted.
 - 🧩 **One integrated loop, not five disconnected tools** — transcription, LLM reply, TTS, and screen OCR are wired together into a single conversation instead of scripts you have to glue yourself.
 - 🛠️ **Developer-friendly, not a black box** — Mana can open files in Zed or VS Code, propose edits for review instead of silently applying them, and can even run as a Zed External Agent.
@@ -93,10 +93,11 @@ For the full setup flow, including model paths, Whisper, TTS services, gaming mo
 - **Voice barge-in**: interrupt Mana mid-reply with a hotkey or just by talking over her, on by default. See [docs/roadmap/issue-219-voice-barge-in.md](docs/roadmap/issue-219-voice-barge-in.md).
 - **Local transcription and speech output**: audio goes through `whisper.cpp`, and replies are spoken locally. Fish Speech is the default TTS provider; see [docs/fish_speech_tts.md](docs/fish_speech_tts.md).
 - **Screen text awareness**: after Mana is awake, the launcher can capture the primary display and read the text on it locally.
-- **Look-at-my-screen hotkey**: press `Ctrl+Alt+Shift+M` (remappable in Settings > Hotkeys) to have Mana describe the screen and speak the answer. See [docs/vision_setup.md](docs/vision_setup.md).
+- **Look-at-my-screen hotkey**: press `Ctrl+Alt+Shift+M` (remappable in Settings > General > Hotkeys) to have Mana describe the screen and speak the answer. See [docs/vision_setup.md](docs/vision_setup.md).
 - **Desktop avatar support**: Mana emotes through a built-in Live2D avatar with lip sync and emotion reactions. See [docs/live2d_avatar_setup.md](docs/live2d_avatar_setup.md).
 - **Editor coding handoff**: Mana can open projects or files in Zed or VS Code and propose edits for review. See [Editor Integration](#editor-integration).
 - **Memory between conversations**: memories link across sessions and are consolidated while she's idle, so what she learns outlives one chat.
+- **Browser automation (in progress)**: Mana's browser plugin is being moved onto Arcana, a lightweight browser runtime, with your installed Edge as the fallback. A week-long soak test is still running, so treat it as unfinished.
 - **OpenAI-compatible API**: `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` let external tools talk to Mana's local backend. See [Backend API](#backend-api).
 
 More features, including gaming mode, Deep Research, the MCP server and the plugins, are listed in [docs/features.md](docs/features.md).
@@ -141,9 +142,26 @@ Default behavior:
 
 Remote AI is an explicit escape hatch, not the default path.
 
+### Optional cloud escalation for self-work
+
+Mana can work issues on her own code ("self-work") with her local coding model. When every local attempt at an issue fails, she can escalate to a cloud model instead of giving up. **This is off by default**, and it is the one place where code and issue context can leave your PC, so it is spelled out here.
+
+- **Opt-in.** You switch it on, with that provider's API key, in Settings > Models (the *Self-work escalation* use). Until then nothing is sent anywhere. The key is stored protected, not in plain text.
+- **What leaves the machine.** The model it escalates to runs her self-work loop remotely, so it receives the issue text, what her local attempts found (a short summary), and whatever repository files it reads with her coding tools, plus the tool results it asks for. Its edits come back as proposals that go through her tests and reviewer. Nothing else is sent: not your voice, chats or screen. The spending record keeps tokens and dollars only, never a prompt, code or key.
+- **It does not use `MANA_ALLOW_REMOTE_AI`.** That variable only governs remote AI for normal replies (`OPENAI_API_KEY`). Escalation is governed by its own Settings switch and key, and it is blocked entirely by local-only mode (`MANA_LOCAL_ONLY=1`, or the launcher's local-only toggle).
+- **Tiers and limits.** Escalation tries the models you pick in Settings > Models, one tier at a time (DeepSeek Flash, then DeepSeek Pro, until you choose others), one run per tier per issue, at most 5 escalation runs a day. DeepSeek runs are held for its cheaper off-peak hours unless you say "go ahead" on that issue. A "go ahead" also lets one run past the daily cap.
+- **Providers.** DeepSeek is the default. Settings > Models offers twelve provider presets (DeepSeek, OpenAI, Anthropic, Google Gemini, xAI, Mistral, OpenRouter, Groq, Ollama, LM Studio, llama.cpp server, and Custom). Models without built-in prices can be given per-token prices, and Settings keeps outcome stats per model.
+- **Asking for it in chat.** Mana only hands a coding request in chat to DeepSeek when you explicitly ask her to. It uses the same DeepSeek switch and key, its edits are proposals you review, and its cost is counted under chat rather than against self-work's daily limit.
+- **No dollar cap.** There is no spending limit in dollars. The only limits are the 5 escalation runs a day for self-work (chat requests are not counted against that), so check the spending page.
+- **Spending.** Settings > Models > Spending shows what cloud use has cost, in tokens and dollars: per issue or PR, a monthly projection, a daily chart, and, for DeepSeek, a balance estimate with a low-balance warning.
+
+Her own local runs are the only ones kept as training records; a change from a cloud model never is (see [docs/self_work_training_traces.md](docs/self_work_training_traces.md)).
+
 ## Configuration
 
 These are the variables most setups change. [`node-bot/.env.sample`](node-bot/.env.sample) has the core settings, with a comment on each. Feature-specific variables are in their own docs.
+
+Most day-to-day options are in the launcher's Settings window, which is its own window with a search box and nine groups: General, Voice, Check-ins, Memory, Models, Permissions, Privacy, Connections and Advanced. Models is one page covering providers, which model each use picks, this PC's model files and API spending.
 
 | Variable | Purpose |
 |---|---|
@@ -151,7 +169,8 @@ These are the variables most setups change. [`node-bot/.env.sample`](node-bot/.e
 | `LLAMA_MODEL` | Path to the active GGUF model; unset, Mana picks one from [Model Stack](#model-stack) |
 | `WHISPER_BIN` / `WHISPER_MODEL` | Path to the `whisper.cpp` binary and its model |
 | `TTS_PROVIDER` | TTS backend: `fish` (default), `kokoro`, `gpt-sovits`, or `qwen3tts` |
-| `MANA_ALLOW_REMOTE_AI` | Set to `1` to opt into remote AI; unset or `0` keeps everything local |
+| `MANA_ALLOW_REMOTE_AI` | Set to `1` to opt into remote AI for normal replies; unset or `0` keeps everything local. Does not control self-work escalation (see above) |
+| `MANA_LOCAL_ONLY` | Set to `1` to block every connection that would leave this PC and your local network, including self-work escalation |
 | `OPENAI_API_KEY` | Remote AI key, ignored unless `MANA_ALLOW_REMOTE_AI=1` |
 | `MANA_BIND_HOST` | Address the backend listens on; loopback only by default. Read the note in `.env.sample` before changing it |
 | `ADMIN_TOKEN` | Sent as the `x-admin-token` header by scripts; the launchers use their own per-run key |
@@ -268,10 +287,10 @@ Setup, the test commands and the checks to run before pushing are in [CONTRIBUTI
 
 ## Status
 
-Mana is under active development. The supported path is:
+Mana is under active development, and the code on `main` is well ahead of the last packaged release: **v0.3.0 (3 August 2026, Developer Preview) is the latest packaged release; `main` is ahead of it.** To get what is described here, build from source as in [Quick Start](#quick-start). The supported path is:
 
 ```text
 windows-native-launcher -> node-bot -> local Whisper / local Llama / local TTS
 ```
 
-The native launcher is the primary, supported launcher. Its feature history and benchmarks are in [docs/native_launcher_plan.md](docs/native_launcher_plan.md). The Electron launcher is retired and kept only as a fallback. The next engineering priority is backend modularization, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500).
+The native launcher is the primary, supported launcher. Its feature history and launcher resource benchmarks are in [docs/native_launcher_plan.md](docs/native_launcher_plan.md). The Electron launcher is retired and kept only as a fallback. The next engineering priority is backend modularization, tracked in [issue #500](https://github.com/Yuuzulight/Mana/issues/500).
