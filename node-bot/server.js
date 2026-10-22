@@ -3128,6 +3128,9 @@ function registerRoutes(app, upload, deps = {}) {
         env: deps.env || process.env,
       }),
       remoteLoop: (config) => llamaServerRuntime.remoteToolReply(config),
+      // #1406: Claude Code on her Claude subscription, the last step (MANA_CLAUDE_CODE=1).
+      claudeRunner: (worktree) => require("./ai/claude-code-runner").createClaudeCodeRunner({ model: (deps.env || process.env).MANA_CLAUDE_CODE_MODEL || "sonnet", env: deps.env || process.env, worktree }),
+      claudeAvailable: () => require("./ai/claude-code-runner").claudeCodeAvailable({ env: deps.env || process.env }),
       spending: apiSpending,
       isGaming: deps.isGaming || gamingWatch.isGaming,
       // #1008: starts and ends go to the chat and a toast; a ready PR's link comes along.

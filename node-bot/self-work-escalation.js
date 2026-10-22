@@ -17,16 +17,26 @@ const TIERS = [
   { id: "pro", label: "DeepSeek Pro", model: "deepseek-v4-pro", thinking: true },
 ];
 const PER_DAY = 5;
+// #1406: how long Claude's usage limit holds an issue (Pro's five-hour window).
+const LIMIT_HOLD_MS = 5 * 60 * 60 * 1000;
 
-// The tiers for these settings: the models picked, or DeepSeek's two. Only
+// The tiers for these settings: the models picked, or DeepSeek's Flash (the
+// 2026-10-16 bench: Pro solved one more case for five times the cost). Only
 // DeepSeek gets its thinking switch (null: the request leaves it out).
-function tiersFor(s) {
+// #1406: Claude Code (her own Claude subscription, ai/claude-code-runner.js)
+// comes last when MANA_CLAUDE_CODE=1: an agent, not a model her loop calls.
+function tiersFor(s, env = {}) {
   const deepseek = (s.preset || "deepseek") === "deepseek"; // settings from before providers
-  const models = s.models?.length ? s.models : deepseek ? TIERS.map((t) => t.model) : [];
-  return models.map((model) => {
+  const models = s.models?.length ? s.models : deepseek ? [TIERS[0].model] : [];
+  const tiers = models.map((model) => {
     const builtIn = deepseek && TIERS.find((t) => t.model === model);
     return builtIn ? { ...builtIn } : { id: model, label: model, model, thinking: deepseek ? true : null };
   });
+  if (env.MANA_CLAUDE_CODE === "1") {
+    const model = env.MANA_CLAUDE_CODE_MODEL || "sonnet";
+    tiers.push({ id: "claude", label: `Claude Code (${model})`, model, thinking: null, agent: true });
+  }
+  return tiers;
 }
 const MAX_RUNS_KEPT = 500;
 const MAX_FACTS = 4000;
@@ -34,7 +44,7 @@ const MAX_FACTS = 4000;
 // settings: () => { enabled, preset, label, needsKey, models, baseUrl, apiKey }
 // (the protected store). tiers: fixed tiers instead (tests).
 function createEscalation({ file, settings, env = process.env, now = () => new Date(), tiers = null, perDay = PER_DAY }) {
-  const currentTiers = () => tiers || tiersFor(settings());
+  const currentTiers = () => tiers || tiersFor(settings(), env);
   let data = { runs: [], goAhead: {}, held: {} };
   try {
     if (fs.existsSync(file)) data = { ...data, ...JSON.parse(fs.readFileSync(file, "utf8")) };
@@ -63,14 +73,18 @@ function createEscalation({ file, settings, env = process.env, now = () => new D
   // The tiers this issue hasn't used since my last "retry".
   const tiersLeft = (issue) => currentTiers().filter((t) => !data.runs.some((r) => r.issue === key(issue) && r.tier === t.id && !r.reset));
 
-  // May the next tier run now? { ok } or { ok: false, why, kind: "peak" | "day" }.
-  function gate(issue) {
+  // May the next tier run now? { ok } or { ok: false, why, kind: "limit" | "peak" | "day" }.
+  // #1406: Claude's usage limit holds it until the window resets, go ahead or
+  // not; DeepSeek's price hours don't apply to her Claude subscription.
+  function gate(issue, tier = null) {
+    const until = data.held[key(issue)]?.until;
+    if (until && now() < new Date(until)) return { ok: false, kind: "limit", why: `Claude's usage limit is reached; I'll pick #${issue} up after it resets.` };
     if (data.goAhead[key(issue)]) return { ok: true };
     const ranToday = data.runs.filter((r) => r.at.startsWith(today())).length;
     if (ranToday >= perDay) {
       return { ok: false, kind: "day", why: `I've used today's ${perDay} escalation runs. Say "go ahead on #${issue}" to let one more through, or I'll try tomorrow.` };
     }
-    if ((settings().preset || "deepseek") === "deepseek" && isPeak(now())) {
+    if (!tier?.agent && (settings().preset || "deepseek") === "deepseek" && isPeak(now())) {
       const at = nextOffPeak(now());
       const local = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       return { ok: false, kind: "peak", why: `DeepSeek is at peak price now; it's half price from ${local}, so I'll wait for that. Say "go ahead on #${issue}" to run it now.` };
@@ -109,8 +123,23 @@ function createEscalation({ file, settings, env = process.env, now = () => new D
 
   // Held for later (peak, the day's cap), with what her attempts found, so
   // the next run on it goes straight to the escalation.
-  function hold(issue, facts, why) {
-    data.held[key(issue)] = { at: now().toISOString(), facts: String(facts || "").slice(0, MAX_FACTS), why };
+  function hold(issue, facts, why, until = null) {
+    data.held[key(issue)] = { at: now().toISOString(), facts: String(facts || "").slice(0, MAX_FACTS), why, ...(until ? { until: until.toISOString() } : {}) };
+    save();
+  }
+
+  // #1406: Claude's usage limit: the run didn't happen (the tier stays left)
+  // and the issue waits about one five-hour window.
+  function pause(issue, tier, facts) {
+    cancel(issue, tier);
+    hold(issue, facts, "claude-limit", new Date(now().getTime() + LIMIT_HOLD_MS));
+  }
+
+  // A run that didn't happen: the tier stays left for this issue.
+  function cancel(issue, tier) {
+    const i = data.runs.findLastIndex((r) => r.issue === key(issue) && r.tier === tier.id && r.passed === undefined);
+    if (i < 0) return;
+    data.runs.splice(i, 1);
     save();
   }
   const held = (issue) => data.held[key(issue)] || null;
@@ -121,7 +150,7 @@ function createEscalation({ file, settings, env = process.env, now = () => new D
   }
 
   // Held and still not allowed: the idle picker leaves it until it is.
-  const waitingNow = (issue) => Boolean(held(issue)) && !gate(issue).ok;
+  const waitingNow = (issue) => Boolean(held(issue)) && !gate(issue, tiersLeft(issue)[0]).ok;
 
   // "Go ahead": one run past the peak hold or a cap.
   function goAhead(issue) {
@@ -141,7 +170,7 @@ function createEscalation({ file, settings, env = process.env, now = () => new D
     return { baseUrl, apiKey };
   };
 
-  return { unavailable, tiersLeft, gate, begin, finish, stats, hold, held, release, waitingNow, goAhead, reset, config, get tiers() { return currentTiers(); } };
+  return { unavailable, tiersLeft, gate, begin, finish, cancel, pause, stats, hold, held, release, waitingNow, goAhead, reset, config, get tiers() { return currentTiers(); } };
 }
 
 module.exports = { createEscalation, tiersFor, TIERS, PER_DAY };

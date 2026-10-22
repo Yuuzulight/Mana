@@ -22,6 +22,8 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "mana-escalation-"));
 const bases = [];
 test.after(() => bases.forEach((b) => fs.rmSync(b, { recursive: true, force: true })));
 
+const CLAUDE_ON = { MANA_CLAUDE_CODE: "1" };
+
 function escalation({ settings = ON, env = {}, at = OFF, file } = {}) {
   let now = at;
   const e = createEscalation({ file: file || path.join(tmp(), "esc.json"), settings: () => settings, env, now: () => now });
@@ -36,7 +38,7 @@ test("unavailable: switched off, no key, or local-only", () => {
 });
 
 test("one run per tier per issue until my retry; 5 a day; go ahead lets one through", () => {
-  const { e } = escalation();
+  const { e } = escalation({ settings: { ...ON, models: ["deepseek-flash", "deepseek-v4-pro"] } });
   const [flash, pro] = e.tiers;
   e.begin(7, flash);
   assert.deepEqual(e.tiersLeft(7).map((t) => t.id), ["pro"]);
@@ -142,8 +144,36 @@ async function play(policy, calls, seen) {
   }
 }
 
+// #1406: a stand-in for Claude Code (the runner her loop drives) and for her
+// approval gate. claude: [calls, answer, extra] per handoff, in order.
+function claudeSide({ claude = [], approve = true, available = null } = {}) {
+  const asked = [];
+  const calls = [];
+  const executors = {};
+  let n = 0;
+  return {
+    asked,
+    calls,
+    gate: {
+      registerExecutor: (type, fn) => (executors[type] = fn),
+      requestApproval: async (type, request) => {
+        asked.push({ type, summary: request.summary });
+        return approve ? { status: "approved", result: await executors[type](request.payload) } : { status: "blocked", reason: "you said no" };
+      },
+      listPending: () => [],
+    },
+    available: async () => available,
+    runner: (worktree) => async (prompt, policy, opts) => {
+      const [script, answer, extra] = claude[n++] || [[], "Not done yet."];
+      calls.push({ worktree, prompt, opts, before: read(path.join(worktree, "node-bot", "util.js")) });
+      await play(policy, script, []);
+      return { content: answer, rounds: script.length, messages: null, ...extra };
+    },
+  };
+}
+
 // local: her loop's scripts; remote: { model: script } for each tier.
-function setup({ local = [gotNowhere], remote = {}, at = OFF, settings = ON, testsPass = () => true } = {}) {
+function setup({ local = [gotNowhere], remote = {}, at = OFF, settings = ON, testsPass = () => true, escEnv = {}, claude = null } = {}) {
   const repos = makeRepos();
   const ghCalls = [];
   const seen = [];
@@ -168,7 +198,7 @@ function setup({ local = [gotNowhere], remote = {}, at = OFF, settings = ON, tes
     };
   };
   const spending = createApiSpending({ file: path.join(repos.base, "spending.json"), now: () => at });
-  const { e, setNow } = escalation({ at, settings, file: path.join(repos.base, "esc.json") });
+  const { e, setNow } = escalation({ at, settings, env: escEnv, file: path.join(repos.base, "esc.json") });
   const sw = createSelfWork({
     repoRoot: repos.live,
     worktreesDir: repos.worktrees,
@@ -178,6 +208,7 @@ function setup({ local = [gotNowhere], remote = {}, at = OFF, settings = ON, tes
     runLoop,
     escalation: e,
     remoteLoop,
+    ...(claude ? { claudeRunner: claude.runner, claudeAvailable: claude.available, approvalGate: claude.gate } : {}),
     spending,
     traces: { enabled: () => true, save: (rec) => (saved.push(rec), { saved: true }), mark: () => {} },
     runTests: async () => {
@@ -216,6 +247,7 @@ test("Flash fails, Pro passes: Pro hears what Flash tried, and Flash's reasoning
   // Her run is unjudged; Flash's tests fail; Pro's pass.
   const s = setup({
     remote: { "deepseek-flash": [[find, plan, fix, runTests, ...reviews, finish], "Done, I think."], "deepseek-v4-pro": passes },
+    settings: { ...ON, models: ["deepseek-flash", "deepseek-v4-pro"] },
     testsPass: () => ++call > 2,
   });
   const status = await s.runIssue();
@@ -251,9 +283,11 @@ test("switched off: no remote call, and her run ends as it would have", async ()
 });
 
 // #1441: the models I pick in Settings, on any provider.
-test("tiers: DeepSeek's two until I pick; another provider's are mine to pick, without DeepSeek's thinking switch", () => {
+test("tiers: DeepSeek's Flash until I pick; another provider's are mine to pick, without DeepSeek's thinking switch", () => {
   const { tiersFor } = require("../self-work-escalation");
-  assert.deepEqual(tiersFor({ preset: "deepseek" }).map((t) => t.id), ["flash", "pro"]);
+  // The 2026-10-16 bench: Pro solved one more case than Flash for five times the cost, so it isn't in the default chain.
+  assert.deepEqual(tiersFor({ preset: "deepseek" }).map((t) => t.id), ["flash"]);
+  assert.deepEqual(tiersFor({ preset: "deepseek", models: ["deepseek-flash", "deepseek-v4-pro"] }).map((t) => t.id), ["flash", "pro"]);
   assert.deepEqual(tiersFor({ preset: "deepseek", models: ["deepseek-v4-pro"] }).map((t) => t.id), ["pro"]);
   assert.deepEqual(tiersFor({ preset: "openrouter" }), []);
   const [first, second] = tiersFor({ preset: "openrouter", models: ["qwen/qwen3-coder", "openai/gpt-5"] });
@@ -269,7 +303,7 @@ test("another provider: its own key wording, a local one needs none, no models p
 });
 
 test("finish and stats: per model, runs with an outcome, passes and cost", () => {
-  const { e } = escalation();
+  const { e } = escalation({ settings: { ...ON, models: ["deepseek-flash", "deepseek-v4-pro"] } });
   const [flash, pro] = e.tiers;
   e.begin(7, flash);
   e.finish(7, flash, { passed: false, usd: 0.04 });
@@ -282,4 +316,97 @@ test("finish and stats: per model, runs with an outcome, passes and cost", () =>
     { model: "deepseek-flash", runs: 2, passed: 1, usd: null },
     { model: "deepseek-v4-pro", runs: 1, passed: 1, usd: 0.3 },
   ]);
+});
+
+// #1406: Claude Code, the last step: after Flash fails, asked for first.
+test("tiers: Claude Code comes last when switched on, with its model; it counts toward the day and isn't held at DeepSeek's peak", () => {
+  const { tiersFor } = require("../self-work-escalation");
+  assert.deepEqual(tiersFor({ preset: "deepseek" }, {}).map((t) => t.id), ["flash"]);
+  const [, claude] = tiersFor({ preset: "deepseek" }, CLAUDE_ON);
+  assert.deepEqual([claude.id, claude.model, claude.agent, claude.label], ["claude", "sonnet", true, "Claude Code (sonnet)"]);
+  assert.equal(tiersFor({ preset: "deepseek" }, { ...CLAUDE_ON, MANA_CLAUDE_CODE_MODEL: "opus" })[1].model, "opus");
+  const { e } = escalation({ env: CLAUDE_ON, at: PEAK });
+  const tier = e.tiers.find((t) => t.agent);
+  assert.equal(e.gate(7, tier).ok, true, "DeepSeek's price hours don't apply to her subscription");
+  assert.equal(e.gate(7).ok, false);
+  for (const n of [1, 2, 3, 4, 5]) e.begin(n, tier);
+  assert.equal(e.gate(7, tier).kind, "day");
+});
+
+const flashTries = [[find, plan, ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b;", new_text: "return a - b; // flash" }], runTests, ...reviews, finish], "Done, I think."];
+const claudeFixes = [[["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b; // flash", new_text: "return a + b;" }], runTests, ...reviews, finish], "I fixed DeepSeek's change."];
+
+test("Flash fails: she asks first, then Claude Code picks up Flash's attempt with the brief, and its pass opens the PR", async () => {
+  const claude = claudeSide({ claude: [claudeFixes] });
+  const s = setup({ remote: { "deepseek-flash": flashTries }, escEnv: CLAUDE_ON, claude, testsPass: () => claude.calls.length > 0 && !/a - b/.test(read(path.join(s.repos.worktrees, "mana-7", "node-bot", "util.js"))) });
+  const status = await s.runIssue();
+  assert.equal(claude.asked.length, 1);
+  assert.equal(claude.asked[0].type, "self-work-claude");
+  assert.match(claude.asked[0].summary, /#7/);
+  assert.match(claude.asked[0].summary, /DeepSeek Flash/);
+  assert.match(claude.asked[0].summary, /sonnet/);
+  assert.match(claude.asked[0].summary, /five-hour/);
+  assert.equal(claude.calls.length, 1);
+  assert.match(claude.calls[0].before, /return a - b; \/\/ flash/, "Claude starts from Flash's worktree, not a reset one");
+  assert.match(claude.calls[0].prompt, /DeepSeek Flash's try: /);
+  assert.match(claude.calls[0].prompt, /DeepSeek Flash's change is in your worktree/);
+  assert.equal(claude.calls[0].opts.cancelled?.(), false, "the runner can see her Stop");
+  assert.equal(status.state, "pr-open", status.step);
+  assert.equal(read(path.join(s.repos.worktrees, "mana-7", "node-bot", "util.js")), FIXED);
+  const create = s.ghCalls.find((a) => a[0] === "pr" && a[1] === "create");
+  assert.match(create[create.indexOf("--body") + 1], /came from Claude Code \(sonnet\) running my self-work loop/);
+  assert.equal(s.e.stats().find((x) => x.model === "sonnet").passed, 1);
+});
+
+test("declined: nothing goes to Claude, her own attempt is put back, and the run ends as it would have", async () => {
+  const claude = claudeSide({ claude: [claudeFixes], approve: false });
+  const s = setup({ remote: { "deepseek-flash": flashTries }, escEnv: CLAUDE_ON, claude, testsPass: () => false });
+  const status = await s.runIssue();
+  assert.equal(claude.asked.length, 1);
+  assert.equal(claude.calls.length, 0);
+  assert.notEqual(status.state, "pr-open");
+  assert.doesNotMatch(read(path.join(s.repos.worktrees, "mana-7", "node-bot", "util.js")), /\/\/ flash/);
+  assert.ok(s.events.some((ev) => /didn't hand #7 to Claude Code/.test(ev.text)), s.events.map((ev) => ev.text).join("\n"));
+});
+
+test("a usage limit pauses: Claude's work stays, the run waits, and later it goes straight back to Claude", async () => {
+  const partial = [[["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b; // flash", new_text: "return a - b; // claude, halfway" }]], "Working on it... Claude usage limit reached.", { usageLimit: true }];
+  // A new run has no plan yet, so it plans before its first edit, as Claude would when told to.
+  const finishing = [[find, plan, ["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b; // claude, halfway", new_text: "return a + b;" }], runTests, ...reviews, finish], "Done."];
+  const claude = claudeSide({ claude: [partial, finishing] });
+  const s = setup({ remote: { "deepseek-flash": flashTries }, escEnv: CLAUDE_ON, claude, testsPass: () => !/a - b/.test(read(path.join(s.repos.worktrees, "mana-7", "node-bot", "util.js"))) });
+  let status = await s.runIssue();
+  assert.equal(status.state, "waiting", status.step);
+  assert.match(status.step, /usage limit/);
+  assert.match(read(path.join(s.repos.worktrees, "mana-7", "node-bot", "util.js")), /claude, halfway/);
+  assert.equal(s.e.held(7).why, "claude-limit");
+  assert.deepEqual(s.e.tiersLeft(7).map((t) => t.id), ["claude"]);
+  assert.equal(s.e.gate(7, s.e.tiers[1]).ok, false, "held until the window resets");
+  s.setNow(new Date(OFF.getTime() + 6 * 3600 * 1000));
+  status = await s.runIssue();
+  assert.equal(claude.asked.length, 2, "asked again before it continues");
+  assert.equal(claude.calls.length, 2);
+  assert.match(claude.calls[1].before, /claude, halfway/);
+  assert.equal(status.state, "pr-open", status.step);
+});
+
+test("Claude Code not set up: one line on how, and she isn't asked", async () => {
+  const claude = claudeSide({ available: "Claude Code isn't signed in: run `claude`, then `/login` with your Claude account" });
+  const s = setup({ remote: { "deepseek-flash": flashTries }, escEnv: CLAUDE_ON, claude, testsPass: () => false });
+  await s.runIssue();
+  assert.equal(claude.asked.length, 0);
+  assert.equal(claude.calls.length, 0);
+  assert.ok(s.events.some((ev) => /run `claude`, then `\/login`/.test(ev.text)), s.events.map((ev) => ev.text).join("\n"));
+});
+
+test("a held issue that fails again when it resumes ends as not done, not as a crash", async () => {
+  const partial = [[["coding__propose_edit", { path: "node-bot/util.js", old_text: "return a - b; // flash", new_text: "return a - b; // claude, halfway" }]], "Claude usage limit reached.", { usageLimit: true }];
+  const claude = claudeSide({ claude: [partial, gotNowhere] });
+  const s = setup({ remote: { "deepseek-flash": flashTries }, escEnv: CLAUDE_ON, claude, testsPass: () => false });
+  assert.equal((await s.runIssue()).state, "waiting");
+  s.setNow(new Date(OFF.getTime() + 6 * 3600 * 1000));
+  const status = await s.runIssue();
+  assert.equal(claude.calls.length, 2);
+  assert.notEqual(status.state, "failed", status.step);
+  assert.doesNotMatch(status.step, /hit a problem/);
 });

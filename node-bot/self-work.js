@@ -33,6 +33,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { resolveWithinRoot, isCredentialPath } = require("./ai/tool-policy");
 const { CODING_EDIT_TOOL_NAME, CODING_TEST_TOOL_NAME, runTestCommand, TEST_ESTIMATE_SCHEMA } = require("./ai/coding-tool-source");
+const { askClaudeHandoff } = require("./tools/self-work-claude-approval");
 const {
   SESSION_GOAL_FINISH_TOOL_NAME,
   TOOL_SCHEMAS: GOAL_TOOL_SCHEMAS,
@@ -817,17 +818,18 @@ function createSelfWork(options = {}) {
     } catch {}
     await git(["fetch", "origin", "main"]);
     await prepare(r, "origin/main");
-    // #1420: a run that died can leave half-edits in a reused worktree.
-    await resetWorktree(r);
+    // #1406: held for off-peak, the day's cap or Claude's usage limit: her
+    // attempts already failed, so straight to the escalation with what they found.
+    const waiting = escalation?.held(r.issue);
+    // #1420: a run that died can leave half-edits in a reused worktree. Not
+    // after Claude's limit: that pause was clean, and its work is picked up.
+    if (waiting?.why !== "claude-limit") await resetWorktree(r);
 
     log(r, "Working on it in my worktree.");
     await owner();
-    // #1406: held for off-peak or the day's cap: her attempts already failed,
-    // so straight to DeepSeek with what they found.
-    const waiting = escalation?.held(r.issue);
     if (waiting) {
       r.priorFacts = waiting.facts;
-      log(r, "My own attempts at this already failed, so I'm going straight to DeepSeek.");
+      log(r, waiting.why === "claude-limit" ? "Claude Code's limit has reset, so I'm picking its work back up." : "My own attempts at this already failed, so I'm going straight to DeepSeek.");
     }
     let best = waiting ? { reply: null, kept: 0, none: true } : await bestOf(r, issue, attemptCount());
     if (haltedEnd(r)) return;
@@ -848,8 +850,11 @@ function createSelfWork(options = {}) {
     // #1247: none of several attempts passed. The closest that finished
     // and ran its tests goes up as a draft; with none, no PR.
     if (best.none) {
-      const tried = r.attempts.map((a) => `attempt ${a.attempt} ${a.finished ? "finished" : "didn't finish"}, ${a.passed ? "tests passing" : `${a.failures} failing`}`).join("; ");
-      return end(r, "not-done", `None of my ${r.attempts.length} attempts at #${r.issue} finished with its tests run and passing, so no PR (${tried}).`);
+      // #1406: a held issue resumed straight into the escalation has no attempts of her own this run.
+      const attempts = r.attempts || [];
+      if (!attempts.length) return end(r, "not-done", `The escalation didn't get #${r.issue} passing either, so no PR.${r.fallbackNote ? ` ${r.fallbackNote}` : ""}`);
+      const tried = attempts.map((a) => `attempt ${a.attempt} ${a.finished ? "finished" : "didn't finish"}, ${a.passed ? "tests passing" : `${a.failures} failing`}`).join("; ");
+      return end(r, "not-done", `None of my ${attempts.length} attempts at #${r.issue} finished with its tests run and passing, so no PR (${tried}).`);
     }
     const closest = best.failing !== undefined;
     if (!closest && (!r.finished || /^Not done yet/i.test(summary))) {
@@ -944,6 +949,8 @@ function createSelfWork(options = {}) {
       onRound: (round) => {
         r.round = round;
       },
+      // #1406: her Stop, for a runner that can end its turn (Claude Code).
+      cancelled: () => Boolean(r.stopRequested || r.halt),
       maxMs: Infinity,
       maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
       thinking: Number(env.MANA_SELF_WORK_THINKING ?? SELF_WORK_THINKING) || false,
@@ -957,12 +964,15 @@ function createSelfWork(options = {}) {
   // worktree the caller made: no fetch, no labels, no commit, no push, no
   // PR. A loop that throws (where a real run would end "failed") comes
   // back as error, with the run as far as it got.
-  async function bench(issue, worktree, { attempts = 1 } = {}) {
+  async function bench(issue, worktree, { attempts = 1, claude = false } = {}) {
     // #1467: the bench may give more rounds (a case whose merged fix alone takes most of the budget).
     const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: Math.max(roundBudget(issue.body), Number(issue.maxRounds) || 0) });
     try {
       if (nativeTests && !options.approvalGate) throw new Error('Windows benchmark tests require a human approval gate; no unrestricted benchmark fallback');
-      return { reply: (await bestOf(r, issue, attempts)).reply, run: r };
+      let best = await bestOf(r, issue, attempts);
+      // #1406: --setup flash-claude: a case Flash didn't pass goes to Claude Code, in the same worktree.
+      if (claude && options.claudeRunner && (best.failing !== undefined || (await ownFailed(r, best)))) best = (await benchHandoff(r, issue, worktree, best)) || best;
+      return { reply: best.reply, run: r };
     } catch (e) {
       return { reply: null, run: r, error: e.message };
     }
@@ -982,6 +992,8 @@ function createSelfWork(options = {}) {
   // when its tests pass but it didn't hand in.
   async function remoteAttempt(r, issue, runner) {
     let reply = await loop(r, issue, false, runner);
+    // #1406: Claude Code stopped by a usage limit or not signed in: nothing to judge.
+    if (reply?.usageLimit || reply?.unavailable) return { reply };
     if (r.halt || r.stopRequested || r.refuted) return { reply };
     const finished = Boolean(r.finished) && !/^Not done yet/i.test(reply?.content || "");
     const verdict = await judge(r);
@@ -1010,6 +1022,30 @@ function createSelfWork(options = {}) {
     } catch {}
   }
 
+  // #1406: the bench's handoff (the run starting the bench is its approval): Flash's attempt, as left, to Claude Code.
+  async function benchHandoff(r, issue, worktree, best) {
+    const model = options.claudeModel || "sonnet";
+    const tier = { label: `Claude Code (${model})`, model, agent: true };
+    const last = { label: "DeepSeek Flash", how: best.failing ? `${best.failures} tests still failing (${best.failing.slice(0, 5).join("; ")})` : "it didn't finish" };
+    if (!(await askClaudeHandoff({ gate: options.approvalGate, summary: handoffSummary(r, tier, last) }))) return null;
+    for (const key of ["finished", "lastTestPassed", "reviewedTree", "refutations", "conversations"]) delete r[key];
+    r.round = 0;
+    r.priorFacts = handoffBrief(failureFacts(r), last);
+    const out = await remoteAttempt(r, issue, options.claudeRunner(worktree));
+    r.claude = { ran: true, rounds: out.reply?.rounds ?? 0, tokens: out.reply?.usage?.totalTokens ?? null, usageLimit: Boolean(out.reply?.usageLimit) };
+    return { reply: out.reply };
+  }
+
+  // #1406: what Mana asks before a Claude Code handoff, and the brief it starts from.
+  function handoffSummary(r, tier, last) {
+    const why = last ? `${last.label} didn't get it passing: ${last.how}.` : "My earlier attempts didn't get it passing.";
+    return `Hand #${r.issue} (${r.title}) to ${tier.label}? ${why} It runs on your Claude subscription and uses part of your five-hour window; a large change can use most of it.`;
+  }
+  function handoffBrief(facts, last) {
+    const where = last ? `${last.label}'s change is in your worktree now (git diff shows it), and it didn't pass: ${last.how}.` : "The earlier attempt's change is in your worktree now (git diff shows it).";
+    return `${facts}\n\n${where} Work out where and why it went wrong, then fix or improve that change, or replace the parts that went the wrong way.`;
+  }
+
   // #1406: DeepSeek, one tier at a time, from a clean worktree with the
   // facts of her attempts. Returns her reply to go on with (a tier passed),
   // { held } (off-peak or the day's cap: try later), or null with her own
@@ -1034,6 +1070,7 @@ function createSelfWork(options = {}) {
     const refuted = r.refuted;
     delete r.refuted;
     const notes = [];
+    let last = null; // the tier before: its label and how it failed (#1406's handoff)
     const putBack = async () => {
       await resetWorktree(r);
       if (own) await applyPatch(r, patchFile);
@@ -1043,24 +1080,42 @@ function createSelfWork(options = {}) {
       if (notes.length) r.fallbackNote = notes.join(" ");
     };
     for (const tier of tiers) {
-      const gate = escalation.gate(r.issue);
+      // #1406: Claude Code is her Claude subscription: set up, and asked for, every time.
+      if (tier.agent) {
+        const no = options.claudeRunner ? await (options.claudeAvailable || (async () => null))() : "Claude Code isn't set up for self-work";
+        if (no) {
+          log(r, `I can't hand #${r.issue} to ${tier.label}: ${no}.`, true);
+          break;
+        }
+      }
+      const gate = escalation.gate(r.issue, tier);
       if (!gate.ok) {
         escalation.hold(r.issue, facts, gate.kind);
         await putBack();
         return { held: gate.why };
       }
+      if (tier.agent && !(await askClaudeHandoff({ gate: options.approvalGate, summary: handoffSummary(r, tier, last), cancelled: () => Boolean(r.stopRequested) }))) {
+        log(r, `You didn't hand #${r.issue} to ${tier.label}, so I stopped there.`, true);
+        break;
+      }
       escalation.begin(r.issue, tier);
       escalation.release(r.issue);
-      await resetWorktree(r);
-      for (const key of ATTEMPT_STATE) delete r[key];
+      if (tier.agent) {
+        // It picks up the tier before's attempt: that worktree and plan, judged afresh.
+        for (const key of ["finished", "lastTestPassed", "reviewedTree", "refutations", "conversations"]) delete r[key];
+        r.priorFacts = handoffBrief(facts, last);
+      } else {
+        await resetWorktree(r);
+        for (const key of ATTEMPT_STATE) delete r[key];
+        r.priorFacts = facts;
+      }
       r.round = 0;
-      r.priorFacts = facts;
       log(r, `None of my attempts at #${r.issue} passed, so I'm asking ${tier.label}.`, true);
       const used = { cacheHit: 0, cacheMiss: 0, output: 0, reasoning: 0, usd: 0, peak: false };
       const thoughts = [];
       let runner;
       try {
-        runner = remoteLoop({
+        runner = tier.agent ? options.claudeRunner(r.worktree) : remoteLoop({
           ...escalation.config(),
           model: tier.model,
           thinking: tier.thinking,
@@ -1085,12 +1140,26 @@ function createSelfWork(options = {}) {
       } catch (e) {
         out = { error: e.message };
       }
-      escalation.finish?.(r.issue, tier, { passed: Boolean(out.passed), usd: used.usd });
-      const line = `${tier.label}: ${describeUsage(used)}${tier.thinking === null ? "" : used.peak ? ", peak" : ", off-peak"}.`;
+      if (tier.agent && out.reply?.usageLimit) {
+        // Not a failure: its work stays in the worktree and she picks it up after the reset.
+        escalation.pause(r.issue, tier, facts);
+        fs.rmSync(patchFile, { force: true });
+        log(r, `${tier.label} hit your Claude usage limit on #${r.issue}; I kept its work and paused.`, true);
+        return { held: `${tier.label} hit your Claude usage limit, so I paused; I'll pick #${r.issue} up after it resets.` };
+      }
+      if (tier.agent && out.reply?.unavailable) {
+        escalation.cancel(r.issue, tier);
+        log(r, `I can't hand #${r.issue} to ${tier.label}: ${out.reply.unavailable}.`, true);
+        break;
+      }
+      escalation.finish?.(r.issue, tier, { passed: Boolean(out.passed), usd: tier.agent ? null : used.usd });
+      const line = tier.agent
+        ? `${tier.label}: ${out.reply?.usage?.totalTokens ?? "an unknown number of"} tokens on your Claude subscription.`
+        : `${tier.label}: ${describeUsage(used)}${tier.thinking === null ? "" : used.peak ? ", peak" : ", off-peak"}.`;
       notes.push(line);
       log(r, line);
       if (out.passed) {
-        r.fromRemote = { label: tier.label, model: tier.model };
+        r.fromRemote = { label: tier.agent ? "Claude Code" : tier.label, model: tier.model };
         fs.rmSync(patchFile, { force: true });
         r.fallbackNote = notes.join(" ");
         return { reply: out.reply, kept: 1 };
@@ -1099,6 +1168,7 @@ function createSelfWork(options = {}) {
       if (r.halt || r.stopRequested) break;
       const how = out.error ? `it failed (${String(out.error).slice(0, 200)})` : out.failing ? `${out.failures} tests still failing (${out.failing.slice(0, 5).join("; ")})` : "it didn't finish";
       log(r, `${tier.label} didn't get #${r.issue} passing: ${how}.`);
+      last = { label: tier.label, how };
       facts = `${facts}\n${tier.label}'s try: ${how}`.slice(-4000);
       // A refutation ends this tier the way it ends her own attempt.
       delete r.refuted;

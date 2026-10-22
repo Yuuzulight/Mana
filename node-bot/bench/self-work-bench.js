@@ -10,7 +10,9 @@
 //     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--no-time-limit] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
 //     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
-//     [--setup <name>]   (worktree folders bench-<name>-<case>, so setups can run side by side)
+//     [--setup <name>]   (worktree folders bench-<name>-<case>, so setups can run side by side;
+//                         flash-claude, with --remote deepseek-flash: a case Flash doesn't pass goes to Claude Code
+//                         on her Claude subscription (MANA_CLAUDE_CODE_MODEL, sonnet by default); its usage limit ends the run)
 //     [--orchestrate <model> [--worker <model>]]   (her loop run by <model> with no edit tool and a delegate tool; the worker, flash unless named, makes the edits)
 //     [--helper-model <model>]   (with --remote: that model also does her goal check and tool-call repair, and reviews her edits unless --reviewer says otherwise; nothing local runs)
 //     [--reviewer <model>]   (with --remote: that DeepSeek model reviews her edits, so no local model is loaded)
@@ -113,7 +115,9 @@ function loadCases(dir = CASES_DIR) {
 // disposable workspace) of tests in one of its throwaway bench worktrees.
 // An unrestricted rerun, any other request or another folder is refused
 // and fails that run, as a denial would.
-function benchTestGate(worktreesDir) {
+// #1406: under --setup flash-claude it also approves her Claude Code handoffs:
+// starting that run is the approval for its own handoffs.
+function benchTestGate(worktreesDir, { claude = false } = {}) {
   const executors = new Map();
   const inBench = (cwd) => {
     const rel = path.relative(worktreesDir, path.resolve(String(cwd || "")));
@@ -122,6 +126,10 @@ function benchTestGate(worktreesDir) {
   return {
     registerExecutor: (type, fn) => executors.set(type, fn),
     async requestApproval(type, { payload } = {}) {
+      if (type === "self-work-claude") {
+        if (!claude || !executors.has(type)) return { status: "blocked", reason: "the bench hands a case to Claude Code only under --setup flash-claude" };
+        return { status: "approved", result: await executors.get(type)(payload) };
+      }
       if (type !== "self-work-sandbox-tests" || !executors.has(type)) return { status: "blocked", reason: `the bench approves only its sandboxed tests, not ${type}` };
       if (payload?.unrestricted) return { status: "blocked", reason: "the bench never approves an unrestricted test run" };
       if (!inBench(payload?.cwd)) return { status: "blocked", reason: `tests outside the bench's own worktrees: ${payload?.cwd}` };
@@ -345,6 +353,8 @@ async function runCase(c, deps) {
       ramPercent: deps.ramPercent,
       runTests: deps.runTests,
       approvalGate: deps.approvalGate,
+      claudeRunner: deps.claudeRunner,
+      claudeModel: deps.claudeModel,
       protectedPaths: hiddenTestGuard(c, wt),
       onEvent: deps.onEvent || ((run, text) => console.log(`[bench ${c.id}] ${text}`)),
     });
@@ -359,7 +369,7 @@ async function runCase(c, deps) {
     // that and EXPLORE_ROUNDS more, so a budget never decides a case on its own.
     const issue = { number: c.issue, title: c.title, body, ...(deps.noRoundCap ? { maxRounds: 1000 } : c.minRounds ? { maxRounds: Math.round((c.minRounds + EXPLORE_ROUNDS) * (deps.roundScale || 1)) } : {}) };
     // #1247: --attempts N is her best-of-N (where self-work has it).
-    const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
+    const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1, claude: Boolean(deps.claude) });
     const wallMs = Date.now() - started;
     clearTimeout(overTimer);
     const peak = await peaks.stop();
@@ -412,6 +422,7 @@ async function runCase(c, deps) {
       trace: calls.trace,
       hiddenTail: hidden.passed ? "" : hidden.tail,
     };
+    if (run?.claude) result.claude = run.claude;
     result.failure = failureKind(result, c);
     return result;
   } finally {
@@ -572,6 +583,11 @@ function summarize(results) {
 const pct = (x) => `${Math.round(x * 100)}%`;
 const usd = (x) => `$${(x || 0).toFixed(2)}`;
 
+// #1406: Claude's usage limit ends a flash-claude run; the cases left run after it resets.
+function claudeLimitStop(caseId, remaining) {
+  return `Stopping after ${caseId}: Claude's usage limit is reached. Resume after it resets with: ${remaining.map((id) => `--case ${id}`).join(" ")}`;
+}
+
 function writeReport(results, outDir, meta = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const name = (r) => (meta.repeats > 1 ? `${r.id}-r${r.repeat}` : r.id);
@@ -597,6 +613,10 @@ function writeReport(results, outDir, meta = {}) {
     "",
     ...(rows.some((r) => typeof r.costUsd === "number")
       ? [`Cost: ${usd(summary.money.usd)} in all, ${summary.money.usdPerSolved == null ? "nothing solved" : `${usd(summary.money.usdPerSolved)} per solved case`} (${summary.money.solved} solved). By model: ${Object.entries(summary.byModelUsd).map(([m, v]) => `${m} ${usd(v)}`).join(", ") || "none"}.`, ""]
+      : []),
+    // #1406: Claude Code runs on her subscription: counted in tokens, never in dollars.
+    ...(rows.some((r) => r.claude)
+      ? [`Claude Code: ${rows.filter((r) => r.claude).length} handoff${rows.filter((r) => r.claude).length === 1 ? "" : "s"}, ${rows.filter((r) => r.claude && r.passed).length} passed, ${rows.reduce((n, r) => n + (r.claude?.tokens || 0), 0)} tokens on the subscription${rows.some((r) => r.claude?.usageLimit) ? ", stopped at a usage limit" : ""}.`, ""]
       : []),
     `Ended by: ${Object.entries(summary.endedBy).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}.`,
     "",
@@ -866,7 +886,10 @@ async function main(argv) {
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
   const maxUsd = Number(opt("--max-usd")[0]) || 0;
-  const approvalGate = benchTestGate(worktreesDir);
+  // #1406: flash-claude: Flash first, then Claude Code in the same worktree.
+  const claude = setup === "flash-claude";
+  const claudeModel = benchEnv(repoRoot).MANA_CLAUDE_CODE_MODEL || "sonnet";
+  const approvalGate = benchTestGate(worktreesDir, { claude });
   // Her loop and her reviewer both on the API: nothing of the bench's takes the GPU, so a game or her chat model being up is no reason to wait.
   const noLocalModel = Boolean(remote && config.reviewer && config.helperModel);
   const ignoreRamPause = Boolean(remote && noRamPause);
@@ -881,6 +904,8 @@ async function main(argv) {
   const pre = require("./preflight");
   const problems = [pre.copySourcesProblem(repoRoot), pre.helperProblem()];
   if (config.model && !fs.existsSync(config.model)) problems.push(`no model file at ${config.model}`);
+  if (claude && remote !== "deepseek-flash") problems.push("--setup flash-claude needs --remote deepseek-flash");
+  if (claude) problems.push(await require("../ai/claude-code-runner").claudeCodeAvailable());
   if (!problems.some(Boolean)) {
     const preflightName = setup ? `bench-preflight-${worktreePrefix(setup).slice(6, -1)}` : `bench-preflight-${process.pid}`;
     const wt = path.join(worktreesDir, preflightName);
@@ -944,7 +969,7 @@ async function main(argv) {
       for (let tries = 0; tries < 3 && !result; tries += 1) {
         why = await waitOut(c, gate, model, undefined, { forever: noLocalModel });
         if (why) break;
-        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, noRoundCap, timeByEstimate, timeWarnOnly, approvalGate, prefix: oracle ? "bench-oracle-" : worktreePrefix(setup) });
+        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, noRoundCap, timeByEstimate, timeWarnOnly, approvalGate, prefix: oracle ? "bench-oracle-" : worktreePrefix(setup), ...(claude ? { claude, claudeModel, claudeRunner: (wt) => require("../ai/claude-code-runner").createClaudeCodeRunner({ worktree: wt, model: claudeModel }) } : {}) });
         if (result.ended === "paused") {
           console.log(`${c.id} was paused; running it again.`);
           result = null;
@@ -967,6 +992,10 @@ async function main(argv) {
       if (remote) Object.assign(result, spendDelta(spendBefore, spend));
       results.push(result);
       writeReport(results, outDir, meta);
+      if (result.claude?.usageLimit) {
+        console.log(claudeLimitStop(c.id, [...new Set(runs.slice(runs.findIndex((r) => r.c === c && r.repeat === repeat)).map((r) => r.c.id))]));
+        break;
+      }
       if (maxUsd && spend.usd >= maxUsd) {
         console.log(`Stopping after ${c.id}: $${spend.usd.toFixed(2)} spent, the cap is $${maxUsd}.`);
         break;
@@ -993,4 +1022,4 @@ if (require.main === module) {
 }
 
 module.exports = {
-  spendDelta, addSpend, worktreePrefix, caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+  claudeLimitStop, spendDelta, addSpend, worktreePrefix, caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
