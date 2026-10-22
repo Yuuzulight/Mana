@@ -350,6 +350,7 @@ test("Flash fails: she asks first, then Claude Code picks up Flash's attempt wit
   assert.match(claude.calls[0].before, /return a - b; \/\/ flash/, "Claude starts from Flash's worktree, not a reset one");
   assert.match(claude.calls[0].prompt, /DeepSeek Flash's try: /);
   assert.match(claude.calls[0].prompt, /DeepSeek Flash's change is in your worktree/);
+  assert.equal(claude.calls[0].opts.cancelled?.(), false, "the runner can see her Stop");
   assert.equal(status.state, "pr-open", status.step);
   assert.equal(read(path.join(s.repos.worktrees, "mana-7", "node-bot", "util.js")), FIXED);
   const create = s.ghCalls.find((a) => a[0] === "pr" && a[1] === "create");

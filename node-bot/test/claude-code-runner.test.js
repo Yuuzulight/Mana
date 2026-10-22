@@ -90,3 +90,13 @@ test("not installed: claudeCodeAvailable says so instead of throwing", async () 
   const s = setup("finish");
   assert.match(await claudeCodeAvailable({ command: s.command, args: [path.join(s.dir, "missing.js")], env: s.env }), /isn't installed/);
 });
+
+test("Stop cancels the Claude session instead of letting it run on her subscription", async () => {
+  const s = setup("hang");
+  const runner = createClaudeCodeRunner({ command: s.command, args: s.args, env: s.env, worktree: s.dir });
+  let stop = false;
+  setTimeout(() => (stop = true), 300);
+  const reply = await runner("Implement #1", policy(), { cancelled: () => stop });
+  assert.ok(s.seen().some((e) => e.cancelled === "s1"));
+  assert.equal(reply.content, "Thinking...");
+});

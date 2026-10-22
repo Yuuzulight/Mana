@@ -949,6 +949,8 @@ function createSelfWork(options = {}) {
       onRound: (round) => {
         r.round = round;
       },
+      // #1406: her Stop, for a runner that can end its turn (Claude Code).
+      cancelled: () => Boolean(r.stopRequested || r.halt),
       maxMs: Infinity,
       maxTokens: Number(env.MANA_SELF_WORK_MAX_TOKENS) || 2048,
       thinking: Number(env.MANA_SELF_WORK_THINKING ?? SELF_WORK_THINKING) || false,

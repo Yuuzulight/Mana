@@ -22,6 +22,8 @@ const NOT_INSTALLED = "Claude Code isn't installed for Mana (its ACP adapter is 
 const SIGN_IN = "Claude Code isn't signed in: run `claude`, then `/login` with your Claude account";
 const LIMIT_RE = /usage limit|limit reached|rate limit/i;
 const OWN_TOOL_RE = /^mcp__mana__/;
+// After a Stop, how long Claude Code gets to end its turn before it's killed.
+const CANCEL_GRACE_MS = 10000;
 
 const cleanEnv = (env) => Object.fromEntries(Object.entries(env).filter(([k]) => !/^(ANTHROPIC_|CLAUDE|USE_(LOCAL|STAGING)_OAUTH)/i.test(k)));
 
@@ -62,6 +64,7 @@ function connect(child) {
   child.on("exit", () => fail(new Error("Claude Code stopped")));
   return {
     on: (method, handler) => (handlers[method] = handler),
+    notify: (method, params) => send({ method, params }),
     request: (method, params) =>
       new Promise((resolve, reject) => {
         const id = next++;
@@ -102,6 +105,15 @@ function createClaudeCodeRunner({ model = "sonnet", command = process.execPath, 
     const rpc = connect(child);
     let content = "";
     let rounds = 0;
+    let sessionId = null;
+    let stopped = false;
+    // Her Stop ends Claude's turn (ACP's session/cancel), so it stops spending her window.
+    const watch = setInterval(() => {
+      if (stopped || !sessionId || !opts.cancelled?.()) return;
+      stopped = true;
+      rpc.notify("session/cancel", { sessionId });
+      setTimeout(() => killProcessTree(child), CANCEL_GRACE_MS).unref();
+    }, 250);
     rpc.on("session/request_permission", decide);
     rpc.on("session/update", ({ update } = {}) => {
       if (update?.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") content += update.content.text;
@@ -110,19 +122,21 @@ function createClaudeCodeRunner({ model = "sonnet", command = process.execPath, 
     try {
       await rpc.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
       const options = { model, tools: [], disallowedTools: DENIED_BUILTINS, settingSources: [], strictMcpConfig: true, ...(Number.isFinite(opts.maxRounds) ? { maxTurns: opts.maxRounds } : {}) };
-      const { sessionId } = await rpc.request("session/new", {
+      ({ sessionId } = await rpc.request("session/new", {
         cwd: worktree,
         mcpServers: [{ type: "http", name: "mana", url: server.url, headers: [{ name: "Authorization", value: server.headers.Authorization }] }],
         _meta: { claudeCode: { options } },
-      });
+      }));
       const result = await rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text: briefFor(prompt, opts) }] });
       return { content: content.trim(), rounds, messages: null, usage: result?.usage || null };
     } catch (e) {
+      if (stopped) return { content: content.trim(), rounds, messages: null };
       if (e.code === -32000 && /auth/i.test(e.message)) return { content: content.trim(), rounds, messages: null, unavailable: SIGN_IN };
       // A limit stops the run without failing it: she picks it up after the reset.
       if (LIMIT_RE.test(e.message)) return { content: `${content.trim()}\n${e.message}`.trim(), rounds, messages: null, usageLimit: true };
       throw e;
     } finally {
+      clearInterval(watch);
       killProcessTree(child);
       await server.close();
     }

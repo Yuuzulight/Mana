@@ -1,6 +1,6 @@
 // A stand-in for the Claude Code ACP adapter (newline-delimited JSON-RPC on
 // stdio), shaped like what the real one sent in the #1406 spike. FAKE_ACP_MODE:
-// finish | limit | signed-out. FAKE_ACP_LOG: a file it appends what it saw to.
+// finish | limit | signed-out | hang (no answer until session/cancel). FAKE_ACP_LOG: a file it appends what it saw to.
 const fs = require("node:fs");
 const readline = require("node:readline");
 
@@ -21,8 +21,14 @@ const waiting = new Map();
 const ask = (method, params) => new Promise((resolve) => { const id = nextId++; waiting.set(id, resolve); send({ id, method, params }); });
 const say = (sessionId, text) => send({ method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
 
+let onCancel = null;
 async function prompt(id, params) {
   const sessionId = params.sessionId;
+  if (mode === "hang") {
+    say(sessionId, "Thinking...");
+    onCancel = () => send({ id, result: { stopReason: "cancelled" } });
+    return;
+  }
   if (mode === "signed-out") return send({ id, error: { code: -32000, message: "Authentication required" } });
   if (mode === "limit") {
     say(sessionId, "Working on it...");
@@ -52,5 +58,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return send({ id: msg.id, result: { sessionId: "s1" } });
   }
   if (msg.method === "session/prompt") return prompt(msg.id, msg.params);
+  if (msg.method === "session/cancel") {
+    record({ cancelled: msg.params.sessionId });
+    return onCancel?.();
+  }
   if (msg.id !== undefined) send({ id: msg.id, error: { code: -32601, message: `no ${msg.method}` } });
 });
