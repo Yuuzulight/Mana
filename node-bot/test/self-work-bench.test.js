@@ -463,3 +463,78 @@ test("the report prints cost per solved case, by model and by kind", () => {
   assert.match(md, /deepseek-flash \$1\.00/);
   assert.match(md, /\| node-bug \| 2 \| 50% \| 50% \| 1-1 \| \$1\.00 \| \$1\.00 \|/);
 });
+
+// #1406: --setup flash-claude: Flash first; a case it fails goes to Claude Code in the same worktree.
+function claudeDeps(r, flashCalls, claudeCalls, extra = {}) {
+  const { benchTestGate } = require("../bench/self-work-bench");
+  const seen = [];
+  const base = deps(r, flashCalls);
+  return {
+    seen,
+    deps: {
+      ...base,
+      claude: true,
+      approvalGate: benchTestGate(r.worktrees, { claude: true }),
+      claudeRunner: (worktree) => async (prompt, policy) => {
+        seen.push({ worktree, prompt, before: fs.readFileSync(path.join(worktree, "node-bot", "util.js"), "utf8") });
+        for (const [name, args] of claudeCalls) {
+          try {
+            await policy.executeTool(name, args);
+          } catch {}
+        }
+        return { content: extra.usageLimit ? "Claude usage limit reached." : "I fixed it.", rounds: claudeCalls.length, messages: null, usage: { totalTokens: 500 }, ...extra };
+      },
+    },
+  };
+}
+
+test("flash-claude: a case Flash fails goes to Claude in the same worktree, and its fix passes the hidden test", async () => {
+  const r = makeRepo();
+  const flash = [find, plan, edit("node-bot/util.js", "a - b", "a - b /* flash */"), ...reviews, finish];
+  const { deps: d, seen } = claudeDeps(r, flash, [edit("node-bot/util.js", "a - b /* flash */", "a + b"), ...reviews, finish]);
+  const result = await runCase(r.c, d);
+  assert.equal(seen.length, 1);
+  assert.match(seen[0].before, /a - b \/\* flash \*\//, "Claude starts from Flash's worktree");
+  assert.match(seen[0].prompt, /change is in your worktree/);
+  assert.equal(result.passed, true, result.hiddenTail);
+  assert.deepEqual(result.claude, { ran: true, rounds: 5, tokens: 500, usageLimit: false });
+});
+
+test("flash-claude: a case Flash passes never reaches Claude", async () => {
+  const r = makeRepo();
+  // Flash fixes it and passes a test of its own (the case's hidden test only arrives after the run).
+  const ownTest = ["coding__propose_edit", { path: "node-bot/test/own.test.js", new_text: ['const test = require("node:test");', 'const assert = require("node:assert");', 'test("adds", () => assert.equal(require("../util").add(2, 3), 5));', ""].join("\n"), summary: "a test" }];
+  const { deps: d, seen } = claudeDeps(r, [find, plan, ownTest, edit("node-bot/util.js", "a - b", "a + b"), ["coding__run_tests", { path: "node-bot/test/own.test.js" }], ...reviews, finish], []);
+  const result = await runCase(r.c, d);
+  assert.equal(result.passed, true, result.hiddenTail);
+  assert.equal(seen.length, 0);
+  assert.equal(result.claude, undefined);
+});
+
+test("the bench gate approves a Claude handoff only under flash-claude", async () => {
+  const { benchTestGate } = require("../bench/self-work-bench");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mana-bench-gate-"));
+  const plain = benchTestGate(root);
+  plain.registerExecutor("self-work-claude", async () => "ok");
+  assert.equal((await plain.requestApproval("self-work-claude", { payload: {} })).status, "blocked");
+  const withClaude = benchTestGate(root, { claude: true });
+  withClaude.registerExecutor("self-work-claude", async () => "ok");
+  assert.equal((await withClaude.requestApproval("self-work-claude", { payload: {} })).status, "approved");
+});
+
+test("a Claude usage limit is marked on the case, and the bench says how to resume", async () => {
+  const r = makeRepo();
+  const flash = [find, plan, edit("node-bot/util.js", "a - b", "a - b /* flash */"), ...reviews, finish];
+  const { deps: d } = claudeDeps(r, flash, [], { usageLimit: true });
+  const result = await runCase(r.c, d);
+  assert.equal(result.claude.usageLimit, true);
+  const { claudeLimitStop } = require("../bench/self-work-bench");
+  assert.equal(claudeLimitStop("1-add", ["2-b", "3-c"]), "Stopping after 1-add: Claude's usage limit is reached. Resume after it resets with: --case 2-b --case 3-c");
+});
+
+test("the report counts Claude's part on its own, in tokens, with no dollar figure", () => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "mana-bench-report-"));
+  const row = (id, passed, claude) => ({ id, kind: "node-bug", repeat: 1, passed, ended: "finished", costUsd: 0.05, costByModel: { "deepseek-flash": 0.05 }, wallMs: 1000, rounds: 5, toolCalls: 5, tokens: { prompt: 10, completion: 1, peak: 10 }, toolErrors: 0, diff: { files: [], added: 0, removed: 0 }, outside: [], ...(claude ? { claude } : {}) });
+  const md = writeReport([row("a", true, { ran: true, rounds: 5, tokens: 500, usageLimit: false }), row("b", false, { ran: true, rounds: 3, tokens: 200, usageLimit: false }), row("c", true)], out, {});
+  assert.match(md, /Claude Code: 2 handoffs, 1 passed, 700 tokens on the subscription/);
+});

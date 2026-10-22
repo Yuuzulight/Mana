@@ -962,12 +962,15 @@ function createSelfWork(options = {}) {
   // worktree the caller made: no fetch, no labels, no commit, no push, no
   // PR. A loop that throws (where a real run would end "failed") comes
   // back as error, with the run as far as it got.
-  async function bench(issue, worktree, { attempts = 1 } = {}) {
+  async function bench(issue, worktree, { attempts = 1, claude = false } = {}) {
     // #1467: the bench may give more rounds (a case whose merged fix alone takes most of the budget).
     const r = newRun({ issue: issue.number, title: issue.title, worktree, branch: "bench", maxRounds: Math.max(roundBudget(issue.body), Number(issue.maxRounds) || 0) });
     try {
       if (nativeTests && !options.approvalGate) throw new Error('Windows benchmark tests require a human approval gate; no unrestricted benchmark fallback');
-      return { reply: (await bestOf(r, issue, attempts)).reply, run: r };
+      let best = await bestOf(r, issue, attempts);
+      // #1406: --setup flash-claude: a case Flash didn't pass goes to Claude Code, in the same worktree.
+      if (claude && options.claudeRunner && (best.failing !== undefined || (await ownFailed(r, best)))) best = (await benchHandoff(r, issue, worktree, best)) || best;
+      return { reply: best.reply, run: r };
     } catch (e) {
       return { reply: null, run: r, error: e.message };
     }
@@ -1015,6 +1018,20 @@ function createSelfWork(options = {}) {
       fs.writeFileSync(file, text);
       log(r, `${tier.label}'s reasoning on this is in ${file}.`);
     } catch {}
+  }
+
+  // #1406: the bench's handoff (the run starting the bench is its approval): Flash's attempt, as left, to Claude Code.
+  async function benchHandoff(r, issue, worktree, best) {
+    const model = options.claudeModel || "sonnet";
+    const tier = { label: `Claude Code (${model})`, model, agent: true };
+    const last = { label: "DeepSeek Flash", how: best.failing ? `${best.failures} tests still failing (${best.failing.slice(0, 5).join("; ")})` : "it didn't finish" };
+    if (!(await askClaudeHandoff({ gate: options.approvalGate, summary: handoffSummary(r, tier, last) }))) return null;
+    for (const key of ["finished", "lastTestPassed", "reviewedTree", "refutations", "conversations"]) delete r[key];
+    r.round = 0;
+    r.priorFacts = handoffBrief(failureFacts(r), last);
+    const out = await remoteAttempt(r, issue, options.claudeRunner(worktree));
+    r.claude = { ran: true, rounds: out.reply?.rounds ?? 0, tokens: out.reply?.usage?.totalTokens ?? null, usageLimit: Boolean(out.reply?.usageLimit) };
+    return { reply: out.reply };
   }
 
   // #1406: what Mana asks before a Claude Code handoff, and the brief it starts from.
