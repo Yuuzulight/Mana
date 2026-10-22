@@ -888,7 +888,7 @@ async function main(argv) {
   const maxUsd = Number(opt("--max-usd")[0]) || 0;
   // #1406: flash-claude: Flash first, then Claude Code in the same worktree.
   const claude = setup === "flash-claude";
-  const claudeModel = process.env.MANA_CLAUDE_CODE_MODEL || "sonnet";
+  const claudeModel = benchEnv(repoRoot).MANA_CLAUDE_CODE_MODEL || "sonnet";
   const approvalGate = benchTestGate(worktreesDir, { claude });
   // Her loop and her reviewer both on the API: nothing of the bench's takes the GPU, so a game or her chat model being up is no reason to wait.
   const noLocalModel = Boolean(remote && config.reviewer && config.helperModel);
