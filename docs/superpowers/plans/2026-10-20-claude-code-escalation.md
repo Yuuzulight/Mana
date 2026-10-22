@@ -6,17 +6,17 @@
 
 **Architecture:** Claude Code is one more *runner* for `loop()` in `node-bot/self-work.js` (same contract as `remoteToolReply`: `runner(prompt, tools, opts) -> Promise<{content, rounds, messages}>`). The runner starts the Claude Code ACP adapter, gives the session one MCP server (a local HTTP MCP endpoint, `127.0.0.1` + random token) that exposes exactly `tools.tools` and calls `tools.executeTool`, and writes a worktree `.claude/settings.json` denying every Claude Code built-in tool. So every edit, test run, review and finish goes through her existing policy (`writeRefusal`, sandboxed tests, reviewer), and `remoteAttempt` judges the result as for any tier.
 
-**Tech Stack:** Node 22, `node:test`; `@modelcontextprotocol/sdk` (already a dependency); the ACP client library (`@agentclientprotocol/sdk`) and the Claude Code ACP adapter (Zed's `claude-code-acp`, current package name confirmed in Task 1).
+**Tech Stack:** Node 22, `node:test`; `@modelcontextprotocol/sdk` (already a dependency); `@agentclientprotocol/sdk@1.8.0` (ACP client) and `@agentclientprotocol/claude-agent-acp@0.91.0` (the adapter Zed uses, renamed from `@zed-industries/claude-code-acp`), pinned exact.
 
 **Spec:** `docs/superpowers/specs/2026-10-20-claude-code-escalation-design.md`
 
 ## Global Constraints
 
 - Mana never reads, stores, copies or forwards Claude credentials or session tokens; sign-in only through Claude Code's own `/login`.
-- `ANTHROPIC_API_KEY` (and `ANTHROPIC_AUTH_TOKEN`) are removed from the adapter's environment.
+- Every `ANTHROPIC_*`, `CLAUDE*` and `USE_*_OAUTH` variable is removed from the adapter's environment (an API key would bill the API; a host app's variables point it at that app's session and break the login).
 - Claude Code gets no built-in tool (no shell, no read/edit/write, no web); its only tools are Mana's, through the MCP endpoint.
 - Every handoff asks Yuuzulight first through the approval gate (type `self-work-claude`); a bench run with setup `flash-claude` is the approval for its own handoffs.
-- Default Claude model `claude-sonnet-5-5`; the model is a setting (`MANA_CLAUDE_CODE_MODEL`).
+- Default Claude model alias `sonnet` (Claude Code resolves it to its newest Sonnet, Sonnet 5.5 today; a pinned id breaks older Claude Code builds); the model is a setting (`MANA_CLAUDE_CODE_MODEL`).
 - A usage-limit response pauses the run ("paused until the reset"), never a failure, never a retry, never paid credits.
 - Claude runs count toward the existing 5 remote runs a day (`PER_DAY`).
 - Default DeepSeek chain is Flash only; Pro stays pickable in Settings.
@@ -33,7 +33,9 @@
 
 ---
 
-### Task 1: Spike - does the adapter let Mana be Claude's only tools? (gate)
+### Task 1: Spike - does the adapter let Mana be Claude's only tools? (gate) - DONE 2026-10-22, PASSED
+
+Result: with `_meta.claudeCode.options = { model, tools: [], disallowedTools: <built-ins>, settingSources: [], strictMcpConfig: true }` and one HTTP MCP server, Claude Code (Sonnet 5.5, her Pro login) had only that server's tools: no shell, no reads; its MCP call arrived as `session/request_permission` titled `mcp__mana__<tool>` (approve those, reject anything else); it wrote nothing itself; `stopReason` `end_turn`; `PromptResponse.usage` has `inputTokens/outputTokens/cachedReadTokens/cachedWriteTokens/totalTokens`; signed out = `RequestError` code -32000 "Authentication required". Needed a standalone `claude` `/login` (the Claude app's own login isn't usable outside it). No settings file needed.
 
 Throwaway, outside the repo (session scratchpad). **If any check fails, stop and report to Yuuzulight; nothing else is built.** Uses a little of her Pro limits.
 
@@ -75,19 +77,20 @@ Throwaway, outside the repo (session scratchpad). **If any check fails, stop and
 
 **Interfaces:**
 - Consumes: `startPolicyMcpServer` (Task 2).
-- Produces: `createClaudeCodeRunner({ model = "claude-sonnet-5-5", command, args, env = process.env, worktree }) -> runner(prompt, tools, opts) -> Promise<{ content: string, rounds: number, messages: null, usageLimit?: true, unavailable?: string }>`; `DENIED_BUILTINS: string[]` (the list from Task 1); `claudeCodeAvailable({ command, args, env }) -> Promise<null | string>` (null, or why not: not installed / not signed in, worded for her).
+- Produces: `createClaudeCodeRunner({ model = "sonnet", command, args, env = process.env, worktree }) -> runner(prompt, tools, opts) -> Promise<{ content: string, rounds: number, messages: null, usageLimit?: true, unavailable?: string }>`; `DENIED_BUILTINS: string[]` (the list from Task 1); `claudeCodeAvailable({ command, args, env }) -> Promise<null | string>` (null, or why not: not installed / not signed in, worded for her).
 - `command`/`args` default to the adapter installed in `node-bot/node_modules` (run with `process.execPath`).
 
 - [ ] **Step 1: Write the failing tests** (against the fake agent):
-  - `writes the deny-all settings into the worktree before the session` (`.claude/settings.json` `permissions.deny` equals `DENIED_BUILTINS`).
+  - `asks for a session with no built-in tools` (`_meta.claudeCode.options`: `tools: []`, `disallowedTools` equals `DENIED_BUILTINS`, `settingSources: []`, `strictMcpConfig: true`, `model`).
   - `passes only Mana's MCP endpoint to session/new and the configured model`.
-  - `strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the agent's env` (fake echoes its env).
+  - `strips every ANTHROPIC_*, CLAUDE* and USE_*_OAUTH variable from the agent's env` (fake echoes its env).
+  - `approves permission requests for mcp__mana__ tools and rejects any other`.
   - `content is the agent's final message; rounds counts its turns` (mode `finish`).
   - `a usage-limit stop returns usageLimit: true` (mode `limit`).
   - `signed out returns unavailable: "run claude, then /login"` and `claudeCodeAvailable` says the same (mode `signed-out`).
   - `stops the agent and closes the MCP endpoint when done`.
 - [ ] **Step 2: Run** `node --test test/claude-code-runner.test.js` - expect FAIL.
-- [ ] **Step 3: Implement**: write settings, start the endpoint, spawn, `initialize`, `session/new` (cwd = worktree, mcpServers = [endpoint], model), `session/prompt` with `prompt`; reject any `session/request_permission` (`DENIED_BUILTINS` are already off; anything else is denied); collect text; classify limit errors by the shape recorded in Task 1 (fallback: `/usage limit|limit reached/i`); always kill the child and close the endpoint in `finally`. Remove the settings file afterwards so it never reaches her diff.
+- [ ] **Step 3: Implement**: start the endpoint, spawn, `initialize`, `session/new` (cwd = worktree, mcpServers = [endpoint], model), `session/prompt` with `prompt`; approve `session/request_permission` only for titles `mcp__mana__*`, reject the rest; collect text; signed out = `RequestError` code -32000 -> `unavailable`; classify limit errors by `/usage limit|limit reached|rate limit/i` on the error or final message; always kill the child and close the endpoint in `finally`.
 - [ ] **Step 4: Run** - expect PASS.
 - [ ] **Step 5: Commit** `Self-work: Claude Code over ACP as a runner, with only her tools`.
 
@@ -105,12 +108,12 @@ Throwaway, outside the repo (session scratchpad). **If any check fails, stop and
 - Produces: tier `{ id: "claude", label: "Claude (Sonnet 5.5)", model, agent: true }` appended last by `tiersFor` when `MANA_CLAUDE_CODE=1`; `options.claudeRunner(worktree) -> runner` on `createSelfWork`; approval type `"self-work-claude"`; `handoffBrief(r, out) -> string`.
 
 - [ ] **Step 1: Write the failing tests**:
-  - escalation: `default DeepSeek chain is Flash only`; `the Claude tier comes last when MANA_CLAUDE_CODE=1, with MANA_CLAUDE_CODE_MODEL or claude-sonnet-5-5`; `a Claude run counts toward the day's 5`.
+  - escalation: `default DeepSeek chain is Flash only`; `the Claude tier comes last when MANA_CLAUDE_CODE=1, with MANA_CLAUDE_CODE_MODEL or sonnet`; `a Claude run counts toward the day's 5`.
   - self-work (scripted runners, fake gate): `Flash fails -> she asks with type self-work-claude, naming the issue, why Flash failed, the model, and a rough share of the five-hour window (the summary contains "five-hour")`; `declined -> no Claude run, her own attempt is put back, run ends as today`; `approved -> Claude runs in the worktree as Flash left it (not reset) and its prompt contains the brief: plan, steps, failing tests, refutations, how it ended`; `Claude's change passes her judge -> PR path as from DeepSeek, r.fromRemote.label is the Claude label`; `usageLimit -> run state "paused", escalation.finish not called, a later retry resumes with Claude`; `claude unavailable -> one log line telling her to run claude then /login, no approval asked`.
 - [ ] **Step 2: Run** each file alone - expect FAIL.
 - [ ] **Step 3: Implement**: in `escalate()`, for a tier with `agent: true`: check `claudeCodeAvailable`, ask `approvalGate.requestApproval("self-work-claude", { summary, payload, forceReview: true })` (register a no-op executor once), skip `resetWorktree`, set `r.priorFacts = handoffBrief(r, out)` (out = the Flash tier's result), run `remoteAttempt(r, issue, options.claudeRunner(r.worktree))`; `usageLimit` -> `r.paused = "Claude's usage limit; I'll pick this up after it resets"` and return `{ held: ... }` (existing hold path) without `escalation.finish`. `handoffBrief` reuses `failureFacts(r)` plus the Flash tier's `how` line and refutations.
 - [ ] **Step 4: Run** - expect PASS; also `node --test test/self-work-bench.test.js` still passes.
-- [ ] **Step 5: `.env.sample`**: `MANA_CLAUDE_CODE=0` and `MANA_CLAUDE_CODE_MODEL=claude-sonnet-5-5`, with: "Uses your own Claude subscription through Claude Code (install it, run `claude`, then `/login`). Every handoff asks you first. Personal use only."
+- [ ] **Step 5: `.env.sample`**: `MANA_CLAUDE_CODE=0` and `MANA_CLAUDE_CODE_MODEL=sonnet`, with: "Uses your own Claude subscription through Claude Code (install it, run `claude`, then `/login`). Every handoff asks you first. Personal use only."
 - [ ] **Step 6: Commit** `Self-work: hand a failed Flash attempt to Claude Code, after asking (#1406)`.
 
 ### Task 5: The `flash-claude` bench setup
