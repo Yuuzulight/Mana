@@ -1407,7 +1407,13 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     // An empty chat opens on her: her live model in the middle (the window moves it here from her card, through
     // WelcomeAvatarSlot), a greeting for the time of day, a hint, and up to three things to start with.
 
-    internal const string WelcomeHint = "Say \"Mana\" or type below to start.";
+    // The mockups' line under the greeting, by the hour like it.
+    internal static string WelcomeAsk(int hour) => hour switch
+    {
+        >= 5 and < 12 => "What are we starting with?",
+        >= 12 and < 17 => "What are we working on?",
+        _ => "What are we doing tonight?",
+    };
 
     private readonly Panel welcomeAvatar = new() { BackColor = Color.Transparent, Visible = false };
     private IReadOnlyList<(string Label, Action Run)> welcomeSuggestions = Array.Empty<(string, Action)>();
@@ -1464,7 +1470,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var height = ClientSize.Height;
         var greetingHeight = greetingFont.Height;
         var hintHeight = bodyFont.Height;
-        var cardHeight = LogicalToDeviceUnits(64);
+        var cardHeight = LogicalToDeviceUnits(76); // icon, then two lines
         var gap = LogicalToDeviceUnits(10);
         var count = welcomeSuggestions.Count;
         var textBlock = greetingHeight + gap / 2 + hintHeight + (count > 0 ? gap * 2 + cardHeight : 0);
@@ -1497,7 +1503,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         const TextFormatFlags centred = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
         TextRenderer.DrawText(g, Greeting(DateTime.Now.Hour), greetingFont, greetingBounds, DarkTheme.Text, centred);
-        TextRenderer.DrawText(g, WelcomeHint, bodyFont, hintBounds, DarkTheme.Muted, centred);
+        TextRenderer.DrawText(g, WelcomeAsk(DateTime.Now.Hour), bodyFont, hintBounds, DarkTheme.Muted, centred);
         for (var i = 0; i < suggestionBounds.Count && i < welcomeSuggestions.Count; i++)
         {
             var card = suggestionBounds[i];
@@ -1509,8 +1515,34 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 DrawRound(g, border, card, BubbleRadius);
             }
-            TextRenderer.DrawText(g, welcomeSuggestions[i].Label, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text,
-                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            // The mockups' cards: an accent icon at the top left, the words under it.
+            var label = welcomeSuggestions[i].Label;
+            var icon = new RectangleF(card.X + 12, card.Y + 11, 15, 15);
+            var smoothing = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var pen = new Pen(DarkTheme.Accent, 1.3f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                var state = g.Save();
+                g.TranslateTransform(icon.X, icon.Y);
+                g.ScaleTransform(icon.Width / 16f, icon.Height / 16f);
+                pen.Width = 1.3f * 16f / icon.Width;
+                if (label.StartsWith("What did I miss", StringComparison.Ordinal))
+                {
+                    // An inbox tray.
+                    g.DrawLines(pen, new PointF[] { new(2, 9), new(4, 3), new(12, 3), new(14, 9), new(14, 13), new(2, 13), new(2, 9) });
+                    g.DrawLines(pen, new PointF[] { new(2, 9), new(5.5f, 9), new(6.5f, 10.5f), new(9.5f, 10.5f), new(10.5f, 9), new(14, 9) });
+                }
+                else
+                {
+                    // A spark.
+                    g.DrawPolygon(pen, new PointF[] { new(8, 1.5f), new(9.4f, 5.6f), new(13.5f, 7), new(9.4f, 8.4f), new(8, 12.5f), new(6.6f, 8.4f), new(2.5f, 7), new(6.6f, 5.6f) });
+                }
+                g.Restore(state);
+            }
+            g.SmoothingMode = smoothing;
+            var words = new Rectangle(card.X + 12, (int)icon.Bottom + 6, card.Width - 24, card.Bottom - (int)icon.Bottom - 12);
+            TextRenderer.DrawText(g, label, bodyFont, words, DarkTheme.Text,
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.EndEllipsis);
         }
     }
 

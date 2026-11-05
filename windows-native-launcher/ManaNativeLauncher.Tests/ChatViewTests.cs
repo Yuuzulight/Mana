@@ -28,6 +28,14 @@ public class ChatViewTests
         Assert.Equal(greeting, ChatView.Greeting(hour));
     }
 
+    // Under the greeting, as in the mockups: what she asks depends on the hour too.
+    [Theory]
+    [InlineData(9, "What are we starting with?")]
+    [InlineData(14, "What are we working on?")]
+    [InlineData(20, "What are we doing tonight?")]
+    [InlineData(2, "What are we doing tonight?")]
+    public void WelcomeAsksByTheHour(int hour, string ask) => Assert.Equal(ask, ChatView.WelcomeAsk(hour));
+
     // Under your message: the time today, the day and time before that.
     [Theory]
     [InlineData(2026, 11, 5, 21, 41, "9:41 PM")]
