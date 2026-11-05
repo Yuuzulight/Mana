@@ -34,6 +34,31 @@ Same memory and drawing cost as the glows: one window-sized background bitmap pl
 - The first message sends her back to the card.
 - The launcher stores no name for the user, so the greeting has none.
 
+## Matching the mockups (2026-11-06)
+
+Yuuzulight asked for the window to look like the mockups, not just have their pieces. Done, top to bottom:
+
+- **Sidebar:**
+  - her tile at the top, a lavender-to-sky rounded gradient, with her name and status under it;
+  - a search pill with a magnifier, and New chat as an accent pill;
+  - the project filter is now a small "All projects ⌄" heading over the list (the projects, then New/Edit/Delete);
+  - one-line rounded chat rows with the time on the right.
+- **Header:** the title, a model chip that opens the models, and a small mic for listening (struck through while off). The sidebar toggle moved to the rail, above Settings.
+- **Chat:**
+  - its own pane, a lighter sheet with a rounded top-left corner, drawn into the glass background (`GlassSurface.SetPane`);
+  - no name labels; your time under your bubbles (`ChatView.Stamp`), and her name, model and the actions on hover;
+  - her bubbles in runs, and the corner nearest the speaker small;
+  - a dashed chip for tool steps;
+  - code blocks as cards with a language and Copy bar (the fence's language is kept: `MarkdownBlock.Info`).
+- **Composer:** one pill: paperclip, text, a thinking chip (spark and level), Deep research as a magnifier, mic and a round arrow.
+- **Welcome:** a line by the hour under the greeting (`ChatView.WelcomeAsk`), and cards with icons.
+
+Left as they are:
+
+- Pinned chats and unread dots: the backend has neither.
+- Her bubbles no longer shimmer (the mockups' bubbles are plain fills).
+- With wallpaper glass on, the tint follows her own wallpaper, as Mica does. The mockups were drawn over a purple one, so on a warm wallpaper soft glass reads cream and Mana night grey-violet. Her glows (wallpaper glass off) give the mockups' lavender and navy.
+
 ## Sharp text (F)
 
 - `ApplicationHighDpiMode` goes to `PerMonitorV2`.
