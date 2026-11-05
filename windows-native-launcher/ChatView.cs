@@ -1992,7 +1992,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             else
             {
-                using var fill = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(190, 255, 255, 255) : DarkTheme.Panel2);
+                using var fill = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(190) : DarkTheme.Panel2);
                 FillRound(g, fill, rect, ButtonRadius);
                 using var border = new Pen(DarkTheme.Border);
                 DrawRound(g, border, rect, ButtonRadius);

@@ -238,7 +238,7 @@ internal sealed class SettingsCombo : ComboBox
 
     private void PaintField(Graphics g)
     {
-        using (var surround = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(240, 238, 246) : DarkTheme.Panel2))
+        using (var surround = new SolidBrush(DarkTheme.IsGlass && DarkTheme.IsLight ? Color.FromArgb(240, 238, 246) : DarkTheme.Panel2))
         {
             g.FillRectangle(surround, ClientRectangle);
         }
@@ -521,7 +521,7 @@ internal sealed class SettingsField : TextBox
     private void PaintFrame(Graphics g)
     {
         g.ExcludeClip(new Rectangle(PadX, PadY, Width - (2 * PadX), Height - (2 * PadY)));
-        using (var surround = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(240, 238, 246) : DarkTheme.Panel2))
+        using (var surround = new SolidBrush(DarkTheme.IsGlass && DarkTheme.IsLight ? Color.FromArgb(240, 238, 246) : DarkTheme.Panel2))
         {
             g.FillRectangle(surround, 0, 0, Width, Height);
         }

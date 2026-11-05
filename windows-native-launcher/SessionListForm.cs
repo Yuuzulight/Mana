@@ -32,6 +32,11 @@ namespace Mana.NativeLauncher;
 // QuickEntryForm.
 internal sealed partial class SessionListForm : Form
 {
+    // The snapshot test opens the window without taking focus from whatever is in front (a game, say).
+    internal static bool OpenWithoutActivation { get; set; }
+
+    protected override bool ShowWithoutActivation => OpenWithoutActivation;
+
     private readonly ManaBackendClient backendClient;
     private readonly VoiceLoop voiceLoop;
     private readonly BackendLogBuffer backendLog;

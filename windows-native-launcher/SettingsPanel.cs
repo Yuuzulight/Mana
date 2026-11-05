@@ -345,7 +345,7 @@ internal sealed class SettingsPanel : UserControl
         var header = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = DarkTheme.Background, Padding = new Padding(12, 4, 12, 4) };
         header.Paint += (_, e) =>
         {
-            using var line = new Pen(DarkTheme.IsGlass ? Color.FromArgb(36, 106, 95, 184) : DarkTheme.Border);
+            using var line = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
             e.Graphics.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
         };
         titleLabel.Dock = DockStyle.Left;

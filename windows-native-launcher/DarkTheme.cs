@@ -91,6 +91,7 @@ internal static class DarkTheme
         new ThemePresetInfo("light", "Light"),
         new ThemePresetInfo("highContrast", "High contrast"),
         new ThemePresetInfo("mana", "Mana"),
+        new ThemePresetInfo("manaNight", "Mana night"),
     };
 
     private static readonly Dictionary<string, ThemeColors> PresetColors = new()
@@ -110,6 +111,10 @@ internal static class DarkTheme
         // bubble and sky-blue (her glowing hair ends) Mana bubble.
         ["mana"] = new ThemeColors("#f5f3fa", "#ffffff", "#eee7f8", "#d9d0ec", "#1b1e3f", "#67628a", "#6a5fb8", "#e7defa", "#e3f1fd",
             codeText: "#4f4596", green: "#23874a", warn: "#a86b0c"),
+        // Her colours after dark, for focus and long sessions: a navy-violet page (her headphone navy), periwinkle
+        // text, her lavender as the accent, hoodie-lavender and sky-blue bubbles dimmed onto the dark glass.
+        ["manaNight"] = new ThemeColors("#181624", "#221f33", "#2a2640", "#3a3556", "#ece9f8", "#a39fc0", "#a99ef0", "#3b3460", "#22304a",
+            codeText: "#c9bdfb"),
     };
 
     // #576: applied once, at startup (Program.cs, before any Form is
@@ -120,7 +125,7 @@ internal static class DarkTheme
     public static void ApplyPreset(string presetId, string? accentHex)
     {
         var colors = PresetColors.TryGetValue(presetId, out var found) ? found : PresetColors["mana"];
-        IsGlass = colors == PresetColors["mana"]; // including the fallback for an unknown id
+        IsGlass = colors == PresetColors["mana"] || colors == PresetColors["manaNight"]; // including the fallback for an unknown id
         Background = colors.Background;
         Panel = colors.Panel;
         Panel2 = colors.Panel2;

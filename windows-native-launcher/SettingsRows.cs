@@ -264,7 +264,7 @@ internal sealed class SettingsRow : TableLayoutPanel
         }
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var card = SettingsRows.Rounded(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), 6);
-        using (var fill = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(150, 255, 255, 255) : DarkTheme.Panel2))
+        using (var fill = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(150) : DarkTheme.Panel2))
         {
             g.FillPath(fill, card);
         }

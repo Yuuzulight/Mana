@@ -19,10 +19,16 @@ namespace Mana.NativeLauncher;
 // shows. Only attached when DarkTheme.IsGlass (the Mana preset).
 internal static class GlassSurface
 {
-    internal static readonly Color GlassFill = Color.FromArgb(135, 255, 255, 255);
-    private static readonly Color GlassHover = Color.FromArgb(200, 255, 255, 255);
-    private static readonly Color TopEdge = Color.FromArgb(240, 255, 255, 255);
-    private static readonly Color Outline = Color.FromArgb(34, 106, 95, 184);
+    // Light glass is frosted white; dark glass (Mana night) is a faint white veil with lavender edges.
+    internal static Color GlassFill => DarkTheme.IsLight ? Color.FromArgb(135, 255, 255, 255) : Color.FromArgb(30, 255, 255, 255);
+    private static Color GlassHover => DarkTheme.IsLight ? Color.FromArgb(200, 255, 255, 255) : Color.FromArgb(56, 255, 255, 255);
+    private static Color TopEdge => DarkTheme.IsLight ? Color.FromArgb(240, 255, 255, 255) : Color.FromArgb(40, 255, 255, 255);
+    internal static Color Outline => DarkTheme.IsLight ? Color.FromArgb(34, 106, 95, 184) : Color.FromArgb(60, 169, 158, 240);
+
+    // A white veil of `lightAlpha` on light glass, and the matching faint one on dark glass, where the same white
+    // would glare.
+    internal static Color Veil(int lightAlpha) =>
+        DarkTheme.IsLight ? Color.FromArgb(lightAlpha, 255, 255, 255) : Color.FromArgb(Math.Clamp(lightAlpha / 5, 10, 60), 255, 255, 255);
 
     // #688: everything Attach/Style changed, per control, so Detach can put
     // each control back exactly as the theme left it (live theme switching).
@@ -134,9 +140,10 @@ internal static class GlassSurface
         var w = Math.Max(1, windowSize.Width);
         var h = Math.Max(1, windowSize.Height);
         var span = Math.Max(w, h);
-        FillGlow(g, new PointF(w * 0.05f, h * 0.02f), span * 0.55f, Color.FromArgb(150, 198, 170, 224)); // lavender, top left
-        FillGlow(g, new PointF(w * 0.98f, h * 1.02f), span * 0.62f, Color.FromArgb(160, 163, 210, 250)); // sky blue, bottom right
-        FillGlow(g, new PointF(w * 0.55f, h * 0.45f), span * 0.35f, Color.FromArgb(40, 118, 109, 190));  // faint periwinkle
+        var light = DarkTheme.IsLight;
+        FillGlow(g, new PointF(w * 0.05f, h * 0.02f), span * 0.55f, light ? Color.FromArgb(150, 198, 170, 224) : Color.FromArgb(70, 118, 109, 190)); // lavender, top left
+        FillGlow(g, new PointF(w * 0.98f, h * 1.02f), span * 0.62f, light ? Color.FromArgb(160, 163, 210, 250) : Color.FromArgb(60, 37, 110, 190)); // sky blue, bottom right
+        FillGlow(g, new PointF(w * 0.55f, h * 0.45f), span * 0.35f, light ? Color.FromArgb(40, 118, 109, 190) : Color.FromArgb(24, 169, 158, 240));  // faint periwinkle
         if (frosted)
         {
             g.ResetTransform();
@@ -225,7 +232,7 @@ internal static class GlassSurface
                     var (over, down, border) = (appearance.MouseOverBackColor, appearance.MouseDownBackColor, appearance.BorderColor);
                     appearance.MouseOverBackColor = GlassHover;
                     appearance.MouseDownBackColor = GlassHover;
-                    appearance.BorderColor = Color.FromArgb(200, 255, 255, 255);
+                    appearance.BorderColor = Veil(200);
                     Record(undo, flat, () =>
                     {
                         appearance.MouseOverBackColor = over;
@@ -380,7 +387,9 @@ internal static class GlassSurface
         {
             InterpolationColors = new ColorBlend
             {
-                Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), Color.FromArgb(153, 255, 255, 255), Color.FromArgb(128, 227, 241, 253), Color.FromArgb(0, 227, 241, 253), Color.FromArgb(0, 227, 241, 253) },
+                Colors = DarkTheme.IsLight
+                    ? new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), Color.FromArgb(153, 255, 255, 255), Color.FromArgb(128, 227, 241, 253), Color.FromArgb(0, 227, 241, 253), Color.FromArgb(0, 227, 241, 253) }
+                    : new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), Color.FromArgb(40, 255, 255, 255), Color.FromArgb(36, 163, 210, 250), Color.FromArgb(0, 163, 210, 250), Color.FromArgb(0, 163, 210, 250) },
                 Positions = new[] { 0f, 0.38f, 0.48f, 0.52f, 0.62f, 1f },
             },
         };
@@ -402,7 +411,7 @@ internal static class GlassSurface
         };
     }
 
-    private static readonly Color GlassOn = Color.FromArgb(217, 238, 231, 248);
+    private static Color GlassOn => DarkTheme.IsLight ? Color.FromArgb(217, 238, 231, 248) : Color.FromArgb(64, 169, 158, 240);
 
     private static void PaintGlassButton(Graphics g, ButtonBase button, bool gloss)
     {
@@ -439,7 +448,7 @@ internal static class GlassSurface
         else
         {
             var on = button is CheckBox { Checked: true };
-            using (var fill = new SolidBrush(on ? GlassOn : down ? Color.FromArgb(215, 255, 255, 255) : hot ? GlassHover : Color.FromArgb(133, 255, 255, 255)))
+            using (var fill = new SolidBrush(on ? GlassOn : down ? Veil(215) : hot ? GlassHover : Veil(133)))
             {
                 g.FillRectangle(fill, bounds);
             }
