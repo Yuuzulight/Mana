@@ -1082,6 +1082,10 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 var sourceLines = string.Concat(block.Runs.Select(r => r.Text)).Replace("\r", "").Split('\n');
                 var codeTop = y;
+                // The mockups' code card: a bar with the language and Copy, then the lines.
+                var language = CodeLanguage(block.Info);
+                widest = Math.Max(widest, Measure(language, stampFont) + CopyWidth + 28);
+                y += CodeBarHeight;
                 for (var li = 0; li < sourceLines.Length; li++)
                 {
                     if (li > 0)
@@ -1097,7 +1101,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                         y += codeFont.Height + 2;
                     }
                 }
-                message.CodeBlocks.Add((codeTop - 1, y - 1, string.Join("\n", sourceLines)));
+                y += 4;
+                message.CodeBlocks.Add((codeTop - 1, y - 1, string.Join("\n", sourceLines), language));
                 continue;
             }
 
@@ -1688,13 +1693,12 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                     g.DrawRectangle(grid, rect);
                 }
             }
+            for (var k = 0; k < message.CodeBlocks.Count; k++)
+            {
+                PaintCodeCard(g, message, k, origin, copied: copiedBlock == (i, k));
+            }
             foreach (var line in message.Lines)
             {
-                if (line.Code)
-                {
-                    using var codeBack = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 110 : 60, DarkTheme.IsLight ? Color.White : Color.Black));
-                    g.FillRectangle(codeBack, origin.X, origin.Y + line.Y - 1, message.ContentWidth, line.Height);
-                }
                 if (line.Quote)
                 {
                     using var bar = new SolidBrush(Color.FromArgb(160, DarkTheme.Accent));
@@ -1710,21 +1714,6 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 }
             }
 
-            if (i == hoveredIndex)
-            {
-                for (var k = 0; k < message.CodeBlocks.Count; k++)
-                {
-                    var pill = CopyButton(message, k);
-                    pill.Offset(origin);
-                    using var back = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(215) : DarkTheme.Panel2);
-                    FillRound(g, back, pill, ButtonRadius);
-                    using var edge = new Pen(DarkTheme.Border);
-                    DrawRound(g, edge, pill, ButtonRadius);
-                    TextRenderer.DrawText(g, copiedBlock == (i, k) ? "Copied" : "Copy", labelFont, pill, DarkTheme.Text,
-                        TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-                }
-            }
-
             PaintActions(g, message, origin);
 
             if (i == selected)
@@ -1733,6 +1722,44 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 DrawRound(g, ring, Rectangle.Inflate(bubble, -1, -1), BubbleRadius - 1);
             }
         }
+    }
+
+    // The mockups' code card: rounded, edged, a tinted bar over the lines with the language on the left and a Copy
+    // (a copy icon and the word) on the right.
+    private void PaintCodeCard(Graphics g, Message message, int block, Point origin, bool copied)
+    {
+        var (top, bottom, _, language) = message.CodeBlocks[block];
+        var card = new Rectangle(origin.X, origin.Y + top, message.ContentWidth, bottom - top);
+        var light = DarkTheme.IsLight;
+        var smoothing = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var shape = Round(card, 8))
+        {
+            using var back = new SolidBrush(light ? Color.FromArgb(180, 255, 255, 255) : Color.FromArgb(120, 12, 12, 24));
+            g.FillPath(back, shape);
+            var clip = g.Clip;
+            g.SetClip(shape, CombineMode.Intersect);
+            using var bar = new SolidBrush(Color.FromArgb(light ? 34 : 30, DarkTheme.Accent));
+            g.FillRectangle(bar, card.X, card.Y, card.Width, CodeBarHeight);
+            g.Clip = clip;
+            using var edge = new Pen(Color.FromArgb(light ? 40 : 46, DarkTheme.Accent));
+            g.DrawPath(edge, shape);
+        }
+        var barRect = new Rectangle(card.X + 10, card.Y, card.Width - 20, CodeBarHeight);
+        TextRenderer.DrawText(g, language, stampFont, barRect, DarkTheme.Muted, TextFlags | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+        var copy = CopyButton(message, block);
+        copy.Offset(origin);
+        var ink = copied ? DarkTheme.Accent : DarkTheme.Text;
+        var icon = new RectangleF(copy.X + 6, copy.Y + (copy.Height - 12) / 2f, 12, 12);
+        using (var pen = new Pen(ink, 1.1f))
+        {
+            // Two sheets, the front one whole.
+            g.DrawRectangle(pen, icon.X + 3.5f, icon.Y + 3.5f, 7.5f, 8);
+            g.DrawLines(pen, new[] { new PointF(icon.X + 1, icon.Y + 9), new PointF(icon.X + 1, icon.Y + 1), new PointF(icon.X + 8, icon.Y + 1) });
+        }
+        g.SmoothingMode = smoothing;
+        TextRenderer.DrawText(g, copied ? "Copied" : "Copy", stampFont, new Rectangle((int)icon.Right + 4, copy.Y, copy.Right - (int)icon.Right - 4, copy.Height), ink,
+            TextFlags | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
     }
 
     // #1318: a step-group line: grey text straight on the chat background,
@@ -1756,12 +1783,29 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     }
 
     // A code block's Copy button, in content coordinates: its top right corner.
-    private Rectangle CopyButton(Message message, int block)
+    private Rectangle CopyButton(Message message, int block) =>
+        new(message.ContentWidth - CopyWidth - 4, message.CodeBlocks[block].Top + 3, CopyWidth, CodeBarHeight - 5);
+
+    private int CodeBarHeight => stampFont.Height + 9;
+    private int CopyWidth => TextRenderer.MeasureText("Copied", stampFont).Width + 26;
+
+    // The bar's name for a fence language.
+    internal static string CodeLanguage(string? info) => info?.ToLowerInvariant() switch
     {
-        var width = TextRenderer.MeasureText("Copied", labelFont).Width + 16;
-        var height = labelFont.Height + 4;
-        return new Rectangle(message.ContentWidth - width - 4, message.CodeBlocks[block].Top + 3, width, height);
-    }
+        null or "" => "Code",
+        "cs" or "csharp" or "c#" => "C#",
+        "js" or "javascript" or "mjs" => "JavaScript",
+        "ts" or "typescript" => "TypeScript",
+        "py" or "python" => "Python",
+        "sh" or "bash" or "shell" or "zsh" => "Shell",
+        "ps" or "ps1" or "powershell" or "pwsh" => "PowerShell",
+        "json" => "JSON",
+        "html" => "HTML",
+        "css" => "CSS",
+        "md" or "markdown" => "Markdown",
+        "diff" => "Diff",
+        _ => info!,
+    };
 
     // The Copy button under `point` (control coordinates), on the hovered message only, where they show.
     private (int Message, int Block)? CopyButtonAt(Point point)
@@ -2638,7 +2682,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public bool ActionRunning { get; set; }
         public List<(Rectangle Bounds, bool Header)> Cells { get; } = new(); // table cells, in content coordinates
         // Mockup A: each code block's top and bottom (content coordinates) and its text, for its Copy button.
-        public List<(int Top, int Bottom, string Code)> CodeBlocks { get; } = new();
+        public List<(int Top, int Bottom, string Code, string Language)> CodeBlocks { get; } = new();
         public List<Bitmap> Images { get; } = new(); // #679: thumbnails of a user message's images
         public List<Rectangle> ImageBounds { get; } = new(); // in content coordinates
 
