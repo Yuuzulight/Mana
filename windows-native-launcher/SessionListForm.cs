@@ -78,7 +78,7 @@ internal sealed partial class SessionListForm : Form
     // the open chat, and 12px time) -- built once, not per row painted.
     private readonly Font sessionTitleFont = new("Segoe UI", 9.75f);
     private readonly Font activeSessionFont = new("Segoe UI Semibold", 9.75f);
-    private readonly Font sessionTimeFont = new("Segoe UI", 9f);
+    private readonly Font sessionTimeFont = new("Segoe UI", 8.25f);
     private readonly ImageList sessionRowHeight = new();
     private readonly Font messageBoxFont;
     private readonly MessageQueueStrip messageQueue = new();
@@ -380,9 +380,35 @@ internal sealed partial class SessionListForm : Form
 
         // 10px around and between everything, as in the #652 mockup.
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Background, Padding = new Padding(10) };
-        var searchField = GlassSurface.Field(searchBox, new Padding(10, 8, 10, 0));
-        searchField.Dock = DockStyle.Top;
-        searchField.Height = 32;
+        // The mockups' search: a pill with a magnifier.
+        searchBox.BorderStyle = BorderStyle.None;
+        searchBox.Dock = DockStyle.Fill;
+        var searchField = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(32, 8, 14, 0), BackColor = Color.Transparent, Cursor = Cursors.IBeam };
+        searchField.Controls.Add(searchBox);
+        searchField.MouseDown += (_, _) => searchBox.Focus();
+        searchField.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            var bounds = searchField.ClientRectangle;
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, searchField, bounds);
+            }
+            else
+            {
+                using var clear = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(clear, bounds);
+            }
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var pill = new RectangleF(0.5f, 0.5f, bounds.Width - 1.5f, bounds.Height - 1.5f);
+            using var shape = RoundedRect(pill, pill.Height / 2);
+            using var fill = new SolidBrush(searchBox.BackColor);
+            g.FillPath(fill, shape);
+            using var edge = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
+            g.DrawPath(edge, shape);
+            StrokeIcon(g, new RectangleF(12, (bounds.Height - 14) / 2f, 14, 14), DarkTheme.Muted, IconSearch);
+        };
+        searchBox.BackColorChanged += (_, _) => searchField.Invalidate();
         Panel Gap(DockStyle dock) => new() { Dock = dock, Height = 8, BackColor = Color.Transparent };
         // Reverse dock order again (last added docks first): the avatar
         // card (bottom) and new-chat button (top) stake their strips before
@@ -1221,6 +1247,12 @@ internal sealed partial class SessionListForm : Form
     // The mockups' icons, on their 16-unit grid.
     private static void IconSpark(Graphics g, Pen pen) =>
         g.DrawPolygon(pen, new PointF[] { new(8, 1.5f), new(9.4f, 5.6f), new(13.5f, 7), new(9.4f, 8.4f), new(8, 12.5f), new(6.6f, 8.4f), new(2.5f, 7), new(6.6f, 5.6f) });
+
+    private static void IconSearch(Graphics g, Pen pen)
+    {
+        g.DrawEllipse(pen, 2.5f, 2.5f, 9, 9);
+        g.DrawLine(pen, 10.5f, 10.5f, 14, 14);
+    }
 
     private static void IconZoomPlus(Graphics g, Pen pen)
     {
@@ -2500,7 +2532,7 @@ internal sealed partial class SessionListForm : Form
     internal static string ChatTitle(System.Collections.Generic.IReadOnlyList<ManaSession> sessions, string? activeSessionId) =>
         sessions.FirstOrDefault(s => s.SessionId == activeSessionId) is { } open ? SessionListFormatter.FormatDisplayName(open) : "New chat";
 
-    private const int SessionRowHeight = 52; // 8px padding, title, 2px, time, 8px padding, 2px between rows
+    private const int SessionRowHeight = 36; // one line, 2px between rows
 
     private void FitSessionColumn()
     {
@@ -2510,9 +2542,9 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
-    // A chat row: its title over the relative time. The open chat is a
-    // bright glass card with a semibold title in the Mana preset (accent and
-    // semibold in the others); a selected row gets a fainter fill.
+    // A chat row, as in the mockups: one line, rounded, the title and then how long ago, small and muted, on the
+    // right. The open chat is a bright card with an edge in the glass presets (accent and semibold in the others); a
+    // selected row gets a fainter fill.
     private void OnDrawSessionItem(object? sender, DrawListViewItemEventArgs e)
     {
         var g = e.Graphics;
@@ -2522,36 +2554,33 @@ internal sealed partial class SessionListForm : Form
         if (DarkTheme.IsGlass)
         {
             GlassSurface.PaintGlowBehind(g, list, bounds);
-            if (active || e.Item.Selected)
-            {
-                using var fill = new SolidBrush(Color.FromArgb(active ? 179 : 90, 255, 255, 255));
-                g.FillRectangle(fill, card);
-            }
-            if (active)
-            {
-                GlassSurface.PaintGlassEdges(g, card, GlassSurface.SheenProgress(list));
-            }
         }
         else
         {
             using var back = new SolidBrush(list.BackColor);
             g.FillRectangle(back, bounds);
-            if (e.Item.Selected)
+        }
+        if (active || e.Item.Selected)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var shape = RoundedRect(new RectangleF(card.X + 0.5f, card.Y + 0.5f, card.Width - 1.5f, card.Height - 1.5f), 9);
+            using var fill = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(active ? 179 : 90) : Color.FromArgb(active ? 56 : 30, DarkTheme.Accent));
+            g.FillPath(fill, shape);
+            if (active && DarkTheme.IsGlass)
             {
-                using var tint = new SolidBrush(Color.FromArgb(56, DarkTheme.Accent)); // reads on every preset, High contrast too
-                g.FillRectangle(tint, card);
+                using var edge = new Pen(GlassSurface.Outline);
+                g.DrawPath(edge, shape);
             }
         }
 
         var pad = LogicalToDeviceUnits(10);
         var titleFont = active ? activeSessionFont : sessionTitleFont;
         var titleColor = active && !DarkTheme.IsGlass ? DarkTheme.Accent : DarkTheme.Text;
-        var gap = LogicalToDeviceUnits(2);
-        var top = card.Y + (card.Height - titleFont.Height - gap - sessionTimeFont.Height) / 2;
-        const TextFormatFlags flags = TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
-        TextRenderer.DrawText(g, e.Item.Text, titleFont, new Rectangle(card.X + pad, top, card.Width - pad * 2, titleFont.Height), titleColor, flags);
+        const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
         var time = e.Item.SubItems.Count > 1 ? e.Item.SubItems[1].Text : "";
-        TextRenderer.DrawText(g, time, sessionTimeFont, new Rectangle(card.X + pad, top + titleFont.Height + gap, card.Width - pad * 2, sessionTimeFont.Height), DarkTheme.Muted, flags);
+        var timeWidth = time.Length == 0 ? 0 : TextRenderer.MeasureText(g, time, sessionTimeFont, card.Size, TextFormatFlags.NoPadding).Width;
+        TextRenderer.DrawText(g, time, sessionTimeFont, new Rectangle(card.Right - pad - timeWidth, card.Y, timeWidth, card.Height), DarkTheme.Muted, flags | TextFormatFlags.Right | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, e.Item.Text, titleFont, new Rectangle(card.X + pad, card.Y, card.Width - pad * 2 - timeWidth - (timeWidth > 0 ? 8 : 0), card.Height), titleColor, flags | TextFormatFlags.Left);
         if (e.Item.Focused && list.Focused && GlassSurface.ShowsFocusCues(list))
         {
             ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -2, -1));
