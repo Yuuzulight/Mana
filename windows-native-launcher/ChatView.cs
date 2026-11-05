@@ -52,6 +52,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private readonly Font headerFont = new("Segoe UI", 11F, FontStyle.Bold);
     private readonly Font codeFont = new("Consolas", 9.5F);
     private readonly Font labelFont = new("Segoe UI", 8.5F, FontStyle.Bold);
+    private readonly Font greetingFont = new("Segoe UI Semibold", 15F); // the welcome's greeting (mockup B)
     private readonly ToolTip linkTip = new();
     private string? hoveredLink;
     private int hoveredIndex = -1;
@@ -84,6 +85,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     public ChatView()
     {
+        Controls.Add(welcomeAvatar);
         copiedReset.Tick += (_, _) =>
         {
             copiedReset.Stop();
@@ -827,6 +829,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     private void Relayout(bool forceScroll)
     {
+        NotifyEmpty();
+        if (messages.Count == 0)
+        {
+            LayOutWelcome();
+        }
         var wasAtBottom = scrollBar.Value >= MaxScroll() - 8;
         var y = SideMargin;
         var width = MaxBubbleContentWidth;
@@ -1350,34 +1357,118 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     }
 
     // A new chat's card: how to start, and a few things she can do.
-    internal const string EmptyStateText = "Say \"Mana\" or type below to start.\n\n"
-        + "A few things she can do:\n"
-        + "•  chat, and answer questions\n"
-        + "•  look at your screen (\"what's this?\", \"translate my screen\")\n"
-        + "•  look things up and research a topic\n"
-        + "•  remember what you tell her about yourself";
+    // ---- Welcome (mockup B) ---------------------------------------------
+    // An empty chat opens on her: her live model in the middle (the window moves it here from her card, through
+    // WelcomeAvatarSlot), a greeting for the time of day, a hint, and up to three things to start with.
 
-    private void PaintEmptyState(Graphics g)
+    internal const string WelcomeHint = "Say \"Mana\" or type below to start.";
+
+    private readonly Panel welcomeAvatar = new() { BackColor = Color.Transparent, Visible = false };
+    private IReadOnlyList<(string Label, Action Run)> welcomeSuggestions = Array.Empty<(string, Action)>();
+    private readonly List<Rectangle> suggestionBounds = new();
+    private int hotSuggestion = -1;
+    private bool? wasEmpty;
+    private Rectangle greetingBounds;
+    private Rectangle hintBounds;
+
+    // True when the chat turns empty (a new chat), false when its first message arrives.
+    public event Action<bool>? EmptyChanged;
+
+    public bool IsEmpty => messages.Count == 0;
+
+    public Control WelcomeAvatarSlot => welcomeAvatar;
+
+    internal IReadOnlyList<Rectangle> SuggestionBounds => suggestionBounds;
+
+    // What the welcome offers, first to last (three at most).
+    public void SetWelcomeSuggestions(IReadOnlyList<(string Label, Action Run)> suggestions)
     {
-        const TextFormatFlags flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix;
-        var width = Math.Min(420, ClientSize.Width - 48);
-        if (width <= 0)
-        {
-            return;
-        }
-        var text = TextRenderer.MeasureText(g, EmptyStateText, bodyFont, new Size(width - (PadX * 2), int.MaxValue), flags);
-        var card = new Rectangle((ClientSize.Width - width) / 2, Math.Max(24, (ClientSize.Height - text.Height) / 3), width, text.Height + (PadY * 2));
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var fill = new SolidBrush(DarkTheme.ManaBubble))
-        {
-            FillRound(g, fill, card, BubbleRadius);
-        }
-        using (var border = new Pen(DarkTheme.Border))
-        {
-            DrawRound(g, border, card, BubbleRadius);
-        }
-        TextRenderer.DrawText(g, EmptyStateText, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text, flags);
+        welcomeSuggestions = suggestions.Take(3).ToList();
+        LayOutWelcome();
+        Invalidate();
     }
+
+    // Her greeting by the hour: morning from 5, afternoon from 12, evening from 17, and a night-owl one after 22.
+    internal static string Greeting(int hour) => hour switch
+    {
+        >= 5 and < 12 => "Good morning~",
+        >= 12 and < 17 => "Good afternoon~",
+        >= 17 and < 22 => "Good evening~",
+        _ => "Hi, night owl~",
+    };
+
+    private void NotifyEmpty()
+    {
+        var empty = messages.Count == 0;
+        welcomeAvatar.Visible = empty && welcomeAvatar.Height > 0;
+        if (empty != wasEmpty)
+        {
+            wasEmpty = empty;
+            EmptyChanged?.Invoke(empty);
+            LayOutWelcome();
+        }
+    }
+
+    // Her in the middle, the greeting and hint under her, the cards under those; centred as a block. On a short
+    // window she gets smaller, and goes back to her card if there's no room.
+    private void LayOutWelcome()
+    {
+        suggestionBounds.Clear();
+        var width = ClientSize.Width;
+        var height = ClientSize.Height;
+        var greetingHeight = greetingFont.Height;
+        var hintHeight = bodyFont.Height;
+        var cardHeight = LogicalToDeviceUnits(64);
+        var gap = LogicalToDeviceUnits(10);
+        var count = welcomeSuggestions.Count;
+        var textBlock = greetingHeight + gap / 2 + hintHeight + (count > 0 ? gap * 2 + cardHeight : 0);
+        var avatarHeight = Math.Min(LogicalToDeviceUnits(230), height - textBlock - gap * 4);
+        if (avatarHeight < LogicalToDeviceUnits(110))
+        {
+            avatarHeight = 0;
+        }
+        var avatarWidth = avatarHeight * 200 / 230;
+        var top = Math.Max(gap, (height - (avatarHeight + (avatarHeight > 0 ? gap : 0) + textBlock)) / 2);
+        welcomeAvatar.Bounds = new Rectangle((width - avatarWidth) / 2, top, avatarWidth, avatarHeight);
+        welcomeAvatar.Visible = messages.Count == 0 && avatarHeight > 0;
+        var y = top + avatarHeight + (avatarHeight > 0 ? gap : 0);
+        greetingBounds = new Rectangle(0, y, width, greetingHeight);
+        y += greetingHeight + gap / 2;
+        hintBounds = new Rectangle(0, y, width, hintHeight);
+        y += hintHeight + gap * 2;
+        if (count > 0)
+        {
+            var cardWidth = Math.Min(LogicalToDeviceUnits(170), (width - SideMargin * 2 - gap * (count - 1)) / count);
+            var x = (width - (cardWidth * count + gap * (count - 1))) / 2;
+            for (var i = 0; i < count; i++)
+            {
+                suggestionBounds.Add(new Rectangle(x + i * (cardWidth + gap), y, cardWidth, cardHeight));
+            }
+        }
+    }
+
+    private void PaintWelcome(Graphics g)
+    {
+        const TextFormatFlags centred = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+        TextRenderer.DrawText(g, Greeting(DateTime.Now.Hour), greetingFont, greetingBounds, DarkTheme.Text, centred);
+        TextRenderer.DrawText(g, WelcomeHint, bodyFont, hintBounds, DarkTheme.Muted, centred);
+        for (var i = 0; i < suggestionBounds.Count && i < welcomeSuggestions.Count; i++)
+        {
+            var card = suggestionBounds[i];
+            using (var fill = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(i == hotSuggestion ? 215 : 165) : i == hotSuggestion ? DarkTheme.Border : DarkTheme.Panel2))
+            {
+                FillRound(g, fill, card, BubbleRadius);
+            }
+            using (var border = new Pen(i == hotSuggestion ? DarkTheme.Accent : DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border))
+            {
+                DrawRound(g, border, card, BubbleRadius);
+            }
+            TextRenderer.DrawText(g, welcomeSuggestions[i].Label, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text,
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    private int SuggestionAt(Point point) => messages.Count == 0 ? suggestionBounds.FindIndex(r => r.Contains(point)) : -1;
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -1385,7 +1476,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         g.SmoothingMode = SmoothingMode.AntiAlias; // #1449: the rounded corners
         if (messages.Count == 0)
         {
-            PaintEmptyState(g);
+            PaintWelcome(g);
         }
         var scroll = scrolling ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
@@ -1651,6 +1742,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         base.OnMouseDown(e);
         Focus();
+        if (e.Button == MouseButtons.Left && SuggestionAt(e.Location) is var suggestion and >= 0 && suggestion < welcomeSuggestions.Count)
+        {
+            welcomeSuggestions[suggestion].Run();
+            return;
+        }
         if (e.Button == MouseButtons.Left && ActionAt(e.Location) is var (actionMsg, actionIndex, actionRect))
         {
             if (messages[actionMsg].Actions[actionIndex].Menu is not null && e.X >= actionRect.Right - MenuArrowWidth)
@@ -1781,6 +1877,17 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (messages.Count == 0)
+        {
+            var hot = SuggestionAt(e.Location);
+            if (hot != hotSuggestion)
+            {
+                hotSuggestion = hot;
+                Invalidate();
+            }
+            Cursor = hot >= 0 ? Cursors.Hand : Cursors.Default;
+            return;
+        }
         var link = LinkAt(e.Location);
         var label = messages.FirstOrDefault(message => !message.FromUser && message.LabelBounds.Contains(e.X, e.Y + (scrolling ? scrollBar.Value : 0)))?.Speaker;
         var tip = link ?? label;
@@ -2433,6 +2540,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             headerFont.Dispose();
             codeFont.Dispose();
             labelFont.Dispose();
+            greetingFont.Dispose();
             linkTip.Dispose();
             glow?.Dispose();
             ContextMenuStrip?.Dispose();

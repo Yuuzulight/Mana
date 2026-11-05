@@ -38,10 +38,6 @@ internal sealed partial class SessionListForm : Form
     protected override bool ShowWithoutActivation => OpenWithoutActivation;
 
     private readonly ManaBackendClient backendClient;
-    // Mockup C: the chat list folded to a strip when the window is narrow or the toggle folds it.
-    private SessionRail? sessionRail;
-    private bool? foldChoice; // the toggle's choice; null follows the window's width
-    private bool folded;
     private readonly VoiceLoop voiceLoop;
     private readonly BackendLogBuffer backendLog;
     private readonly ListView list = new();
@@ -352,6 +348,41 @@ internal sealed partial class SessionListForm : Form
         // fire into disposed controls on every future avatar state change.
         avatarOverlay.StateChanged += OnAvatarStateChanged;
 
+        // Mockup B: while the chat is empty she stands in the middle of it and her card steps aside, so she's never
+        // drawn twice; the first message sends her back to the card.
+        var cardFraming = avatarVisual.Framing;
+        var cardHeight = avatarVisual.Height;
+        void ShowWelcomeAvatar(bool empty)
+        {
+            if (IsDisposed || empty == (avatarVisual.Parent == chatView.WelcomeAvatarSlot))
+            {
+                return;
+            }
+            SuspendLayout();
+            if (empty)
+            {
+                cardFraming = avatarVisual.Framing;
+                cardHeight = avatarVisual.Height;
+                avatarVisual.Framing = "waist";
+                avatarVisual.Dock = DockStyle.Fill;
+                chatView.WelcomeAvatarSlot.Controls.Add(avatarVisual);
+                avatarCard.Visible = false;
+            }
+            else
+            {
+                avatarVisual.Framing = cardFraming;
+                avatarVisual.Dock = DockStyle.Top;
+                avatarVisual.Height = cardHeight;
+                avatarCard.Controls.Add(avatarVisual); // last added docks first: back on top of the card
+                avatarCard.Visible = true;
+            }
+            ResumeLayout(true);
+            UpdateAvatarMirror();
+        }
+        chatView.EmptyChanged += ShowWelcomeAvatar;
+        ShowWelcomeAvatar(chatView.IsEmpty);
+        UpdateWelcomeSuggestions();
+
         // 10px around and between everything, as in the #652 mockup.
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Background, Padding = new Padding(10) };
         var searchField = GlassSurface.Field(searchBox, new Padding(10, 8, 10, 0));
@@ -398,54 +429,6 @@ internal sealed partial class SessionListForm : Form
             }
         };
 
-        // The folded sidebar (mockup C). Her avatar moves into it while folded, in head framing, and back after.
-        var rail = new SessionRail(railToolTip) { Dock = DockStyle.Left, Width = LogicalToDeviceUnits(SessionRail.LogicalWidth), Visible = false };
-        sessionRail = rail;
-        var unfoldedFraming = avatarVisual.Framing;
-        var unfoldedHeight = avatarVisual.Height;
-        void ApplyFold()
-        {
-            var fold = foldChoice ?? SessionRail.ShouldFold(ClientSize.Width, DeviceDpi);
-            if (fold == folded || IsDisposed)
-            {
-                return;
-            }
-            folded = fold;
-            SuspendLayout();
-            sidebar.Visible = !fold;
-            sidebarSplitter.Visible = !fold;
-            rail.Visible = fold;
-            if (fold)
-            {
-                unfoldedFraming = avatarVisual.Framing;
-                unfoldedHeight = avatarVisual.Height;
-                avatarVisual.Dock = DockStyle.None;
-                avatarVisual.Framing = "bust";
-                rail.AvatarSlot.Controls.Add(avatarVisual);
-            }
-            else
-            {
-                avatarVisual.Region = null;
-                avatarVisual.Framing = unfoldedFraming;
-                avatarVisual.Height = unfoldedHeight;
-                avatarVisual.Dock = DockStyle.Top;
-                avatarCard.Controls.Add(avatarVisual); // last added docks first: back on top of the card
-            }
-            ResumeLayout(true);
-            rail.PerformLayout();
-            UpdateAvatarMirror();
-        }
-        rail.NewChatRequested += () => _ = StartNewChatAsync();
-        rail.ChatChosen += SwitchTo;
-        rail.SearchRequested += () =>
-        {
-            foldChoice = false;
-            ApplyFold();
-            searchBox.Focus();
-        };
-        Resize += (_, _) => ApplyFold();
-        Load += (_, _) => ApplyFold();
-
         // Before any RegisterRailTool.
         toolPanel = new ToolPanelHost(railToolTip);
 
@@ -453,10 +436,11 @@ internal sealed partial class SessionListForm : Form
         // Settings docked at the bottom.
         // #1426: Settings is its own window again, so its cog opens that
         // rather than a tool in the panel.
-        // Mockup D: Focus mode, for long sessions -- Mana night and the chat list folded, until it's pressed again.
+        // Mockup D: Focus mode, for long sessions -- Mana night with the chat list put away, until it's pressed again.
         // The saved theme isn't touched; leaving puts the window back as it was.
         string? focusReturnPreset = null;
-        var focusButton = MakeRailButton("focus", "Focus mode: Mana night, chat list folded", active: () => focusReturnPreset is not null);
+        var sidebarBeforeFocus = true;
+        var focusButton = MakeRailButton("focus", "Focus mode: Mana night, chat list put away", active: () => focusReturnPreset is not null);
         focusButton.Dock = DockStyle.Bottom;
         focusButton.Click += (_, _) =>
         {
@@ -464,16 +448,16 @@ internal sealed partial class SessionListForm : Form
             if (focusReturnPreset is null)
             {
                 focusReturnPreset = theme.Preset;
+                sidebarBeforeFocus = sidebar.Visible;
                 DarkTheme.ApplyPresetLive("manaNight", theme.AccentHex);
-                foldChoice = true;
+                sidebar.Visible = sidebarSplitter.Visible = false;
             }
             else
             {
                 DarkTheme.ApplyPresetLive(focusReturnPreset, theme.AccentHex);
                 focusReturnPreset = null;
-                foldChoice = null;
+                sidebar.Visible = sidebarSplitter.Visible = sidebarBeforeFocus;
             }
-            ApplyFold();
             focusButton.Invalidate();
         };
         toolRail.Controls.Add(focusButton);
@@ -552,12 +536,10 @@ internal sealed partial class SessionListForm : Form
         var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
         sidebarToggleButton.Dock = DockStyle.Left;
         sidebarToggleButton.Width = 34;
-        // Folds the chat list to its strip (mockup C) or opens it out again; the choice holds until the window is
-        // reopened, whatever its width.
         sidebarToggleButton.Click += (_, _) =>
         {
-            foldChoice = !folded;
-            ApplyFold();
+            sidebar.Visible = !sidebar.Visible;
+            sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
         };
 
         // #681: same toggle as the tray's Start/Stop listening item. Its
@@ -637,7 +619,6 @@ internal sealed partial class SessionListForm : Form
         Controls.Add(toolRail);
         Controls.Add(sidebarSplitter);
         Controls.Add(sidebar);
-        Controls.Add(rail);
 
         // Forces the native window handle to exist now, on this (the UI)
         // thread -- #524's toast "Open Chat" callback can fire on a
@@ -1735,8 +1716,22 @@ internal sealed partial class SessionListForm : Form
             return;
         }
 
-        using (var bgBrush = new LinearGradientBrush(rect, DarkTheme.Panel2, DarkTheme.Panel, LinearGradientMode.Vertical))
+        if (avatarVisual.Parent == chatView.WelcomeAvatarSlot)
         {
+            // In the welcome (mockup B) she stands on the chat's own background, not in a card.
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, avatarVisual, rect);
+            }
+            else
+            {
+                using var plain = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(plain, rect);
+            }
+        }
+        else
+        {
+            using var bgBrush = new LinearGradientBrush(rect, DarkTheme.Panel2, DarkTheme.Panel, LinearGradientMode.Vertical);
             g.FillRectangle(bgBrush, rect);
         }
         if (avatarVisual.HasFrame)
@@ -2367,16 +2362,38 @@ internal sealed partial class SessionListForm : Form
             list.Items.Add(item);
         }
         list.EndUpdate();
-        sessionRail?.SetChats(list.Items.Cast<ListViewItem>().Select(i => ((string)i.Tag!, i.Text)).ToList(), activeSessionId);
         FitSessionColumn();
         UpdateListStatus();
         ShowChatTitle();
+        UpdateWelcomeSuggestions();
+    }
+
+    // Mockup B's cards: pick up your two most recent chats, or ask what you missed (put in the box, to send or edit).
+    private void UpdateWelcomeSuggestions()
+    {
+        var suggestions = sessions
+            .Where(session => session.SessionId != activeSessionId && !string.IsNullOrWhiteSpace(session.Name))
+            .OrderByDescending(session => session.UpdatedAt ?? "", StringComparer.Ordinal)
+            .Take(2)
+            .Select(session => ($"Pick up \u201c{SessionListFormatter.FormatDisplayName(session)}\u201d", (Action)(() => SwitchTo(session.SessionId))))
+            .ToList();
+        suggestions.Add(("What did I miss today?", () => PrefillMessage("What did I miss today?")));
+        chatView.SetWelcomeSuggestions(suggestions);
+    }
+
+    private void PrefillMessage(string text)
+    {
+        if (messageInputBox is { } box)
+        {
+            box.Text = text;
+            box.SelectionStart = box.Text.Length;
+            box.Focus();
+        }
     }
 
     private void ShowChatTitle()
     {
         chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
-        sessionRail?.SetActive(activeSessionId);
         if (modelsForSession != activeSessionId || chatModelPicker.Items.Count == 0) _ = RefreshChatModelsAsync();
     }
 

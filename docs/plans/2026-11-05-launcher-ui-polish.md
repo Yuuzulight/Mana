@@ -1,13 +1,11 @@
-# Launcher UI polish: Mica look, folding sidebar, Mana night, sharp text
+# Launcher UI polish: Mica look, welcome, Mana night, sharp text
 
 From the mockups at https://claude.ai/artifact/GGG99sJHBP56jv3gdSEfWc (source `docs/plans/mana-window-styles.html` in the main checkout). Yuuzulight picked:
 
 - **A**, soft glass, for the main window;
-- **C**, the sidebar folding to a rail;
+- **B**, the welcome in an empty chat (2026-11-06: she swapped it in for C, which was built and then removed);
 - **D**, Mana night, for focus and long sessions;
-- **F**, sharp text on every screen.
-
-She rejected B (a separate welcome screen). Her live avatar card and the full right rail stay in every design.
+- **F**, sharp text on every screen (2026-11-06: deferred to its own branch; her only monitor is at 100%). Her live avatar card and the full right rail stay in every design.
 
 ## How the Mica look is made
 
@@ -27,15 +25,14 @@ Same memory and drawing cost as the glows: one window-sized background bitmap pl
 
 - A second glass preset, `manaNight`: navy-violet tint, periwinkle text, her lavender accent.
 - Glass fills, edges, sheen and buttons get dark variants.
-- Offered in Settings beside "Mana". A rail button, Focus mode, switches to Mana night and folds the sidebar, then switches back.
+- Offered in Settings beside "Mana". A rail button, Focus mode, switches to Mana night and puts the chat list away, then switches back; the saved theme isn't touched.
 
-## Folding sidebar (C)
+## Welcome (B)
 
-- Below 700 px of window width, or with the sidebar toggle, the chat list becomes a 56 px rail:
-  - her avatar in head framing;
-  - New chat and Search;
-  - each chat as its initials (pinned first, unread dot, the open one ringed), with its title as a tooltip.
-- The right tool rail is unchanged.
+- An empty chat opens on her: her live model moves from the sidebar card to the middle of the chat (waist framing), and the card steps aside, so she's never drawn twice.
+- Under her: a greeting by the hour, a hint, and up to three cards. Two pick up the most recent chats; one puts "What did I miss today?" in the message box, to send or edit.
+- The first message sends her back to the card.
+- The launcher stores no name for the user, so the greeting has none.
 
 ## Sharp text (F)
 

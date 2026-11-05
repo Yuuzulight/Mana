@@ -26,12 +26,14 @@ public class WindowSnapshotTests
         {
             foreach (var width in new[] { 1180, 640 })
             {
-                RunSta(() => Snapshot(preset, width, Path.Combine(output, $"window-{preset}-{width}.png")));
+                RunSta(() => Snapshot(preset, width, Path.Combine(output, $"window-{preset}-{width}.png"), conversation: true));
             }
+            RunSta(() => Snapshot(preset, 1180, Path.Combine(output, $"window-{preset}-welcome.png"), conversation: false));
         }
     }
 
-    private static void Snapshot(string preset, int width, string path)
+    // conversation: false leaves the chat empty, for the welcome (mockup B).
+    private static void Snapshot(string preset, int width, string path, bool conversation)
     {
         DarkTheme.ApplyPreset(preset, null);
         var client = new ManaBackendClient(new FakeHttpMessageHandler(request => Json(request.RequestUri?.AbsolutePath switch
@@ -57,10 +59,13 @@ public class WindowSnapshotTests
         GlassSurface.TreatAsActive = true;
         Console.WriteLine($"snapshot {preset}: wallpaper monitors {WallpaperBackdrop.Current?.Count.ToString() ?? "none"}");
         GlassSurface.ScreenShift = new Point(8000 + 200, 120); // sample the wallpaper as if the window sat at (200, 160)
-        chat.AppendUserMessage("Is the table page under 50 ms yet?");
-        chat.AppendManaMessage("Not yet~ It's 56 to 64 ms in the published host. The rounded frame gets clipped three times a frame, so I'm reusing the first clip:\n\n```csharp\nif (_lastRoundedClip is { } last && last.Key.Equals(key))\n    return; // reuse the mask\n```");
-        chat.AppendUserMessage("Nice. Pixels still identical?");
-        chat.AppendManaMessage("Every one! The render suite still passes, 864 of 864.");
+        if (conversation)
+        {
+            chat.AppendUserMessage("Is the table page under 50 ms yet?");
+            chat.AppendManaMessage("Not yet~ It's 56 to 64 ms in the published host. The rounded frame gets clipped three times a frame, so I'm reusing the first clip:\n\n```csharp\nif (_lastRoundedClip is { } last && last.Key.Equals(key))\n    return; // reuse the mask\n```");
+            chat.AppendUserMessage("Nice. Pixels still identical?");
+            chat.AppendManaMessage("Every one! The render suite still passes, 864 of 864.");
+        }
         form.Show();
         var refresh = form.RefreshAsync(); // the app does this once the backend is up
         var until = DateTime.UtcNow.AddSeconds(2.5);

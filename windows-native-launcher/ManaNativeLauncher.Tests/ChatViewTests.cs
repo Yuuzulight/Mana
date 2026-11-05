@@ -16,6 +16,34 @@ public class ChatViewTests
         return view;
     }
 
+    // Mockup B: her welcome greets by the hour, and an empty chat says so; the first message ends it.
+    [Theory]
+    [InlineData(6, "Good morning~")]
+    [InlineData(13, "Good afternoon~")]
+    [InlineData(19, "Good evening~")]
+    [InlineData(23, "Hi, night owl~")]
+    [InlineData(3, "Hi, night owl~")]
+    public void WelcomeGreetsByTheHour(int hour, string greeting)
+    {
+        Assert.Equal(greeting, ChatView.Greeting(hour));
+    }
+
+    [Fact]
+    public void WelcomeOffersItsCardsUntilTheFirstMessage()
+    {
+        using var view = NewView();
+        var states = new List<bool>();
+        view.EmptyChanged += states.Add;
+        var picked = -1;
+        view.SetWelcomeSuggestions(new (string, Action)[] { ("Pick up “Folio table speed”", () => picked = 0), ("What did I miss today?", () => picked = 1) });
+        var card = view.SuggestionBounds[0];
+        view.SimulateClick(new Point(card.X + card.Width / 2, card.Y + card.Height / 2));
+        Assert.Equal(0, picked);
+        view.AppendUserMessage("hi"); // the first message: the welcome goes
+        Assert.Contains(false, states);
+        Assert.False(view.IsEmpty);
+    }
+
     // Mockup A: hovering a reply shows a Copy button on each of its code blocks; it copies just that block.
     [Fact]
     public void CodeBlocksCopyFromTheirOwnButton()
