@@ -16,6 +16,26 @@ public class ChatViewTests
         return view;
     }
 
+    // Mockup A: hovering a reply shows a Copy button on each of its code blocks; it copies just that block.
+    [Fact]
+    public void CodeBlocksCopyFromTheirOwnButton()
+    {
+        using var view = NewView();
+        string? copied = null;
+        view.CopyText = text => copied = text;
+        view.AppendManaMessage("Here:\n\n```js\nconst a = 1;\nconst b = 2;\n```\n\nAnd done.");
+        var reply = view.Messages[^1];
+        var block = Assert.Single(reply.CodeBlocks);
+        Assert.Equal("const a = 1;\nconst b = 2;", block.Code);
+
+        var button = new Point(reply.Bounds.X + 14 + reply.ContentWidth - 20, reply.Bounds.Y + 9 + block.Top + 10);
+        view.SimulateClick(button); // not hovered yet: no button there
+        Assert.Null(copied);
+        view.SimulateMouseMove(new Point(reply.Bounds.X + 20, reply.Bounds.Y + 20));
+        view.SimulateClick(button);
+        Assert.Equal(block.Code, copied);
+    }
+
     [Fact]
     public void ManasSentencesJoinOneBubbleUntilYouSpeakAgain()
     {

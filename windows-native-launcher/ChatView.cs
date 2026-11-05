@@ -55,6 +55,12 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private readonly ToolTip linkTip = new();
     private string? hoveredLink;
     private int hoveredIndex = -1;
+    // Mockup A's code Copy button: which block just copied (it says "Copied" for a moment).
+    private (int Message, int Block)? copiedBlock;
+    private readonly System.Windows.Forms.Timer copiedReset = new() { Interval = 1500 };
+
+    // Where a Copy button's text goes: the clipboard (tests read it from here instead).
+    internal Action<string> CopyText { get; set; } = Clipboard.SetText;
     private int contentHeight;
     private int selected = -1;
     private (int Msg, int Offset)? anchor;
@@ -78,6 +84,12 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     public ChatView()
     {
+        copiedReset.Tick += (_, _) =>
+        {
+            copiedReset.Stop();
+            copiedBlock = null;
+            Invalidate();
+        };
         uiContext = System.Threading.SynchronizationContext.Current; // installed by Control's constructor
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
@@ -944,6 +956,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var widest = 0;
         message.Cells.Clear();
         message.ImageBounds.Clear();
+        message.CodeBlocks.Clear();
         message.ThoughtHeaderBounds = Rectangle.Empty;
         message.ThoughtLines.Clear();
 
@@ -1043,6 +1056,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (block.Type == MarkdownBlockType.CodeBlock)
             {
                 var sourceLines = string.Concat(block.Runs.Select(r => r.Text)).Replace("\r", "").Split('\n');
+                var codeTop = y;
                 for (var li = 0; li < sourceLines.Length; li++)
                 {
                     if (li > 0)
@@ -1058,6 +1072,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                         y += codeFont.Height + 2;
                     }
                 }
+                message.CodeBlocks.Add((codeTop - 1, y - 1, string.Join("\n", sourceLines)));
                 continue;
             }
 
@@ -1550,6 +1565,21 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 }
             }
 
+            if (i == hoveredIndex)
+            {
+                for (var k = 0; k < message.CodeBlocks.Count; k++)
+                {
+                    var pill = CopyButton(message, k);
+                    pill.Offset(origin);
+                    using var back = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(215) : DarkTheme.Panel2);
+                    FillRound(g, back, pill, ButtonRadius);
+                    using var edge = new Pen(DarkTheme.Border);
+                    DrawRound(g, edge, pill, ButtonRadius);
+                    TextRenderer.DrawText(g, copiedBlock == (i, k) ? "Copied" : "Copy", labelFont, pill, DarkTheme.Text,
+                        TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                }
+            }
+
             PaintActions(g, message, origin);
 
             if (i == selected)
@@ -1580,12 +1610,42 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
+    // A code block's Copy button, in content coordinates: its top right corner.
+    private Rectangle CopyButton(Message message, int block)
+    {
+        var width = TextRenderer.MeasureText("Copied", labelFont).Width + 16;
+        var height = labelFont.Height + 4;
+        return new Rectangle(message.ContentWidth - width - 4, message.CodeBlocks[block].Top + 3, width, height);
+    }
+
+    // The Copy button under `point` (control coordinates), on the hovered message only, where they show.
+    private (int Message, int Block)? CopyButtonAt(Point point)
+    {
+        if (hoveredIndex < 0 || hoveredIndex >= messages.Count)
+        {
+            return null;
+        }
+        var message = messages[hoveredIndex];
+        var content = new Point(point.X - message.Bounds.X - PadX, point.Y + (scrolling ? scrollBar.Value : 0) - message.Bounds.Y - PadY);
+        for (var k = 0; k < message.CodeBlocks.Count; k++)
+        {
+            if (CopyButton(message, k).Contains(content))
+            {
+                return (hoveredIndex, k);
+            }
+        }
+        return null;
+    }
+
     // ---- Input ----------------------------------------------------------
 
     internal void SimulateClick(Point point) =>
         OnMouseDown(new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0));
 
     internal void SimulateKeyDown(KeyEventArgs e) => OnKeyDown(e);
+
+    internal void SimulateMouseMove(Point point) =>
+        OnMouseMove(new MouseEventArgs(MouseButtons.None, 0, point.X, point.Y, 0));
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
@@ -1600,6 +1660,22 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             else
             {
                 _ = RunActionAsync(actionMsg, actionIndex);
+            }
+            return;
+        }
+        if (e.Button == MouseButtons.Left && CopyButtonAt(e.Location) is var (copyMsg, copyBlock))
+        {
+            try
+            {
+                CopyText(messages[copyMsg].CodeBlocks[copyBlock].Code);
+                copiedBlock = (copyMsg, copyBlock);
+                copiedReset.Stop();
+                copiedReset.Start();
+                Invalidate();
+            }
+            catch (System.Runtime.InteropServices.ExternalException ex)
+            {
+                Console.WriteLine($"ChatView: copy failed. {ex.Message}"); // the clipboard is busy in another app
             }
             return;
         }
@@ -1755,7 +1831,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             hoveredIndex = newHovered;
             Invalidate();
         }
-        Cursor = isActionButton || isThoughtHeader || ActionAt(e.Location) is not null || link is not null ? Cursors.Hand
+        Cursor = isActionButton || isThoughtHeader || ActionAt(e.Location) is not null || link is not null || CopyButtonAt(e.Location) is not null ? Cursors.Hand
             : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
         if (!pressed || (e.Button & MouseButtons.Left) == 0 || messages.Count == 0)
         {
@@ -2396,6 +2472,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public Rectangle NoteBounds { get; set; }
         public bool ActionRunning { get; set; }
         public List<(Rectangle Bounds, bool Header)> Cells { get; } = new(); // table cells, in content coordinates
+        // Mockup A: each code block's top and bottom (content coordinates) and its text, for its Copy button.
+        public List<(int Top, int Bottom, string Code)> CodeBlocks { get; } = new();
         public List<Bitmap> Images { get; } = new(); // #679: thumbnails of a user message's images
         public List<Rectangle> ImageBounds { get; } = new(); // in content coordinates
 
