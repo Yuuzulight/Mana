@@ -178,22 +178,17 @@ internal sealed partial class SessionListForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         DarkTheme.ApplyForm(this);
 
-        newChatButton.Text = "+ New chat";
+        // The mockups' New chat: an accent pill, a plus and the words centred.
+        newChatButton.Text = "New chat";
+        newChatButton.AccessibleName = "New chat";
         newChatButton.Dock = DockStyle.Top;
-        newChatButton.Height = 36;
-        newChatButton.TextAlign = ContentAlignment.MiddleLeft; // the #652 mockup's
-        newChatButton.Padding = new Padding(6, 0, 0, 0);
+        newChatButton.Height = 34;
         newChatButton.Click += async (_, _) => await StartNewChatAsync();
-        // #538's own new-chat button is a solid accent CTA, not the
-        // muted flat style DarkTheme.ApplyButton gives every other button
-        // in this window -- matched here instead of through that shared
-        // helper, which stays as-is for Settings' own buttons. The Mana
-        // preset draws it as glass instead.
         newChatButton.FlatStyle = FlatStyle.Flat;
-        newChatButton.BackColor = DarkTheme.Accent;
-        newChatButton.ForeColor = DarkTheme.OnAccent;
+        newChatButton.BackColor = DarkTheme.Background;
         newChatButton.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(newChatButton);
+        newChatButton.Cursor = Cursors.Hand;
+        newChatButton.Paint += (_, e) => PaintPillButton(e.Graphics, newChatButton);
 
         searchBox.Dock = DockStyle.Top;
         searchBox.PlaceholderText = "Search chats";
@@ -277,7 +272,7 @@ internal sealed partial class SessionListForm : Form
         // avatarCard here, which isn't declared yet at this point in the
         // constructor. Anchor (Top|Right) below keeps it glued to
         // avatarCard's right edge on every later resize.
-        avatarZoomButton.Location = new Point(220 - 20 - 8, 8);
+        avatarZoomButton.Location = new Point(220 - 20 - 6, 6);
         avatarZoomButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         avatarZoomButton.FlatStyle = FlatStyle.Flat;
         avatarZoomButton.BackColor = DarkTheme.Panel2;
@@ -330,8 +325,8 @@ internal sealed partial class SessionListForm : Form
         // Width matches the sidebar's starting width so avatarZoomButton's
         // right-edge anchor is measured against the width it's placed for
         // (a Panel starts 200 wide, which anchored the button off the card).
-        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 220, Height = 62 + avatarVisual.Height, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
-        avatarCard.Paint += OnPaintAvatarCardBorder;
+        // The mockups' card: her in a rounded gradient tile at the top of the sidebar, her name and status under it.
+        var avatarCard = new Panel { Dock = DockStyle.Top, Width = 220, Height = 46 + avatarVisual.Height, BackColor = DarkTheme.Background, Padding = new Padding(0, 0, 0, 2) };
         // WinForms docks the LAST-added child first (see the main
         // Controls.Add block below), so visual/name/status -- top to
         // bottom, the reference's own markup order -- go in reversed. The
@@ -403,14 +398,15 @@ internal sealed partial class SessionListForm : Form
         };
         listStatus.Controls.Add(listStatusLabel);
         listStatus.Controls.Add(listRetryButton);
+        // Top to bottom, as in the mockups: her card, search, New chat, the list's heading, the list.
         sidebar.Controls.Add(list);
         sidebar.Controls.Add(listStatus);
+        sidebar.Controls.Add(BuildProjectControls());
+        sidebar.Controls.Add(Gap(DockStyle.Top));
+        sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(searchField);
         sidebar.Controls.Add(Gap(DockStyle.Top));
-        sidebar.Controls.Add(newChatButton);
-        sidebar.Controls.Add(BuildProjectControls());
-        sidebar.Controls.Add(Gap(DockStyle.Bottom));
         sidebar.Controls.Add(avatarCard);
 
         // Drag-resizable. MinSize (200) is the floor: below that the
@@ -1760,8 +1756,25 @@ internal sealed partial class SessionListForm : Form
         }
         else
         {
-            using var bgBrush = new LinearGradientBrush(rect, DarkTheme.Panel2, DarkTheme.Panel, LinearGradientMode.Vertical);
-            g.FillRectangle(bgBrush, rect);
+            // The mockups' tile: lavender to sky (navy-violet at night), rounded, a faint edge.
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, avatarVisual, rect);
+            }
+            else
+            {
+                using var plain = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(plain, rect);
+            }
+            var tile = new RectangleF(0.5f, 0.5f, rect.Width - 1.5f, rect.Height - 1.5f);
+            using var shape = RoundedRect(tile, 14);
+            var (from, to) = DarkTheme.IsLight
+                ? (Color.FromArgb(140, 198, 170, 224), Color.FromArgb(140, 163, 210, 250))
+                : (Color.FromArgb(115, 118, 109, 190), Color.FromArgb(102, 37, 90, 160));
+            using var bgBrush = new LinearGradientBrush(rect, from, to, 160f);
+            g.FillPath(bgBrush, shape);
+            using var edge = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
+            g.DrawPath(edge, shape);
         }
         if (avatarVisual.HasFrame)
         {
@@ -1787,6 +1800,45 @@ internal sealed partial class SessionListForm : Form
         using var blobPath = RoundedRect(blobRect, radius);
         using var blobBrush = new LinearGradientBrush(blobRect, ControlPaint.Light(DarkTheme.Accent, 0.25f), DarkTheme.Accent, LinearGradientMode.Vertical);
         g.FillPath(blobBrush, blobPath);
+    }
+
+    private static readonly Font PillFont = new("Segoe UI Semibold", 9.75f);
+
+    // An accent pill with a plus before its words (the mockups' New chat).
+    private static void PaintPillButton(Graphics g, Button button)
+    {
+        var bounds = button.ClientRectangle;
+        if (DarkTheme.IsGlass)
+        {
+            GlassSurface.PaintGlowBehind(g, button, bounds);
+        }
+        else
+        {
+            using var clear = new SolidBrush(DarkTheme.Background);
+            g.FillRectangle(clear, bounds);
+        }
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var hot = button.Enabled && bounds.Contains(button.PointToClient(Control.MousePosition));
+        var pill = new RectangleF(0.5f, 0.5f, bounds.Width - 1.5f, bounds.Height - 1.5f);
+        using (var shape = RoundedRect(pill, pill.Height / 2))
+        using (var fill = new SolidBrush(!button.Enabled ? Color.FromArgb(140, DarkTheme.Accent) : hot ? ControlPaint.Light(DarkTheme.Accent, 0.2f) : DarkTheme.Accent))
+        {
+            g.FillPath(fill, shape);
+        }
+        var text = TextRenderer.MeasureText(g, button.Text, PillFont, bounds.Size, TextFormatFlags.NoPadding);
+        const int icon = 10, gap = 7;
+        var left = (bounds.Width - (icon + gap + text.Width)) / 2f;
+        var cy = bounds.Height / 2f;
+        using (var pen = new Pen(DarkTheme.OnAccent, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawLine(pen, left, cy, left + icon, cy);
+            g.DrawLine(pen, left + icon / 2f, cy - icon / 2f, left + icon / 2f, cy + icon / 2f);
+        }
+        TextRenderer.DrawText(g, button.Text, PillFont, new Point((int)(left + icon + gap), (bounds.Height - text.Height) / 2), DarkTheme.OnAccent, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+        if (button.Focused && GlassSurface.ShowsFocusCues(button))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(bounds, -3, -3));
+        }
     }
 
     private static GraphicsPath RoundedRect(RectangleF rect, float radius)
