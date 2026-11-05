@@ -32,7 +32,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private const int PadX = 14;
     private const int PadY = 9;
     private const int LabelGap = 3;
-    private const int MessageGap = 14;
+    private const int MessageGap = 12;
+    private const int RunGap = 3; // between her bubbles in a row
+
+    // Her next bubble joins this one's run: both hers (the same speaker), neither a step line or a request card.
+    private static bool GroupsWith(Message message, Message next) =>
+        !message.FromUser && !next.FromUser && message.Steps is null && next.Steps is null
+        && message.ApprovalId is null && next.ApprovalId is null && message.Speaker == next.Speaker;
+
+    // The time under your message: the time today, the day and time before that.
+    internal static string Stamp(DateTime at, DateTime now) =>
+        at.Date == now.Date ? at.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture)
+        : at.ToString("MMM d, h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
     private const int BlockGap = 5;
     private const int ActionHeight = 28;
     private const int MenuArrowWidth = 22; // a split button's dropdown part
@@ -52,6 +63,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private readonly Font headerFont = new("Segoe UI", 11F, FontStyle.Bold);
     private readonly Font codeFont = new("Consolas", 9.5F);
     private readonly Font labelFont = new("Segoe UI", 8.5F, FontStyle.Bold);
+    private readonly Font stampFont = new("Segoe UI", 8.25F); // the footer: your time, her name
     private readonly Font greetingFont = new("Segoe UI Semibold", 15F); // the welcome's greeting (mockup B)
     private readonly ToolTip linkTip = new();
     private string? hoveredLink;
@@ -158,7 +170,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         LastUserMessageAt = DateTime.UtcNow;
         var turnIndex = messages.Count(m => m.FromUser);
-        var message = new Message(fromUser: true) { TurnIndex = turnIndex };
+        var message = new Message(fromUser: true) { TurnIndex = turnIndex, At = DateTime.Now };
         foreach (var image in images)
         {
             if (DecodeThumbnail(image) is { } thumb)
@@ -320,7 +332,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             if (!string.IsNullOrWhiteSpace(turn.User))
             {
-                var user = new Message(fromUser: true) { TurnIndex = turnIdx };
+                var user = new Message(fromUser: true) { TurnIndex = turnIdx, At = DateTimeOffset.TryParse(turn.At, out var at) ? at.LocalDateTime : null };
                 user.Blocks.AddRange(UserBlocks(turn.User));
                 messages.Add(user);
             }
@@ -837,19 +849,25 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var wasAtBottom = scrollBar.Value >= MaxScroll() - 8;
         var y = SideMargin;
         var width = MaxBubbleContentWidth;
-        foreach (var message in messages)
+        for (var i = 0; i < messages.Count; i++)
         {
+            var message = messages[i];
             if (message.LaidOutWidth != width)
             {
                 LayOut(message, width);
             }
             var bubbleWidth = message.ContentWidth + PadX * 2;
             var x = message.FromUser ? ViewportWidth - SideMargin - bubbleWidth : SideMargin;
-            // #1318: a step line has no "Mana" label above it.
-            var labelHeight = message.Steps is null ? labelFont.Height + LabelGap : 0;
-            var labelWidth = message.FromUser ? 60 : Math.Min(Math.Max(40, ViewportWidth - SideMargin * 2 - 200), Math.Max(60, Measure(message.Speaker, labelFont)));
-            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, labelWidth, labelHeight);
-            message.Bounds = new Rectangle(x, y + labelHeight, bubbleWidth, message.ContentHeight + PadY * 2);
+            message.Bounds = new Rectangle(x, y, bubbleWidth, message.ContentHeight + PadY * 2);
+            // The mockups: no name over the bubbles. Her bubbles in a row sit together; under the last of a run (and
+            // under each of yours) a footer line: your message's time, or her name, with the actions, on hover.
+            var continues = i + 1 < messages.Count && GroupsWith(message, messages[i + 1]);
+            var footerHeight = message.Steps is null && !continues ? labelFont.Height + LabelGap : 0;
+            var footerTop = message.Bounds.Bottom + (footerHeight > 0 ? LabelGap : 0);
+            var labelText = message.FromUser ? (message.At is { } at ? Stamp(at, DateTime.Now) : "") : message.Speaker;
+            var labelWidth = message.FromUser ? Measure(labelText, stampFont) : Math.Min(Math.Max(40, ViewportWidth - SideMargin * 2 - 200), Math.Max(60, Measure(labelText, stampFont)));
+            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - labelWidth : x, footerTop, labelWidth, footerHeight);
+            y = footerTop;
 
             // #1322: Action and version stepper button layout
             message.EditBtnBounds = Rectangle.Empty;
@@ -859,7 +877,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             message.VersionNextBounds = Rectangle.Empty;
             message.VersionLabelBounds = Rectangle.Empty;
 
-            if (message.Steps is null && message.TurnIndex >= 0)
+            if (message.Steps is null && message.TurnIndex >= 0 && footerHeight > 0)
             {
                 var btnHeight = labelFont.Height + 2;
                 if (message.FromUser)
@@ -921,7 +939,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 }
             }
 
-            y = message.Bounds.Bottom + MessageGap;
+            y = continues ? message.Bounds.Bottom + RunGap : footerTop + footerHeight + MessageGap;
         }
         contentHeight = y;
 
@@ -1344,6 +1362,29 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         r.Width < 3 || r.Height < 3 ? new GraphicsPath()
         : SettingsRows.Rounded(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1f, r.Height - 1f), Math.Max(0.5f, Math.Min(radius, (r.Height - 1) / 2f)));
 
+    // The mockups' bubbles: 14px corners, but the one nearest the speaker small -- bottom left on hers (and top left too
+    // when it follows one of hers), bottom right on yours. Request cards keep even corners.
+    private const float SpeechRadius = 14;
+    private const float TailRadius = 4;
+
+    private static GraphicsPath BubbleShape(Rectangle r, Message message, bool followsHers)
+    {
+        if (message.ApprovalId is not null)
+        {
+            return Round(r, BubbleRadius);
+        }
+        var big = Math.Min(SpeechRadius, (r.Height - 1) / 2f);
+        var (tl, tr, br, bl) = message.FromUser ? (big, big, TailRadius, big) : (followsHers ? TailRadius : big, big, big, TailRadius);
+        var rect = new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1f, r.Height - 1f);
+        var path = new GraphicsPath();
+        path.AddArc(rect.X, rect.Y, tl * 2, tl * 2, 180, 90);
+        path.AddArc(rect.Right - tr * 2, rect.Y, tr * 2, tr * 2, 270, 90);
+        path.AddArc(rect.Right - br * 2, rect.Bottom - br * 2, br * 2, br * 2, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - bl * 2, bl * 2, bl * 2, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
     private static void FillRound(Graphics g, Brush brush, Rectangle r, float radius)
     {
         using var shape = Round(r, radius);
@@ -1489,12 +1530,25 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             if (message.Steps is not null)
             {
+                // The mockups' tool-steps chip: a dashed pill around the line (rounder than a card once it's open).
+                var chip = Rectangle.Inflate(bubble, -4, -5);
+                using (var dashed = new Pen(DarkTheme.IsGlass ? Color.FromArgb(70, DarkTheme.Accent) : DarkTheme.Border) { DashPattern = new[] { 3f, 2.5f } })
+                {
+                    var smoothing = g.SmoothingMode;
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    DrawRound(g, dashed, chip, message.StepsOpen ? BubbleRadius : chip.Height / 2f);
+                    g.SmoothingMode = smoothing;
+                }
                 PaintStepLine(g, message, new Point(bubble.X + PadX, bubble.Y + PadY));
                 continue;
             }
             var label = message.LabelBounds with { Y = message.LabelBounds.Y - scroll };
-            TextRenderer.DrawText(g, message.Speaker, labelFont, label, DarkTheme.Muted,
-                TextFlags | TextFormatFlags.EndEllipsis | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
+            var hovered = hoveredIndex == i || selected == i;
+            if (message.FromUser ? message.At is { } at : hovered && label.Height > 0)
+            {
+                TextRenderer.DrawText(g, message.FromUser ? Stamp(message.At!.Value, DateTime.Now) : message.Speaker, stampFont, label, DarkTheme.Muted,
+                    TextFlags | TextFormatFlags.EndEllipsis | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
+            }
 
             // #1322: Draw version stepper controls if multiple versions exist
             if (message.Versions != null && message.Versions.Count > 1)
@@ -1547,18 +1601,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
 
             var fill = message.FromUser ? DarkTheme.UserBubble : DarkTheme.ManaBubble;
-            if (DarkTheme.IsGlass)
+            using (var shape = BubbleShape(bubble, message, i > 0 && GroupsWith(messages[i - 1], message)))
             {
-                using var glass = new SolidBrush(Color.FromArgb(175, fill));
-                FillRound(g, glass, bubble, BubbleRadius);
-                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this), BubbleRadius); // #652: her bubbles shimmer
-            }
-            else
-            {
-                using var solid = new SolidBrush(fill);
-                FillRound(g, solid, bubble, BubbleRadius);
-                using var border = new Pen(DarkTheme.Border);
-                DrawRound(g, border, bubble, BubbleRadius);
+                var smoothing = g.SmoothingMode;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using var solid = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(235, fill) : fill);
+                g.FillPath(solid, shape);
+                if (!DarkTheme.IsGlass)
+                {
+                    using var border = new Pen(DarkTheme.Border);
+                    g.DrawPath(border, shape);
+                }
+                g.SmoothingMode = smoothing;
             }
             if (message.ApprovalId is not null)
             {
@@ -2540,6 +2594,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             headerFont.Dispose();
             codeFont.Dispose();
             labelFont.Dispose();
+            stampFont.Dispose();
             greetingFont.Dispose();
             linkTip.Dispose();
             glow?.Dispose();
@@ -2561,6 +2616,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public bool FromUser { get; }
         // #914: the character's name on her messages (null: Mana).
         public string? Name { get; init; }
+        // When you sent it (your messages only), for the time under the bubble.
+        public DateTime? At { get; set; }
         public string? AnswerModel { get; set; }
         public bool CloudFallback { get; set; }
         public string Speaker => FromUser ? "You" : (Name ?? "Mana") + (AnswerModel is null ? "" : $" · {AnswerModel}{(CloudFallback ? " (fallback)" : "")}");

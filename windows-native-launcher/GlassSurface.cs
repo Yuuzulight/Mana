@@ -40,6 +40,71 @@ internal static class GlassSurface
     }
 
     private static readonly ConditionalWeakTable<Form, Attachment> Attached = new();
+    private static readonly ConditionalWeakTable<Form, Control> Panes = new();
+
+    // The mockups' chat pane: a lighter sheet over the glass, its top-left corner rounded, with a bright top and left
+    // edge. It's drawn into the window's background (and every slice of it), so whatever sits on the pane shows it.
+    public static void SetPane(Form form, Control pane)
+    {
+        Panes.AddOrUpdate(form, pane);
+        pane.SizeChanged += (_, _) =>
+        {
+            if (IsAttached(form) && !form.IsDisposed)
+            {
+                Swap(form, RenderGlow(form.ClientSize, Point.Empty, form.ClientSize, form: form));
+                BackdropShifted?.Invoke(form);
+                form.Invalidate(true);
+            }
+        };
+    }
+
+    // Where `control` sits in `form`'s client area, with or without handles.
+    private static Rectangle BoundsIn(Form form, Control control)
+    {
+        if (form.IsHandleCreated && control.IsHandleCreated)
+        {
+            return new Rectangle(form.PointToClient(control.PointToScreen(Point.Empty)), control.Size);
+        }
+        var location = Point.Empty;
+        for (var c = control; c is not null && c != form; c = c.Parent)
+        {
+            location.Offset(c.Location);
+        }
+        return new Rectangle(location, control.Size);
+    }
+
+    internal const int PaneRadius = 12;
+
+    private static void PaintPane(Graphics g, Form form, Point offset)
+    {
+        if (!Panes.TryGetValue(form, out var pane) || !pane.Visible || pane.Width <= 0)
+        {
+            return;
+        }
+        var r = BoundsIn(form, pane);
+        r.Offset(-offset.X, -offset.Y);
+        var light = DarkTheme.IsLight;
+        const int d = PaneRadius * 2;
+        using var path = new GraphicsPath();
+        path.AddArc(r.X, r.Y, d, d, 180, 90);
+        path.AddLine(r.X + PaneRadius, r.Y, r.Right + 1, r.Y);
+        path.AddLine(r.Right + 1, r.Y, r.Right + 1, r.Bottom + 1);
+        path.AddLine(r.Right + 1, r.Bottom + 1, r.X, r.Bottom + 1);
+        path.CloseFigure();
+        var smoothing = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var fill = new SolidBrush(light ? Color.FromArgb(102, 255, 255, 255) : Color.FromArgb(12, 255, 255, 255)))
+        {
+            g.FillPath(fill, path);
+        }
+        using (var edge = new Pen(light ? Color.FromArgb(150, 255, 255, 255) : Color.FromArgb(20, 255, 255, 255)))
+        {
+            g.DrawArc(edge, r.X + 0.5f, r.Y + 0.5f, d, d, 180, 90);
+            g.DrawLine(edge, r.X + PaneRadius, r.Y + 0.5f, r.Right + 1, r.Y + 0.5f);
+            g.DrawLine(edge, r.X + 0.5f, r.Y + PaneRadius, r.X + 0.5f, r.Bottom + 1);
+        }
+        g.SmoothingMode = smoothing;
+    }
 
     // Records how to put `control` back; dropped when it's disposed.
     private static void Record(Dictionary<Control, List<Action>>? undo, Control control, Action restore)
@@ -195,6 +260,7 @@ internal static class GlassSurface
                 using var tint = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 184 : 204, DarkTheme.Background));
                 g.FillRectangle(tint, 0, 0, bitmap.Width, bitmap.Height);
             }
+            PaintPane(g, form, offset);
             if (frosted)
             {
                 using var veil = new SolidBrush(GlassFill);
@@ -210,6 +276,11 @@ internal static class GlassSurface
         FillGlow(g, new PointF(w * 0.05f, h * 0.02f), span * 0.55f, light ? Color.FromArgb(150, 198, 170, 224) : Color.FromArgb(70, 118, 109, 190)); // lavender, top left
         FillGlow(g, new PointF(w * 0.98f, h * 1.02f), span * 0.62f, light ? Color.FromArgb(160, 163, 210, 250) : Color.FromArgb(60, 37, 110, 190)); // sky blue, bottom right
         FillGlow(g, new PointF(w * 0.55f, h * 0.45f), span * 0.35f, light ? Color.FromArgb(40, 118, 109, 190) : Color.FromArgb(24, 169, 158, 240));  // faint periwinkle
+        if (form is not null)
+        {
+            g.ResetTransform();
+            PaintPane(g, form, offset);
+        }
         if (frosted)
         {
             g.ResetTransform();

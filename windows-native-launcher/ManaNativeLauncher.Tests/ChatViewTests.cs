@@ -28,6 +28,29 @@ public class ChatViewTests
         Assert.Equal(greeting, ChatView.Greeting(hour));
     }
 
+    // Under your message: the time today, the day and time before that.
+    [Theory]
+    [InlineData(2026, 11, 5, 21, 41, "9:41 PM")]
+    [InlineData(2026, 11, 4, 9, 5, "Nov 4, 9:05 AM")]
+    public void StampsYourMessageWithItsTime(int year, int month, int day, int hour, int minute, string stamp)
+    {
+        var now = new DateTime(2026, 11, 5, 23, 0, 0);
+        Assert.Equal(stamp, ChatView.Stamp(new DateTime(year, month, day, hour, minute, 0), now));
+    }
+
+    [Fact]
+    public void YourMessageIsStampedAndHerRunsOfBubblesSitTogether()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("Is the table page under 50 ms yet?");
+        view.AppendReplySentence("Not yet~");
+        view.AppendManaMessage("The rounded frame gets clipped three times a frame.");
+        var (you, first, second) = (view.Messages[0], view.Messages[1], view.Messages[2]);
+        Assert.NotNull(you.At);
+        Assert.True(you.LabelBounds.Top >= you.Bounds.Bottom, "the time sits under your bubble");
+        Assert.InRange(second.Bounds.Top - first.Bounds.Bottom, 0, 6);
+    }
+
     [Fact]
     public void WelcomeOffersItsCardsUntilTheFirstMessage()
     {

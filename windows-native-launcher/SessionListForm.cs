@@ -442,7 +442,15 @@ internal sealed partial class SessionListForm : Form
         // rest of the window (tool rail/panel + chat) to stay usable.
         // Splitter has no built-in max, so SplitterMoved clamps the
         // other end (380) after each drag.
+        // Drawn as the glass behind it in the glass presets: the chat pane's own edge is the divider there.
         var sidebarSplitter = new Splitter { Dock = DockStyle.Left, Width = 4, BackColor = DarkTheme.Border, MinSize = 200, MinExtra = 300 };
+        sidebarSplitter.Paint += (_, e) =>
+        {
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(e.Graphics, sidebarSplitter, sidebarSplitter.ClientRectangle);
+            }
+        };
         sidebarSplitter.SplitterMoved += (_, _) =>
         {
             if (sidebar.Width > 380)
@@ -525,6 +533,7 @@ internal sealed partial class SessionListForm : Form
         waitingButton.Dock = DockStyle.Bottom;
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        GlassSurface.SetPane(this, chatArea);
         // #1118: clicking back into the chat closes an unpinned tool panel.
         // (The chat takes focus on a click; MouseDown covers a click while
         // it already has it.)
