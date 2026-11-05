@@ -725,9 +725,10 @@ internal sealed partial class SessionListForm : Form
         void ShowThinkingChip()
         {
             var shown = manaThinkingOn && ThinkingLevelPicker.IndexOf(thinkingLevel) < ThinkingLevelPicker.IndexOf("high") ? "high" : thinkingLevel;
-            think.Text = $"Thinking: {ThinkingLevelPicker.LabelOf(shown)}";
-            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 28;
-            railToolTip.SetToolTip(think, manaThinkingOn ? "Mana turned deep thinking on; pick a lower level to end it" : "How hard she thinks before answering");
+            think.Text = ThinkingLevelPicker.LabelOf(shown);
+            think.AccessibleName = $"Thinking: {think.Text}";
+            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 34; // the spark, the words, the pill's ends
+            railToolTip.SetToolTip(think, manaThinkingOn ? "Thinking: Mana turned deep thinking on; pick a lower level to end it" : "Thinking: how hard she thinks before answering");
         }
         ShowThinkingChip();
         think.Click += (_, _) =>
@@ -775,9 +776,9 @@ internal sealed partial class SessionListForm : Form
         // message starts a research job in this chat instead of a reply;
         // its progress shows beside the toggle, the round button stops it,
         // and the report arrives as her message. Not saved, like Think.
-        var research = ToolbarToggle("Deep research", "Deep research");
+        var research = ToolbarToggle("Deep research");
         railToolTip.SetToolTip(research, "Deep research: your next message becomes a research job -- she reads the web and comes back with a cited report");
-        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 3, 0, 0), BackColor = Color.Transparent, Font = ToolbarFont };
+        var researchStatus = new Label { Dock = DockStyle.Right, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(0, 0, 6, 0), TextAlign = ContentAlignment.MiddleRight, Font = ToolbarFont };
         string? researchJobId = null;
         async Task ResearchAsync(string question)
         {
@@ -995,39 +996,63 @@ internal sealed partial class SessionListForm : Form
             await sending;
         };
 
-        // #1426: like Claude's composer -- a rounded field holding the text
-        // and the round send button, then a row of small controls under it.
+        // The mockups' composer: one pill holding everything -- the paperclip, the text, then the thinking chip, Deep
+        // research, the mic and the round send button. It rounds less as it grows past a line.
         box.BorderStyle = BorderStyle.None;
-        var sendHost = new Panel { Dock = DockStyle.Right, Width = 40, BackColor = Color.Transparent };
-        sendHost.Controls.Add(send);
-        sendHost.Resize += (_, _) => send.Location = new Point(sendHost.Width - send.Width, sendHost.Height - send.Height);
-        var field = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 8, 8), BackColor = Color.Transparent };
+        var field = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 7, 7, 7), BackColor = Color.Transparent };
         field.Paint += (_, e) =>
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var shape = RoundedRect(new RectangleF(0.5f, 0.5f, field.Width - 1.5f, field.Height - 1.5f), 14);
+            var bounds = new RectangleF(0.5f, 0.5f, field.Width - 1.5f, field.Height - 1.5f);
+            using var shape = RoundedRect(bounds, Math.Min(bounds.Height / 2, 22));
             using var fill = new SolidBrush(box.BackColor);
             e.Graphics.FillPath(fill, shape);
-            using var edge = new Pen(DarkTheme.IsGlass ? Color.FromArgb(70, 106, 95, 184) : DarkTheme.Border);
+            using var edge = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
             e.Graphics.DrawPath(edge, shape);
         };
         field.Resize += (_, _) => field.Invalidate();
         field.MouseDown += (_, _) => box.Focus();
-        field.Controls.Add(box);
-        field.Controls.Add(sendHost);
+        // Each one on the field's own colour, so the pill reads as one piece.
+        foreach (var control in new Control[] { attach, mic, send, think, research, researchStatus })
+        {
+            control.BackColor = box.BackColor;
+            box.BackColorChanged += (_, _) => control.BackColor = box.BackColor;
+        }
+        foreach (var button in new[] { attach, mic, send })
+        {
+            button.FlatAppearance.MouseOverBackColor = button.FlatAppearance.MouseDownBackColor = box.BackColor;
+        }
         box.BackColorChanged += (_, _) => field.Invalidate();
-
-        Panel Gap() => new() { Dock = DockStyle.Left, Width = 6, BackColor = Color.Transparent };
-        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(4, 4, 4, 0), BackColor = Color.Transparent };
-        // Docked last-added first: attach on the left, then mic, Think, Deep research and its progress.
-        toolbar.Controls.Add(researchStatus);
-        toolbar.Controls.Add(research);
-        toolbar.Controls.Add(Gap());
-        toolbar.Controls.Add(think);
-        toolbar.Controls.Add(Gap());
-        toolbar.Controls.Add(mic);
-        toolbar.Controls.Add(attach);
-        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(32, 10, 32, 10), BackColor = DarkTheme.Background };
+        // Buttons keep to the pill's first line; the text wraps beside them.
+        Panel Slot(Control control, int width)
+        {
+            var slot = new Panel { Width = width, BackColor = Color.Transparent };
+            control.Dock = DockStyle.None;
+            control.Bounds = new Rectangle(width - control.Width, 0, control.Width, 30);
+            slot.Controls.Add(control);
+            return slot;
+        }
+        send.Size = new Size(30, 30);
+        attach.Width = mic.Width = research.Width = 28;
+        var left = Slot(attach, 32);
+        left.Dock = DockStyle.Left;
+        var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = Padding.Empty };
+        think.Height = research.Height = mic.Height = 30;
+        foreach (var control in new Control[] { think, research, mic, send })
+        {
+            control.Dock = DockStyle.None;
+            control.Margin = new Padding(control == send ? 4 : 2, 0, 0, 0);
+            right.Controls.Add(control);
+        }
+        // Last added docks first: the buttons claim the right, the text the rest.
+        box.Margin = Padding.Empty;
+        var text = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 6, 4, 0), BackColor = Color.Transparent };
+        text.Controls.Add(box);
+        field.Controls.Add(text);
+        field.Controls.Add(researchStatus);
+        field.Controls.Add(right);
+        field.Controls.Add(left);
+        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(28, 6, 28, 14), BackColor = DarkTheme.Background };
         // Grows with what's typed up to MaxComposerLines, then scrolls.
         // (Changing ScrollBars recreates the box's handle, so only on a change.)
         void FitComposer()
@@ -1043,7 +1068,6 @@ internal sealed partial class SessionListForm : Form
         box.TextChanged += (_, _) => FitComposer();
         box.SizeChanged += (_, _) => FitComposer(); // wrapping follows the width
         panel.Controls.Add(field);
-        panel.Controls.Add(toolbar);
         return panel;
     }
 
@@ -1070,8 +1094,9 @@ internal sealed partial class SessionListForm : Form
             return;
         }
         using var pen = new Pen(DarkTheme.OnAccent, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-        g.DrawLine(pen, cx, cy + 6, cx, cy - 6);
-        g.DrawLines(pen, new[] { new PointF(cx - 5, cy - 1), new PointF(cx, cy - 6), new PointF(cx + 5, cy - 1) });
+        // The mockups' arrow, pointing on.
+        g.DrawLine(pen, cx - 5.5f, cy, cx + 5, cy);
+        g.DrawLines(pen, new[] { new PointF(cx + 0.5f, cy - 4.5f), new PointF(cx + 5, cy), new PointF(cx + 0.5f, cy + 4.5f) });
     }
 
     // #1426: the row under the field, a size smaller than the message box.
@@ -1131,30 +1156,24 @@ internal sealed partial class SessionListForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (DarkTheme.IsGlass)
+            using (var clear = new SolidBrush(chip.BackColor))
             {
-                GlassSurface.PaintGlowBehind(g, chip, chip.ClientRectangle);
-            }
-            else
-            {
-                using var clear = new SolidBrush(DarkTheme.Background);
                 g.FillRectangle(clear, chip.ClientRectangle);
             }
-            var pill = new RectangleF(0.5f, 2.5f, chip.Width - 1.5f, chip.Height - 5.5f);
+            // The mockups' "Auto" chip: a thin pill, a spark and the level, in the accent.
+            var pill = new RectangleF(0.5f, 4.5f, chip.Width - 1.5f, chip.Height - 9.5f);
             using var shape = RoundedRect(pill, pill.Height / 2);
             if (hovered)
             {
-                using var fill = new SolidBrush(DarkTheme.Panel2);
+                using var fill = new SolidBrush(Color.FromArgb(28, DarkTheme.Accent));
                 g.FillPath(fill, shape);
             }
-            using var edge = new Pen(DarkTheme.Border);
+            using var edge = new Pen(Color.FromArgb(70, DarkTheme.Accent));
             g.DrawPath(edge, shape);
-            var text = Rectangle.Round(pill) with { Width = (int)pill.Width - 14 };
-            TextRenderer.DrawText(g, chip.Text, chip.Font, text, DarkTheme.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-            using var pen = new Pen(DarkTheme.Muted, 1.4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            var cx = pill.Right - 14;
-            var cy = pill.Top + pill.Height / 2;
-            g.DrawLines(pen, new[] { new PointF(cx - 3, cy + 1.5f), new PointF(cx, cy - 1.5f), new PointF(cx + 3, cy + 1.5f) });
+            var icon = new RectangleF(pill.X + 8, pill.Y + (pill.Height - 12) / 2, 12, 12);
+            StrokeIcon(g, icon, DarkTheme.Accent, IconSpark);
+            var text = Rectangle.Round(pill) with { X = (int)icon.Right + 3, Width = (int)(pill.Right - icon.Right - 9) };
+            TextRenderer.DrawText(g, chip.Text, chip.Font, text, DarkTheme.Accent, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             if (chip.Focused && GlassSurface.ShowsFocusCues(chip))
             {
                 ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
@@ -1163,24 +1182,17 @@ internal sealed partial class SessionListForm : Form
         return chip;
     }
 
-    // ... and its toggles: an outlined pill sized to its words, filled with
-    // the accent while on.
-    private static CheckBox ToolbarToggle(string text, string name)
+    // ... and Deep research: the mockups' magnifier with a plus, in a soft accent circle while on.
+    private static CheckBox ToolbarToggle(string name)
     {
         var toggle = new CheckBox
         {
             Appearance = Appearance.Button,
-            Text = text,
-            Dock = DockStyle.Left,
             FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Background,
-            ForeColor = DarkTheme.Muted,
             AccessibleName = name,
             Cursor = Cursors.Hand,
-            Font = ToolbarFont,
         };
         toggle.FlatAppearance.BorderSize = 0;
-        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 16;
         var hovered = false;
         toggle.MouseEnter += (_, _) => { hovered = true; toggle.Invalidate(); };
         toggle.MouseLeave += (_, _) => { hovered = false; toggle.Invalidate(); };
@@ -1189,40 +1201,57 @@ internal sealed partial class SessionListForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (DarkTheme.IsGlass)
+            using (var clear = new SolidBrush(toggle.BackColor))
             {
-                GlassSurface.PaintGlowBehind(g, toggle, toggle.ClientRectangle);
-            }
-            else
-            {
-                using var clear = new SolidBrush(DarkTheme.Background);
                 g.FillRectangle(clear, toggle.ClientRectangle);
             }
-            var pill = new RectangleF(0.5f, 2.5f, toggle.Width - 1.5f, toggle.Height - 5.5f);
-            using var shape = RoundedRect(pill, pill.Height / 2);
-            if (toggle.Checked || hovered)
+            var side = Math.Min(toggle.Width, toggle.Height) - 2;
+            var circle = new RectangleF((toggle.Width - side) / 2f, (toggle.Height - side) / 2f, side, side);
+            if (toggle.Checked)
             {
-                using var fill = new SolidBrush(toggle.Checked ? DarkTheme.Accent : DarkTheme.Panel2);
-                g.FillPath(fill, shape);
+                using var fill = new SolidBrush(Color.FromArgb(48, DarkTheme.Accent));
+                g.FillEllipse(fill, circle);
             }
-            using var edge = new Pen(toggle.Checked ? DarkTheme.Accent : DarkTheme.Border);
-            g.DrawPath(edge, shape);
-            TextRenderer.DrawText(g, toggle.Text, toggle.Font, Rectangle.Round(pill), toggle.Checked ? DarkTheme.OnAccent : DarkTheme.Text,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            var icon = RectangleF.Inflate(circle, -(side - 16) / 2f, -(side - 16) / 2f);
+            StrokeIcon(g, icon, toggle.Checked ? DarkTheme.Accent : hovered ? DarkTheme.Text : DarkTheme.Muted, IconZoomPlus);
             if (toggle.Focused && GlassSurface.ShowsFocusCues(toggle))
             {
-                ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
+                ControlPaint.DrawFocusRectangle(g, Rectangle.Round(circle));
             }
         };
         return toggle;
     }
 
+    // The mockups' icons, on their 16-unit grid.
+    private static void IconSpark(Graphics g, Pen pen) =>
+        g.DrawPolygon(pen, new PointF[] { new(8, 1.5f), new(9.4f, 5.6f), new(13.5f, 7), new(9.4f, 8.4f), new(8, 12.5f), new(6.6f, 8.4f), new(2.5f, 7), new(6.6f, 5.6f) });
+
+    private static void IconZoomPlus(Graphics g, Pen pen)
+    {
+        g.DrawEllipse(pen, 2.5f, 2.5f, 9, 9);
+        g.DrawLine(pen, 10.5f, 10.5f, 14, 14);
+        g.DrawLine(pen, 5, 7, 9, 7);
+        g.DrawLine(pen, 7, 5, 7, 9);
+    }
+
+    // Strokes a 16-unit icon into `bounds`, 1.3px lines whatever the size.
+    private static void StrokeIcon(Graphics g, RectangleF bounds, Color color, Action<Graphics, Pen> draw)
+    {
+        var state = g.Save();
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TranslateTransform(bounds.X, bounds.Y);
+        var scale = bounds.Width / 16f;
+        g.ScaleTransform(scale, scale);
+        using var pen = new Pen(color, 1.3f / scale) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        draw(g, pen);
+        g.Restore(state);
+    }
+
     private const int MaxComposerLines = 8;
 
-    // #1426: 100px for one line (the field, the row under it and the
-    // margins), a line taller per wrapped or typed line up to MaxComposerLines.
+    // The one-line pill and its margins (64px), a line taller per wrapped or typed line up to MaxComposerLines.
     internal static int ComposerHeight(int lines, int lineHeight) =>
-        100 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
+        64 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during
