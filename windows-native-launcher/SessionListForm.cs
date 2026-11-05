@@ -201,7 +201,7 @@ internal sealed partial class SessionListForm : Form
             await SearchContentAsync();
         };
 
-        list.Dock = DockStyle.Fill;
+        list.Dock = DockStyle.None;
         list.View = View.Details;
         list.HeaderStyle = ColumnHeaderStyle.None; // sidebar look, not a data grid
         list.FullRowSelect = true;
@@ -425,7 +425,12 @@ internal sealed partial class SessionListForm : Form
         listStatus.Controls.Add(listStatusLabel);
         listStatus.Controls.Add(listRetryButton);
         // Top to bottom, as in the mockups: her card, search, New chat, the list's heading, the list.
-        sidebar.Controls.Add(list);
+        // The list control leaves a 2px strip over its first row and a 1px column down its left edge in its own
+        // background, which shows as lines on the glass; its host tucks those out of sight.
+        var listHost = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        listHost.Controls.Add(list);
+        listHost.Resize += (_, _) => list.Bounds = new Rectangle(-1, -2, listHost.Width + 1, listHost.Height + 2);
+        sidebar.Controls.Add(listHost);
         sidebar.Controls.Add(listStatus);
         sidebar.Controls.Add(BuildProjectControls());
         sidebar.Controls.Add(Gap(DockStyle.Top));
@@ -1232,7 +1237,7 @@ internal sealed partial class SessionListForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var clear = new SolidBrush(chip.BackColor))
+            using (var clear = new SolidBrush(ComposerFill(chip)))
             {
                 g.FillRectangle(clear, chip.ClientRectangle);
             }
@@ -1277,7 +1282,7 @@ internal sealed partial class SessionListForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var clear = new SolidBrush(toggle.BackColor))
+            using (var clear = new SolidBrush(ComposerFill(toggle)))
             {
                 g.FillRectangle(clear, toggle.ClientRectangle);
             }
@@ -1297,6 +1302,10 @@ internal sealed partial class SessionListForm : Form
         };
         return toggle;
     }
+
+    // The composer's own colour behind a control on it (the glass presets make a button's own colour see-through).
+    private static Color ComposerFill(Control control) =>
+        control.BackColor.A == 255 ? control.BackColor : DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
 
     // The mockups' icons, on their 16-unit grid.
     private static void IconSpark(Graphics g, Pen pen) =>
