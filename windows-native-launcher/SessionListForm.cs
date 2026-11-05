@@ -38,6 +38,10 @@ internal sealed partial class SessionListForm : Form
     protected override bool ShowWithoutActivation => OpenWithoutActivation;
 
     private readonly ManaBackendClient backendClient;
+    // Mockup C: the chat list folded to a strip when the window is narrow or the toggle folds it.
+    private SessionRail? sessionRail;
+    private bool? foldChoice; // the toggle's choice; null follows the window's width
+    private bool folded;
     private readonly VoiceLoop voiceLoop;
     private readonly BackendLogBuffer backendLog;
     private readonly ListView list = new();
@@ -394,6 +398,54 @@ internal sealed partial class SessionListForm : Form
             }
         };
 
+        // The folded sidebar (mockup C). Her avatar moves into it while folded, in head framing, and back after.
+        var rail = new SessionRail(railToolTip) { Dock = DockStyle.Left, Width = LogicalToDeviceUnits(SessionRail.LogicalWidth), Visible = false };
+        sessionRail = rail;
+        var unfoldedFraming = avatarVisual.Framing;
+        var unfoldedHeight = avatarVisual.Height;
+        void ApplyFold()
+        {
+            var fold = foldChoice ?? SessionRail.ShouldFold(ClientSize.Width, DeviceDpi);
+            if (fold == folded || IsDisposed)
+            {
+                return;
+            }
+            folded = fold;
+            SuspendLayout();
+            sidebar.Visible = !fold;
+            sidebarSplitter.Visible = !fold;
+            rail.Visible = fold;
+            if (fold)
+            {
+                unfoldedFraming = avatarVisual.Framing;
+                unfoldedHeight = avatarVisual.Height;
+                avatarVisual.Dock = DockStyle.None;
+                avatarVisual.Framing = "bust";
+                rail.AvatarSlot.Controls.Add(avatarVisual);
+            }
+            else
+            {
+                avatarVisual.Region = null;
+                avatarVisual.Framing = unfoldedFraming;
+                avatarVisual.Height = unfoldedHeight;
+                avatarVisual.Dock = DockStyle.Top;
+                avatarCard.Controls.Add(avatarVisual); // last added docks first: back on top of the card
+            }
+            ResumeLayout(true);
+            rail.PerformLayout();
+            UpdateAvatarMirror();
+        }
+        rail.NewChatRequested += () => _ = StartNewChatAsync();
+        rail.ChatChosen += SwitchTo;
+        rail.SearchRequested += () =>
+        {
+            foldChoice = false;
+            ApplyFold();
+            searchBox.Focus();
+        };
+        Resize += (_, _) => ApplyFold();
+        Load += (_, _) => ApplyFold();
+
         // Before any RegisterRailTool.
         toolPanel = new ToolPanelHost(railToolTip);
 
@@ -476,10 +528,12 @@ internal sealed partial class SessionListForm : Form
         var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
         sidebarToggleButton.Dock = DockStyle.Left;
         sidebarToggleButton.Width = 34;
+        // Folds the chat list to its strip (mockup C) or opens it out again; the choice holds until the window is
+        // reopened, whatever its width.
         sidebarToggleButton.Click += (_, _) =>
         {
-            sidebar.Visible = !sidebar.Visible;
-            sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
+            foldChoice = !folded;
+            ApplyFold();
         };
 
         // #681: same toggle as the tray's Start/Stop listening item. Its
@@ -559,6 +613,7 @@ internal sealed partial class SessionListForm : Form
         Controls.Add(toolRail);
         Controls.Add(sidebarSplitter);
         Controls.Add(sidebar);
+        Controls.Add(rail);
 
         // Forces the native window handle to exist now, on this (the UI)
         // thread -- #524's toast "Open Chat" callback can fire on a
@@ -2277,6 +2332,7 @@ internal sealed partial class SessionListForm : Form
             list.Items.Add(item);
         }
         list.EndUpdate();
+        sessionRail?.SetChats(list.Items.Cast<ListViewItem>().Select(i => ((string)i.Tag!, i.Text)).ToList(), activeSessionId);
         FitSessionColumn();
         UpdateListStatus();
         ShowChatTitle();
@@ -2285,6 +2341,7 @@ internal sealed partial class SessionListForm : Form
     private void ShowChatTitle()
     {
         chatTitleLabel.Text = ChatTitle(sessions, activeSessionId);
+        sessionRail?.SetActive(activeSessionId);
         if (modelsForSession != activeSessionId || chatModelPicker.Items.Count == 0) _ = RefreshChatModelsAsync();
     }
 
