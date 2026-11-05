@@ -75,8 +75,29 @@ internal static class GlassSurface
         form.BackgroundImageLayout = ImageLayout.None;
         // ponytail: re-renders the whole glow on every resize step; cache per
         // size or debounce if dragging a big window ever feels sluggish.
-        void RefreshGlow() => Swap(form, RenderGlow(form.ClientSize, Point.Empty, form.ClientSize));
+        void RefreshGlow() => Swap(form, RenderGlow(form.ClientSize, Point.Empty, form.ClientSize, form: form));
         EventHandler onResize = (_, _) => RefreshGlow();
+        // Mica's look: the wallpaper under the window, so it follows the window when a move ends (a drag, a snap, a
+        // keyboard move), and goes plain while the window isn't the active one.
+        var settle = new System.Windows.Forms.Timer { Interval = 120 };
+        void Shift()
+        {
+            settle.Stop();
+            if (!form.IsDisposed && UsesWallpaper)
+            {
+                RefreshGlow();
+                BackdropShifted?.Invoke(form);
+                form.Invalidate(true);
+            }
+        }
+        settle.Tick += (_, _) => Shift();
+        EventHandler onMove = (_, _) => { if (UsesWallpaper) { settle.Stop(); settle.Start(); } };
+        EventHandler onFocus = (_, _) => Shift();
+        Action onWallpaper = () => form.BeginInvoke(Shift);
+        form.LocationChanged += onMove;
+        form.Activated += onFocus;
+        form.Deactivate += onFocus;
+        WallpaperBackdrop.Changed += onWallpaper;
         EventHandler onLoad = (_, _) => StyleChildren(form, attachment.Shimmer, undo);
         FormClosedEventHandler onClosed = (_, _) => attachment.Shimmer.Dispose();
         RefreshGlow();
@@ -86,6 +107,11 @@ internal static class GlassSurface
         Record(undo, form, () =>
         {
             form.Resize -= onResize;
+            form.LocationChanged -= onMove;
+            form.Activated -= onFocus;
+            form.Deactivate -= onFocus;
+            WallpaperBackdrop.Changed -= onWallpaper;
+            settle.Dispose();
             form.Load -= onLoad;
             form.FormClosed -= onClosed;
             Swap(form, image);
@@ -127,15 +153,55 @@ internal static class GlassSurface
 
     internal static bool IsAttached(Form form) => Attached.TryGetValue(form, out _);
 
+    // The wallpaper look (Settings, on by default): Mica's wallpaper-under-the-window instead of her painted glows.
+    public static bool WallpaperGlass { get; set; } = true;
+
+    private static bool UsesWallpaper => WallpaperGlass && WallpaperBackdrop.Current is not null;
+
+    // A window that's been moved or focused or unfocused with the wallpaper look on: what draws its own slice of the
+    // background (a list, a page, the chat) redraws it.
+    public static event Action<Form>? BackdropShifted;
+
+    // The snapshot test's window isn't the active one and sits off-screen: it asks for the active look, and for the
+    // wallpaper as if the window sat ScreenShift further along.
+    internal static bool TreatAsActive { get; set; }
+
+    internal static Point ScreenShift { get; set; }
+
+    private static bool IsActive(Form form) => TreatAsActive || Form.ActiveForm == form;
+
+    // What a cached background depends on beyond its size and place in the window: where the window is on screen,
+    // whether it's active, and which wallpaper.
+    public static (Point Screen, bool Active, int Wallpaper) BackdropKey(Form form) =>
+        UsesWallpaper && form.IsHandleCreated ? (form.PointToScreen(Point.Empty), IsActive(form), WallpaperBackdrop.Version) : default;
+
     // The glows for a `size` area sitting at `offset` inside a window of
     // `windowSize` -- so a control that can't be see-through (a ListView)
     // can paint exactly the slice of the window's glows behind it.
-    internal static Bitmap RenderGlow(Size size, Point offset, Size windowSize, bool frosted = false)
+    // form: the window it's for; given, and with the wallpaper look on, the background is the wallpaper under that
+    // part of the window, tinted, or the plain tint while the window isn't active.
+    internal static Bitmap RenderGlow(Size size, Point offset, Size windowSize, bool frosted = false, Form? form = null)
     {
         var bitmap = new Bitmap(Math.Max(1, size.Width), Math.Max(1, size.Height));
         using var g = Graphics.FromImage(bitmap);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(DarkTheme.Background);
+        if (form is not null && UsesWallpaper && WallpaperBackdrop.Current is { } wallpaper)
+        {
+            if (IsActive(form))
+            {
+                var origin = (form.IsHandleCreated ? form.PointToScreen(offset) : offset) + (Size)ScreenShift;
+                WallpaperBackdrop.Draw(g, wallpaper, new Rectangle(origin, bitmap.Size));
+                using var tint = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 184 : 204, DarkTheme.Background));
+                g.FillRectangle(tint, 0, 0, bitmap.Width, bitmap.Height);
+            }
+            if (frosted)
+            {
+                using var veil = new SolidBrush(GlassFill);
+                g.FillRectangle(veil, 0, 0, bitmap.Width, bitmap.Height);
+            }
+            return bitmap;
+        }
         g.TranslateTransform(-offset.X, -offset.Y);
         var w = Math.Max(1, windowSize.Width);
         var h = Math.Max(1, windowSize.Height);
@@ -206,14 +272,22 @@ internal static class GlassSurface
                 var pageImage = page.BackgroundImage;
                 page.UseVisualStyleBackColor = false;
                 page.BackgroundImageLayout = ImageLayout.None;
-                void RefreshPage() => Swap(page, RenderGlow(page.ClientSize, Point.Empty, page.ClientSize));
+                void RefreshPage()
+                {
+                    var pageForm = page.FindForm();
+                    var pageOffset = pageForm is not null && page.IsHandleCreated ? pageForm.PointToClient(page.PointToScreen(Point.Empty)) : Point.Empty;
+                    Swap(page, RenderGlow(page.ClientSize, UsesWallpaper ? pageOffset : Point.Empty, page.ClientSize, form: pageForm));
+                }
                 EventHandler onPageResize = (_, _) => RefreshPage();
+                Action<Form> onPageShift = shifted => { if (page.FindForm() == shifted) { RefreshPage(); } };
                 RefreshPage();
                 page.Resize += onPageResize;
+                BackdropShifted += onPageShift;
                 page.Disposed += (_, _) => page.BackgroundImage?.Dispose();
                 Record(undo, page, () =>
                 {
                     page.Resize -= onPageResize;
+                    BackdropShifted -= onPageShift;
                     Swap(page, pageImage);
                     page.BackgroundImageLayout = pageLayout;
                     page.UseVisualStyleBackColor = useVisualStyle;
@@ -289,9 +363,11 @@ internal static class GlassSurface
             }
             var offset = form.PointToClient(list.PointToScreen(Point.Empty));
             // A background-coloured list (the chat list) sits straight on the glows.
-            Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: list.BackColor != DarkTheme.Background));
+            Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: list.BackColor != DarkTheme.Background, form: form));
         }
         EventHandler onChange = (_, _) => Refresh();
+        Action<Form> onShift = shifted => { if (list.FindForm() == shifted) { Refresh(); } };
+        BackdropShifted += onShift;
         EnableDoubleBuffering(list); // the shimmer repaints the open chat's row every frame
         list.BackgroundImageTiled = false;
         list.SizeChanged += onChange;
@@ -304,6 +380,7 @@ internal static class GlassSurface
             list.SizeChanged -= onChange;
             list.LocationChanged -= onChange;
             list.HandleCreated -= onChange;
+            BackdropShifted -= onShift;
             Swap(list, image);
             list.BackgroundImageTiled = tiled;
         });

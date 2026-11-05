@@ -802,6 +802,15 @@ internal sealed class SettingsPanel : UserControl
             SettingsRows.Section("Appearance"),
             themeRow,
             accentRow,
+            SwitchRow("Wallpaper glass", "Her glass shows your wallpaper, like Windows 11's Mica, instead of her painted glows", "mica wallpaper glass backdrop glow",
+                ManaThemeSettings.Load().WallpaperGlass, on =>
+                {
+                    var theme = ManaThemeSettings.Load();
+                    theme.WallpaperGlass = on;
+                    theme.Save();
+                    GlassSurface.WallpaperGlass = on;
+                    DarkTheme.ApplyPresetLive(theme.Preset, theme.AccentHex); // redraws every open window's glass
+                }),
             SettingsRows.Section("Avatar"),
             SwitchRow("Hide with the chat window", "She leaves the desktop while the chat window is open", "overlay hide",
                 saved.AvatarHidesWithChat, on => SaveAvatar(s => s.AvatarHidesWithChat = on)),

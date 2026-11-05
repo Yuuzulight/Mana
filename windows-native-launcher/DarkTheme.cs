@@ -336,6 +336,9 @@ internal static class DarkTheme
         {
             DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeLegacy, ref useDark, sizeof(int));
         }
+        // Windows 11 draws the window's 1px border in her lavender on the glass presets (Windows 10 ignores it).
+        int border = !IsGlass ? DwmwaColorDefault : IsLight ? ColorTranslator.ToWin32(Color.FromArgb(0xb9, 0xa6, 0xee)) : ColorTranslator.ToWin32(Color.FromArgb(0x6f, 0x62, 0xb8));
+        DwmSetWindowAttribute(handle, DwmwaBorderColor, ref border, sizeof(int));
         // Re-asks the window for its frame: the chat window draws its own
         // title strip in the Mana preset only (SessionListForm.Caption.cs).
         SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
@@ -401,6 +404,8 @@ internal static class DarkTheme
 
     private const int DwmwaUseImmersiveDarkMode = 20;
     private const int DwmwaUseImmersiveDarkModeLegacy = 19;
+    private const int DwmwaBorderColor = 34;
+    private const int DwmwaColorDefault = unchecked((int)0xFFFFFFFF);
 
     [DllImport("dwmapi.dll", PreserveSig = true)]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int valueSize);

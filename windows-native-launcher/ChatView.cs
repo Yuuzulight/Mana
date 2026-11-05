@@ -63,7 +63,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private bool pressed;
     private bool dragSelecting;
     private Bitmap? glow;
-    private (Size Size, Point Offset, Size Window, int Theme) glowKey;
+    private (Size Size, Point Offset, Size Window, int Theme, (Point, bool, int) Backdrop) glowKey;
     // The UI thread, captured at construction: the view has no handle until
     // the chat window is first shown, and appends made before then (the
     // reopened session's history at launch, voice turns) must still land.
@@ -1298,11 +1298,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         if (DarkTheme.IsGlass && FindForm() is { } form)
         {
-            (Size Size, Point Offset, Size Window, int Theme) key = (ClientSize, form.PointToClient(PointToScreen(Point.Empty)), form.ClientSize, DarkTheme.Version);
+            (Size Size, Point Offset, Size Window, int Theme, (Point, bool, int) Backdrop) key = (ClientSize, form.PointToClient(PointToScreen(Point.Empty)), form.ClientSize, DarkTheme.Version, GlassSurface.BackdropKey(form));
             if (glow is null || key != glowKey)
             {
                 glow?.Dispose();
-                glow = GlassSurface.RenderGlow(key.Size, key.Offset, key.Window);
+                glow = GlassSurface.RenderGlow(key.Size, key.Offset, key.Window, form: form);
                 glowKey = key;
             }
             e.Graphics.DrawImageUnscaled(glow, 0, 0);

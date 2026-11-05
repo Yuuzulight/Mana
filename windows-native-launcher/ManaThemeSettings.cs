@@ -21,6 +21,9 @@ internal sealed class ManaThemeSettings
     public string Preset { get; set; } = "mana";
     public string? AccentHex { get; set; }
 
+    // Her glass shows the wallpaper under the window, like Windows 11's Mica, instead of her painted glows.
+    public bool WallpaperGlass { get; set; } = true;
+
     public static ManaThemeSettings Load(string? filePath = null)
     {
         try
