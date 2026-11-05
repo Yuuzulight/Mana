@@ -60,7 +60,7 @@ internal sealed partial class SessionListForm : Form
     private bool loadingChatModels;
     private string? modelsForSession;
     private int modelLoadVersion;
-    private readonly Font chatTitleFont = new("Segoe UI Semibold", 10.5f);
+    private readonly Font chatTitleFont = new("Segoe UI Semibold", 11.25f);
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
@@ -483,6 +483,15 @@ internal sealed partial class SessionListForm : Form
             focusButton.Invalidate();
         };
         toolRail.Controls.Add(focusButton);
+        // The mockups keep the sidebar toggle on the rail, just above Settings (not inside the sidebar it hides).
+        var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
+        sidebarToggleButton.Dock = DockStyle.Bottom;
+        sidebarToggleButton.Click += (_, _) =>
+        {
+            sidebar.Visible = !sidebar.Visible;
+            sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
+        };
+        toolRail.Controls.Add(sidebarToggleButton);
         var settingsButton = MakeRailButton("settings", "Settings");
         settingsButton.Dock = DockStyle.Bottom;
         settingsButton.Click += (_, _) => OpenSettings();
@@ -550,27 +559,23 @@ internal sealed partial class SessionListForm : Form
             RefreshAvatarCard(avatarOverlay.CurrentState);
         };
 
-        // Same collapse toggle as Claude's own UI, and the design
-        // reference's own #sidebarToggleBtn -- in the chat header (not a
-        // child of `sidebar` itself, which is what gets hidden; a button
-        // that disappears along with the panel it opens would have no way
-        // to bring it back).
-        var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
-        sidebarToggleButton.Dock = DockStyle.Left;
-        sidebarToggleButton.Width = 34;
-        sidebarToggleButton.Click += (_, _) =>
-        {
-            sidebar.Visible = !sidebar.Visible;
-            sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
-        };
-
         // #681: same toggle as the tray's Start/Stop listening item. Its
         // label follows VoiceLoop on the status timer, since the tray and the
         // mic button can flip it too.
-        var listenButton = new Button { Dock = DockStyle.Right, Width = 120 };
-        DarkTheme.ApplyButton(listenButton);
-        GlassSurface.MakeGlassButton(listenButton);
-        void RefreshListenButton() => listenButton.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
+        // A small mic in the header: accent in a soft circle while she's listening, muted and struck through while not.
+        var listenButton = new Button { Dock = DockStyle.Right, Width = 34, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Background, Cursor = Cursors.Hand };
+        listenButton.FlatAppearance.BorderSize = 0;
+        listenButton.Paint += (_, e) => PaintListenButton(e.Graphics, listenButton, voiceLoop.IsListening);
+        void RefreshListenButton()
+        {
+            var text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
+            if (listenButton.Text != text)
+            {
+                listenButton.Text = listenButton.AccessibleName = text;
+                railToolTip.SetToolTip(listenButton, text);
+                listenButton.Invalidate();
+            }
+        }
         listenButton.Click += (_, _) =>
         {
             voiceLoop.ToggleListening();
@@ -600,15 +605,56 @@ internal sealed partial class SessionListForm : Form
         chatTitleLabel.ForeColor = DarkTheme.Text;
         chatTitleLabel.BackColor = DarkTheme.Background;
         chatTitleLabel.Text = "New chat";
-        var chatHeader = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = DarkTheme.Background, Padding = new Padding(12, 4, 12, 4) };
+        var chatHeader = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = DarkTheme.Background, Padding = new Padding(8, 9, 12, 9) };
         chatHeader.Paint += (_, e) =>
         {
-            using var line = new Pen(DarkTheme.IsGlass ? Color.FromArgb(36, 106, 95, 184) : DarkTheme.Border);
-            e.Graphics.DrawLine(line, 0, chatHeader.Height - 1, chatHeader.Width, chatHeader.Height - 1);
+            if (!DarkTheme.IsGlass) // the glass chat is its own panel; flat themes keep the rule
+            {
+                using var line = new Pen(DarkTheme.Border);
+                e.Graphics.DrawLine(line, 0, chatHeader.Height - 1, chatHeader.Width, chatHeader.Height - 1);
+            }
         };
-        // Last added docks first: toggle left, listen toggle outermost right.
+        // The mockups' model chip: the chat's model in a soft accent pill, opening the models to pick from. The combo
+        // stays as the state, hidden.
+        var modelChip = new Button { Dock = DockStyle.Right, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Background, Cursor = Cursors.Hand, AccessibleName = "Chat model", UseMnemonic = false };
+        modelChip.FlatAppearance.BorderSize = 0;
+        void FitModelChip()
+        {
+            modelChip.Text = chatModelPicker.SelectedItem is ManaChatModel picked ? picked.Label : "Model";
+            modelChip.Width = TextRenderer.MeasureText(modelChip.Text, ChipFont).Width + 22;
+            modelChip.Invalidate();
+        }
+        modelChip.Paint += (_, e) => PaintModelChip(e.Graphics, modelChip);
+        var modelMenu = new ContextMenuStrip();
+        modelChip.Disposed += (_, _) => modelMenu.Dispose();
+        modelChip.Click += async (_, _) =>
+        {
+            await RefreshChatModelsAsync();
+            if (IsDisposed)
+            {
+                return;
+            }
+            modelMenu.Items.Clear();
+            foreach (var model in chatModelPicker.Items.OfType<ManaChatModel>())
+            {
+                var pick = new ToolStripMenuItem(model.Label) { Checked = Equals(chatModelPicker.SelectedItem, model), Enabled = chatModelPicker.Enabled };
+                pick.Click += (_, _) => chatModelPicker.SelectedItem = model;
+                modelMenu.Items.Add(pick);
+            }
+            if (modelMenu.Items.Count == 0)
+            {
+                modelMenu.Items.Add(new ToolStripMenuItem("Couldn't load the models") { Enabled = false });
+            }
+            modelMenu.Show(modelChip, new Point(modelChip.Width - modelMenu.PreferredSize.Width, modelChip.Height + 2));
+        };
+        chatModelPicker.SelectedIndexChanged += (_, _) => FitModelChip();
+        chatModelPicker.EnabledChanged += (_, _) => modelChip.Enabled = chatModelPicker.Enabled;
+        chatModelPicker.Visible = false;
+        FitModelChip();
+        // Last added docks first: the title fills; the chip, meter and mic on the right.
         chatHeader.Controls.Add(chatTitleLabel);
         chatHeader.Controls.Add(chatModelPicker);
+        chatHeader.Controls.Add(modelChip);
         chatModelPicker.BackColor = DarkTheme.Panel2;
         chatModelPicker.ForeColor = DarkTheme.Text;
         chatModelPicker.DropDown += async (_, _) => await RefreshChatModelsAsync();
@@ -623,7 +669,6 @@ internal sealed partial class SessionListForm : Form
         };
         chatHeader.Controls.Add(contextMeterLabel);
         chatHeader.Controls.Add(listenButton);
-        chatHeader.Controls.Add(sidebarToggleButton);
         chatArea.Controls.Add(chatHeader);
 
         // Dock order matters, and WinForms docks in REVERSE of the Controls
@@ -1835,6 +1880,63 @@ internal sealed partial class SessionListForm : Form
     }
 
     private static readonly Font PillFont = new("Segoe UI Semibold", 9.75f);
+    private static readonly Font ChipFont = new("Segoe UI", 8.25f);
+
+    private static void ClearToBackground(Graphics g, Control control)
+    {
+        if (DarkTheme.IsGlass)
+        {
+            GlassSurface.PaintGlowBehind(g, control, control.ClientRectangle);
+            return;
+        }
+        using var clear = new SolidBrush(DarkTheme.Background);
+        g.FillRectangle(clear, control.ClientRectangle);
+    }
+
+    // The mockups' chip: a soft lavender pill, its words in the accent.
+    private static void PaintModelChip(Graphics g, Button chip)
+    {
+        ClearToBackground(g, chip);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var hot = chip.Enabled && chip.ClientRectangle.Contains(chip.PointToClient(Control.MousePosition));
+        var pill = new RectangleF(0.5f, (chip.Height - 24) / 2f, chip.Width - 1.5f, 24);
+        using (var shape = RoundedRect(pill, 12))
+        using (var fill = new SolidBrush(Color.FromArgb(hot ? 64 : 38, DarkTheme.Accent)))
+        {
+            g.FillPath(fill, shape);
+        }
+        TextRenderer.DrawText(g, chip.Text, ChipFont, Rectangle.Round(pill), chip.Enabled ? DarkTheme.Accent : DarkTheme.Muted,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+        if (chip.Focused && GlassSurface.ShowsFocusCues(chip))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Round(pill));
+        }
+    }
+
+    private static void PaintListenButton(Graphics g, Button button, bool listening)
+    {
+        ClearToBackground(g, button);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var hot = button.ClientRectangle.Contains(button.PointToClient(Control.MousePosition));
+        var side = Math.Min(button.Width, button.Height) - 4;
+        var circle = new RectangleF((button.Width - side) / 2f, (button.Height - side) / 2f, side, side);
+        if (listening || hot)
+        {
+            using var fill = new SolidBrush(Color.FromArgb(listening ? 48 : 24, DarkTheme.Accent));
+            g.FillEllipse(fill, circle);
+        }
+        var color = listening ? DarkTheme.Accent : hot ? DarkTheme.Text : DarkTheme.Muted;
+        DrawMicIcon(g, Rectangle.Round(circle), color);
+        if (!listening)
+        {
+            using var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLine(pen, circle.X + side * 0.28f, circle.Y + side * 0.24f, circle.Right - side * 0.28f, circle.Bottom - side * 0.24f);
+        }
+        if (button.Focused && GlassSurface.ShowsFocusCues(button))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Round(circle));
+        }
+    }
 
     // An accent pill with a plus before its words (the mockups' New chat).
     private static void PaintPillButton(Graphics g, Button button)
