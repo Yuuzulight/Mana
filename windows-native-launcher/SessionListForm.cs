@@ -453,6 +453,30 @@ internal sealed partial class SessionListForm : Form
         // Settings docked at the bottom.
         // #1426: Settings is its own window again, so its cog opens that
         // rather than a tool in the panel.
+        // Mockup D: Focus mode, for long sessions -- Mana night and the chat list folded, until it's pressed again.
+        // The saved theme isn't touched; leaving puts the window back as it was.
+        string? focusReturnPreset = null;
+        var focusButton = MakeRailButton("focus", "Focus mode: Mana night, chat list folded", active: () => focusReturnPreset is not null);
+        focusButton.Dock = DockStyle.Bottom;
+        focusButton.Click += (_, _) =>
+        {
+            var theme = ManaThemeSettings.Load();
+            if (focusReturnPreset is null)
+            {
+                focusReturnPreset = theme.Preset;
+                DarkTheme.ApplyPresetLive("manaNight", theme.AccentHex);
+                foldChoice = true;
+            }
+            else
+            {
+                DarkTheme.ApplyPresetLive(focusReturnPreset, theme.AccentHex);
+                focusReturnPreset = null;
+                foldChoice = null;
+            }
+            ApplyFold();
+            focusButton.Invalidate();
+        };
+        toolRail.Controls.Add(focusButton);
         var settingsButton = MakeRailButton("settings", "Settings");
         settingsButton.Dock = DockStyle.Bottom;
         settingsButton.Click += (_, _) => OpenSettings();
@@ -1562,6 +1586,17 @@ internal sealed partial class SessionListForm : Form
                 Frame();
                 g.DrawLines(pen, new[] { new PointF(x + 5, y + 6.5f), new PointF(x + 8, y + 9), new PointF(x + 5, y + 11.5f) });
                 g.DrawLine(pen, x + 9.5f, y + 11.5f, x + 13, y + 11.5f);
+                break;
+
+            case "focus": // a crescent moon: Mana night
+                using (var moon = new GraphicsPath())
+                {
+                    // Her body: the outer circle round the left and bottom; the bite: a smaller circle up and right.
+                    moon.AddArc(x + 2.5f, y + 2.5f, 13, 13, 10.4f, 249.2f);
+                    moon.AddArc(x + 7, y, 11, 11, 211.7f, -153.4f);
+                    moon.CloseFigure();
+                    g.DrawPath(pen, moon);
+                }
                 break;
 
             case "artifacts": // a panel on the right
