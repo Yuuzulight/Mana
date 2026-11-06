@@ -24,7 +24,7 @@ const RED = [GREEN[0], { ...GREEN[1], conclusion: "failure" }];
 // The bump PR's own checks.
 const run = (name, conclusion = "success", status = "completed") => ({ name, status, conclusion: status === "completed" ? conclusion : null, url: `https://ci/${name}` });
 const PR_GREEN = [run(LAUNCHER_CHECK), run("Node tests (full suite)"), run("dco"), run("build")];
-const OPEN_PR = { tried: { [NEW]: { pr: 71, url: "https://github.com/x/y/pull/71", state: "open" } } };
+const OPEN_PR = { tried: { [NEW]: { pr: 71, url: "https://github.com/x/y/pull/71", state: "open", version: "1.0.0", releaseTag: "v1.0.0" } } };
 
 const bases = [];
 test.after(() => bases.forEach((b) => fs.rmSync(b, { recursive: true, force: true })));
@@ -51,12 +51,17 @@ function makeRepos() {
 }
 
 // gh answers: Folio's newest runs first and checks per sha; the bump PR's state, mergeability and checks.
-function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, [PIN]: GREEN }, prChecks = [], prState = "OPEN", mergeable = "MERGEABLE", prList = [], createdAt = new Date().toISOString() } = {}) {
+function fakeGh({ runs = [NEW, OLDER], checks = { [NEW]: GREEN, [OLDER]: GREEN, [PIN]: GREEN }, prChecks = [], prState = "OPEN", mergeable = "MERGEABLE", prList = [], releases, createdAt = new Date().toISOString() } = {}) {
   const calls = [];
+  const releaseRows = releases ?? runs.map((sha) => ({ tag_name: sha === NEW ? "v1.0.0" : sha === OLDER ? "v0.9.0" : "v0.1.0-m1.204", draft: false, prerelease: sha === PIN, published_at: "2026-01-01T00:00:00Z", testSha: sha }));
   const answer = (args) => {
     const [a, b] = args;
     const json = (v) => ({ code: 0, stdout: JSON.stringify(v), stderr: "" });
-    if (a === "api" && /actions\/runs/.test(b)) return json(runs);
+    if (a === "api" && args.some((x) => /releases\?/.test(x))) return json(releaseRows);
+    if (a === "api" && /\/commits\/v?\d[^/]*$/.test(b)) {
+      const tag = decodeURIComponent(b.split("/").pop());
+      return json({ sha: releaseRows.find((r) => r.tag_name === tag)?.testSha });
+    }
     if (a === "api" && b === `repos/{owner}/{repo}/commits/${HEAD}/check-runs?per_page=100`) return json(prChecks);
     if (a === "api" && /check-runs/.test(b)) return json(checks[b.split("/")[4]] || []);
     if (a === "api" && b === "--paginate") {
@@ -129,14 +134,14 @@ test("a newer green Folio commit becomes a PR off a throwaway worktree, not merg
   assert.equal(result.status, "opened", JSON.stringify(result));
   assert.equal(result.sha, NEW);
 
-  const branch = `folio/${NEW.slice(0, 12)}`;
+  const branch = "folio/release-1.0.0";
   const csproj = git(repos.origin, "show", `${branch}:${CSPROJ}`);
   assert.match(csproj, new RegExp(`<FolioCommit>${NEW}</FolioCommit>`));
-  assert.match(csproj, /<FolioVersion>0\.1\.0-m1\.300<\/FolioVersion>/);
+  assert.match(csproj, /<FolioVersion>1\.0\.0<\/FolioVersion>/);
   assert.equal(git(repos.origin, "log", "-1", "--format=%an", branch), "Yuuzulight");
-  assert.equal(git(repos.origin, "log", "-1", "--format=%B", branch), `Update Folio to ${NEW.slice(0, 7)} (0.1.0-m1.300)`, "no trailers");
+  assert.equal(git(repos.origin, "log", "-1", "--format=%B", branch), `Update Folio to ${NEW.slice(0, 7)} (1.0.0)`, "no trailers");
   assert.equal(git(repos.origin, "show", `main:${CSPROJ}`).includes(PIN), true, "main untouched");
-  assert.equal(fs.existsSync(path.join(repos.worktrees, `folio-${NEW.slice(0, 12)}`)), false, "worktree removed");
+  assert.equal(fs.existsSync(path.join(repos.worktrees, `folio-release-1.0.0-${NEW.slice(0, 12)}`)), false, "worktree removed");
   assert.equal(git(repos.live, "rev-parse", "--abbrev-ref", "HEAD"), "main", "the live checkout stays put");
 
   const create = gh.calls.find((a) => a[0] === "pr" && a[1] === "create");
@@ -160,7 +165,7 @@ test("nothing happens when the newest green commit is the pin, CI is red, it was
   for (const [label, ghOptions, state, expected] of [
     ["not newer", { runs: [PIN] }, undefined, "current"],
     ["red CI", { runs: [NEW], checks: { [NEW]: RED } }, undefined, "current"],
-    ["already tried", {}, { tried: { [NEW]: { pr: 60, state: "failed" } } }, "tried"],
+    ["already tried", {}, { tried: { [NEW]: { pr: 60, state: "failed", version: "1.0.0", releaseTag: "v1.0.0" } } }, "tried"],
     ["PR already there", { prList: [{ number: 61, state: "CLOSED", url: "u" }] }, undefined, "tried"],
     ["off", {}, { enabled: false }, "off"],
   ]) {
@@ -189,7 +194,7 @@ test("Folio itself is looked at once a day; Check now looks whenever", async () 
   const gh = fakeGh({ runs: [PIN] });
   let clock = 1_000_000_000;
   const { u } = updater(repos, gh, { now: () => clock });
-  const looks = () => gh.calls.filter((a) => /actions\/runs/.test(a[1])).length;
+  const looks = () => gh.calls.filter((a) => a.some((x) => /releases\?/.test(x))).length;
   assert.equal((await u.run()).status, "current");
   clock += 60 * 60 * 1000;
   assert.equal((await u.run()).status, "later");
@@ -282,7 +287,7 @@ test("through the approval setting: the PR and its merge each ask first", async 
   assert.equal(gate.listPending().length, 1);
   assert.equal((await gate.decide(request.id, "allow-once")).status, "approved");
   assert.ok(gh.calls.some((a) => a[0] === "pr" && a[1] === "create"));
-  assert.ok(git(repos.origin, "branch", "--list", `folio/${NEW.slice(0, 12)}`));
+  assert.ok(git(repos.origin, "branch", "--list", "folio/release-1.0.0"));
 
   const green = fakeGh({ prChecks: PR_GREEN });
   const { u: later, gate: gate2 } = updater(repos, green, { mode: "ask" });
@@ -313,4 +318,71 @@ test("the routes need my admin key, and Check now looks at Folio now", async () 
     assert.deepEqual(await (await fetchAsAdmin(`${baseUrl}/folio-update`, post({ enabled: false }))).json(), { enabled: true, tried: {} });
   });
   assert.deepEqual(calls, [{ force: true }, false]);
+});
+
+
+const { stableVersion, compareVersions } = require("../folio-update");
+const release = (tag, sha, extra = {}) => ({ tag_name: tag, testSha: sha, published_at: "2026-01-01T00:00:00Z", draft: false, prerelease: false, ...extra });
+
+test("stable tags are normalized and versions compare numerically", () => {
+  assert.equal(stableVersion("v1.0.0"), "1.0.0");
+  assert.equal(stableVersion("2.10.3"), "2.10.3");
+  for (const tag of ["main", "v1.0.0-rc.1", "v01.0.0", "v1.0", "1.0.0+build"]) assert.equal(stableVersion(tag), null);
+  assert.equal(compareVersions("1.10.0", "1.9.0"), 1);
+  assert.equal(compareVersions("1.0.0", "1.0.0"), 0);
+});
+
+test("no stable published release means no main-branch update", async () => {
+  for (const releases of [[], [release("v1.0.0", NEW, { draft: true })], [release("v1.0.0", NEW, { prerelease: true })], [release("v1.0.0-rc.1", NEW)], [release("v1.0.0", NEW, { published_at: null })]]) {
+    const repos = makeRepos();
+    const gh = fakeGh({ releases });
+    const { u } = updater(repos, gh);
+    assert.equal((await u.run()).status, "current");
+    assert.deepEqual(writes(gh.calls), []);
+    assert.equal(gh.calls.some((args) => args.some((v) => /actions\/runs/.test(v))), false);
+  }
+});
+
+test("selects the highest green stable version and resolves its tag, not target_commitish", async () => {
+  const repos = makeRepos();
+  const gh = fakeGh({ releases: [release("v1.9.0", NEW), release("v1.10.0", OLDER, { target_commitish: "main" })] });
+  const { u } = updater(repos, gh);
+  assert.equal((await u.run()).sha, OLDER);
+  const csproj = git(repos.origin, "show", `folio/release-1.10.0:${CSPROJ}`);
+  assert.match(csproj, /<FolioVersion>1\.10\.0<\/FolioVersion>/);
+  assert.ok(gh.calls.some((args) => args[1] === "--paginate" && args.includes("--slurp")));
+  assert.ok(gh.calls.some((args) => args[1] === "repos/Yuuzulight/Folio/commits/v1.10.0"));
+});
+
+test("publishing a stable tag on an already pinned development commit still updates the package version", async () => {
+  const repos = makeRepos();
+  const gh = fakeGh({ releases: [release("v1.0.0", PIN)] });
+  const { u } = updater(repos, gh);
+  assert.equal((await u.run()).status, "opened");
+  assert.match(git(repos.origin, "show", `folio/release-1.0.0:${CSPROJ}`), /<FolioVersion>1\.0\.0<\/FolioVersion>/);
+});
+
+test("a lower stable version never downgrades an installed release", async () => {
+  const repos = makeRepos();
+  const file = path.join(repos.live, CSPROJ);
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("0.1.0-m1.204", "2.0.0"));
+  git(repos.live, "add", CSPROJ); git(repos.live, "commit", "-qm", "pin release"); git(repos.live, "push", "-q", "origin", "main");
+  const gh = fakeGh({ releases: [release("v1.0.0", NEW)] });
+  const { u } = updater(repos, gh);
+  assert.equal((await u.run()).status, "current");
+  assert.deepEqual(writes(gh.calls), []);
+});
+
+test("old main-branch proposals are not automatically merged under the release-only policy", async () => {
+  const repos = makeRepos();
+  const gh = fakeGh({ releases: [], prChecks: PR_GREEN });
+  const { u } = updater(repos, gh, { state: { tried: { [NEW]: { pr: 71, state: "open", version: "0.1.0-m1.300" } } } });
+  assert.equal((await u.run()).status, "current");
+  assert.deepEqual(merges(gh.calls), []);
+});
+
+test("a successful check rerun supersedes an older failure", () => {
+  const checks = [...GREEN.map((c, i) => ({ ...c, id: i + 1 })), { ...GREEN[1], id: 20, conclusion: "failure" }, { ...GREEN[1], id: 21 }];
+  assert.equal(isGreen(checks), true);
+  assert.equal(isGreen([...checks, { ...GREEN[1], id: 22, status: "in_progress", conclusion: null }]), false);
 });
