@@ -90,6 +90,7 @@ public class ChatActionsTests
         var open = Assert.Single(view.Messages[1].Actions);
         Assert.Equal("Open", open.Label);
         Assert.Equal(new[] { "Open in browser", "View source", "Save as..." }, open.Menu!.Skip(1).Select(i => i.Label));
+        if (page == "<script>alert(1)</script>") inMana = HtmlArtifact.ContentProcessPath() is not null;
         Assert.Equal(inMana, open.Menu![0].Enabled);
         await view.RunActionAsync(1, 0); // the main part: the viewer decides (in Mana or browser)
         foreach (var item in open.Menu!)
@@ -99,7 +100,7 @@ public class ChatActionsTests
         Assert.Equal(new[] { ArtifactOpen.Default, ArtifactOpen.InMana, ArtifactOpen.Browser, ArtifactOpen.Source, ArtifactOpen.SaveAs }, opened);
     }
 
-    // #937: Folio's ArtifactClassifier decides; anything but Static goes to the browser.
+    // Static content stays in Mana; supported scripts also stay when the standalone host is deployed.
     [Theory]
     [InlineData("<p>plain <b>text</b> <img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=\"></p>", false)]
     [InlineData("<header>not a head</header>", false)]
@@ -112,6 +113,7 @@ public class ChatActionsTests
     [InlineData("<img src=\"https://example.com/a.png\">", true)] // Folio loads nothing from the network
     public void HtmlArtifact_NeedsBrowser(string html, bool expected)
     {
+        if (html == "<button onclick=\"go()\">x</button>") expected = HtmlArtifact.ContentProcessPath() is null;
         Assert.Equal(expected, HtmlArtifact.BrowserReasons(html) is not null);
     }
 

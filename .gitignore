@@ -188,3 +188,6 @@ node-bot/skills/
 
 # Pinned Arcana CLI and its separately downloaded engine (tools/install-arcana.ps1).
 node-bot/runtime/arcana/
+
+# Verified Folio source and native build intermediates (not shipped).
+windows-native-launcher/.folio-build/
