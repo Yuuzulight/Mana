@@ -166,8 +166,12 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
       .map((r) => ({ ...r, version: stableVersion(r.tag_name) }))
       .sort((a, b) => compareVersions(b.version, a.version));
     const currentVersion = stableVersion(pin.version);
+    const currentBase = currentVersion || stableVersion(String(pin.version).split("-")[0]);
     for (const release of candidates) {
-      if (currentVersion && compareVersions(release.version, currentVersion) <= 0) continue;
+      if (currentBase) {
+        const comparison = compareVersions(release.version, currentBase);
+        if (comparison < 0 || (comparison === 0 && currentVersion)) continue;
+      }
       // target_commitish may be a moving branch. Resolve the published tag to its actual commit instead.
       const resolved = await ghJson(["api", `repos/${FOLIO}/commits/${encodeURIComponent(release.tag_name)}`, "--jq", "{sha}"]);
       const sha = resolved.sha;

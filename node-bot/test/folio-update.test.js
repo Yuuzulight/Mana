@@ -356,10 +356,18 @@ test("selects the highest green stable version and resolves its tag, not target_
 
 test("publishing a stable tag on an already pinned development commit still updates the package version", async () => {
   const repos = makeRepos();
-  const gh = fakeGh({ releases: [release("v1.0.0", PIN)] });
+  const gh = fakeGh({ releases: [release("v0.1.0", PIN)] });
   const { u } = updater(repos, gh);
   assert.equal((await u.run()).status, "opened");
-  assert.match(git(repos.origin, "show", `folio/release-1.0.0:${CSPROJ}`), /<FolioVersion>1\.0\.0<\/FolioVersion>/);
+  assert.match(git(repos.origin, "show", `folio/release-0.1.0:${CSPROJ}`), /<FolioVersion>0\.1\.0<\/FolioVersion>/);
+});
+
+test("an older stable release cannot downgrade a development pin either", async () => {
+  const repos = makeRepos();
+  const gh = fakeGh({ releases: [release("v0.0.9", NEW)] });
+  const { u } = updater(repos, gh);
+  assert.equal((await u.run()).status, "current");
+  assert.deepEqual(writes(gh.calls), []);
 });
 
 test("a lower stable version never downgrades an installed release", async () => {
