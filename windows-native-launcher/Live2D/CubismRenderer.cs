@@ -123,7 +123,7 @@ internal sealed class CubismRenderer : IDisposable
                     if (maskPath is not null)
                     {
                         canvas.Save();
-                        canvas.ClipPath(maskPath, antialias: true);
+                        canvas.ClipPath(maskPath, drawable.IsInvertedMask ? SKClipOperation.Difference : SKClipOperation.Intersect, antialias: true);
                         didClip = true;
                     }
                 }
@@ -315,6 +315,7 @@ internal sealed class CubismRenderer : IDisposable
         }
 
         using var vertices = SKVertices.CreateCopy(SKVertexMode.Triangles, points, uvs, colors: null, drawable.Indices);
+        using var tint = TintMatrix(drawable.MultiplyColor, drawable.ScreenColor) is { } matrix ? SKColorFilter.CreateColorMatrix(matrix) : null;
         using var paint = new SKPaint
         {
             Shader = levelShaders[drawable.TextureIndex][level], // borrowed, not owned -- see the field's own comment
@@ -324,12 +325,30 @@ internal sealed class CubismRenderer : IDisposable
                 : drawable.IsMultiplicativeBlend
                     ? SKBlendMode.Multiply
                     : SKBlendMode.SrcOver,
+            ColorFilter = tint,
         };
 
         // Dst: no per-vertex colors are supplied (colors: null above), so
         // this tells DrawVertices to use the paint's shader/color as-is
         // rather than trying to blend against nonexistent vertex colors.
         canvas.DrawVertices(vertices, SKBlendMode.Dst, paint);
+    }
+
+    // A drawable's multiply-then-screen tint as a colour matrix (on unpremultiplied colour, translation in 0..1):
+    // c' = c * m * (1 - s) + s, i.e. 1 - (1 - c*m)(1 - s). Null when the drawable isn't tinted.
+    internal static float[]? TintMatrix((float R, float G, float B) multiply, (float R, float G, float B) screen)
+    {
+        if (multiply == (1f, 1f, 1f) && screen == (0f, 0f, 0f))
+        {
+            return null;
+        }
+        return
+        [
+            multiply.R * (1 - screen.R), 0, 0, 0, screen.R,
+            0, multiply.G * (1 - screen.G), 0, 0, screen.G,
+            0, 0, multiply.B * (1 - screen.B), 0, screen.B,
+            0, 0, 0, 1, 0,
+        ];
     }
 
     // How many halvings the drawable's texture region is shrunk by on

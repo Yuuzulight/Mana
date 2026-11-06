@@ -42,6 +42,11 @@ internal sealed unsafe class CubismModel : IDisposable
         // drawable should only render within the union of those drawables'
         // own shapes (e.g. an iris clipped to its eye-white's outline).
         public required int[] MaskDrawableIndices { get; init; }
+        // Shown only OUTSIDE its masks' shapes, not inside (csmIsInvertedMask).
+        public required bool IsInvertedMask { get; init; }
+        // Cubism 4.2+ tint: the texture is multiplied by MultiplyColor, then screened with ScreenColor.
+        public required (float R, float G, float B) MultiplyColor { get; init; }
+        public required (float R, float G, float B) ScreenColor { get; init; }
     }
 
     private nint mocBuffer;
@@ -234,6 +239,8 @@ internal sealed unsafe class CubismModel : IDisposable
         var indexArrays = CubismCoreNative.csmGetDrawableIndices(model);
         var maskCounts = ReadInt32Array(CubismCoreNative.csmGetDrawableMaskCounts(model), count);
         var maskArrays = CubismCoreNative.csmGetDrawableMasks(model);
+        var multiplyColors = ReadFloatArray(CubismCoreNative.csmGetDrawableMultiplyColors(model), count * 4);
+        var screenColors = ReadFloatArray(CubismCoreNative.csmGetDrawableScreenColors(model), count * 4);
 
         var drawables = new Drawable[count];
         for (var i = 0; i < count; i++)
@@ -242,6 +249,7 @@ internal sealed unsafe class CubismModel : IDisposable
             const byte blendAdditive = 1 << 0;
             const byte blendMultiplicative = 1 << 1;
             const byte isDoubleSided = 1 << 2;
+            const byte isInvertedMask = 1 << 3;
 
             drawables[i] = new Drawable
             {
@@ -258,6 +266,9 @@ internal sealed unsafe class CubismModel : IDisposable
                 VertexUvs = ReadVector2Array(ReadPointerAt(vertexUvArrays, i), vertexCounts[i]),
                 Indices = ReadUInt16Array(ReadPointerAt(indexArrays, i), indexCounts[i]),
                 MaskDrawableIndices = ReadInt32Array(ReadPointerAt(maskArrays, i), maskCounts[i]),
+                IsInvertedMask = (constantFlags[i] & isInvertedMask) != 0,
+                MultiplyColor = multiplyColors.Length >= (i + 1) * 4 ? (multiplyColors[i * 4], multiplyColors[i * 4 + 1], multiplyColors[i * 4 + 2]) : (1f, 1f, 1f),
+                ScreenColor = screenColors.Length >= (i + 1) * 4 ? (screenColors[i * 4], screenColors[i * 4 + 1], screenColors[i * 4 + 2]) : (0f, 0f, 0f),
             };
         }
 

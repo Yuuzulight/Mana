@@ -68,6 +68,27 @@ public class CubismRendererTests
         SaveSnapshot(talking, "cubism-render-mouth-open.png");
     }
 
+    // A mesh's multiply and screen colours (Cubism 4.2+): multiply first, then screen, as Live2D's own renderer does.
+    // A multiply of black with a skin-tone screen turns a mesh into a flat skin-tone patch whatever its texture.
+    [Theory]
+    [InlineData(0f, 0f, 0f, 1f, 0.9f, 0.8f, 0.0f, 0.0f, 0.0f, 1f, 0.9f, 0.8f)] // black ring -> skin patch
+    [InlineData(0f, 0f, 0f, 1f, 0.9f, 0.8f, 1f, 1f, 1f, 1f, 0.9f, 0.8f)] // white centre -> skin patch
+    [InlineData(0.5f, 1f, 1f, 0f, 0f, 0f, 0.8f, 0.8f, 0.8f, 0.4f, 0.8f, 0.8f)] // multiply only
+    [InlineData(1f, 1f, 1f, 0.5f, 0f, 0f, 0.5f, 0.2f, 0.2f, 0.75f, 0.2f, 0.2f)] // screen only: 1-(1-c)(1-s)
+    public void Tint_MultipliesThenScreens(float mr, float mg, float mb, float sr, float sg, float sb, float r, float g, float b, float er, float eg, float eb)
+    {
+        var matrix = CubismRenderer.TintMatrix((mr, mg, mb), (sr, sg, sb));
+        Assert.NotNull(matrix);
+        float Row(int row, float c0, float c1, float c2) => matrix![row * 5] * c0 + matrix[row * 5 + 1] * c1 + matrix[row * 5 + 2] * c2 + matrix[row * 5 + 4];
+        Assert.Equal(er, Row(0, r, g, b), 3);
+        Assert.Equal(eg, Row(1, r, g, b), 3);
+        Assert.Equal(eb, Row(2, r, g, b), 3);
+        Assert.Equal(1f, matrix![18]); // alpha passes through
+    }
+
+    [Fact]
+    public void Tint_IsNoneForAnUntintedMesh() => Assert.Null(CubismRenderer.TintMatrix((1f, 1f, 1f), (0f, 0f, 0f)));
+
     private static void SaveSnapshot(SKBitmap bitmap, string fileName)
     {
         var outDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "cubism-render-snapshots");
