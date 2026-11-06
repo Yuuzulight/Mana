@@ -148,6 +148,13 @@ internal static class CubismCoreNative
     [DllImport(DllName)]
     public static extern nint csmGetDrawableMasks(nint model); // const int** (per drawable)
 
+    // Cubism 4.2+: each drawable's multiply and screen colour (const csmVector4*, RGBA floats).
+    [DllImport(DllName)]
+    public static extern nint csmGetDrawableMultiplyColors(nint model);
+
+    [DllImport(DllName)]
+    public static extern nint csmGetDrawableScreenColors(nint model);
+
     [DllImport(DllName)]
     public static extern void csmResetDrawableDynamicFlags(nint model);
 }
