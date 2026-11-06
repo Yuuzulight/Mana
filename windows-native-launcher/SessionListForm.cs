@@ -1181,7 +1181,7 @@ internal sealed partial class SessionListForm : Form
     }
 
     // #1426: the row under the field, a size smaller than the message box.
-    private static readonly Font ToolbarFont = new("Segoe UI", 7.5f);
+    private static readonly Font ToolbarFont = new("Segoe UI", 8.25f);
 
     // The mic and paperclip are drawn 18px; the row draws them 16px.
     private static void ShrinkToolbarIcon(Graphics g, Control button)
@@ -1948,7 +1948,7 @@ internal sealed partial class SessionListForm : Form
         if (!listening)
         {
             using var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawLine(pen, circle.X + side * 0.28f, circle.Y + side * 0.24f, circle.Right - side * 0.28f, circle.Bottom - side * 0.24f);
+            g.DrawLine(pen, circle.X + side * 0.24f, circle.Y + side * 0.2f, circle.Right - side * 0.24f, circle.Bottom - side * 0.2f);
         }
         if (button.Focused && GlassSurface.ShowsFocusCues(button))
         {
