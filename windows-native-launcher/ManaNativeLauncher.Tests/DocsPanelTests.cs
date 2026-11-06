@@ -3,7 +3,6 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using Folio;
-using Folio.Skia;
 using Folio.Typography;
 using Folio.WinForms;
 using Mana.NativeLauncher;
@@ -80,7 +79,7 @@ public class DocsPanelTests : IDisposable
     [Fact]
     public void FolioDrawsTheDocsPage()
     {
-        using var view = new FolioView { Size = new Size(200, 60), Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() } } };
+        using var view = new FolioView { Size = new Size(200, 60), Options = new FolioOptions { Fonts = BundledFontSource.Settings } };
         view.LoadHtml(MarkdownHtml.ToHtml("# Hi", _ => null));
         using var bitmap = new Bitmap(200, 60);
         view.DrawToBitmap(bitmap, new Rectangle(0, 0, 200, 60));
