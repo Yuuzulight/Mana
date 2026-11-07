@@ -10,27 +10,27 @@ namespace ManaNativeLauncher.Tests;
 public class LiveAvatarPanelTests
 {
     [Theory]
-    [InlineData(null, "bust")]
+    [InlineData(null, "full")]
     [InlineData("full", "waist")]
     [InlineData("waist", "bust")]
     [InlineData("bust", "full")]
-    [InlineData("nonsense", "bust")]
+    [InlineData("nonsense", "full")]
     public void NextFraming_CyclesFullWaistBust(string? current, string expected)
     {
         Assert.Equal(expected, LiveAvatarPanel.NextFraming(current));
     }
 
     [Fact]
-    public void Framing_UnknownOrMissingSavedValueIsWaistUp()
+    public void Framing_UnknownOrMissingSavedValueIsBustUp()
     {
         using var panel = new LiveAvatarPanel();
-        Assert.Equal("waist", panel.Framing);
-        panel.Framing = "bust";
         Assert.Equal("bust", panel.Framing);
+        panel.Framing = "waist";
+        Assert.Equal("waist", panel.Framing);
         panel.Framing = null;
-        Assert.Equal("waist", panel.Framing);
+        Assert.Equal("bust", panel.Framing);
         panel.Framing = "zoomed";
-        Assert.Equal("waist", panel.Framing);
+        Assert.Equal("bust", panel.Framing);
     }
 
     [Fact]

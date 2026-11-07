@@ -32,8 +32,8 @@ internal sealed class LiveAvatarPanel : Panel
         _ => 1f,
     };
 
-    // The card starts waist-up, close enough to see her face in a small tile; unknown/missing counts as that.
-    public const string DefaultFraming = "waist";
+    // The card starts bust-up, close enough to see her face in a small tile; unknown/missing counts as that.
+    public const string DefaultFraming = "bust";
 
     public static string NextFraming(string? framing) =>
         Framings[(Array.IndexOf(Framings, Array.IndexOf(Framings, framing) >= 0 ? framing : DefaultFraming) + 1) % Framings.Length];
