@@ -59,6 +59,8 @@ const BUILTIN_TIERS = {
   self_work__search: "read",
   self_work__plan: "read",
   self_work__review: "read",
+  // Like her edits: one file in her own worktree, guardrails refused.
+  self_work__delete: "read",
   project_references__search: "read",
   project_references__link: "write",
   skill__view: "read",

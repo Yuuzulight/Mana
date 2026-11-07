@@ -1,5 +1,6 @@
 {
   "id": "1351-tri-mode-lora-telemetry",
+  "minRounds": 17,
   "kind": "multi-file",
   "pr": 1351,
   "issue": 1343,
@@ -20,6 +21,6 @@
     "windows-native-launcher/ManaNativeLauncher.Tests/ManaBackendClientTests.cs"
   ],
   "testCommand": "node --test test/lora-adapters.test.js test/doctor.test.js",
-  "interface": "llama-server runtime can register/apply LoRA adapters, and Doctor includes VRAM/coding-session health.",
+  "interface": "llama-server runtime can register/apply LoRA adapters, and Doctor includes VRAM/coding-session health. The tests call: `node-bot/doctor.js` exports `checkVramBudgets({ gpu, vramUsage, gamingWatch })` and `checkCodingSession(stickyCodingSession)`; the llama-server runtime has `findLoraAdapters()`, `applyLoraAdapter(name)` (\"companion\" or \"assistant\") and `getActiveLoraAdapter()`.",
   "why": "Model-routing reliability is part of the self-sufficiency shortlist."
 }

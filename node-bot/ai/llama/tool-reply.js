@@ -21,6 +21,8 @@ async function runToolAwareReply(
       onRound = null,
       // #1318: (text) when a round shows reply text alongside its tool calls.
       onRoundText = null,
+      // #1467: the running model's own card settings instead of the profile's (self-work).
+      modelCard = false,
     } = {},
   ) {
     if (typeof context.fetchImpl !== "function") {
@@ -94,7 +96,7 @@ async function runToolAwareReply(
         ? { tools: toolPolicy.tools, tool_choice: "auto" }
         : { tool_choice: "none" };
       const think = typeof thinking === "function" ? thinking() : thinking;
-      const { params } = context.buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env: context.env });
+      const { params } = context.buildSamplingParams({ profile, task: "tools", maxTokens, thinking: think, env: context.env, model: modelCard ? context.state?.model : null });
       if (think === true || think > 0) await context.fitThinkingToContext(params, { messages, ...toolFields });
       // #1406: a remote OpenAI-compatible endpoint (DeepSeek) runs this
       // same loop through chatUrl and requestHeaders; local is llama-server.
@@ -110,9 +112,28 @@ async function runToolAwareReply(
       // #1420: a connection to her own llama-server that reset produced
       // nothing, so it's tried once more. A timeout already ran the whole
       // generation and isn't repeated; a remote model never is.
+      // A remote loop that asks for retries (the bench, running unattended) waits out a network error or an overloaded
+      // or rate-limited API, 5 s doubling to 5 minutes, instead of ending the run on one failed request.
+      const sendWithRetries = async () => {
+        for (let attempt = 0; ; attempt += 1) {
+          let failed = null;
+          try {
+            const r = await send();
+            if (r.ok || ![408, 409, 429, 500, 502, 503, 504].includes(r.status)) return r;
+            failed = new Error(`remote model reply failed (${r.status})`);
+            if (attempt >= context.remoteRetries) return r;
+          } catch (e) {
+            if (extraMessages?.signal?.aborted || attempt >= context.remoteRetries) throw e;
+            failed = e;
+          }
+          console.warn(`remote model: ${failed.message}; trying again in ${Math.min(300, 5 * 2 ** attempt)} s`);
+          await context.sleep(Math.min(300000, 5000 * 2 ** attempt));
+          extraMessages?.signal?.throwIfAborted();
+        }
+      };
       let resp;
       try {
-        resp = await send();
+        resp = context.chatUrl && context.remoteRetries > 0 ? await sendWithRetries() : await send();
       } catch (e) {
         if (context.chatUrl || !CONNECTION_RESET.has(e?.cause?.code)) throw e;
         await context.sleep(2000);

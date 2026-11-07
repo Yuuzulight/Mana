@@ -5,6 +5,7 @@ const { createLifecycle } = require('./llama/lifecycle');
 const { createCompletions } = require('./llama/completions');
 const { createToolCalls } = require('./llama/tool-calls');
 const { createGoalReview } = require('./llama/goal-review');
+const { createRemoteHelpers } = require('./llama/remote-helpers');
 const { createToolReply } = require('./llama/tool-reply');
 const { isLocalOnly } = require("../local-only");
 const { AsyncLocalStorage } = require('node:async_hooks');
@@ -627,14 +628,20 @@ function createLlamaServerRuntime(options = {}) {
   // #1441: thinking true/false is DeepSeek's switch; null (other providers)
   // sends neither it nor max_tokens, which some providers refuse or name
   // differently. A provider on this PC needs no key.
-  function remoteToolReply({ baseUrl, apiKey, model, thinking = true, maxTokens = 32768, contextSize = 131072, onResponse = null }) {
+  function remoteToolReply({ baseUrl, apiKey, model, thinking = true, maxTokens = 32768, contextSize = 131072, retries = 0, onResponse = null, helperModel = null, onHelperResponse = null }) {
     if (isLocalOnly(env)) throw new Error("local-only mode is on, so I can't use a remote model");
     if (!baseUrl || !model) throw new Error("a remote model needs a base URL and a model");
+    // #1467: helperModel runs the goal check and tool-call repair on that DeepSeek model too, so the run needs no local server.
+    const helpers = helperModel
+      ? createRemoteHelpers({ baseUrl, apiKey, model: helperModel, fetchImpl, retries: Math.max(2, retries), onResponse: onHelperResponse, goalEvidence: goalReview.goalEvidence, buildToolCallRepairSchema: toolCalls.buildToolCallRepairSchema })
+      : null;
     const own = {
+      ...(helpers ? { reviewGoalCompletion: helpers.reviewGoalCompletion, repairToolCalls: helpers.repairToolCalls } : {}),
       chatUrl: () => `${String(baseUrl).replace(/\/+$/, "")}/chat/completions`,
       requestHeaders: () => (apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       keepReasoning: thinking === true,
       onResponse,
+      remoteRetries: retries,
       ensureServer: async () => {},
       applyLoraAdapter: async () => {},
       state: { hasLoraAdapters: false },

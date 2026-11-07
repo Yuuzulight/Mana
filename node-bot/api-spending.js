@@ -31,6 +31,16 @@ function nextOffPeak(date = new Date()) {
   return t;
 }
 
+// Minutes until the next peak window starts (0 inside one), so a long job can hold off instead of running into peak.
+function minutesToPeak(date = new Date()) {
+  const t = new Date(date);
+  t.setUTCSeconds(0, 0);
+  for (let minutes = 0; minutes <= 7 * 24 * 60; minutes += 1, t.setUTCMinutes(t.getUTCMinutes() + 1)) {
+    if (isPeak(t)) return minutes;
+  }
+  return Infinity;
+}
+
 // An OpenAI-compatible usage block, in our token kinds.
 function tokensOf(usage = {}) {
   const prompt = Number(usage.prompt_tokens) || 0;
@@ -309,4 +319,4 @@ function createSpendingToolSource(report) {
   };
 }
 
-module.exports = { createApiSpending, createBalanceReader, runway, createSpendingToolSource, isPeak, nextOffPeak, tokensOf, costOf, costParts, describeUsage, PRICES, USES };
+module.exports = { createApiSpending, createBalanceReader, runway, createSpendingToolSource, isPeak, nextOffPeak, minutesToPeak, tokensOf, costOf, costParts, describeUsage, PRICES, USES };

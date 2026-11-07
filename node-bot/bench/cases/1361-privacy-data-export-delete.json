@@ -1,5 +1,6 @@
 {
   "id": "1361-privacy-data-export-delete",
+  "guarded": "node-bot/tool-call-log.js",
   "kind": "multi-file",
   "pr": 1361,
   "issue": 1336,
@@ -18,6 +19,6 @@
     "node-bot/test/privacy-data-capability.test.js"
   ],
   "testCommand": "node --test test/privacy-data-capability.test.js",
-  "interface": "privacy-data-capability exports a ZIP and deletes only after the typed delete-everything confirmation.",
+  "interface": "privacy-data-capability exports a ZIP and deletes only after the typed delete-everything confirmation. The tests call: `node-bot/capabilities/privacy-data-capability.js` (new) exports `privacyDataCapability` (with `registerRoutes(app, context)`), `createZipBuffer(entries)` and `gatherExportEntries(context)`.",
   "why": "Data lifecycle controls are a high-risk feature that self-work must learn to handle carefully."
 }
