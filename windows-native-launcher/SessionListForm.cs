@@ -1630,7 +1630,8 @@ internal sealed partial class SessionListForm : Form
                 using var lit = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(217, 238, 231, 248) : DarkTheme.Panel2);
                 e.Graphics.FillRectangle(lit, button.ClientRectangle);
             }
-            DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : button.ForeColor, icon);
+            // The mockups' rail icons are a soft periwinkle on the glass, not the grey text colour.
+            DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : DarkTheme.IsGlass ? Color.FromArgb(190, DarkTheme.Accent) : button.ForeColor, icon);
             if (highlighted?.Invoke() == true)
             {
                 // #1120: something new inside -- an accent dot at the icon's top right.
