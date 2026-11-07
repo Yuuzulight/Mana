@@ -157,9 +157,9 @@ internal sealed partial class SessionListForm
         }
     }
 
-    private static readonly Color CaptionTopEdge = Color.FromArgb(242, 255, 255, 255);
-    private static readonly Color CaptionBottomEdge = Color.FromArgb(199, 255, 255, 255);
-    private static readonly Color CaptionOutline = Color.FromArgb(18, 106, 95, 184);
+    private static Color CaptionTopEdge => GlassSurface.Veil(242);
+    private static Color CaptionBottomEdge => GlassSurface.Veil(199);
+    private static Color CaptionOutline => DarkTheme.IsLight ? Color.FromArgb(18, 106, 95, 184) : Color.FromArgb(40, 169, 158, 240);
     private static readonly Color CloseHover = Color.FromArgb(0xc4, 0x2b, 0x1c);
 
     private void PaintCaption(Graphics g)

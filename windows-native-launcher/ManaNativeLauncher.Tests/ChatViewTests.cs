@@ -16,6 +16,85 @@ public class ChatViewTests
         return view;
     }
 
+    // Mockup B: her welcome greets by the hour, and an empty chat says so; the first message ends it.
+    [Theory]
+    [InlineData(6, "Good morning~")]
+    [InlineData(13, "Good afternoon~")]
+    [InlineData(19, "Good evening~")]
+    [InlineData(23, "Hi, night owl~")]
+    [InlineData(3, "Hi, night owl~")]
+    public void WelcomeGreetsByTheHour(int hour, string greeting)
+    {
+        Assert.Equal(greeting, ChatView.Greeting(hour));
+    }
+
+    // Under the greeting, as in the mockups: what she asks depends on the hour too.
+    [Theory]
+    [InlineData(9, "What are we starting with?")]
+    [InlineData(14, "What are we working on?")]
+    [InlineData(20, "What are we doing tonight?")]
+    [InlineData(2, "What are we doing tonight?")]
+    public void WelcomeAsksByTheHour(int hour, string ask) => Assert.Equal(ask, ChatView.WelcomeAsk(hour));
+
+    // Under your message: the time today, the day and time before that.
+    [Theory]
+    [InlineData(2026, 11, 5, 21, 41, "9:41 PM")]
+    [InlineData(2026, 11, 4, 9, 5, "Nov 4, 9:05 AM")]
+    public void StampsYourMessageWithItsTime(int year, int month, int day, int hour, int minute, string stamp)
+    {
+        var now = new DateTime(2026, 11, 5, 23, 0, 0);
+        Assert.Equal(stamp, ChatView.Stamp(new DateTime(year, month, day, hour, minute, 0), now));
+    }
+
+    [Fact]
+    public void YourMessageIsStampedAndHerRunsOfBubblesSitTogether()
+    {
+        using var view = NewView();
+        view.AppendUserMessage("Is the table page under 50 ms yet?");
+        view.AppendReplySentence("Not yet~");
+        view.AppendManaMessage("The rounded frame gets clipped three times a frame.");
+        var (you, first, second) = (view.Messages[0], view.Messages[1], view.Messages[2]);
+        Assert.NotNull(you.At);
+        Assert.True(you.LabelBounds.Top >= you.Bounds.Bottom, "the time sits under your bubble");
+        Assert.InRange(second.Bounds.Top - first.Bounds.Bottom, 0, 6);
+    }
+
+    [Fact]
+    public void WelcomeOffersItsCardsUntilTheFirstMessage()
+    {
+        using var view = NewView();
+        var states = new List<bool>();
+        view.EmptyChanged += states.Add;
+        var picked = -1;
+        view.SetWelcomeSuggestions(new (string, Action)[] { ("Pick up “Folio table speed”", () => picked = 0), ("What did I miss today?", () => picked = 1) });
+        var card = view.SuggestionBounds[0];
+        view.SimulateClick(new Point(card.X + card.Width / 2, card.Y + card.Height / 2));
+        Assert.Equal(0, picked);
+        view.AppendUserMessage("hi"); // the first message: the welcome goes
+        Assert.Contains(false, states);
+        Assert.False(view.IsEmpty);
+    }
+
+    // Mockup A: hovering a reply shows a Copy button on each of its code blocks; it copies just that block.
+    [Fact]
+    public void CodeBlocksCopyFromTheirOwnButton()
+    {
+        using var view = NewView();
+        string? copied = null;
+        view.CopyText = text => copied = text;
+        view.AppendManaMessage("Here:\n\n```js\nconst a = 1;\nconst b = 2;\n```\n\nAnd done.");
+        var reply = view.Messages[^1];
+        var block = Assert.Single(reply.CodeBlocks);
+        Assert.Equal("const a = 1;\nconst b = 2;", block.Code);
+
+        var button = new Point(reply.Bounds.X + 14 + reply.ContentWidth - 20, reply.Bounds.Y + 9 + block.Top + 10);
+        view.SimulateClick(button); // not hovered yet: no button there
+        Assert.Null(copied);
+        view.SimulateMouseMove(new Point(reply.Bounds.X + 20, reply.Bounds.Y + 20));
+        view.SimulateClick(button);
+        Assert.Equal(block.Code, copied);
+    }
+
     [Fact]
     public void ManasSentencesJoinOneBubbleUntilYouSpeakAgain()
     {

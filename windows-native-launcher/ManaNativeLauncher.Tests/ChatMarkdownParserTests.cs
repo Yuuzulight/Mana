@@ -108,6 +108,14 @@ public class ChatMarkdownParserTests
         Assert.True(run.Code);
     }
 
+    // The fence's language, for the code block's header bar.
+    [Theory]
+    [InlineData("```csharp\nx\n```", "csharp")]
+    [InlineData("``` py \nx\n```", "py")]
+    [InlineData("```\nx\n```", null)]
+    public void Parse_FencedCodeBlockKeepsItsLanguage(string markdown, string? language) =>
+        Assert.Equal(language, Assert.Single(ChatMarkdownParser.Parse(markdown)).Info);
+
     [Fact]
     public void Parse_FencedCodeBlockContentIsNotInlineFormatted()
     {

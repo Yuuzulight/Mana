@@ -52,6 +52,7 @@ internal static class Program
         // first such use.
         var theme = ManaThemeSettings.Load();
         DarkTheme.ApplyPreset(theme.Preset, theme.AccentHex);
+        GlassSurface.WallpaperGlass = theme.WallpaperGlass;
 
         ApplicationConfiguration.Initialize();
         using var context = new ManaApplicationContext(LauncherUpdate.ChatBoundsFrom(args));

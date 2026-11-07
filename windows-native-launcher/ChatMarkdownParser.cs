@@ -23,7 +23,8 @@ internal readonly record struct MarkdownRun(string Text, bool Bold, bool Italic,
 
 // Rows is set only for a Table: row 0 is the header, each cell a run list.
 // Level is a Header's 1-6 (#1127's docs view uses it; the chat doesn't).
-internal readonly record struct MarkdownBlock(MarkdownBlockType Type, IReadOnlyList<MarkdownRun> Runs, IReadOnlyList<IReadOnlyList<IReadOnlyList<MarkdownRun>>>? Rows = null, int Level = 0);
+// Info: a code block's fence language ("csharp"), if it gave one.
+internal readonly record struct MarkdownBlock(MarkdownBlockType Type, IReadOnlyList<MarkdownRun> Runs, IReadOnlyList<IReadOnlyList<IReadOnlyList<MarkdownRun>>>? Rows = null, int Level = 0, string? Info = null);
 
 // #521: a hand-built Markdown parser scoped to what a chat reply actually
 // needs -- headers, bold, italic, strikethrough, inline code, links, fenced
@@ -67,6 +68,7 @@ internal static class ChatMarkdownParser
 
             if (line.TrimStart().StartsWith("```"))
             {
+                var info = line.TrimStart()[3..].Trim();
                 var codeLines = new List<string>();
                 i++;
                 while (i < lines.Length && !lines[i].TrimStart().StartsWith("```"))
@@ -77,7 +79,8 @@ internal static class ChatMarkdownParser
                 i++; // skip the closing fence, or just end of input if unterminated
                 blocks.Add(new MarkdownBlock(
                     MarkdownBlockType.CodeBlock,
-                    new[] { new MarkdownRun(string.Join("\n", codeLines), false, false, true) }));
+                    new[] { new MarkdownRun(string.Join("\n", codeLines), false, false, true) },
+                    Info: info.Length > 0 ? info : null));
                 continue;
             }
 

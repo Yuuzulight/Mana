@@ -59,6 +59,25 @@ public class DarkThemeTests
         Assert.Contains(DarkTheme.Presets, p => p.Id == "mana" && p.Label == "Mana");
     }
 
+    // Mana night: her glass after dark. It keeps the glass look, but every white veil the light glass uses
+    // becomes a faint one, so nothing glares on the navy page.
+    [Fact]
+    public void ApplyPreset_ManaNightIsDarkGlassWithFaintVeils()
+    {
+        DarkTheme.ApplyPreset("manaNight", null);
+
+        Assert.True(DarkTheme.IsGlass);
+        Assert.False(DarkTheme.IsLight);
+        Assert.Equal(ColorTranslator.FromHtml("#181624"), DarkTheme.Background);
+        Assert.Equal(ColorTranslator.FromHtml("#a99ef0"), DarkTheme.Accent);
+        Assert.Contains(DarkTheme.Presets, p => p.Id == "manaNight" && p.Label == "Mana night");
+        Assert.True(GlassSurface.Veil(200).A <= 60);
+        Assert.True(GlassSurface.GlassFill.A <= 60);
+
+        DarkTheme.ApplyPreset("mana", null);
+        Assert.Equal(200, GlassSurface.Veil(200).A);
+    }
+
     [Fact]
     public void ApplyPreset_LightPresetsGetDarkerCodeAndStatusColors()
     {
