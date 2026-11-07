@@ -145,6 +145,16 @@ public class CubismRendererTests
         Assert.Equal(255, frame.GetPixel(50, 6).Alpha);
     }
 
+    // The chat window's card asks for no margin: her head starts at the top edge.
+    [Fact]
+    public void CloseFraming_WithNoMargin_StartsAtTheTopEdge()
+    {
+        using var renderer = new CubismRenderer([SolidTexture()]);
+        var figure = Mesh(0, [(0, 40, 100, 100)]);
+        using var frame = renderer.Render([figure], Canvas100, 100, 100, SKColors.Transparent, heightFraction: 0.5f, topMargin: 0f);
+        Assert.Equal(255, frame.GetPixel(50, 0).Alpha);
+    }
+
     // The render thread draws the same frame as drawing directly, on the GPU where there is one (CI has none: CPU).
     [Theory]
     [InlineData(true)]

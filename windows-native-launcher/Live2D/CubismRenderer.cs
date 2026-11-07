@@ -95,22 +95,22 @@ internal sealed class CubismRenderer : IDisposable
     internal readonly record struct CanvasInfo(CubismCoreNative.Vector2 SizeInPixels, CubismCoreNative.Vector2 OriginInPixels, float PixelsPerUnit);
 
     // Draws a snapshot of the model's drawables (GetDrawables copies them), so this can run off the thread that animates the model.
-    internal SKBitmap Render(IReadOnlyList<CubismModel.Drawable> drawables, CanvasInfo canvasInfo, int width, int height, SKColor background, float heightFraction = 1f)
+    internal SKBitmap Render(IReadOnlyList<CubismModel.Drawable> drawables, CanvasInfo canvasInfo, int width, int height, SKColor background, float heightFraction = 1f, float topMargin = TopMargin)
     {
         var bitmap = new SKBitmap(width, height);
         using var canvas = new SKCanvas(bitmap);
-        Draw(canvas, drawables, canvasInfo, width, height, background, heightFraction);
+        Draw(canvas, drawables, canvasInfo, width, height, background, heightFraction, topMargin);
         return bitmap;
     }
 
-    internal void Draw(SKCanvas canvas, IReadOnlyList<CubismModel.Drawable> drawables, CanvasInfo canvasInfo, int width, int height, SKColor background, float heightFraction = 1f)
+    internal void Draw(SKCanvas canvas, IReadOnlyList<CubismModel.Drawable> drawables, CanvasInfo canvasInfo, int width, int height, SKColor background, float heightFraction = 1f, float topMargin = TopMargin)
     {
         var (sizeInPixels, originInPixels, pixelsPerUnit) = canvasInfo;
         if (heightFraction < 1f)
         {
             figureTop ??= FigureTop(drawables, originInPixels, pixelsPerUnit);
         }
-        var (scale, offsetX, offsetY) = Fit(sizeInPixels.X, sizeInPixels.Y, width, height, heightFraction, figureTop ?? 0f);
+        var (scale, offsetX, offsetY) = Fit(sizeInPixels.X, sizeInPixels.Y, width, height, heightFraction, figureTop ?? 0f, topMargin);
 
         // Screen-space points for every drawable, keyed by its index in
         // `drawables` -- computed up front, before drawing anything, so a
@@ -208,8 +208,9 @@ internal sealed class CubismRenderer : IDisposable
     // horizontally, and the rest is cropped off the bottom.
     internal const float TopMargin = 0.04f;
 
-    // A framing under 1 shows heightFraction of the canvas height from figureTop (a canvas pixel row) down.
-    internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction, float figureTop = 0f)
+    // A framing under 1 shows heightFraction of the canvas height from figureTop (a canvas pixel row) down, under a
+    // gap of topMargin of the height.
+    internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction, float figureTop = 0f, float topMargin = TopMargin)
     {
         var valid = canvasWidth > 0 && canvasHeight > 0;
         if (heightFraction >= 1f || !valid)
@@ -217,9 +218,9 @@ internal sealed class CubismRenderer : IDisposable
             var fitScale = valid ? Math.Min(width / canvasWidth, height / canvasHeight) : 1f;
             return (fitScale, (width - canvasWidth * fitScale) / 2f, (height - canvasHeight * fitScale) / 2f);
         }
-        var topMargin = height * TopMargin;
-        var scale = (height - topMargin) / (canvasHeight * Math.Max(0.05f, heightFraction));
-        return (scale, (width - canvasWidth * scale) / 2f, topMargin - figureTop * scale);
+        var gap = height * topMargin;
+        var scale = (height - gap) / (canvasHeight * Math.Max(0.05f, heightFraction));
+        return (scale, (width - canvasWidth * scale) / 2f, gap - figureTop * scale);
     }
 
     private static float FigureTop(IReadOnlyList<CubismModel.Drawable> drawables, CubismCoreNative.Vector2 originInPixels, float pixelsPerUnit)
