@@ -28,6 +28,16 @@ public class ChatViewTests
         Assert.Equal(greeting, ChatView.Greeting(hour));
     }
 
+    // The mockups' code card names the file when the fence does.
+    [Theory]
+    [InlineData("cs SoftwareCanvas.cs", "C#   SoftwareCanvas.cs")]
+    [InlineData("cs title=\"SoftwareCanvas.cs\"", "C#   SoftwareCanvas.cs")]
+    [InlineData("python:tools/run.py", "Python   tools/run.py")]
+    [InlineData("SoftwareCanvas.cs", "C#   SoftwareCanvas.cs")]
+    [InlineData("csharp", "C#")]
+    [InlineData(null, "Code")]
+    public void CodeCardBar_NamesTheLanguageAndFile(string? info, string label) => Assert.Equal(label, ChatView.CodeLabel(info));
+
     // Mockup B greets you by name, when Settings has one.
     [Theory]
     [InlineData(19, "Yuuzu", "Good evening, Yuuzu~")]

@@ -20,7 +20,8 @@ internal static class ArtifactDetector
     private static readonly HashSet<string> AlwaysArtifactLanguages = new(System.StringComparer.Ordinal) { "html", "mermaid" };
     private const double SameArtifactLineOverlapThreshold = 0.3;
 
-    private static readonly Regex FencePattern = new(@"```(\w*)\r?\n([\s\S]*?)```", RegexOptions.Compiled);
+    // The info line may go on to name the file ("```cs SoftwareCanvas.cs").
+    private static readonly Regex FencePattern = new(@"```(\w*)[^\r\n]*\r?\n([\s\S]*?)```", RegexOptions.Compiled);
 
     // Returns the first artifact-worthy fenced block in text, or null --
     // only the first match, a reply naming a second one is treated as

@@ -1165,7 +1165,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var sourceLines = string.Concat(block.Runs.Select(r => r.Text)).Replace("\r", "").Split('\n');
                 var codeTop = y;
                 // The mockups' code card: a bar with the language and Copy, then the lines.
-                var language = CodeLanguage(block.Info);
+                var language = CodeLabel(block.Info);
                 widest = Math.Max(widest, Measure(language, stampFont) + CopyWidth + 28);
                 y += CodeBarHeight;
                 CodeLines(sourceLines);
@@ -2073,6 +2073,25 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     private int CodeBarHeight => stampFont.Height + 9;
     private int CopyWidth => TextRenderer.MeasureText("Copied", stampFont).Width + 26;
+
+    // The card bar's text for a fence's info: the language, then the file when the fence names one, as the mockups'
+    // "C#  SoftwareCanvas.cs". Takes "cs SoftwareCanvas.cs", "cs title=\"SoftwareCanvas.cs\"", "cs:SoftwareCanvas.cs" and
+    // a bare "SoftwareCanvas.cs" (its language from the extension).
+    internal static string CodeLabel(string? info)
+    {
+        var text = info?.Trim() ?? "";
+        var split = text.IndexOfAny([' ', '\t', ':']);
+        var language = split < 0 ? text : text[..split];
+        var rest = split < 0 ? "" : text[(split + 1)..].Trim();
+        if (rest.StartsWith("title=", StringComparison.OrdinalIgnoreCase)) rest = rest[6..];
+        var file = rest.Trim('"', '\'', ' ');
+        if (file.Length == 0 && language.Contains('.') && !language.StartsWith('.'))
+        {
+            (file, language) = (language, language[(language.LastIndexOf('.') + 1)..]);
+        }
+        var name = CodeLanguage(language.Length == 0 ? null : language);
+        return file.Length == 0 ? name : $"{name}   {file}";
+    }
 
     // The bar's name for a fence language.
     internal static string CodeLanguage(string? info) => info?.ToLowerInvariant() switch

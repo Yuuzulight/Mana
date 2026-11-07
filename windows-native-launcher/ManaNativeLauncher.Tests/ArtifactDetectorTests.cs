@@ -32,6 +32,15 @@ public class ArtifactDetectorTests
     }
 
     [Fact]
+    public void Extract_FenceThatNamesItsFileStillQualifies()
+    {
+        var artifact = ArtifactDetector.Extract("```html page.html\n<div>hi</div>\n```");
+
+        Assert.Equal("html", artifact?.Language);
+        Assert.Equal("<div>hi</div>", artifact?.Content);
+    }
+
+    [Fact]
     public void Extract_ShortNonSpecialFenceDoesNotQualify()
     {
         Assert.Null(ArtifactDetector.Extract("```python\nprint(1)\n```"));
