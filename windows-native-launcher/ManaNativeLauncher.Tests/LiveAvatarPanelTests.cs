@@ -46,8 +46,8 @@ public class LiveAvatarPanelTests
     public void Fit_BustShowsTheTopOfTheModelUnderAMargin()
     {
         var (scale, x, y) = CubismRenderer.Fit(1000, 2000, 200, 200, LiveAvatarPanel.FramingFraction("bust"));
-        // The top 28% of 2000 (560) fills the 96% of 200 below the margin.
-        Assert.Equal(192f / 560f, scale, 4);
+        // The top 30% of 2000 (600) fills the 96% of 200 below the margin.
+        Assert.Equal(192f / 600f, scale, 4);
         Assert.Equal(8f, y, 3);
         Assert.Equal((200 - 1000 * scale) / 2f, x, 3);
         Assert.True(scale > CubismRenderer.Fit(1000, 2000, 200, 200, LiveAvatarPanel.FramingFraction("waist")).Scale);
