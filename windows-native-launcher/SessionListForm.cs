@@ -51,6 +51,9 @@ internal sealed partial class SessionListForm : Form
     private System.Collections.Generic.IReadOnlyList<ManaSession> sessions = Array.Empty<ManaSession>();
     private readonly AvatarOverlayForm avatarOverlay;
     private readonly LiveAvatarPanel avatarVisual = new();
+
+    // The empty-chat welcome shows her from the top of her head down to her skirt's hem.
+    internal const float WelcomeFraction = 0.47f;
     private readonly Button avatarZoomButton = new();
     private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
@@ -345,7 +348,6 @@ internal sealed partial class SessionListForm : Form
 
         // Mockup B: while the chat is empty she stands in the middle of it and her card steps aside, so she's never
         // drawn twice; the first message sends her back to the card.
-        var cardFraming = avatarVisual.Framing;
         var cardHeight = avatarVisual.Height;
         void ShowWelcomeAvatar(bool empty)
         {
@@ -356,16 +358,15 @@ internal sealed partial class SessionListForm : Form
             SuspendLayout();
             if (empty)
             {
-                cardFraming = avatarVisual.Framing;
                 cardHeight = avatarVisual.Height;
-                avatarVisual.Framing = "waist";
+                avatarVisual.Fraction = WelcomeFraction;
                 avatarVisual.Dock = DockStyle.Fill;
                 chatView.WelcomeAvatarSlot.Controls.Add(avatarVisual);
                 avatarCard.Visible = false;
             }
             else
             {
-                avatarVisual.Framing = cardFraming;
+                avatarVisual.Fraction = null;
                 avatarVisual.Dock = DockStyle.Top;
                 avatarVisual.Height = cardHeight;
                 avatarCard.Controls.Add(avatarVisual); // last added docks first: back on top of the card

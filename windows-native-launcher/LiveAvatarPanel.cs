@@ -54,6 +54,9 @@ internal sealed class LiveAvatarPanel : Panel
         set => framing = Array.IndexOf(Framings, value) >= 0 ? value! : DefaultFraming;
     }
 
+    // When set, how much of her height to show instead of Framing's (the empty-chat welcome's own crop).
+    public float? Fraction { get; set; }
+
     public bool HasFrame => frame is not null;
 
     // Copies the rendered frame (any size; normally ClientSize) into a GDI
