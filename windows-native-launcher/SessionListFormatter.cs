@@ -66,6 +66,36 @@ internal static class SessionListFormatter
         return day.ToString(day.Year == today.Year ? "MMM d" : "MMM d, yyyy", CultureInfo.InvariantCulture);
     }
 
+    // The mockups' sidebar headings: pinned chats first, then by the day they were last used.
+    public static readonly string[] Sections = ["Pinned", "Today", "Yesterday", "Earlier"];
+
+    public static string Section(ManaSession session, bool pinned, DateTimeOffset now)
+    {
+        if (pinned)
+        {
+            return "Pinned";
+        }
+        if (!DateTimeOffset.TryParse(session.UpdatedAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            return "Earlier";
+        }
+        var day = parsed.ToLocalTime().Date;
+        var today = now.ToLocalTime().Date;
+        return day >= today ? "Today" : day == today.AddDays(-1) ? "Yesterday" : "Earlier";
+    }
+
+    // The mockups' unread dot: changed since I last had it open -- or, never opened, since the launcher started
+    // keeping track (so the first run doesn't mark every old chat).
+    public static bool IsUnread(string? updatedAt, string? seenAt, string? trackingSince)
+    {
+        if (!DateTimeOffset.TryParse(updatedAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out var updated))
+        {
+            return false;
+        }
+        var since = seenAt ?? trackingSince;
+        return since is not null && DateTimeOffset.TryParse(since, CultureInfo.InvariantCulture, DateTimeStyles.None, out var seen) && updated > seen;
+    }
+
     // #687: the sidebar's search box -- a case-insensitive title match, like
     // Electron's sidebar filter. Blank shows everything.
     public static bool MatchesSearch(ManaSession session, string query) =>

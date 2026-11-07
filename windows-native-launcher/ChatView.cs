@@ -1509,13 +1509,20 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     }
 
     // Her greeting by the hour: morning from 5, afternoon from 12, evening from 17, and a night-owl one after 22.
-    internal static string Greeting(int hour) => hour switch
+    // What she calls you (Settings > General > Your name), for the welcome; null or blank: no name.
+    public static string? UserName { get; set; }
+
+    internal static string Greeting(int hour, string? name = null)
     {
-        >= 5 and < 12 => "Good morning~",
-        >= 12 and < 17 => "Good afternoon~",
-        >= 17 and < 22 => "Good evening~",
-        _ => "Hi, night owl~",
-    };
+        name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        return hour switch
+        {
+            >= 5 and < 12 => name is null ? "Good morning~" : $"Good morning, {name}~",
+            >= 12 and < 17 => name is null ? "Good afternoon~" : $"Good afternoon, {name}~",
+            >= 17 and < 22 => name is null ? "Good evening~" : $"Good evening, {name}~",
+            _ => name is null ? "Hi, night owl~" : $"Hi, {name}~ Up late?",
+        };
+    }
 
     private void NotifyEmpty()
     {
@@ -1570,7 +1577,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private void PaintWelcome(Graphics g)
     {
         const TextFormatFlags centred = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
-        TextRenderer.DrawText(g, Greeting(DateTime.Now.Hour), greetingFont, greetingBounds, DarkTheme.Text, centred);
+        TextRenderer.DrawText(g, Greeting(DateTime.Now.Hour, UserName), greetingFont, greetingBounds, DarkTheme.Text, centred);
         TextRenderer.DrawText(g, WelcomeAsk(DateTime.Now.Hour), bodyFont, hintBounds, DarkTheme.Muted, centred);
         for (var i = 0; i < suggestionBounds.Count && i < welcomeSuggestions.Count; i++)
         {

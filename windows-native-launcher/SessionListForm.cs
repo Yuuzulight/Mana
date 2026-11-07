@@ -91,6 +91,8 @@ internal sealed partial class SessionListForm : Form
     // Q11: flips Send to Stop while she's replying.
     // ponytail: polls VoiceLoop.IsIdle rather than an event on every mode change; 4 cheap reads a second.
     private readonly System.Windows.Forms.Timer sendButtonTimer = new() { Interval = 250 };
+    private readonly System.Windows.Forms.Timer runningTasksTimer = new() { Interval = 15000 };
+    private int runningTasks;
     private readonly System.Collections.Generic.HashSet<string> offeredProposalIds = new();
 
     // Mirrors VoiceLoop.CurrentSessionId -- null until something is
@@ -120,6 +122,7 @@ internal sealed partial class SessionListForm : Form
         this.voiceLoop = voiceLoop;
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
+        ChatView.UserName = ManaSettingsStore.Load().UserName; // Settings > General > Your name
         chatView = chatLog;
         // #1337: a sub-agent's or finished task's line in the chat.
         chatView.OpenTask = (id, title, running) =>
@@ -227,11 +230,18 @@ internal sealed partial class SessionListForm : Form
         // worse native experience than the sidebar's always-visible list
         // made single-click safe for.
         list.ItemActivate += (_, _) => SwitchToSelected(); // double-click or Enter
+        // A heading row (Tag null) is never selected, so every SelectedItems[0].Tag is a chat's id.
+        list.ItemSelectionChanged += (_, e) =>
+        {
+            if (e.IsSelected && e.Item?.Tag is null && e.Item is { } heading) heading.Selected = false;
+        };
         list.AfterLabelEdit += OnAfterLabelEdit;
 
         var contextMenu = new ContextMenuStrip();
         AddMoveToProjectMenu(contextMenu);
         contextMenu.Items.Add("Switch to session", null, (_, _) => SwitchToSelected());
+        var pinItem = contextMenu.Items.Add("Pin", null, (_, _) => TogglePinSelected());
+        contextMenu.Opening += (_, _) => pinItem.Text = list.SelectedItems.Count > 0 && pinnedChats.Contains((string)list.SelectedItems[0].Tag!) ? "Unpin" : "Pin";
         contextMenu.Items.Add("Rename", null, (_, _) =>
         {
             if (list.SelectedItems.Count > 0)
@@ -522,7 +532,26 @@ internal sealed partial class SessionListForm : Form
         });
         artifacts.Added += OnArtifactAdded;
         // #1125: its Self-work section opens the "What I'm working on" window (#1016).
-        RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient));
+        // The mockups' count on its icon: how many are running (polled every 15 s while the window shows).
+        var tasksButton = RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient), badge: () => runningTasks);
+        runningTasksTimer.Tick += async (_, _) =>
+        {
+            if (!Visible || WindowState == FormWindowState.Minimized) return;
+            try
+            {
+                var running = (await backendClient.GetBackgroundTasksAsync()).Count(t => t.Status == "running");
+                if (!IsDisposed && running != runningTasks)
+                {
+                    runningTasks = running;
+                    tasksButton.Invalidate();
+                }
+            }
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+            {
+                // the backend isn't up (or this one has no tasks route): no count
+            }
+        };
+        runningTasksTimer.Start();
         // #1121: the commands Mana runs, and my own shells in the repo folder.
         RegisterRailTool("terminal", "terminal", "Terminal",
             () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
@@ -574,32 +603,7 @@ internal sealed partial class SessionListForm : Form
             RefreshAvatarCard(avatarOverlay.CurrentState);
         };
 
-        // #681: same toggle as the tray's Start/Stop listening item. Its
-        // label follows VoiceLoop on the status timer, since the tray and the
-        // mic button can flip it too.
-        // A small mic in the header: accent in a soft circle while she's listening, muted and struck through while not.
-        var listenButton = new Button { Dock = DockStyle.Right, Width = 34, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Background, Cursor = Cursors.Hand };
-        listenButton.FlatAppearance.BorderSize = 0;
-        listenButton.Paint += (_, e) => PaintListenButton(e.Graphics, listenButton, voiceLoop.IsListening);
-        void RefreshListenButton()
-        {
-            var text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
-            if (listenButton.Text != text)
-            {
-                listenButton.Text = listenButton.AccessibleName = text;
-                railToolTip.SetToolTip(listenButton, text);
-                listenButton.Invalidate();
-            }
-        }
-        listenButton.Click += (_, _) =>
-        {
-            voiceLoop.ToggleListening();
-            RefreshListenButton();
-        };
-        sendButtonTimer.Tick += (_, _) => RefreshListenButton();
-        RefreshListenButton();
-
-        // #642: the context meter, just left of the listen toggle. Hover for
+        // #642: the context meter, at the header's right. Hover for
         // the breakdown; held up to 30s since it's several lines to read.
         contextMeterLabel.Dock = DockStyle.Right;
         contextMeterLabel.AutoSize = true;
@@ -683,7 +687,6 @@ internal sealed partial class SessionListForm : Form
             finally { if (!IsDisposed) { chatModelPicker.Enabled = true; await RefreshChatModelsAsync(); } }
         };
         chatHeader.Controls.Add(contextMeterLabel);
-        chatHeader.Controls.Add(listenButton);
         chatArea.Controls.Add(chatHeader);
 
         // Dock order matters, and WinForms docks in REVERSE of the Controls
@@ -714,9 +717,8 @@ internal sealed partial class SessionListForm : Form
         // -- directly). Same pattern as ArtifactViewerForm/QuickEntryForm.
         _ = Handle;
 
-        // The #652 mockup's shimmer and its delays: title strip, Mana's
-        // bubbles, the open chat's card, the avatar card, the rail.
-        GlassSurface.Shimmer(this, 0, () => new Rectangle(0, 0, ClientSize.Width, CaptionHeight));
+        // The #652 mockup's shimmer and its delays: Mana's bubbles, the open
+        // chat's card, the avatar card, the rail. (The title has no strip to shine.)
         // ponytail: repaints the whole chat during its sweep; limit it to her visible bubbles if that ever shows up in CPU use.
         GlassSurface.Shimmer(chatLog, 1100);
         GlassSurface.Shimmer(list, 2200, () => list.Items.Cast<ListViewItem>().FirstOrDefault(i => (string?)i.Tag == activeSessionId)?.Bounds ?? Rectangle.Empty);
@@ -767,12 +769,46 @@ internal sealed partial class SessionListForm : Form
         send.Paint += (_, e) => DrawSendButton(e.Graphics, send, box.BackColor);
         railToolTip.SetToolTip(send, MessageBoxHint);
 
-        // The #652 mockup's push-to-talk button: counts as saying her name,
-        // like clicking her on the overlay (listening comes on if it was off).
-        var mic = ToolbarIconButton("Push to talk");
-        mic.Paint += (_, e) => { ShrinkToolbarIcon(e.Graphics, mic); DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor); };
-        mic.Click += (_, _) => voiceLoop.Wake();
-        railToolTip.SetToolTip(mic, "Talk to Mana: the next thing you say is for her");
+        // The mockups' one mic (the header's listening toggle folded in, #681): while she isn't listening it's struck
+        // through and a click turns listening on with the next thing you say for her, like saying her name; while she
+        // listens it's in the accent and a click stops listening. Its menu has both, whatever the state.
+        var mic = ToolbarIconButton("Start listening");
+        mic.Paint += (_, e) =>
+        {
+            ShrinkToolbarIcon(e.Graphics, mic);
+            var listening = voiceLoop.IsListening;
+            var color = listening ? DarkTheme.Accent : mic.ForeColor;
+            DrawMicIcon(e.Graphics, mic.ClientRectangle, color);
+            if (!listening)
+            {
+                using var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                e.Graphics.DrawLine(pen, mic.Width * 0.26f, mic.Height * 0.24f, mic.Width * 0.74f, mic.Height * 0.76f);
+            }
+        };
+        void RefreshMic()
+        {
+            var text = voiceLoop.IsListening ? "Stop listening" : "Talk to Mana: start listening, the next thing you say is for her";
+            if (mic.AccessibleName != text)
+            {
+                mic.AccessibleName = text;
+                railToolTip.SetToolTip(mic, text);
+                mic.Invalidate();
+            }
+        }
+        mic.Click += (_, _) =>
+        {
+            if (voiceLoop.IsListening) voiceLoop.ToggleListening();
+            else voiceLoop.Wake(); // turns listening on too
+            RefreshMic();
+        };
+        var micMenu = new ContextMenuStrip();
+        micMenu.Items.Add("Talk to Mana now", null, (_, _) => { voiceLoop.Wake(); RefreshMic(); });
+        var listenItem = micMenu.Items.Add("Stop listening", null, (_, _) => { voiceLoop.ToggleListening(); RefreshMic(); });
+        micMenu.Opening += (_, _) => listenItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
+        mic.ContextMenuStrip = micMenu;
+        mic.Disposed += (_, _) => micMenu.Dispose();
+        sendButtonTimer.Tick += (_, _) => RefreshMic(); // the tray, a hotkey or the overlay can flip it too
+        RefreshMic();
 
         // #1325: Attach button (paperclip) for documents and images
         var attach = ToolbarIconButton("Attach files");
@@ -1805,19 +1841,32 @@ internal sealed partial class SessionListForm : Form
     // last error), except while the avatar shows an activity it doesn't
     // track (dreaming, working, waiting, done). Sentence case ("Idle", not
     // "idle" or "IDLE") matches the reference mock-up's status text.
-    private string StatusLine(AvatarState state)
+    private string StatusLine(AvatarState state) => StatusLine(state, voiceLoop.StatusText, hearingText, moodSummary);
+
+    // The mockups' "happy · working on Folio": at rest (or busy with something of her own) her mood comes first, then
+    // what she's doing; what she hears, says or thinks, and errors, show as they are.
+    internal static string StatusLine(AvatarState state, string voiceStatus, string? hearing, string? mood)
     {
-        if (hearingText is not null)
+        if (hearing is not null)
         {
-            return $"Hearing: \"{hearingText}\"";
+            return $"Hearing: \"{hearing}\"";
         }
-        if (state is AvatarState.Dreaming or AvatarState.Working or AvatarState.Waiting or AvatarState.Done)
+        string? doing = state is AvatarState.Dreaming or AvatarState.Working or AvatarState.Waiting or AvatarState.Done
+            ? state.ToString().ToLowerInvariant()
+            : voiceStatus switch { "Not listening" => "mic off", "Waiting for Mana..." => "listening", _ => null };
+        if (doing is null)
         {
-            var text = state.ToString();
-            return char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant();
+            return voiceStatus;
         }
-        return voiceLoop.StatusText;
+        if (string.IsNullOrWhiteSpace(mood))
+        {
+            return doing == "mic off" ? voiceStatus : char.ToUpperInvariant(doing[0]) + doing[1..];
+        }
+        return $"{mood} · {doing}";
     }
+
+    // Part of #700: her mood in words ("tired, chatty"), read with the chats (RefreshAsync); null until then.
+    private string? moodSummary;
 
     // Same abstract gradient + rounded "silhouette" the reference mock-up
     // uses in place of real Live2D art (see this card's own constructor
@@ -1933,30 +1982,6 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
-    private static void PaintListenButton(Graphics g, Button button, bool listening)
-    {
-        ClearToBackground(g, button);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var hot = button.ClientRectangle.Contains(button.PointToClient(Control.MousePosition));
-        var side = Math.Min(button.Width, button.Height) - 4;
-        var circle = new RectangleF((button.Width - side) / 2f, (button.Height - side) / 2f, side, side);
-        if (listening || hot)
-        {
-            using var fill = new SolidBrush(Color.FromArgb(listening ? 48 : 24, DarkTheme.Accent));
-            g.FillEllipse(fill, circle);
-        }
-        var color = listening ? DarkTheme.Accent : hot ? DarkTheme.Text : DarkTheme.Muted;
-        DrawMicIcon(g, Rectangle.Round(circle), color);
-        if (!listening)
-        {
-            using var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawLine(pen, circle.X + side * 0.24f, circle.Y + side * 0.2f, circle.Right - side * 0.24f, circle.Bottom - side * 0.2f);
-        }
-        if (button.Focused && GlassSurface.ShowsFocusCues(button))
-        {
-            ControlPaint.DrawFocusRectangle(g, Rectangle.Round(circle));
-        }
-    }
 
     // An accent pill with a plus before its words (the mockups' New chat).
     private static void PaintPillButton(Graphics g, Button button)
@@ -2514,6 +2539,15 @@ internal sealed partial class SessionListForm : Form
         listError = null; // loaded, so an earlier load error is stale
         ShowSessions();
         _ = ReadArtifactHistoryAsync();
+        try
+        {
+            moodSummary = (await backendClient.GetMoodAsync()).Summary;
+            if (!IsDisposed) RefreshAvatarCard(avatarOverlay.CurrentState);
+        }
+        catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or System.Collections.Generic.KeyNotFoundException)
+        {
+            Console.WriteLine($"SessionListForm: couldn't read her mood. {ex.Message}");
+        }
     }
 
     private void SetListError(string? error, Func<Task>? retry = null)
@@ -2581,20 +2615,24 @@ internal sealed partial class SessionListForm : Form
     {
         list.BeginUpdate();
         list.Items.Clear();
-        list.Groups.Clear();
-        foreach (var session in sessions.Where(s => MatchesProject(s) && (SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId))))
+        MarkActiveChatSeen();
+        var now = DateTimeOffset.Now;
+        // The mockups' sidebar: Pinned, then Today, Yesterday and Earlier, each under a small heading row.
+        var shown = sessions.Where(s => MatchesProject(s) && (SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId)));
+        foreach (var section in shown.GroupBy(s => SessionListFormatter.Section(s, pinnedChats.Contains(s.SessionId), now))
+                     .OrderBy(g => Array.IndexOf(SessionListFormatter.Sections, g.Key)))
         {
-            var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
+            list.Items.Add(new ListViewItem(section.Key)); // a heading: no Tag
+            foreach (var session in section)
             {
-                Tag = session.SessionId,
-                ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
-            };
-            item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, DateTimeOffset.Now));
-            var groupKey = session.ProjectId is { } id ? $"project:{id}" : "ungrouped";
-            var group = list.Groups[groupKey];
-            if (group is null) { group = new ListViewGroup(groupKey, session.ProjectName ?? "Ungrouped"); list.Groups.Add(group); }
-            item.Group = group;
-            list.Items.Add(item);
+                var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
+                {
+                    Tag = session.SessionId,
+                    ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
+                };
+                item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, now));
+                list.Items.Add(item);
+            }
         }
         list.EndUpdate();
         FitSessionColumn();
@@ -2682,6 +2720,14 @@ internal sealed partial class SessionListForm : Form
             using var back = new SolidBrush(list.BackColor);
             g.FillRectangle(back, bounds);
         }
+        if (e.Item.Tag is null)
+        {
+            // A heading: small and muted, sitting on the rows below it.
+            var headingPad = LogicalToDeviceUnits(4);
+            TextRenderer.DrawText(g, e.Item.Text, sessionTimeFont, new Rectangle(bounds.X + headingPad, bounds.Y, bounds.Width - headingPad, bounds.Height - LogicalToDeviceUnits(4)),
+                DarkTheme.Muted, TextFormatFlags.Bottom | TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            return;
+        }
         if (active || e.Item.Selected)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -2702,10 +2748,81 @@ internal sealed partial class SessionListForm : Form
         var time = e.Item.SubItems.Count > 1 ? e.Item.SubItems[1].Text : "";
         var timeWidth = time.Length == 0 ? 0 : TextRenderer.MeasureText(g, time, sessionTimeFont, card.Size, TextFormatFlags.NoPadding).Width;
         TextRenderer.DrawText(g, time, sessionTimeFont, new Rectangle(card.Right - pad - timeWidth, card.Y, timeWidth, card.Height), DarkTheme.Muted, flags | TextFormatFlags.Right | TextFormatFlags.NoPadding);
+        if (sessions.FirstOrDefault(s => s.SessionId == (string?)e.Item.Tag) is { } shown && IsUnread(shown))
+        {
+            // The mockups' unread dot, just left of the time.
+            var dot = LogicalToDeviceUnits(7);
+            timeWidth += dot + LogicalToDeviceUnits(6);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var brush = new SolidBrush(DarkTheme.Accent);
+            g.FillEllipse(brush, card.Right - pad - timeWidth, card.Y + (card.Height - dot) / 2f, dot, dot);
+        }
         TextRenderer.DrawText(g, e.Item.Text, titleFont, new Rectangle(card.X + pad, card.Y, card.Width - pad * 2 - timeWidth - (timeWidth > 0 ? 8 : 0), card.Height), titleColor, flags | TextFormatFlags.Left);
         if (e.Item.Focused && list.Focused && GlassSurface.ShowsFocusCues(list))
         {
             ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -2, -1));
+        }
+    }
+
+    // Pins and what I've read are the launcher's own (the backend keeps neither), saved in settings.
+    private readonly HashSet<string> pinnedChats = new(ManaSettingsStore.Load().PinnedChats ?? []);
+
+    private void TogglePinSelected()
+    {
+        if (list.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)list.SelectedItems[0].Tag!;
+        if (!pinnedChats.Remove(id))
+        {
+            pinnedChats.Add(id);
+        }
+        SaveChatState(s => s.PinnedChats = pinnedChats.Count == 0 ? null : pinnedChats.ToList());
+        ShowSessions();
+    }
+
+    private bool IsUnread(ManaSession session)
+    {
+        var settings = chatState ??= ManaSettingsStore.Load();
+        return session.SessionId != activeSessionId
+               && SessionListFormatter.IsUnread(session.UpdatedAt, settings.SeenChats?.GetValueOrDefault(session.SessionId), settings.ChatsSeenSince);
+    }
+
+    // The open chat is read as it is now; the first run starts the tracking.
+    private void MarkActiveChatSeen()
+    {
+        var settings = chatState ??= ManaSettingsStore.Load();
+        var open = sessions.FirstOrDefault(s => s.SessionId == activeSessionId);
+        var startTracking = settings.ChatsSeenSince is null;
+        var seenNow = open?.UpdatedAt is { } at && settings.SeenChats?.GetValueOrDefault(open.SessionId) != at;
+        if (startTracking || seenNow)
+        {
+            SaveChatState(s =>
+            {
+                s.ChatsSeenSince ??= DateTimeOffset.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+                if (seenNow)
+                {
+                    (s.SeenChats ??= new())[open!.SessionId] = open.UpdatedAt!;
+                }
+            });
+        }
+    }
+
+    private ManaSettingsStore? chatState; // the last loaded or saved settings, for the unread dots
+
+    private void SaveChatState(Action<ManaSettingsStore> change)
+    {
+        try
+        {
+            var latest = ManaSettingsStore.Load();
+            change(latest);
+            latest.Save();
+            chatState = latest;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"SessionListForm: couldn't save the chat list's pins or read state. {ex.Message}");
         }
     }
 
@@ -2777,6 +2894,7 @@ internal sealed partial class SessionListForm : Form
             railToolTip.Dispose();
             messageQueueTimer.Dispose();
             sendButtonTimer.Dispose();
+            runningTasksTimer.Dispose();
         }
         base.Dispose(disposing);
     }

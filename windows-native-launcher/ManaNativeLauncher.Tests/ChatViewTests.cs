@@ -28,6 +28,14 @@ public class ChatViewTests
         Assert.Equal(greeting, ChatView.Greeting(hour));
     }
 
+    // Mockup B greets you by name, when Settings has one.
+    [Theory]
+    [InlineData(19, "Yuuzu", "Good evening, Yuuzu~")]
+    [InlineData(9, "Yuuzu", "Good morning, Yuuzu~")]
+    [InlineData(2, "Yuuzu", "Hi, Yuuzu~ Up late?")]
+    [InlineData(19, "  ", "Good evening~")]
+    public void WelcomeGreetsYouByName(int hour, string name, string greeting) => Assert.Equal(greeting, ChatView.Greeting(hour, name));
+
     // Under the greeting, as in the mockups: what she asks depends on the hour too.
     [Theory]
     [InlineData(9, "What are we starting with?")]
