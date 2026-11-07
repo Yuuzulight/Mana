@@ -694,7 +694,8 @@ internal sealed class AvatarOverlayForm : Form
         }
         if (panel is not null)
         {
-            targets.Add(new(Math.Max(1, panel.ClientSize.Width), Math.Max(1, panel.ClientSize.Height), LiveAvatarPanel.FramingFraction(panel.Framing)));
+            // The card has its own padding above her, so no extra gap.
+            targets.Add(new(Math.Max(1, panel.ClientSize.Width), Math.Max(1, panel.ClientSize.Height), LiveAvatarPanel.FramingFraction(panel.Framing), TopMargin: 0f));
         }
         model.ReadCanvasInfo(out var size, out var origin, out var pixelsPerUnit);
         worker.TrySubmit(model.GetDrawables(), new(size, origin, pixelsPerUnit), targets.ToArray(), frames => ShowFrames(frames, overlay, panel));

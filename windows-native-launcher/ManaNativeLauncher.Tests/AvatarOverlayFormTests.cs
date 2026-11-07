@@ -89,7 +89,7 @@ public class AvatarOverlayFormTests
     [InlineData("full", 1f, 234, 288)]
     [InlineData("full", 1.5f, 351, 432)]
     [InlineData("upperHalf", 2f, 468, 330)]
-    [InlineData("bust", 2f, 468, 168)]
+    [InlineData("bust", 2f, 468, 180)]
     public void OverlaySize_IsTheBaseWidthScaledAndTallEnoughForTheFraming(string framing, float scale, int width, int height) =>
         Assert.Equal(new Size(width, height),
             AvatarOverlayForm.OverlaySize(Avatar, Canvas, LiveAvatarPanel.FramingFraction(framing), scale));

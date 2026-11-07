@@ -9,7 +9,7 @@ namespace Mana.NativeLauncher.Live2D;
 // machine has it (DeepSeek-chan: ~14 ms a frame there, ~50 ms on the CPU), else on the CPU. Owns the renderer.
 internal sealed class AvatarRenderWorker : IDisposable
 {
-    internal readonly record struct Target(int Width, int Height, float HeightFraction);
+    internal readonly record struct Target(int Width, int Height, float HeightFraction, float TopMargin = CubismRenderer.TopMargin);
 
     private sealed record Job(IReadOnlyList<CubismModel.Drawable> Drawables, CubismRenderer.CanvasInfo Canvas, Target[] Targets, Action<SKBitmap[]> Done);
 
@@ -81,7 +81,7 @@ internal sealed class AvatarRenderWorker : IDisposable
                 try
                 {
                     var frames = next.Targets.Select(t => gl is null
-                        ? renderer.Render(next.Drawables, next.Canvas, t.Width, t.Height, SKColors.Transparent, t.HeightFraction)
+                        ? renderer.Render(next.Drawables, next.Canvas, t.Width, t.Height, SKColors.Transparent, t.HeightFraction, t.TopMargin)
                         : DrawOnGpu(gl.Gpu, surfaces, next, t)).ToArray();
                     foreach (var size in surfaces.Keys.Except(next.Targets.Select(t => (t.Width, t.Height))).ToList())
                     {
@@ -122,7 +122,7 @@ internal sealed class AvatarRenderWorker : IDisposable
             surface = SKSurface.Create(gpu, false, info) ?? throw new InvalidOperationException("no GPU surface");
             surfaces[(target.Width, target.Height)] = surface;
         }
-        renderer.Draw(surface.Canvas, next.Drawables, next.Canvas, target.Width, target.Height, SKColors.Transparent, target.HeightFraction);
+        renderer.Draw(surface.Canvas, next.Drawables, next.Canvas, target.Width, target.Height, SKColors.Transparent, target.HeightFraction, target.TopMargin);
         var frame = new SKBitmap(target.Width, target.Height);
         if (!surface.ReadPixels(frame.Info, frame.GetPixels(), frame.RowBytes, 0, 0))
         {
