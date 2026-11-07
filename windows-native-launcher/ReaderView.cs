@@ -4,7 +4,6 @@ using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Folio;
-using Folio.Skia;
 using Folio.Typography;
 using Folio.WinForms;
 
@@ -23,7 +22,7 @@ internal sealed class ReaderView : UserControl
     private readonly FolioView view = new()
     {
         Dock = DockStyle.Fill,
-        Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() }, ColorScheme = DarkTheme.IsLight ? ColorScheme.Light : ColorScheme.Dark },
+        Options = new FolioOptions { Fonts = BundledFontSource.Settings, ColorScheme = DarkTheme.IsLight ? ColorScheme.Light : ColorScheme.Dark },
         AccessibleName = "Page",
     };
     private readonly Label titleLabel = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = DarkTheme.Text, AutoEllipsis = true };

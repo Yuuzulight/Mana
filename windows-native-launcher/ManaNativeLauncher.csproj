@@ -111,12 +111,20 @@
        formal release. #1267: Mana does this herself once a day
        (node-bot/folio-update.js), as a PR. -->
   <PropertyGroup>
-    <FolioCommit>ca2dd9e425bf422ad5aecb9b0b0f58202721a204</FolioCommit>
-    <FolioVersion>0.1.0-m1.988</FolioVersion>
+    <FolioCommit>8112827b09c517026a595c007b6bd2e3ff29e46a</FolioCommit>
+    <FolioVersion>0.1.0-m1.2163</FolioVersion>
     <!-- Set this to the complete Folio.ContentHost publish directory for a
          launcher package. Its files are copied under Folio\ beside Mana. -->
-    <FolioContentHostDirectory Condition="'$(FolioContentHostDirectory)' == ''">$(MANA_FOLIO_CONTENT_HOST_DIRECTORY)</FolioContentHostDirectory>
+    <FolioContentHostRuntime Condition="'$(RuntimeIdentifier)' == 'win-arm64'">win-arm64</FolioContentHostRuntime>
+    <FolioContentHostRuntime Condition="'$(FolioContentHostRuntime)' == ''">win-x64</FolioContentHostRuntime>
+    <FolioContentHostDirectory Condition="'$(FolioContentHostDirectory)' == '' and '$(MANA_FOLIO_CONTENT_HOST_DIRECTORY)' != ''">$(MANA_FOLIO_CONTENT_HOST_DIRECTORY)</FolioContentHostDirectory>
+    <FolioContentHostDirectory Condition="'$(FolioContentHostDirectory)' == ''">$(MSBuildProjectDirectory)\folio-feed\content-host\$(FolioCommit)\$(FolioContentHostRuntime)</FolioContentHostDirectory>
   </PropertyGroup>
+
+  <Target Name="RequireFolioContentHostForPublish" BeforeTargets="ComputeFilesToPublish" Condition="'$(OS)' == 'Windows_NT'">
+    <Error Condition="!Exists('$(FolioContentHostDirectory)\Folio.ContentHost.exe') or !Exists('$(FolioContentHostDirectory)\native-build.json')"
+           Text="The standalone Folio host is missing. Run windows-native-launcher/pack-folio.ps1 (with -Runtime win-arm64 for ARM64), or supply FolioContentHostDirectory with a complete validated publish." />
+  </Target>
 
   <ItemGroup Condition="'$(FolioContentHostDirectory)' != '' and Exists('$(FolioContentHostDirectory)')">
     <Content Include="$(FolioContentHostDirectory)\**\*"
@@ -146,8 +154,7 @@
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" />
-    <!-- 4.153.0: Folio.Skia's own SkiaSharp, which a lower version here
-         would downgrade (NU1605). -->
+    <!-- Used by Mana's avatar/preview rendering independently of Folio. -->
     <PackageReference Include="SkiaSharp" Version="4.153.0" />
     <!-- #937: draws static HTML artifacts in the viewer (FolioView). -->
     <PackageReference Include="Folio.WinForms" Version="$(FolioVersion)" />

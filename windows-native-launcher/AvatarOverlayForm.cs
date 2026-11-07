@@ -85,7 +85,10 @@ internal sealed class AvatarOverlayForm : Form
     // #914: this and every other field ApplyModel sets change when LoadModel
     // swaps in another character's model.
     private CubismModel? cubismModel;
-    private CubismRenderer? cubismRenderer;
+    private AvatarRenderWorker? renderWorker; // #1518: draws on its own thread, owns the renderer
+    // Where finished frames go back to: the UI thread's own queue, which works before this window has a handle (the
+    // overlay may never be shown while the chat window's card still wants her).
+    private SynchronizationContext? uiThread;
     private System.Windows.Forms.Timer? renderTimer;
     private readonly int fpsCap = ReadIntEnv("MANA_AVATAR_FPS", 0); // #683, Electron's knob
     private readonly Stopwatch renderClock = Stopwatch.StartNew();
@@ -214,7 +217,8 @@ internal sealed class AvatarOverlayForm : Form
     private void ApplyModel(CubismLoadResult loaded)
     {
         cubismModel = loaded.Model;
-        cubismRenderer = loaded.Renderer;
+        uiThread = SynchronizationContext.Current;
+        renderWorker = loaded.Renderer is { } loadedRenderer ? new AvatarRenderWorker(loadedRenderer) : null;
         expressions = loaded.Expressions;
         physics = loaded.Physics;
         ModelPath = loaded.ModelPath;
@@ -251,12 +255,12 @@ internal sealed class AvatarOverlayForm : Form
                 lifeParameters[id] = (cubismModel.GetParameterDefaultValue(id), cubismModel.GetParameterMinValue(id), cubismModel.GetParameterMaxValue(id));
             }
         }
-        if (cubismModel is not null && cubismRenderer is not null)
+        if (cubismModel is not null && renderWorker is not null)
         {
             // RenderFrame re-paces it every tick (RenderIntervalMs).
-            var (model, renderer) = (cubismModel, cubismRenderer);
+            var (model, worker) = (cubismModel, renderWorker);
             renderTimer = new System.Windows.Forms.Timer { Interval = RenderIntervalMs(gameRunning, speaking: false, fpsCap) };
-            renderTimer.Tick += (_, _) => RenderFrame(model, renderer);
+            renderTimer.Tick += (_, _) => RenderFrame(model, worker);
         }
 
         // #899: the framed window is sized from the model's canvas; the
@@ -283,7 +287,7 @@ internal sealed class AvatarOverlayForm : Form
         }
         var loaded = TryLoadCubismModel(rootDirectory, explicitPath);
         renderTimer?.Dispose();
-        cubismRenderer?.Dispose();
+        renderWorker?.Dispose();
         cubismModel?.Dispose();
         mirror?.ClearFrame();
         ApplyModel(loaded);
@@ -539,7 +543,7 @@ internal sealed class AvatarOverlayForm : Form
         }
     }
 
-    private void RenderFrame(CubismModel model, CubismRenderer renderer)
+    private void RenderFrame(CubismModel model, AvatarRenderWorker worker)
     {
         var nowMs = renderClock.ElapsedMilliseconds;
         var dtMs = lastRenderTickMs == 0 ? 33f : Math.Max(1, nowMs - lastRenderTickMs);
@@ -675,17 +679,67 @@ internal sealed class AvatarOverlayForm : Form
 
         model.Update();
 
-        if (Visible)
+        // #1518: drawn on the render thread. A tick that comes while it's still drawing the last frame draws nothing,
+        // so a heavy model runs at fewer frames a second instead of holding up the launcher.
+        var overlay = Visible;
+        var panel = mirror;
+        if ((!overlay && panel is null) || worker.IsBusy)
         {
-            using var frame = renderer.Render(model, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), SKColors.Transparent,
-                LiveAvatarPanel.FramingFraction(OverlayFraming));
-            Present(frame);
+            return;
         }
-        if (mirror is { } panel)
+        var targets = new List<AvatarRenderWorker.Target>();
+        if (overlay)
         {
-            using var frame = renderer.Render(model, Math.Max(1, panel.ClientSize.Width), Math.Max(1, panel.ClientSize.Height),
-                SKColors.Transparent, LiveAvatarPanel.FramingFraction(panel.Framing));
-            panel.ShowFrame(frame);
+            targets.Add(new(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), LiveAvatarPanel.FramingFraction(OverlayFraming)));
+        }
+        if (panel is not null)
+        {
+            // The card has its own padding above her, so no extra gap.
+            targets.Add(new(Math.Max(1, panel.ClientSize.Width), Math.Max(1, panel.ClientSize.Height), LiveAvatarPanel.FramingFraction(panel.Framing), TopMargin: 0f));
+        }
+        model.ReadCanvasInfo(out var size, out var origin, out var pixelsPerUnit);
+        worker.TrySubmit(model.GetDrawables(), new(size, origin, pixelsPerUnit), targets.ToArray(), frames => ShowFrames(frames, overlay, panel));
+    }
+
+    // Called on the render thread: shows the frames on the UI thread (the overlay's first, if it was drawn), then
+    // frees them.
+    private void ShowFrames(SKBitmap[] frames, bool overlay, LiveAvatarPanel? panel)
+    {
+        void Show()
+        {
+            try
+            {
+                if (overlay && Visible)
+                {
+                    Present(frames[0]);
+                }
+                if (panel is not null && mirror == panel)
+                {
+                    panel.ShowFrame(frames[overlay ? 1 : 0]);
+                }
+            }
+            finally
+            {
+                foreach (var frame in frames)
+                {
+                    frame.Dispose();
+                }
+            }
+        }
+        try
+        {
+            if (uiThread is null)
+            {
+                throw new InvalidOperationException("no UI thread to show frames on");
+            }
+            uiThread.Post(_ => Show(), null);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            foreach (var frame in frames)
+            {
+                frame.Dispose(); // the window is gone
+            }
         }
     }
 
@@ -1192,7 +1246,7 @@ internal sealed class AvatarOverlayForm : Form
         renderTimer?.Stop();
         renderTimer?.Dispose();
         stateTimer.Dispose();
-        cubismRenderer?.Dispose();
+        renderWorker?.Dispose();
         cubismModel?.Dispose();
         ReleaseDib();
         base.OnFormClosed(e);

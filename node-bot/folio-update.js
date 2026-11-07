@@ -1,7 +1,7 @@
 // #1265: Mana keeps Folio up to date. Once a day (from the cron scheduler's
 // hourly "folio-update" script job) and on "Check now" (Settings >
-// Approvals): the newest commit on Folio main whose CI passed on Windows and
-// Ubuntu, if it's newer than the launcher's pin and wasn't tried before,
+// Approvals): the newest published stable release whose tagged commit passed CI
+// on Windows and Ubuntu, if its version is newer than the pin and wasn't tried before,
 // becomes a PR -- a throwaway worktree off origin/main under
 // D:\Mana-worktrees, with FolioCommit and FolioVersion set the way
 // pack-folio.ps1 checks them, "Part of #<Keep Folio up to date>". Every hour
@@ -56,15 +56,28 @@ function packVersion(props, count) {
   return version;
 }
 
-// A Folio commit's checks: done, passed on both OSes, nothing failed.
+// Count the latest attempt of each check, including reruns, on the immutable release commit.
 function isGreen(checks) {
+  const latest = new Map();
+  for (const check of checks) if (!latest.has(check.name) || (check.id ?? 0) > (latest.get(check.name).id ?? 0)) latest.set(check.name, check);
+  const current = [...latest.values()];
   const ok = (c) => c.status === "completed" && ["success", "skipped", "neutral"].includes(c.conclusion);
-  return (
-    checks.length > 0 &&
-    checks.every(ok) &&
-    ["windows", "ubuntu"].every((os) => checks.some((c) => c.conclusion === "success" && c.name.toLowerCase().includes(os)))
-  );
+  return current.length > 0 && current.every(ok)
+    && ["windows", "ubuntu"].every((os) => current.some((c) => c.conclusion === "success" && c.name.toLowerCase().includes(os)));
 }
+
+function stableVersion(tag) {
+  const hit = /^v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/.exec(String(tag || ""));
+  return hit?.[1] || null;
+}
+
+function compareVersions(left, right) {
+  const a = left.split(".").map(BigInt), b = right.split(".").map(BigInt);
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
+  return 0;
+}
+
+const releaseBranch = (version) => `folio/release-${version}`;
 
 // A bump PR: its head commit's check runs and gh's mergeable ->
 // { fail, url } | { merge: true } | { wait: what it waits on }. Skipped or
@@ -92,11 +105,11 @@ function mergedPrs(messages) {
   });
 }
 
-function prBody({ from, sha, version, prs, commits, tracking }) {
+function prBody({ from, sha, version, releaseTag, prs, commits, tracking }) {
   const listed = prs.slice(-MAX_LISTED).map((p) => `- ${FOLIO}#${p.number} ${p.title}`);
   const more = prs.length > MAX_LISTED ? [`- ...and ${prs.length - MAX_LISTED} earlier ones`] : [];
   return [
-    `Updates Folio from \`${from.slice(0, 7)}\` to \`${sha.slice(0, 7)}\` (Folio main, CI green on Windows and Ubuntu), packed as \`${version}\`.`,
+    `Updates Folio from \`${from.slice(0, 7)}\` to \`${sha.slice(0, 7)}\` (published stable release ${releaseTag}, CI green on Windows and Ubuntu), packed as \`${version}\`.`,
     "",
     `Part of #${tracking}.`,
     "",
@@ -147,21 +160,26 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   }
   const isEnabled = () => load().enabled !== false;
 
-  async function newestGreen() {
-    const shas = await ghJson(["api", `repos/${FOLIO}/actions/runs?branch=main&event=push&status=completed&per_page=30`, "--jq", "[.workflow_runs[].head_sha]"]);
-    for (const sha of [...new Set(shas)]) {
-      const checks = await ghJson(["api", `repos/${FOLIO}/commits/${sha}/check-runs?per_page=100`, "--jq", "[.check_runs[] | {name, status, conclusion}]"]);
-      if (isGreen(checks)) return sha;
+  async function newestStableRelease(pin) {
+    const releases = await ghJson(["api", "--paginate", "--slurp", `repos/${FOLIO}/releases?per_page=100`, "--jq", "add"]);
+    const candidates = releases.filter((r) => !r.draft && !r.prerelease && r.published_at && stableVersion(r.tag_name))
+      .map((r) => ({ ...r, version: stableVersion(r.tag_name) }))
+      .sort((a, b) => compareVersions(b.version, a.version));
+    const currentVersion = stableVersion(pin.version);
+    const currentBase = currentVersion || stableVersion(String(pin.version).split("-")[0]);
+    for (const release of candidates) {
+      if (currentBase) {
+        const comparison = compareVersions(release.version, currentBase);
+        if (comparison < 0 || (comparison === 0 && currentVersion)) continue;
+      }
+      // target_commitish may be a moving branch. Resolve the published tag to its actual commit instead.
+      const resolved = await ghJson(["api", `repos/${FOLIO}/commits/${encodeURIComponent(release.tag_name)}`, "--jq", "{sha}"]);
+      const sha = resolved.sha;
+      if (!/^[0-9a-f]{40}$/.test(sha || "")) throw new Error("Folio release tag did not resolve to a full commit hash");
+      const checks = await ghJson(["api", `repos/${FOLIO}/commits/${sha}/check-runs?per_page=100`, "--jq", "[.check_runs[] | {id, name, status, conclusion}]"]);
+      if (isGreen(checks)) return { sha, version: release.version, releaseTag: release.tag_name };
     }
     return null;
-  }
-
-  async function folioVersion(sha) {
-    const props = await gh(["api", `repos/${FOLIO}/contents/Directory.Build.props?ref=${sha}`, "-H", "Accept: application/vnd.github.raw"]);
-    const [owner, name] = FOLIO.split("/");
-    const query = `{repository(owner:"${owner}",name:"${name}"){object(expression:"${sha}"){... on Commit{history{totalCount}}}}}`;
-    const count = (await ghJson(["api", "graphql", "-f", `query=${query}`])).data.repository.object.history.totalCount;
-    return packVersion(props, count);
   }
 
   async function trackingIssue(state) {
@@ -203,6 +221,10 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   // A game may have started since it was asked.
   function perform(payload) {
     if (isGaming()) throw new Error("A game is running, so I'm leaving git alone until it's closed.");
+    if (payload.merge && !load().tried?.[payload.sha]?.releaseTag)
+      throw new Error("This is an obsolete main-branch Folio proposal; stable-release updates require a new review.");
+    if (!payload.merge && !payload.close && stableVersion(payload.releaseTag) !== payload.version)
+      throw new Error("The Folio update is not a published stable-release proposal.");
     return payload.merge ? merge(payload) : payload.close ? close(payload) : bump(payload);
   }
   approvalGate?.registerExecutor(actionType, perform);
@@ -212,8 +234,8 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   async function bump(payload) {
     const { sha, version } = payload;
     const short = sha.slice(0, 12);
-    const branch = `folio/${short}`;
-    const wt = path.join(worktrees, `folio-${short}`);
+    const branch = releaseBranch(version);
+    const wt = path.join(worktrees, `folio-release-${version}-${short}`);
     const tracking = await trackingIssue(load());
     await git(["fetch", "origin", "main"]);
     await git(["worktree", "add", "-b", branch, wt, "origin/main"]);
@@ -226,7 +248,7 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
       const title = `Update Folio to ${sha.slice(0, 7)} (${version})`;
       const url = (await gh(["pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", prBody({ ...payload, tracking })], wt)).split(/\s+/).pop();
       const pr = Number(url.split("/").pop());
-      setTried(sha, { pr, url, state: "open", version });
+      setTried(sha, { pr, url, state: "open", version, releaseTag: payload.releaseTag });
       const text = `I opened #${pr} to update Folio to ${sha.slice(0, 7)}; I'll merge it once every check on it passes.`;
       notify({ text, url });
       return text;
@@ -251,7 +273,7 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   // that commit stays tried); or every check passed and it's mergeable (it
   // merges, through the approval setting); else it waits for the next hour.
   async function checkOpen() {
-    const open = Object.entries(load().tried || {}).filter(([, t]) => t.state === "open");
+    const open = Object.entries(load().tried || {}).filter(([, t]) => t.state === "open" && t.releaseTag);
     for (const [sha, t] of open) {
       const p = await ghJson(["pr", "view", String(t.pr), "--json", "state,mergeable,headRefOid,createdAt"]);
       if (p.state !== "OPEN") {
@@ -298,23 +320,24 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
     try {
       await checkOpen();
       // One at a time: a newer bump would change the same two lines.
-      const waiting = Object.entries(load().tried || {}).find(([, t]) => t.state === "open");
+      const waiting = Object.entries(load().tried || {}).find(([, t]) => t.state === "open" && t.releaseTag);
       if (waiting) return { status: "waiting", sha: waiting[0], pr: waiting[1].pr };
       if (!force && now() - (load().lookedAt || 0) < LOOK_EVERY_MS) return { status: "later" };
       save({ ...load(), lookedAt: now() });
 
       await git(["fetch", "origin", "main"]);
       const pin = readPin(await git(["show", `origin/main:${CSPROJ}`]));
-      const sha = await newestGreen();
-      if (!sha || sha === pin.commit) return { status: "current", pin: pin.commit };
+      const release = await newestStableRelease(pin);
+      if (!release || (release.sha === pin.commit && release.version === pin.version)) return { status: "current", pin: pin.commit };
+      const { sha, version, releaseTag } = release;
       const compare = await ghJson(["api", `repos/${FOLIO}/compare/${pin.commit}...${sha}`, "--jq", "{status, ahead_by}"]);
-      if (compare.status !== "ahead") return { status: "current", pin: pin.commit };
+      if (!["ahead", "identical"].includes(compare.status)) return { status: "current", pin: pin.commit };
       const tried = load().tried?.[sha];
-      if (tried) return { status: "tried", sha, ...tried };
-      const existing = await ghJson(["pr", "list", "--state", "all", "--head", `folio/${sha.slice(0, 12)}`, "--json", "number,state,url"]);
+      if (tried && tried.version === version) return { status: "tried", sha, ...tried };
+      const existing = await ghJson(["pr", "list", "--state", "all", "--head", releaseBranch(version), "--json", "number,state,url"]);
       if (existing.length) {
         const [p] = existing;
-        setTried(sha, { pr: p.number, url: p.url, state: p.state.toLowerCase() });
+        setTried(sha, { pr: p.number, url: p.url, state: p.state.toLowerCase(), version, releaseTag });
         return { status: "tried", sha, pr: p.number };
       }
       if (asking()) return { status: "pending", sha };
@@ -323,8 +346,8 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
         .split(/\r?\n/)
         .filter(Boolean)
         .map((l) => JSON.parse(l));
-      const payload = { sha, version: await folioVersion(sha), from: pin.commit, prs: mergedPrs(messages), commits: compare.ahead_by };
-      const summary = `Update Folio to ${sha.slice(0, 7)} (${payload.version}, ${payload.prs.length} Folio PR(s) since the pin): push folio/${sha.slice(0, 12)} to origin from ${root} and open a PR (Part of "${TRACKING_TITLE}"). It's merged later, once every check on it passes, the launcher's included`;
+      const payload = { sha, version, releaseTag, from: pin.commit, prs: mergedPrs(messages), commits: compare.ahead_by };
+      const summary = `Update Folio to ${sha.slice(0, 7)} (${payload.version}, ${payload.prs.length} Folio PR(s) since the pin): push ${releaseBranch(version)} for stable release ${releaseTag} to origin from ${root} and open a PR (Part of "${TRACKING_TITLE}"). It's merged later, once every check on it passes, the launcher's included`;
       const outcome = await gated(summary, payload);
       if (outcome.status === "approved") return { status: "opened", sha, text: outcome.result };
       return { status: outcome.status, sha, requestId: outcome.requestId, reason: outcome.reason };
@@ -347,4 +370,4 @@ function createFolioUpdater({ repoRoot, worktreesDir, exec = runCommand, approva
   };
 }
 
-module.exports = { JOB_ACTION, LAUNCHER_CHECK, createFolioUpdater, isGreen, mergedPrs, packVersion, prVerdict, readPin, setPin };
+module.exports = { stableVersion, compareVersions, JOB_ACTION, LAUNCHER_CHECK, createFolioUpdater, isGreen, mergedPrs, packVersion, prVerdict, readPin, setPin };

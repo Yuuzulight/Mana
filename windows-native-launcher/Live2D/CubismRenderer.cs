@@ -8,16 +8,12 @@ namespace Mana.NativeLauncher.Live2D;
 // one. AvatarOverlayForm pushes the result to its layered window each
 // frame.
 //
-// Clipping masks (e.g. an iris clipped to its eye-white's outline) render
-// correctly despite Core only exposing the raw mask-source drawable
-// indices, not the bounding-transform machinery the Cubism Framework's own
-// renderers use: since this is a software 2D rasterizer working entirely
-// in screen space already, a masked drawable is clipped directly against
-// an SKPath built from its mask sources' own already-computed screen-space
-// triangles (SKCanvas.ClipPath) -- no offscreen alpha texture or UV
-// remapping needed, unlike a GPU pipeline. Confirmed against a real,
-// previously-broken case: hiyori_free's eye iris was missing (only the
-// eye-white rendered) until this was added.
+// Clipping masks (e.g. an iris clipped to its eye-white) are drawn the
+// way Live2D's own renderers draw them, by the mask meshes' texture alpha:
+// the masked mesh goes into a layer and the masks are drawn over it with
+// DstIn (DstOut when inverted). An earlier convex-hull clip path was close
+// enough for Hiyori but not for detailed models (#1518): DeepSeek-chan's
+// mouth came out dashed and skin showed past her cheeks.
 //
 // Coordinate conversion (model space -> pixels, Cubism's Y-up to Skia's
 // Y-down) follows Cubism's documented canvas-info convention as best
@@ -31,20 +27,29 @@ internal sealed class CubismRenderer : IDisposable
     // single stray texels (dark line-art pixels) as specks. Skia's
     // DrawVertices ignores SKMipmapMode -- it picks the mip level from the
     // canvas matrix, which is 1:1 here, not from the UV mapping -- so the
-    // level is chosen per drawable in RenderDrawable instead.
-    private readonly SKBitmap[][] textureLevels;
-    // Built once here, not per-drawable-per-frame -- textures never
-    // change after construction, so re-wrapping one in a fresh SKShader
-    // on every RenderDrawable call (this runs at ~60fps indefinitely)
+    // level is chosen per drawable in Batch.Add instead.
+    private readonly SKSizeI[][] levelSizes;
+    private readonly SKImage[][] levelImages;
+    // Built once, not per-drawable-per-frame -- re-wrapping a texture in a
+    // fresh SKShader on every draw call (this runs at ~60fps indefinitely)
     // would leak a native shader object every time; SKPaint.Shader below
     // only ever borrows these, it doesn't own/dispose them.
     private readonly SKShader[][] levelShaders;
+    private static readonly SKSamplingOptions Sampling = new(SKFilterMode.Linear);
+
+    // Atlases are cut down to this on their longer side. The avatar never shows a model anywhere near its atlas size,
+    // so bigger levels are never sampled; DeepSeek-chan's 8192px atlases took ~0.9 GB at full size (#1518).
+    internal const int MaxTextureSide = 4096;
+
+    // Canvas pixel row of the top of her head in the first frame drawn, where a closer framing starts. Taken once,
+    // so her hair swaying doesn't move the crop.
+    private float? figureTop;
 
     public CubismRenderer(IReadOnlyList<string> texturePaths)
     {
-        textureLevels = new SKBitmap[texturePaths.Count][];
+        levelSizes = new SKSizeI[texturePaths.Count][];
+        levelImages = new SKImage[texturePaths.Count][];
         levelShaders = new SKShader[texturePaths.Count][];
-        var sampling = new SKSamplingOptions(SKFilterMode.Linear);
         for (var i = 0; i < texturePaths.Count; i++)
         {
             var levels = new List<SKBitmap>
@@ -55,23 +60,57 @@ internal sealed class CubismRenderer : IDisposable
             {
                 var previous = levels[^1];
                 // Linear sampling at exactly half size averages each 2x2 block.
-                levels.Add(previous.Resize(new SKImageInfo(previous.Width / 2, previous.Height / 2, previous.ColorType, previous.AlphaType), sampling)
+                levels.Add(previous.Resize(new SKImageInfo(previous.Width / 2, previous.Height / 2, previous.ColorType, previous.AlphaType), Sampling)
                     ?? throw new InvalidDataException($"failed to downscale texture: {texturePaths[i]}"));
+                if (Math.Max(previous.Width, previous.Height) > MaxTextureSide)
+                {
+                    previous.Dispose();
+                    levels.RemoveAt(levels.Count - 2);
+                }
             }
-            textureLevels[i] = levels.ToArray();
-            levelShaders[i] = levels.Select(l => l.ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp, sampling)).ToArray();
+            levelSizes[i] = levels.Select(l => new SKSizeI(l.Width, l.Height)).ToArray();
+            // Immutable, so the image shares the bitmap's pixels instead of copying them.
+            levelImages[i] = levels.Select(l =>
+            {
+                l.SetImmutable();
+                var image = SKImage.FromBitmap(l);
+                l.Dispose();
+                return image;
+            }).ToArray();
+            levelShaders[i] = levelImages[i].Select(l => l.ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp, Sampling)).ToArray();
         }
     }
+
+    internal SKSizeI TextureSize(int texture) => levelSizes[texture][0];
 
     // heightFraction (#685): how much of the model's height to show, from
     // the top -- 1 is the whole model; see Fit.
     public SKBitmap Render(CubismModel model, int width, int height, SKColor background, float heightFraction = 1f)
     {
         model.ReadCanvasInfo(out var sizeInPixels, out var originInPixels, out var pixelsPerUnit);
+        return Render(model.GetDrawables(), new CanvasInfo(sizeInPixels, originInPixels, pixelsPerUnit), width, height, background, heightFraction);
+    }
 
-        var (scale, offsetX, offsetY) = Fit(sizeInPixels.X, sizeInPixels.Y, width, height, heightFraction);
+    // csmReadCanvasInfo's three values.
+    internal readonly record struct CanvasInfo(CubismCoreNative.Vector2 SizeInPixels, CubismCoreNative.Vector2 OriginInPixels, float PixelsPerUnit);
 
-        var drawables = model.GetDrawables();
+    // Draws a snapshot of the model's drawables (GetDrawables copies them), so this can run off the thread that animates the model.
+    internal SKBitmap Render(IReadOnlyList<CubismModel.Drawable> drawables, CanvasInfo canvasInfo, int width, int height, SKColor background, float heightFraction = 1f, float topMargin = TopMargin)
+    {
+        var bitmap = new SKBitmap(width, height);
+        using var canvas = new SKCanvas(bitmap);
+        Draw(canvas, drawables, canvasInfo, width, height, background, heightFraction, topMargin);
+        return bitmap;
+    }
+
+    internal void Draw(SKCanvas canvas, IReadOnlyList<CubismModel.Drawable> drawables, CanvasInfo canvasInfo, int width, int height, SKColor background, float heightFraction = 1f, float topMargin = TopMargin)
+    {
+        var (sizeInPixels, originInPixels, pixelsPerUnit) = canvasInfo;
+        if (heightFraction < 1f)
+        {
+            figureTop ??= FigureTop(drawables, originInPixels, pixelsPerUnit);
+        }
+        var (scale, offsetX, offsetY) = Fit(sizeInPixels.X, sizeInPixels.Y, width, height, heightFraction, figureTop ?? 0f, topMargin);
 
         // Screen-space points for every drawable, keyed by its index in
         // `drawables` -- computed up front, before drawing anything, so a
@@ -85,8 +124,6 @@ internal sealed class CubismRenderer : IDisposable
             screenPoints[i] = ToScreenPoints(drawables[i].VertexPositions, originInPixels, pixelsPerUnit, scale, offsetX, offsetY);
         }
 
-        var bitmap = new SKBitmap(width, height);
-        using (var canvas = new SKCanvas(bitmap))
         {
             canvas.Clear(background);
 
@@ -103,41 +140,65 @@ internal sealed class CubismRenderer : IDisposable
             // after, and so painting over, its own iris).
             var drawOrder = Enumerable.Range(0, drawables.Count).OrderBy(i => drawables[i].RenderOrder).ToList();
 
-            foreach (var i in drawOrder)
+            var batch = new Batch(this, canvas);
+            for (var k = 0; k < drawOrder.Count; k++)
             {
+                var i = drawOrder[k];
                 var drawable = drawables[i];
-                if (!drawable.IsVisible || drawable.VertexPositions.Length == 0)
+                if (!IsDrawn(drawable))
                 {
                     continue;
                 }
-
-                var didClip = false;
-                if (drawable.MaskDrawableIndices.Length > 0)
+                if (drawable.MaskDrawableIndices.Length == 0)
                 {
-                    // Disposed explicitly right after use, not left to
-                    // BuildMaskPath -- it's a fresh SKPath built once per
-                    // masked drawable per frame; at ~60fps this runs
-                    // indefinitely, so leaving it to the GC/finalizer
-                    // (SKPath wraps a native object) would leak steadily.
-                    using var maskPath = BuildMaskPath(drawable.MaskDrawableIndices, drawables, screenPoints);
-                    if (maskPath is not null)
+                    batch.Add(drawable, screenPoints[i], BlendOf(drawable));
+                    continue;
+                }
+
+                // Live2D's clipping: the mesh goes into a layer, which keeps it only where its mask meshes' own art is
+                // (their texture's alpha, not their opacity or visibility -- an invisible mesh still masks), or only
+                // where it isn't for an inverted mask; then the layer blends down the way the mesh itself would.
+                // The meshes drawn next under the same masks share the layer (an iris, its pupil and highlight under
+                // one eye-white): a layer is the costly part, and DeepSeek-chan has 123 masked meshes.
+                var run = new List<int> { i };
+                var bounds = Bounds(screenPoints[i]);
+                while (k + 1 < drawOrder.Count)
+                {
+                    var next = drawables[drawOrder[k + 1]];
+                    if (IsDrawn(next) && !SharesMasks(next, drawable))
                     {
-                        canvas.Save();
-                        canvas.ClipPath(maskPath, antialias: true);
-                        didClip = true;
+                        break;
+                    }
+                    k++;
+                    if (IsDrawn(next))
+                    {
+                        run.Add(drawOrder[k]);
+                        bounds.Union(Bounds(screenPoints[drawOrder[k]]));
                     }
                 }
-
-                RenderDrawable(canvas, drawable, screenPoints[i]);
-
-                if (didClip)
+                using var blend = new SKPaint { BlendMode = BlendOf(drawable) };
+                using var keep = new SKPaint { BlendMode = drawable.IsInvertedMask ? SKBlendMode.DstOut : SKBlendMode.DstIn };
+                batch.Flush();
+                canvas.SaveLayer(bounds, blend);
+                foreach (var j in run)
                 {
-                    canvas.Restore();
+                    batch.Add(drawables[j], screenPoints[j], SKBlendMode.SrcOver);
                 }
+                batch.Flush();
+                canvas.SaveLayer(bounds, keep);
+                foreach (var maskIndex in drawable.MaskDrawableIndices)
+                {
+                    if (maskIndex >= 0 && maskIndex < drawables.Count)
+                    {
+                        batch.Add(drawables[maskIndex], screenPoints[maskIndex], SKBlendMode.SrcOver, asMask: true);
+                    }
+                }
+                batch.Flush();
+                canvas.Restore();
+                canvas.Restore();
             }
+            batch.Flush();
         }
-
-        return bitmap;
     }
 
     // Fits the model's canvas into width x height. heightFraction >= 1: the
@@ -147,7 +208,9 @@ internal sealed class CubismRenderer : IDisposable
     // horizontally, and the rest is cropped off the bottom.
     internal const float TopMargin = 0.04f;
 
-    internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction)
+    // A framing under 1 shows heightFraction of the canvas height from figureTop (a canvas pixel row) down, under a
+    // gap of topMargin of the height.
+    internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction, float figureTop = 0f, float topMargin = TopMargin)
     {
         var valid = canvasWidth > 0 && canvasHeight > 0;
         if (heightFraction >= 1f || !valid)
@@ -155,122 +218,46 @@ internal sealed class CubismRenderer : IDisposable
             var fitScale = valid ? Math.Min(width / canvasWidth, height / canvasHeight) : 1f;
             return (fitScale, (width - canvasWidth * fitScale) / 2f, (height - canvasHeight * fitScale) / 2f);
         }
-        var topMargin = height * TopMargin;
-        var scale = (height - topMargin) / (canvasHeight * Math.Max(0.05f, heightFraction));
-        return (scale, (width - canvasWidth * scale) / 2f, topMargin);
+        var gap = height * topMargin;
+        var scale = (height - gap) / (canvasHeight * Math.Max(0.05f, heightFraction));
+        return (scale, (width - canvasWidth * scale) / 2f, gap - figureTop * scale);
     }
 
-    // Unions every mask source's own shape into one clip path -- a
-    // drawable with multiple mask sources is visible within any of them,
-    // not just their intersection, matching Cubism's own semantics.
-    //
-    // Each mask source's shape is its CONVEX HULL, not its raw triangle
-    // mesh -- deliberately, not a simplification taken lightly. Building
-    // the clip path from the mesh's own triangles (via a Winding or
-    // EvenOdd fill rule) is only correct if every triangle in that mesh
-    // has consistent winding order; confirmed against hiyori_free's real
-    // eye masks that this doesn't hold in practice (one eye's mask mesh
-    // rendered as a filled clip region, the mirrored other eye's -- same
-    // code path, same fill rule -- rendered as an EMPTY region and
-    // silently hid its iris entirely, a classic symptom of a mirrored
-    // mesh's triangle winding being flipped relative to the original).
-    // A mask source in this model set is meant to bound a simple region
-    // (an eye-white, a hairline) that's convex or close to it, so the
-    // hull is a safe, winding-order-independent stand-in for "the area
-    // this mask covers" -- verified visually against the real model
-    // (native/cubism-core/README.md's own note on this class of check).
-    private static SKPath? BuildMaskPath(
-        int[] maskDrawableIndices,
-        IReadOnlyList<CubismModel.Drawable> drawables,
-        SKPoint[][] screenPoints)
+    private static float FigureTop(IReadOnlyList<CubismModel.Drawable> drawables, CubismCoreNative.Vector2 originInPixels, float pixelsPerUnit)
     {
-        SKPath? union = null;
-        foreach (var maskIndex in maskDrawableIndices)
+        var top = float.MaxValue;
+        foreach (var drawable in drawables)
         {
-            if (maskIndex < 0 || maskIndex >= drawables.Count)
+            if (IsDrawn(drawable))
             {
-                continue;
-            }
-            var points = screenPoints[maskIndex];
-            var hull = ConvexHull(points);
-            if (hull.Length < 3)
-            {
-                continue;
-            }
-
-            var builder = new SKPathBuilder();
-            builder.MoveTo(hull[0]);
-            for (var i = 1; i < hull.Length; i++)
-            {
-                builder.LineTo(hull[i]);
-            }
-            builder.Close();
-            var path = builder.Detach();
-
-            if (union is null)
-            {
-                union = path;
-            }
-            else
-            {
-                using var previous = union;
-                union = previous.Op(path, SKPathOp.Union) ?? previous;
-                path.Dispose();
+                foreach (var v in drawable.VertexPositions)
+                {
+                    top = Math.Min(top, originInPixels.Y - v.Y * pixelsPerUnit);
+                }
             }
         }
-        return union;
+        return top == float.MaxValue ? 0f : Math.Max(0f, top);
     }
 
-    // Standard monotone-chain convex hull (Andrew's algorithm). Returns
-    // points in counter-clockwise order, deduplicated; fewer than 3 points
-    // in means a degenerate (empty/collinear) input, returned as-is for
-    // the caller to reject.
-    private static SKPoint[] ConvexHull(SKPoint[] points)
+    private static SKRect Bounds(SKPoint[] points)
     {
-        if (points.Length < 3)
+        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        foreach (var p in points)
         {
-            return points;
+            minX = Math.Min(minX, p.X); maxX = Math.Max(maxX, p.X);
+            minY = Math.Min(minY, p.Y); maxY = Math.Max(maxY, p.Y);
         }
-
-        var sorted = points
-            .Distinct()
-            .OrderBy(p => p.X)
-            .ThenBy(p => p.Y)
-            .ToArray();
-        if (sorted.Length < 3)
-        {
-            return sorted;
-        }
-
-        static double Cross(SKPoint o, SKPoint a, SKPoint b) =>
-            ((double)a.X - o.X) * (b.Y - o.Y) - ((double)a.Y - o.Y) * (b.X - o.X);
-
-        var lower = new List<SKPoint>();
-        foreach (var p in sorted)
-        {
-            while (lower.Count >= 2 && Cross(lower[^2], lower[^1], p) <= 0)
-            {
-                lower.RemoveAt(lower.Count - 1);
-            }
-            lower.Add(p);
-        }
-
-        var upper = new List<SKPoint>();
-        for (var i = sorted.Length - 1; i >= 0; i--)
-        {
-            var p = sorted[i];
-            while (upper.Count >= 2 && Cross(upper[^2], upper[^1], p) <= 0)
-            {
-                upper.RemoveAt(upper.Count - 1);
-            }
-            upper.Add(p);
-        }
-
-        lower.RemoveAt(lower.Count - 1);
-        upper.RemoveAt(upper.Count - 1);
-        lower.AddRange(upper);
-        return lower.ToArray();
+        return new SKRect(MathF.Floor(minX) - 1, MathF.Floor(minY) - 1, MathF.Ceiling(maxX) + 1, MathF.Ceiling(maxY) + 1);
     }
+
+    private static bool IsDrawn(CubismModel.Drawable drawable) =>
+        drawable.IsVisible && drawable.Opacity > 0f && drawable.VertexPositions.Length > 0;
+
+    private static bool SharesMasks(CubismModel.Drawable a, CubismModel.Drawable b) =>
+        a.IsInvertedMask == b.IsInvertedMask && BlendOf(a) == BlendOf(b) && a.MaskDrawableIndices.AsSpan().SequenceEqual(b.MaskDrawableIndices);
+
+    private static SKBlendMode BlendOf(CubismModel.Drawable drawable) =>
+        drawable.IsAdditiveBlend ? SKBlendMode.Plus : drawable.IsMultiplicativeBlend ? SKBlendMode.Multiply : SKBlendMode.SrcOver;
 
     private static SKPoint[] ToScreenPoints(
         CubismCoreNative.Vector2[] modelVertices,
@@ -294,42 +281,90 @@ internal sealed class CubismRenderer : IDisposable
         return points;
     }
 
-    private void RenderDrawable(SKCanvas canvas, CubismModel.Drawable drawable, SKPoint[] points)
+    // Consecutive meshes with the same texture, mip level, tint and blend go to Skia as one DrawVertices call (#1518):
+    // each call has a fixed cost, DeepSeek-chan draws 460 meshes a frame, and the triangles of one call still draw in
+    // order. Each mesh's opacity rides on its vertex colours.
+    private sealed class Batch(CubismRenderer renderer, SKCanvas canvas)
     {
-        if (drawable.TextureIndex < 0 || drawable.TextureIndex >= textureLevels.Length)
+        private readonly List<SKPoint> positions = [];
+        private readonly List<SKPoint> uvs = [];
+        private readonly List<SKColor> colors = [];
+        private readonly List<ushort> indices = [];
+        private (int Texture, int Level, (float, float, float) Multiply, (float, float, float) Screen, SKBlendMode Blend) key;
+
+        // asMask: drawn as a clipping mask -- only its texture's alpha counts, so no opacity or tint.
+        public void Add(CubismModel.Drawable drawable, SKPoint[] points, SKBlendMode blend, bool asMask = false)
         {
-            return;
+            if (drawable.TextureIndex < 0 || drawable.TextureIndex >= renderer.levelSizes.Length || points.Length == 0)
+            {
+                return;
+            }
+            var levels = renderer.levelSizes[drawable.TextureIndex];
+            var level = MipLevel(points, drawable.VertexUvs, levels[0].Width, levels[0].Height, levels.Length);
+            var next = (drawable.TextureIndex, level,
+                asMask ? (1f, 1f, 1f) : drawable.MultiplyColor, asMask ? (0f, 0f, 0f) : drawable.ScreenColor, blend);
+            if (positions.Count > 0 && (next != key || positions.Count + points.Length > ushort.MaxValue))
+            {
+                Flush();
+            }
+            key = next;
+
+            var texture = levels[level];
+            var first = positions.Count;
+            var color = new SKColor(255, 255, 255, asMask ? (byte)255 : (byte)Math.Clamp(drawable.Opacity * 255f, 0f, 255f));
+            positions.AddRange(points);
+            foreach (var uv in drawable.VertexUvs)
+            {
+                // Same Y-flip as vertex positions -- Cubism/OpenGL-style UVs
+                // put (0,0) at the texture's bottom-left; raster image data
+                // (and Skia) puts it at the top-left.
+                uvs.Add(new SKPoint(uv.X * texture.Width, (1f - uv.Y) * texture.Height));
+                colors.Add(color);
+            }
+            foreach (var index in drawable.Indices)
+            {
+                indices.Add((ushort)(first + index));
+            }
         }
 
-        var levels = textureLevels[drawable.TextureIndex];
-        var level = MipLevel(points, drawable.VertexUvs, levels[0].Width, levels[0].Height, levels.Length);
-        var texture = levels[level];
-        var uvs = new SKPoint[drawable.VertexUvs.Length];
-        for (var i = 0; i < drawable.VertexUvs.Length; i++)
+        public void Flush()
         {
-            // Same Y-flip as vertex positions -- Cubism/OpenGL-style UVs
-            // put (0,0) at the texture's bottom-left; raster image data
-            // (and Skia) puts it at the top-left.
-            var uv = drawable.VertexUvs[i];
-            uvs[i] = new SKPoint(uv.X * texture.Width, (1f - uv.Y) * texture.Height);
+            if (positions.Count == 0)
+            {
+                return;
+            }
+            using var vertices = SKVertices.CreateCopy(SKVertexMode.Triangles, positions.ToArray(), uvs.ToArray(), colors.ToArray(), indices.ToArray());
+            using var tint = TintMatrix(key.Multiply, key.Screen) is { } matrix ? SKColorFilter.CreateColorMatrix(matrix) : null;
+            using var paint = new SKPaint
+            {
+                Shader = renderer.levelShaders[key.Texture][key.Level], // borrowed, not owned -- see the field's own comment
+                BlendMode = key.Blend,
+                ColorFilter = tint,
+            };
+            // Modulate: the texture times the vertex colour, i.e. each mesh's opacity.
+            canvas.DrawVertices(vertices, SKBlendMode.Modulate, paint);
+            positions.Clear();
+            uvs.Clear();
+            colors.Clear();
+            indices.Clear();
         }
+    }
 
-        using var vertices = SKVertices.CreateCopy(SKVertexMode.Triangles, points, uvs, colors: null, drawable.Indices);
-        using var paint = new SKPaint
+    // A drawable's multiply-then-screen tint as a colour matrix (on unpremultiplied colour, translation in 0..1):
+    // c' = c * m * (1 - s) + s, i.e. 1 - (1 - c*m)(1 - s). Null when the drawable isn't tinted.
+    internal static float[]? TintMatrix((float R, float G, float B) multiply, (float R, float G, float B) screen)
+    {
+        if (multiply == (1f, 1f, 1f) && screen == (0f, 0f, 0f))
         {
-            Shader = levelShaders[drawable.TextureIndex][level], // borrowed, not owned -- see the field's own comment
-            Color = new SKColor(255, 255, 255, (byte)Math.Clamp(drawable.Opacity * 255f, 0f, 255f)),
-            BlendMode = drawable.IsAdditiveBlend
-                ? SKBlendMode.Plus
-                : drawable.IsMultiplicativeBlend
-                    ? SKBlendMode.Multiply
-                    : SKBlendMode.SrcOver,
-        };
-
-        // Dst: no per-vertex colors are supplied (colors: null above), so
-        // this tells DrawVertices to use the paint's shader/color as-is
-        // rather than trying to blend against nonexistent vertex colors.
-        canvas.DrawVertices(vertices, SKBlendMode.Dst, paint);
+            return null;
+        }
+        return
+        [
+            multiply.R * (1 - screen.R), 0, 0, 0, screen.R,
+            0, multiply.G * (1 - screen.G), 0, 0, screen.G,
+            0, 0, multiply.B * (1 - screen.B), 0, screen.B,
+            0, 0, 0, 1, 0,
+        ];
     }
 
     // How many halvings the drawable's texture region is shrunk by on
@@ -365,9 +400,9 @@ internal sealed class CubismRenderer : IDisposable
         {
             shader?.Dispose();
         }
-        foreach (var texture in textureLevels.SelectMany(t => t))
+        foreach (var image in levelImages.SelectMany(t => t))
         {
-            texture?.Dispose();
+            image?.Dispose();
         }
     }
 }

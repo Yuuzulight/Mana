@@ -9,7 +9,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using Folio;
-using Folio.Skia;
 using Folio.Typography;
 using Folio.WinForms;
 
@@ -28,7 +27,7 @@ internal sealed class DocsPanel : UserControl
     private readonly FolioView view = new()
     {
         Dock = DockStyle.Fill,
-        Options = new FolioOptions { Fonts = new FontSettings { Source = new SystemFontSource() }, ColorScheme = DarkTheme.IsLight ? ColorScheme.Light : ColorScheme.Dark },
+        Options = new FolioOptions { Fonts = BundledFontSource.Settings, ColorScheme = DarkTheme.IsLight ? ColorScheme.Light : ColorScheme.Dark },
         AccessibleName = "Document",
     };
     private readonly Label titleLabel = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = DarkTheme.Muted, AutoEllipsis = true };

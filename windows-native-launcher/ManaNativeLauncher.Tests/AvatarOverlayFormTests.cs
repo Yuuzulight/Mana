@@ -89,7 +89,7 @@ public class AvatarOverlayFormTests
     [InlineData("full", 1f, 234, 288)]
     [InlineData("full", 1.5f, 351, 432)]
     [InlineData("upperHalf", 2f, 468, 330)]
-    [InlineData("bust", 2f, 468, 168)]
+    [InlineData("bust", 2f, 468, 180)]
     public void OverlaySize_IsTheBaseWidthScaledAndTallEnoughForTheFraming(string framing, float scale, int width, int height) =>
         Assert.Equal(new Size(width, height),
             AvatarOverlayForm.OverlaySize(Avatar, Canvas, LiveAvatarPanel.FramingFraction(framing), scale));
@@ -190,6 +190,47 @@ public class AvatarOverlayFormTests
 
                 overlay.LoadModel(null);
                 Assert.Null(overlay.ModelPath);
+            }
+            catch (Exception ex)
+            {
+                failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        failure?.Throw();
+    }
+}
+
+public class AvatarCardTests
+{
+    // The chat window's card gets her frames even while the overlay has never been shown (the tray's Show avatar
+    // off). Needs a real model and the Cubism core: set MANA_LIVE_MODEL_ROOT to a checkout that has them.
+    [Fact]
+    public void Card_IsDrawnWhileTheOverlayIsHidden()
+    {
+        if (Environment.GetEnvironmentVariable("MANA_LIVE_MODEL_ROOT") is not { Length: > 0 } root)
+        {
+            return;
+        }
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using var overlay = new AvatarOverlayForm(root);
+                Assert.True(overlay.HasLiveModel);
+                using var card = new LiveAvatarPanel { Size = new Size(200, 300) };
+                overlay.Mirror = card;
+                var until = DateTime.UtcNow.AddSeconds(5);
+                while (!card.HasFrame && DateTime.UtcNow < until)
+                {
+                    System.Windows.Forms.Application.DoEvents();
+                    Thread.Sleep(10);
+                }
+                Assert.False(overlay.Visible);
+                Assert.True(card.HasFrame);
             }
             catch (Exception ex)
             {

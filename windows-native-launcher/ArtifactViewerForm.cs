@@ -8,7 +8,6 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Folio;
-using Folio.Skia;
 using Folio.Typography;
 using Folio.WinForms;
 
@@ -427,7 +426,7 @@ internal static class HtmlArtifact
         var contentProcessPath = ContentProcessPath();
         return new FolioOptions
         {
-            Fonts = new FontSettings { Source = new SystemFontSource() },
+            Fonts = BundledFontSource.Settings,
             Scripting = contentProcessPath is null ? ScriptingPolicy.Disabled : ScriptingPolicy.ContentProcess,
             ContentProcessPath = contentProcessPath,
         };
