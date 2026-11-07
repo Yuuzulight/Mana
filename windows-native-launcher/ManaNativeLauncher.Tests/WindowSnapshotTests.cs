@@ -65,7 +65,7 @@ public class WindowSnapshotTests
         if (conversation)
         {
             chat.AppendUserMessage("Is the table page under 50 ms yet?");
-            chat.AppendManaMessage("Not yet~ It's 56 to 64 ms in the published host. The rounded frame gets clipped three times a frame, so I'm reusing the first clip:\n\n```csharp\nif (_lastRoundedClip is { } last && last.Key.Equals(key))\n    return; // reuse the mask\n```");
+            chat.AppendManaMessage("Not yet~ It's 56 to 64 ms in the published host. The rounded frame gets clipped three times a frame, so I'm reusing the first clip:\n\n```csharp SoftwareCanvas.cs\nif (_lastRoundedClip is { } last && last.Key.Equals(key))\n    return; // reuse the mask\n```");
             chat.AppendUserMessage("Nice. Pixels still identical?");
             chat.AppendManaMessage("Every one! The render suite still passes, 864 of 864.");
         }

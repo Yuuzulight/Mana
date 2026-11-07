@@ -9,50 +9,39 @@ internal sealed partial class SessionListForm
     private bool loadingProjects;
     private ManaProject? SelectedProject => projectPicker.SelectedItem as ManaProject;
 
-    // The list's heading, where the mockups have "Pinned": which project's chats are showing, as a small muted
-    // label with a chevron. It opens the projects to pick from and the project commands. (projectPicker stays the
-    // state, hidden.)
+    // The mockups have no project heading over the list, so the filter is a small funnel at the end of the search
+    // pill: muted while every chat shows, in the accent while it's narrowed to a project (the search's placeholder
+    // names it too). It opens the projects to pick from and the project commands. (projectPicker stays the state,
+    // hidden.) Sized and placed by the caller.
     private Control BuildProjectControls()
     {
         var heading = new Button
         {
-            Dock = DockStyle.Top,
-            Height = 26,
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.Background,
-            AccessibleName = "Project filter",
+            AccessibleName = "Project filter: All projects",
             Cursor = Cursors.Hand,
             UseMnemonic = false,
             TabStop = true,
         };
         heading.FlatAppearance.BorderSize = 0;
-        heading.FlatAppearance.MouseOverBackColor = heading.FlatAppearance.MouseDownBackColor = DarkTheme.Background;
-        var font = new System.Drawing.Font("Segoe UI Semibold", 8.25f);
-        heading.Disposed += (_, _) => font.Dispose();
         var hovered = false;
         heading.MouseEnter += (_, _) => { hovered = true; heading.Invalidate(); };
         heading.MouseLeave += (_, _) => { hovered = false; heading.Invalidate(); };
         heading.Paint += (_, e) =>
         {
             var g = e.Graphics;
-            if (DarkTheme.IsGlass)
+            using (var clear = new System.Drawing.SolidBrush(searchBox.BackColor)) // the pill's own fill
             {
-                GlassSurface.PaintGlowBehind(g, heading, heading.ClientRectangle);
-            }
-            else
-            {
-                using var clear = new System.Drawing.SolidBrush(DarkTheme.Background);
                 g.FillRectangle(clear, heading.ClientRectangle);
             }
-            var color = hovered ? DarkTheme.Text : DarkTheme.Muted;
-            var text = projectPicker.Text;
-            var size = TextRenderer.MeasureText(g, text, font, heading.Size, TextFormatFlags.NoPadding);
-            var top = (heading.Height - size.Height) / 2;
-            TextRenderer.DrawText(g, text, font, new System.Drawing.Point(4, top), color, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+            var filtered = projectPicker.SelectedIndex > 0;
+            var color = filtered ? DarkTheme.Accent : hovered ? DarkTheme.Text : DarkTheme.Muted;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using var pen = new System.Drawing.Pen(color, 1.3f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
-            float cx = 4 + size.Width + 7, cy = heading.Height / 2f;
-            g.DrawLines(pen, new System.Drawing.PointF[] { new(cx - 3, cy - 1.5f), new(cx, cy + 1.5f), new(cx + 3, cy - 1.5f) });
+            using var pen = new System.Drawing.Pen(color, 1.4f) { LineJoin = System.Drawing.Drawing2D.LineJoin.Round, StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
+            float cx = heading.Width / 2f, cy = heading.Height / 2f;
+            // A funnel: a wide top narrowing to a short spout.
+            g.DrawLines(pen, new System.Drawing.PointF[] { new(cx - 6, cy - 5), new(cx + 6, cy - 5), new(cx + 1.5f, cy + 0.5f), new(cx + 1.5f, cy + 5), new(cx - 1.5f, cy + 3.5f), new(cx - 1.5f, cy + 0.5f), new(cx - 6, cy - 5) });
             if (heading.Focused && GlassSurface.ShowsFocusCues(heading))
             {
                 ControlPaint.DrawFocusRectangle(g, heading.ClientRectangle);
@@ -93,8 +82,13 @@ internal sealed partial class SessionListForm
         projectPicker.SelectedIndexChanged += (_, _) =>
         {
             heading.Invalidate();
+            var name = projectPicker.Text;
+            heading.AccessibleName = $"Project filter: {name}";
+            railToolTip.SetToolTip(heading, $"Showing {(projectPicker.SelectedIndex == 0 ? "all projects" : name)}: click to pick a project");
+            searchBox.PlaceholderText = projectPicker.SelectedIndex switch { 0 => "Search chats", 1 => "Search ungrouped chats", _ => $"Search {name}" };
             if (!loadingProjects) ShowSessions();
         };
+        railToolTip.SetToolTip(heading, "Showing all projects: click to pick a project");
         projectPicker.Visible = false;
         heading.Controls.Add(projectPicker);
         return heading;

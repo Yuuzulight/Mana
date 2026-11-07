@@ -394,8 +394,12 @@ internal sealed partial class SessionListForm : Form
         // The mockups' search: a pill with a magnifier.
         searchBox.BorderStyle = BorderStyle.None;
         searchBox.Dock = DockStyle.Fill;
-        var searchField = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(32, 8, 14, 0), BackColor = Color.Transparent, Cursor = Cursors.IBeam };
+        var searchField = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(32, 8, 36, 0), BackColor = Color.Transparent, Cursor = Cursors.IBeam };
         searchField.Controls.Add(searchBox);
+        var projectFilter = BuildProjectControls(); // the funnel at the pill's end
+        projectFilter.Size = new Size(26, 24);
+        searchField.Controls.Add(projectFilter);
+        searchField.Resize += (_, _) => projectFilter.Location = new Point(searchField.Width - 34, (searchField.Height - projectFilter.Height) / 2);
         searchField.MouseDown += (_, _) => searchBox.Focus();
         searchField.Paint += (_, e) =>
         {
@@ -435,7 +439,7 @@ internal sealed partial class SessionListForm : Form
         };
         listStatus.Controls.Add(listStatusLabel);
         listStatus.Controls.Add(listRetryButton);
-        // Top to bottom, as in the mockups: her card, search, New chat, the list's heading, the list.
+        // Top to bottom, as in the mockups: her card, search (with the project filter), New chat, the list.
         // The list control leaves a 2px strip over its first row and a 1px column down its left edge in its own
         // background, which shows as lines on the glass; its host tucks those out of sight.
         var listHost = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
@@ -443,7 +447,6 @@ internal sealed partial class SessionListForm : Form
         listHost.Resize += (_, _) => list.Bounds = new Rectangle(-1, -2, listHost.Width + 1, listHost.Height + 2);
         sidebar.Controls.Add(listHost);
         sidebar.Controls.Add(listStatus);
-        sidebar.Controls.Add(BuildProjectControls());
         sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(Gap(DockStyle.Top));
