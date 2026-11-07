@@ -41,6 +41,10 @@ internal sealed class CubismRenderer : IDisposable
     // so bigger levels are never sampled; DeepSeek-chan's 8192px atlases took ~0.9 GB at full size (#1518).
     internal const int MaxTextureSide = 4096;
 
+    // Canvas pixel row of the top of her head in the first frame drawn, where a closer framing starts. Taken once,
+    // so her hair swaying doesn't move the crop.
+    private float? figureTop;
+
     public CubismRenderer(IReadOnlyList<string> texturePaths)
     {
         levelSizes = new SKSizeI[texturePaths.Count][];
@@ -102,7 +106,11 @@ internal sealed class CubismRenderer : IDisposable
     internal void Draw(SKCanvas canvas, IReadOnlyList<CubismModel.Drawable> drawables, CanvasInfo canvasInfo, int width, int height, SKColor background, float heightFraction = 1f)
     {
         var (sizeInPixels, originInPixels, pixelsPerUnit) = canvasInfo;
-        var (scale, offsetX, offsetY) = Fit(sizeInPixels.X, sizeInPixels.Y, width, height, heightFraction);
+        if (heightFraction < 1f)
+        {
+            figureTop ??= FigureTop(drawables, originInPixels, pixelsPerUnit);
+        }
+        var (scale, offsetX, offsetY) = Fit(sizeInPixels.X, sizeInPixels.Y, width, height, heightFraction, figureTop ?? 0f);
 
         // Screen-space points for every drawable, keyed by its index in
         // `drawables` -- computed up front, before drawing anything, so a
@@ -200,7 +208,8 @@ internal sealed class CubismRenderer : IDisposable
     // horizontally, and the rest is cropped off the bottom.
     internal const float TopMargin = 0.04f;
 
-    internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction)
+    // A framing under 1 shows heightFraction of the canvas height from figureTop (a canvas pixel row) down.
+    internal static (float Scale, float OffsetX, float OffsetY) Fit(float canvasWidth, float canvasHeight, int width, int height, float heightFraction, float figureTop = 0f)
     {
         var valid = canvasWidth > 0 && canvasHeight > 0;
         if (heightFraction >= 1f || !valid)
@@ -210,7 +219,23 @@ internal sealed class CubismRenderer : IDisposable
         }
         var topMargin = height * TopMargin;
         var scale = (height - topMargin) / (canvasHeight * Math.Max(0.05f, heightFraction));
-        return (scale, (width - canvasWidth * scale) / 2f, topMargin);
+        return (scale, (width - canvasWidth * scale) / 2f, topMargin - figureTop * scale);
+    }
+
+    private static float FigureTop(IReadOnlyList<CubismModel.Drawable> drawables, CubismCoreNative.Vector2 originInPixels, float pixelsPerUnit)
+    {
+        var top = float.MaxValue;
+        foreach (var drawable in drawables)
+        {
+            if (IsDrawn(drawable))
+            {
+                foreach (var v in drawable.VertexPositions)
+                {
+                    top = Math.Min(top, originInPixels.Y - v.Y * pixelsPerUnit);
+                }
+            }
+        }
+        return top == float.MaxValue ? 0f : Math.Max(0f, top);
     }
 
     private static SKRect Bounds(SKPoint[] points)

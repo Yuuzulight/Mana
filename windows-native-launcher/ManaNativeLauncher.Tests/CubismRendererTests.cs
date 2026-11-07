@@ -134,6 +134,17 @@ public class CubismRendererTests
         Assert.Equal(0, frame.GetPixel(88, 50).Alpha);
     }
 
+    // A closer framing starts at the top of her head, not the top of the canvas: the empty space above her is cut.
+    [Fact]
+    public void CloseFraming_StartsAtTheTopOfTheFigure()
+    {
+        using var renderer = new CubismRenderer([SolidTexture()]);
+        var figure = Mesh(0, [(0, 40, 100, 100)]);
+        using var frame = renderer.Render([figure], Canvas100, 100, 100, SKColors.Transparent, heightFraction: 0.5f);
+        Assert.Equal(0, frame.GetPixel(50, 2).Alpha);
+        Assert.Equal(255, frame.GetPixel(50, 6).Alpha);
+    }
+
     // The render thread draws the same frame as drawing directly, on the GPU where there is one (CI has none: CPU).
     [Theory]
     [InlineData(true)]
