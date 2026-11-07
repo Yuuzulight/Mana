@@ -162,6 +162,15 @@ internal sealed class ManaSettingsStore
     // #1426: the add-ons (plugins I installed) I've said yes to running.
     public List<string>? AddOnsAllowed { get; set; }
 
+    // The chat list's pins and read state (the backend keeps neither): pinned chat ids, each chat's updatedAt when I
+    // last had it open, and when the launcher started keeping track (older chats never count as unread).
+    public List<string>? PinnedChats { get; set; }
+    public Dictionary<string, string>? SeenChats { get; set; }
+    public string? ChatsSeenSince { get; set; }
+
+    // What Mana calls you in the chat's welcome ("Good evening, Yuuzu~"); null = no name.
+    public string? UserName { get; set; }
+
     // #685: the chat window's live avatar framing -- "full", "waist" or
     // "bust" (see LiveAvatarPanel); null = full.
     public string? AvatarFraming { get; set; }

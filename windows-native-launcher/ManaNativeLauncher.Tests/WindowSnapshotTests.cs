@@ -38,7 +38,8 @@ public class WindowSnapshotTests
         DarkTheme.ApplyPreset(preset, null);
         var client = new ManaBackendClient(new FakeHttpMessageHandler(request => Json(request.RequestUri?.AbsolutePath switch
         {
-            "/sessions" => """{"sessions":[{"sessionId":"a","name":"Folio table speed","updatedAt":"2026-11-05T21:40:00Z"},{"sessionId":"b","name":"Friday stream plan","updatedAt":"2026-11-05T20:10:00Z"},{"sessionId":"c","name":"Bonsai 2 benchmark","updatedAt":"2026-11-05T14:00:00Z"},{"sessionId":"d","name":"Otsumana~ clip picks","updatedAt":"2026-11-04T22:00:00Z"}]}""",
+            "/sessions" => $$"""{"sessions":[{"sessionId":"a","name":"Folio table speed","updatedAt":"{{Ago(0.2)}}"},{"sessionId":"b","name":"Friday stream plan","updatedAt":"{{Ago(1)}}"},{"sessionId":"c","name":"Bonsai 2 benchmark","updatedAt":"{{Ago(26)}}"},{"sessionId":"d","name":"Otsumana~ clip picks","updatedAt":"{{Ago(80)}}"}]}""",
+            "/mood" => """{"summary":"happy, chatty","emotion":"happy"}""",
             "/projects" => """{"projects":[]}""",
             _ => "{}",
         })));
@@ -89,6 +90,8 @@ public class WindowSnapshotTests
 
     [DllImport("user32.dll")]
     private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+
+    private static string Ago(double hours) => DateTimeOffset.UtcNow.AddHours(-hours).ToString("o", System.Globalization.CultureInfo.InvariantCulture);
 
     private static HttpResponseMessage Json(string text) => new(HttpStatusCode.OK) { Content = new StringContent(text, Encoding.UTF8, "application/json") };
 

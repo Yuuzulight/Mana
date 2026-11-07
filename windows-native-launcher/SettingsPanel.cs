@@ -797,6 +797,8 @@ internal sealed class SettingsPanel : UserControl
 
         var parts = new List<Control>
         {
+            SettingsRows.Section("You"),
+            BuildUserNameRow(),
             SettingsRows.Section("Startup"),
             BuildStartWithWindowsRow(changed: Changed),
             SettingsRows.Section("Appearance"),
@@ -1598,6 +1600,28 @@ internal sealed class SettingsPanel : UserControl
     {
         var scores = VoiceDebugLog.RecentSpeakerScores(path: logPath);
         return scores.Count == 0 ? "" : $"Recent: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
+    }
+
+    // What she calls you in the chat's welcome; blank = no name.
+    private static SettingsRow BuildUserNameRow()
+    {
+        var box = new TextBox
+        {
+            Width = 200,
+            PlaceholderText = "Your name",
+            Text = ManaSettingsStore.Load().UserName ?? "",
+            BackColor = DarkTheme.Panel,
+            ForeColor = DarkTheme.Text,
+            AccessibleName = "Your name",
+        };
+        box.TextChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.UserName = string.IsNullOrWhiteSpace(box.Text) ? null : box.Text.Trim();
+            latest.Save();
+            ChatView.UserName = latest.UserName;
+        };
+        return new SettingsRow("Your name", "What she calls you when she greets you", "name call me greeting welcome", box);
     }
 
     // #962: where "save that" puts a snapshot; blank = Pictures\Mana.
