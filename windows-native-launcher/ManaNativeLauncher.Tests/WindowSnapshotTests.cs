@@ -10,7 +10,8 @@ using Xunit;
 namespace ManaNativeLauncher.Tests;
 
 // The chat window as it really draws, saved as PNGs to look at: only when MANA_WINDOW_SNAPSHOT_DIR is set (it opens a
-// window), so ordinary runs skip it. MANA_WINDOW_SNAPSHOT_PRESETS picks presets (comma-separated, default "mana").
+// window), so ordinary runs skip it. MANA_WINDOW_SNAPSHOT_PRESETS picks presets (comma-separated, default "mana"),
+// MANA_WINDOW_SNAPSHOT_ROOT a checkout whose model to draw.
 public class WindowSnapshotTests
 {
     [Fact]
@@ -43,7 +44,8 @@ public class WindowSnapshotTests
             "/projects" => """{"projects":[]}""",
             _ => "{}",
         })));
-        var root = Directory.CreateTempSubdirectory("mana-snapshot-").FullName;
+        // MANA_WINDOW_SNAPSHOT_ROOT: a checkout with her model (assets/avatar/model), to draw her instead of the placeholder.
+        var root = Environment.GetEnvironmentVariable("MANA_WINDOW_SNAPSHOT_ROOT") is { Length: > 0 } real ? real : Directory.CreateTempSubdirectory("mana-snapshot-").FullName;
         using var overlay = new AvatarOverlayForm(root);
         using var chat = new ChatView();
         using var player = new AudioPlayer();
@@ -69,7 +71,7 @@ public class WindowSnapshotTests
         }
         form.Show();
         var refresh = form.RefreshAsync(); // the app does this once the backend is up
-        var until = DateTime.UtcNow.AddSeconds(2.5);
+        var until = DateTime.UtcNow.AddSeconds(Environment.GetEnvironmentVariable("MANA_WINDOW_SNAPSHOT_ROOT") is { Length: > 0 } ? 6 : 2.5); // her model takes longer to settle
         while (DateTime.UtcNow < until)
         {
             Application.DoEvents();
