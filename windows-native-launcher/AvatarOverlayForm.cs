@@ -86,6 +86,9 @@ internal sealed class AvatarOverlayForm : Form
     // swaps in another character's model.
     private CubismModel? cubismModel;
     private AvatarRenderWorker? renderWorker; // #1518: draws on its own thread, owns the renderer
+    // Where finished frames go back to: the UI thread's own queue, which works before this window has a handle (the
+    // overlay may never be shown while the chat window's card still wants her).
+    private SynchronizationContext? uiThread;
     private System.Windows.Forms.Timer? renderTimer;
     private readonly int fpsCap = ReadIntEnv("MANA_AVATAR_FPS", 0); // #683, Electron's knob
     private readonly Stopwatch renderClock = Stopwatch.StartNew();
@@ -214,6 +217,7 @@ internal sealed class AvatarOverlayForm : Form
     private void ApplyModel(CubismLoadResult loaded)
     {
         cubismModel = loaded.Model;
+        uiThread = SynchronizationContext.Current;
         renderWorker = loaded.Renderer is { } loadedRenderer ? new AvatarRenderWorker(loadedRenderer) : null;
         expressions = loaded.Expressions;
         physics = loaded.Physics;
@@ -723,7 +727,11 @@ internal sealed class AvatarOverlayForm : Form
         }
         try
         {
-            BeginInvoke(Show);
+            if (uiThread is null)
+            {
+                throw new InvalidOperationException("no UI thread to show frames on");
+            }
+            uiThread.Post(_ => Show(), null);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
         {
