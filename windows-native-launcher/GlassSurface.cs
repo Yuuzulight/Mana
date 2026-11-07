@@ -260,6 +260,14 @@ internal static class GlassSurface
                 using var tint = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 184 : 204, DarkTheme.Background));
                 g.FillRectangle(tint, 0, 0, bitmap.Width, bitmap.Height);
             }
+            // Her colours over any wallpaper (a warm one reads cream under the tint alone), as in the mockups.
+            using (var wash = new SolidBrush(DarkTheme.IsLight ? Color.FromArgb(46, 150, 160, 235) : Color.FromArgb(30, 60, 52, 120)))
+            {
+                g.FillRectangle(wash, 0, 0, bitmap.Width, bitmap.Height);
+            }
+            g.TranslateTransform(-offset.X, -offset.Y);
+            FillGlows(g, windowSize, strength: 1f);
+            g.ResetTransform();
             PaintPane(g, form, offset);
             if (frosted)
             {
@@ -269,13 +277,7 @@ internal static class GlassSurface
             return bitmap;
         }
         g.TranslateTransform(-offset.X, -offset.Y);
-        var w = Math.Max(1, windowSize.Width);
-        var h = Math.Max(1, windowSize.Height);
-        var span = Math.Max(w, h);
-        var light = DarkTheme.IsLight;
-        FillGlow(g, new PointF(w * 0.05f, h * 0.02f), span * 0.55f, light ? Color.FromArgb(150, 198, 170, 224) : Color.FromArgb(70, 118, 109, 190)); // lavender, top left
-        FillGlow(g, new PointF(w * 0.98f, h * 1.02f), span * 0.62f, light ? Color.FromArgb(160, 163, 210, 250) : Color.FromArgb(60, 37, 110, 190)); // sky blue, bottom right
-        FillGlow(g, new PointF(w * 0.55f, h * 0.45f), span * 0.35f, light ? Color.FromArgb(40, 118, 109, 190) : Color.FromArgb(24, 169, 158, 240));  // faint periwinkle
+        FillGlows(g, windowSize, strength: 1f);
         if (form is not null)
         {
             g.ResetTransform();
@@ -288,6 +290,18 @@ internal static class GlassSurface
             g.FillRectangle(frost, 0, 0, bitmap.Width, bitmap.Height);
         }
         return bitmap;
+    }
+
+    private static void FillGlows(Graphics g, Size windowSize, float strength)
+    {
+        var w = Math.Max(1, windowSize.Width);
+        var h = Math.Max(1, windowSize.Height);
+        var span = Math.Max(w, h);
+        var light = DarkTheme.IsLight;
+        Color C(int a, int r, int gr, int b) => Color.FromArgb((int)(a * strength), r, gr, b);
+        FillGlow(g, new PointF(w * 0.05f, h * 0.02f), span * 0.55f, light ? C(150, 198, 170, 224) : C(70, 118, 109, 190)); // lavender, top left
+        FillGlow(g, new PointF(w * 0.98f, h * 1.02f), span * 0.62f, light ? C(160, 163, 210, 250) : C(60, 37, 110, 190)); // sky blue, bottom right
+        FillGlow(g, new PointF(w * 0.55f, h * 0.45f), span * 0.35f, light ? C(40, 118, 109, 190) : C(24, 169, 158, 240));  // faint periwinkle
     }
 
     private static void FillGlow(Graphics g, PointF center, float radius, Color color)
