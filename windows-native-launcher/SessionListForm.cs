@@ -717,9 +717,8 @@ internal sealed partial class SessionListForm : Form
         // -- directly). Same pattern as ArtifactViewerForm/QuickEntryForm.
         _ = Handle;
 
-        // The #652 mockup's shimmer and its delays: title strip, Mana's
-        // bubbles, the open chat's card, the avatar card, the rail.
-        GlassSurface.Shimmer(this, 0, () => new Rectangle(0, 0, ClientSize.Width, CaptionHeight));
+        // The #652 mockup's shimmer and its delays: Mana's bubbles, the open
+        // chat's card, the avatar card, the rail. (The title has no strip to shine.)
         // ponytail: repaints the whole chat during its sweep; limit it to her visible bubbles if that ever shows up in CPU use.
         GlassSurface.Shimmer(chatLog, 1100);
         GlassSurface.Shimmer(list, 2200, () => list.Items.Cast<ListViewItem>().FirstOrDefault(i => (string?)i.Tag == activeSessionId)?.Bounds ?? Rectangle.Empty);
