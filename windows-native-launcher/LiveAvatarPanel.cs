@@ -32,9 +32,11 @@ internal sealed class LiveAvatarPanel : Panel
         _ => 1f,
     };
 
-    // Unknown/missing counts as "full".
+    // The card starts waist-up, close enough to see her face in a small tile; unknown/missing counts as that.
+    public const string DefaultFraming = "waist";
+
     public static string NextFraming(string? framing) =>
-        Framings[(Math.Max(0, Array.IndexOf(Framings, framing)) + 1) % Framings.Length];
+        Framings[(Array.IndexOf(Framings, Array.IndexOf(Framings, framing) >= 0 ? framing : DefaultFraming) + 1) % Framings.Length];
 
     // Electron's zoom button titles (renderer.js ZOOM_BUTTON_TITLES).
     public static string FramingTitle(string? framing) => framing switch
@@ -44,12 +46,12 @@ internal sealed class LiveAvatarPanel : Panel
         _ => "Whole body — click to zoom to waist-up",
     };
 
-    // One of Framings; anything else (e.g. a missing saved value) is "full".
-    private string framing = "full";
+    // One of Framings; anything else (e.g. a missing saved value) is DefaultFraming.
+    private string framing = DefaultFraming;
     public string? Framing
     {
         get => framing;
-        set => framing = Array.IndexOf(Framings, value) >= 0 ? value! : "full";
+        set => framing = Array.IndexOf(Framings, value) >= 0 ? value! : DefaultFraming;
     }
 
     public bool HasFrame => frame is not null;
