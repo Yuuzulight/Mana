@@ -284,7 +284,7 @@ internal sealed partial class SessionListForm : Form
             // #685: the live avatar replaces the placeholder, drawn from the
             // overlay's own model; the zoom button cycles Electron's
             // full / waist / bust framing, remembered across launches.
-            avatarVisual.Height = 224;
+            avatarVisual.Height = 200;
             avatarVisual.Framing = ManaSettingsStore.Load().AvatarFraming;
             railToolTip.SetToolTip(avatarZoomButton, LiveAvatarPanel.FramingTitle(avatarVisual.Framing));
             avatarZoomButton.Click += (_, _) => CycleAvatarFraming();
