@@ -27,7 +27,7 @@ public class WakeWordClassifierTests
     private static WakeWordClassifier CreateClassifier() =>
         new(MelspecPath, EmbeddingPath, ClassifierPath);
 
-    [SkippableFact]
+    [WakeWordModelsAvailableFact]
     public void Score_AnySegmentLengthProducesValidProbability()
     {
         using var classifier = CreateClassifier();
