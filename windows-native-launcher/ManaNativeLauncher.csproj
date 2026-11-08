@@ -62,8 +62,10 @@
       <EmbeddingModelUrl>https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx</EmbeddingModelUrl>
     </PropertyGroup>
     <MakeDir Directories="$(WakeWordModelDir)" Condition="!Exists('$(WakeWordModelDir)')" />
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(MelspectrogramModelUrl)' -OutFile '$(MelspectrogramModelPath)' -UserAgent 'mana-fetch-wakeword-backbone'&quot;" Condition="!Exists('$(MelspectrogramModelPath)')" ContinueOnError="WarnAndContinue" />
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Invoke-WebRequest -Uri '$(EmbeddingModelUrl)' -OutFile '$(EmbeddingModelPath)' -UserAgent 'mana-fetch-wakeword-backbone'&quot;" Condition="!Exists('$(EmbeddingModelPath)')" ContinueOnError="WarnAndContinue" />
+    <!-- Three tries, a few seconds apart (a GitHub blip once dropped one on CI), into a .part file that only
+         becomes the model once it's whole. Still WarnAndContinue: offline, the wake-word tests skip. -->
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;foreach ($attempt in 1..3) { try { Invoke-WebRequest -Uri '$(MelspectrogramModelUrl)' -OutFile '$(MelspectrogramModelPath).part' -UserAgent 'mana-fetch-wakeword-backbone' -ErrorAction Stop; Move-Item -Force '$(MelspectrogramModelPath).part' '$(MelspectrogramModelPath)'; break } catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds (5 * $attempt) } }&quot;" Condition="!Exists('$(MelspectrogramModelPath)')" ContinueOnError="WarnAndContinue" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;foreach ($attempt in 1..3) { try { Invoke-WebRequest -Uri '$(EmbeddingModelUrl)' -OutFile '$(EmbeddingModelPath).part' -UserAgent 'mana-fetch-wakeword-backbone' -ErrorAction Stop; Move-Item -Force '$(EmbeddingModelPath).part' '$(EmbeddingModelPath)'; break } catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds (5 * $attempt) } }&quot;" Condition="!Exists('$(EmbeddingModelPath)')" ContinueOnError="WarnAndContinue" />
   </Target>
 
   <!-- #678: WeSpeaker's VoxCeleb ResNet34-LM speaker embedding (CC BY 4.0,
