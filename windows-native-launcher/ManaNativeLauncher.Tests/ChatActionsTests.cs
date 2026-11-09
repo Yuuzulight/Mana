@@ -62,7 +62,7 @@ public class ChatActionsTests
         var mana = view.Messages[1];
         Assert.Equal("mermaid", recorded?.Language);
         Assert.Empty(opened); // nothing opens until the button is pressed
-        Assert.Equal("Here it is:\nEnjoy.", mana.Text);
+        Assert.Equal("Here it is:\ngraph TD; A-->B\nEnjoy.", mana.Text); // #1526: in its card, as code (no one-line graphs drawn)
         Assert.Equal("Open mermaid content in new window", Assert.Single(mana.Actions).Label);
         await view.RunActionAsync(1, 0);
         Assert.Equal(new[] { ArtifactOpen.Default }, opened);

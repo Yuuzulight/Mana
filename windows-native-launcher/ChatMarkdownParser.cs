@@ -13,6 +13,7 @@ internal enum MarkdownBlockType
     CodeBlock,
     Quote,
     Table,
+    Artifact, // #1526: where a reply's artifact card goes (ChatView.Message.Artifact holds it)
 }
 
 // One inline formatted span within a block -- Code implies neither Bold

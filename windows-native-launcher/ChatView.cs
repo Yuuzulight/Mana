@@ -114,7 +114,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         AccessibleName = "Conversation";
         AccessibleRole = AccessibleRole.List;
 
-        scrollBar.ValueChanged += (_, _) => Invalidate();
+        scrollBar.ValueChanged += (_, _) =>
+        {
+            Invalidate();
+            PlaceLive();
+        };
         Controls.Add(scrollBar);
 
         var menu = new ContextMenuStrip();
@@ -315,6 +319,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     public void ShowHistory(IReadOnlyList<ManaSessionTurn> turns) => RunOnUiThread(() =>
     {
         foreach (var image in messages.SelectMany(message => message.Images)) image.Dispose();
+        foreach (var message in messages) message.ArtifactPicture?.Dispose();
+        StopLive();
         messages.Clear();
         polledSteps.Clear(); // #1318: re-added after the history on the next poll
         streamedSteps.Clear();
@@ -359,6 +365,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 {
                     first = false;
                     reply.Blocks.AddRange(ChatMarkdownParser.Parse(text!));
+                    if (ArtifactDetector.Extract(text) is { } artifact)
+                    {
+                        reply.Artifact = artifact;
+                        WithArtifactCard(reply.Blocks, artifact);
+                    }
                 }
                 else
                 {
@@ -458,7 +469,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         var addArtifact = Artifacts;
         var artifact = addArtifact is null ? null : ArtifactDetector.Extract(replyText);
-        var blocks = ChatMarkdownParser.Parse(artifact is { } found ? replyText.Replace(found.MatchedText, "").Trim() : replyText).ToList();
+        var blocks = ChatMarkdownParser.Parse(replyText).ToList();
+        if (artifact is { } found) WithArtifactCard(blocks, found);
         if (sources is { Count: > 0 })
         {
             blocks.Add(new MarkdownBlock(MarkdownBlockType.Header, new[] { new MarkdownRun("Sources", Bold: true, Italic: false, Code: false) }, Level: 3));
@@ -502,6 +514,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 }
                 if (artifact is { } split)
                 {
+                    WithArtifactCard(last.Blocks, split);
+                    last.Artifact = split;
                     last.Actions.Add(ArtifactAction(split, addArtifact!(split)));
                 }
                 last.Invalidate();
@@ -529,11 +543,21 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         message.Sources = sources?.ToList();
         if (artifact is { } a)
         {
+            message.Artifact = a;
             message.Actions.Add(ArtifactAction(a, addArtifact!(a)));
         }
         message.Invalidate();
         Relayout(forceScroll: false);
     });
+
+    // #1526: the artifact's card goes where its fenced block was (else at the end).
+    private static void WithArtifactCard(List<MarkdownBlock> blocks, DetectedArtifact artifact)
+    {
+        var card = new MarkdownBlock(MarkdownBlockType.Artifact, [], Info: artifact.Language);
+        var at = blocks.FindIndex(b => b.Type == MarkdownBlockType.CodeBlock && string.Concat(b.Runs.Select(r => r.Text)).Replace("\r", "").TrimEnd() == artifact.Content.Replace("\r", ""));
+        if (at >= 0) blocks[at] = card;
+        else blocks.Add(card);
+    }
 
     // #686 (Q4/Q44b): an HTML artifact gets an "Open" split button whose
     // main part opens it in Mana when Folio can draw it (#937), else in the
@@ -966,6 +990,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             scrollBar.Value = Math.Min(scrollBar.Value, MaxScroll());
         }
         Invalidate();
+        PlaceLive();
     }
 
     private int MaxScroll() => Math.Max(0, contentHeight - ClientSize.Height);
@@ -1070,13 +1095,70 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             y += rowHeight + (message.Blocks.Count > 0 ? BlockGap : 2);
         }
+        message.ArtifactBounds = Rectangle.Empty;
+        void CodeLines(IEnumerable<string> sourceLines)
+        {
+            var first = true;
+            foreach (var source in sourceLines)
+            {
+                if (!first)
+                {
+                    flat.Append('\n');
+                }
+                first = false;
+                foreach (var piece in BreakToWidth(source.Length == 0 ? " " : source, s => Measure(s, codeFont), maxWidth - 12))
+                {
+                    var w = Measure(piece, codeFont);
+                    lines.Add(new Line(y, codeFont.Height + 2, true, new List<Fragment> { new(piece, codeFont, 6, w, true, flat.Length) }));
+                    flat.Append(piece);
+                    widest = Math.Max(widest, w + 12);
+                    y += codeFont.Height + 2;
+                }
+            }
+        }
         for (var b = 0; b < message.Blocks.Count; b++)
         {
             var block = message.Blocks[b];
+            // #1526: a picture card adds no text, so it adds no line break either.
+            var picture = block.Type == MarkdownBlockType.Artifact && message.Artifact is { } shown && ArtifactPictureSize(message, shown, maxWidth - 2) is not null;
             if (b > 0)
             {
                 y += BlockGap;
-                flat.Append('\n');
+                if (!picture)
+                {
+                    flat.Append('\n');
+                }
+            }
+            if (block.Type == MarkdownBlockType.Artifact && message.Artifact is { } artifact)
+            {
+                // #1526: the code card's bar (its name and Copy), then a picture of it or its first lines.
+                var cardTop = y;
+                var name = artifact.Language switch { "mermaid" => "Diagram", "html" => "HTML page · click to use", var l => CodeLanguage(l) };
+                widest = Math.Max(widest, Measure(name, stampFont) + CopyWidth + 28);
+                y += CodeBarHeight;
+                if (ArtifactPictureSize(message, artifact, maxWidth - 2) is { } natural)
+                {
+                    // A diagram only shrinks to fit the width, so its labels stay readable; a page is drawn at the card's width.
+                    var width = Math.Min(natural.Width, maxWidth - 2);
+                    var height = natural.Height * width / Math.Max(1, natural.Width);
+                    if (artifact.Language == "html") widest = maxWidth;
+                    widest = Math.Max(widest, width + 2);
+                    message.ArtifactBounds = new Rectangle(1, y, width, height);
+                    y += height + 1;
+                }
+                else
+                {
+                    var source = artifact.Content.Replace("\r", "").Split('\n');
+                    CodeLines(source.Take(ArtifactPreviewLines));
+                    if (source.Length > ArtifactPreviewLines)
+                    {
+                        flat.Append('\n');
+                        CodeLines([$"… {source.Length - ArtifactPreviewLines} more lines"]);
+                    }
+                    y += 4;
+                }
+                message.CodeBlocks.Add((cardTop - 1, y - 1, artifact.Content, name));
+                continue;
             }
             if (block.Type == MarkdownBlockType.CodeBlock)
             {
@@ -1086,21 +1168,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 var language = CodeLabel(block.Info);
                 widest = Math.Max(widest, Measure(language, stampFont) + CopyWidth + 28);
                 y += CodeBarHeight;
-                for (var li = 0; li < sourceLines.Length; li++)
-                {
-                    if (li > 0)
-                    {
-                        flat.Append('\n');
-                    }
-                    foreach (var piece in BreakToWidth(sourceLines[li].Length == 0 ? " " : sourceLines[li], s => Measure(s, codeFont), maxWidth - 12))
-                    {
-                        var w = Measure(piece, codeFont);
-                        lines.Add(new Line(y, codeFont.Height + 2, true, new List<Fragment> { new(piece, codeFont, 6, w, true, flat.Length) }));
-                        flat.Append(piece);
-                        widest = Math.Max(widest, w + 12);
-                        y += codeFont.Height + 2;
-                    }
-                }
+                CodeLines(sourceLines);
                 y += 4;
                 message.CodeBlocks.Add((codeTop - 1, y - 1, string.Join("\n", sourceLines), language));
                 continue;
@@ -1736,6 +1804,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 PaintCodeCard(g, message, k, origin, copied: copiedBlock == (i, k));
             }
+            PaintArtifact(g, message, origin);
             foreach (var line in message.Lines)
             {
                 if (line.Quote)
@@ -1821,6 +1890,183 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
+    // ---- #1526: artifact cards ----------------------------------------------
+
+    private const int ArtifactPreviewLines = 12;
+    private ArtifactView? live; // the one card that's live, over its picture
+    private Message? liveMessage;
+
+    // The size an artifact's picture is drawn at, or null when it shows as code. A page is
+    // drawn again when the card's width changes by more than a tenth (blurry when scaled).
+    private static Size? ArtifactPictureSize(Message message, DetectedArtifact artifact, int width)
+    {
+        if (message.ArtifactPicture is { } old && Math.Abs(old.Width - width) * 10 > width)
+        {
+            old.Dispose();
+            message.ArtifactPicture = null;
+            message.ArtifactTried = false;
+        }
+        if (!message.ArtifactTried)
+        {
+            message.ArtifactTried = true;
+            try
+            {
+                if (artifact.Language == "mermaid" && MermaidParser.Parse(artifact.Content) is { Nodes.Count: > 0 } graph)
+                {
+                    message.ArtifactDiagram = MermaidLayout.Compute(graph);
+                }
+                else if (artifact.Language == "html" && HtmlArtifact.BrowserReasons(artifact.Content) is null)
+                {
+                    message.ArtifactPicture = HtmlPicture(artifact.Content, new Size(width, width * 5 / 8));
+                }
+            }
+            catch (Exception error)
+            {
+                Console.WriteLine($"ChatView: no picture of the {artifact.Language} artifact. {error.Message}");
+            }
+        }
+        return message.ArtifactDiagram is { } diagram ? MermaidRenderer.Measure(diagram) : message.ArtifactPicture?.Size;
+    }
+
+    // Folio draws the page off screen. Its scripts don't run for the picture; clicking it runs them (StartLive).
+    private static Bitmap HtmlPicture(string html, Size size)
+    {
+        using var view = new Folio.WinForms.FolioView
+        {
+            Size = size,
+            Options = new Folio.FolioOptions { Fonts = Folio.Typography.BundledFontSource.Settings, Scripting = Folio.ScriptingPolicy.Disabled },
+        };
+        view.LoadHtml(html);
+        var bitmap = new Bitmap(size.Width, size.Height);
+        view.DrawToBitmap(bitmap, new Rectangle(Point.Empty, size));
+        return bitmap;
+    }
+
+    private void PaintArtifact(Graphics g, Message message, Point origin)
+    {
+        if (message.ArtifactBounds.IsEmpty || message == liveMessage)
+        {
+            return;
+        }
+        var rect = message.ArtifactBounds;
+        rect.Offset(origin);
+        var state = g.Save();
+        if (message.ArtifactPicture is { } picture)
+        {
+            // The card's rounded bottom corners.
+            using var shape = Round(new Rectangle(rect.X - 1, rect.Y - 20, rect.Width + 2, rect.Height + 20), 8);
+            g.SetClip(shape, CombineMode.Intersect);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.DrawImage(picture, rect);
+        }
+        else if (message.ArtifactDiagram is { } diagram)
+        {
+            rect.X += (message.ContentWidth - 2 - rect.Width) / 2; // centred in the card
+            g.SetClip(rect, CombineMode.Intersect);
+            g.TranslateTransform(rect.X, rect.Y);
+            var scale = rect.Width / (float)MermaidRenderer.Measure(diagram).Width;
+            g.ScaleTransform(scale, scale);
+            MermaidRenderer.Draw(g, diagram);
+        }
+        g.Restore(state);
+    }
+
+    // A message's artifact picture in control coordinates (empty when it has none).
+    internal Rectangle ArtifactRect(int index)
+    {
+        var message = messages[index];
+        if (message.ArtifactBounds.IsEmpty)
+        {
+            return Rectangle.Empty;
+        }
+        var rect = message.ArtifactBounds;
+        rect.Offset(message.Bounds.X + PadX, message.Bounds.Y + PadY - (scrolling ? scrollBar.Value : 0));
+        return rect;
+    }
+
+    // The page picture under `point` that can go live.
+    private Message? LiveCardAt(Point point)
+    {
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (messages[i].ArtifactPicture is not null && messages[i] != liveMessage && ArtifactRect(i).Contains(point))
+            {
+                return messages[i];
+            }
+        }
+        return null;
+    }
+
+    // One live view at a time: each is a window over the chat, so more would lag scrolling.
+    private void StartLive(Message message)
+    {
+        StopLive();
+        var artifact = message.Artifact!.Value;
+        liveMessage = message;
+        live = new ArtifactView();
+        Controls.Add(live);
+        live.Show(new VersionedArtifact(artifact.Language, artifact.Content, "", 0), source: false);
+        PlaceLive();
+        live?.Focus();
+        Invalidate();
+    }
+
+    private void StopLive()
+    {
+        if (live is null)
+        {
+            return;
+        }
+        var view = live;
+        live = null;
+        liveMessage = null;
+        Controls.Remove(view);
+        view.Dispose(); // stops its scripts
+        Invalidate();
+    }
+
+    // Keeps the live view over its picture; it goes once the picture scrolls out of sight.
+    private void PlaceLive()
+    {
+        if (live is null)
+        {
+            return;
+        }
+        var index = liveMessage is null ? -1 : messages.IndexOf(liveMessage);
+        var rect = index < 0 ? Rectangle.Empty : ArtifactRect(index);
+        if (rect.IsEmpty || !ClientRectangle.IntersectsWith(rect))
+        {
+            StopLive();
+            return;
+        }
+        if (live.Bounds != rect)
+        {
+            live.Bounds = rect;
+            using var shape = Round(new Rectangle(-1, -20, rect.Width + 2, rect.Height + 20), 8); // the card's rounded bottom corners
+            var old = live.Region;
+            live.Region = new Region(shape);
+            old?.Dispose();
+        }
+    }
+
+    // Esc in the live page (or the chat) puts the picture back.
+    protected override bool ProcessCmdKey(ref System.Windows.Forms.Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape && live is not null)
+        {
+            StopLive();
+            Focus();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    internal bool SimulateCmdKey(Keys keyData)
+    {
+        var msg = default(System.Windows.Forms.Message);
+        return ProcessCmdKey(ref msg, keyData);
+    }
+
     // A code block's Copy button, in content coordinates: its top right corner.
     private Rectangle CopyButton(Message message, int block) =>
         new(message.ContentWidth - CopyWidth - 4, message.CodeBlocks[block].Top + 3, CopyWidth, CodeBarHeight - 5);
@@ -1898,6 +2144,13 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         base.OnMouseDown(e);
         Focus();
+        // #1526: a page's picture goes live where it is; a click anywhere else puts it back.
+        if (e.Button == MouseButtons.Left && LiveCardAt(e.Location) is { } card)
+        {
+            StartLive(card);
+            return;
+        }
+        StopLive();
         if (e.Button == MouseButtons.Left && SuggestionAt(e.Location) is var suggestion and >= 0 && suggestion < welcomeSuggestions.Count)
         {
             welcomeSuggestions[suggestion].Run();
@@ -2094,7 +2347,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             hoveredIndex = newHovered;
             Invalidate();
         }
-        Cursor = isActionButton || isThoughtHeader || ActionAt(e.Location) is not null || link is not null || CopyButtonAt(e.Location) is not null ? Cursors.Hand
+        Cursor = isActionButton || isThoughtHeader || ActionAt(e.Location) is not null || link is not null || CopyButtonAt(e.Location) is not null || LiveCardAt(e.Location) is not null ? Cursors.Hand
             : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
         if (!pressed || (e.Button & MouseButtons.Left) == 0 || messages.Count == 0)
         {
@@ -2705,6 +2958,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             {
                 image.Dispose();
             }
+            foreach (var message in messages) message.ArtifactPicture?.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -2743,6 +2997,13 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public List<(int Top, int Bottom, string Code, string Language)> CodeBlocks { get; } = new();
         public List<Bitmap> Images { get; } = new(); // #679: thumbnails of a user message's images
         public List<Rectangle> ImageBounds { get; } = new(); // in content coordinates
+        // #1526: the reply's artifact, shown in its card: a diagram's layout or a page's picture
+        // (in ArtifactBounds, content coordinates), or else its first lines.
+        public DetectedArtifact? Artifact { get; set; }
+        public bool ArtifactTried { get; set; }
+        public MermaidLayoutResult? ArtifactDiagram { get; set; }
+        public Bitmap? ArtifactPicture { get; set; }
+        public Rectangle ArtifactBounds { get; set; }
 
         // The full reply text once VoiceLoop reported it; later sentences start a new bubble.
         public string? FinalText { get; set; }
