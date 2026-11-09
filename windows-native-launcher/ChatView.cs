@@ -32,7 +32,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private const int PadX = 14;
     private const int PadY = 9;
     private const int LabelGap = 3;
-    private const int MessageGap = 14;
+    private const int MessageGap = 12;
+    private const int RunGap = 3; // between her bubbles in a row
+
+    // Her next bubble joins this one's run: both hers (the same speaker), neither a step line or a request card.
+    private static bool GroupsWith(Message message, Message next) =>
+        !message.FromUser && !next.FromUser && message.Steps is null && next.Steps is null
+        && message.ApprovalId is null && next.ApprovalId is null && message.Speaker == next.Speaker;
+
+    // The time under your message: the time today, the day and time before that.
+    internal static string Stamp(DateTime at, DateTime now) =>
+        at.Date == now.Date ? at.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture)
+        : at.ToString("MMM d, h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
     private const int BlockGap = 5;
     private const int ActionHeight = 28;
     private const int MenuArrowWidth = 22; // a split button's dropdown part
@@ -52,9 +63,17 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private readonly Font headerFont = new("Segoe UI", 11F, FontStyle.Bold);
     private readonly Font codeFont = new("Consolas", 9.5F);
     private readonly Font labelFont = new("Segoe UI", 8.5F, FontStyle.Bold);
+    private readonly Font stampFont = new("Segoe UI", 8.25F); // the footer: your time, her name
+    private readonly Font greetingFont = new("Segoe UI Semibold", 15F); // the welcome's greeting (mockup B)
     private readonly ToolTip linkTip = new();
     private string? hoveredLink;
     private int hoveredIndex = -1;
+    // Mockup A's code Copy button: which block just copied (it says "Copied" for a moment).
+    private (int Message, int Block)? copiedBlock;
+    private readonly System.Windows.Forms.Timer copiedReset = new() { Interval = 1500 };
+
+    // Where a Copy button's text goes: the clipboard (tests read it from here instead).
+    internal Action<string> CopyText { get; set; } = Clipboard.SetText;
     private int contentHeight;
     private int selected = -1;
     private (int Msg, int Offset)? anchor;
@@ -63,7 +82,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     private bool pressed;
     private bool dragSelecting;
     private Bitmap? glow;
-    private (Size Size, Point Offset, Size Window, int Theme) glowKey;
+    private (Size Size, Point Offset, Size Window, int Theme, (Point, bool, int) Backdrop) glowKey;
     // The UI thread, captured at construction: the view has no handle until
     // the chat window is first shown, and appends made before then (the
     // reopened session's history at launch, voice turns) must still land.
@@ -78,6 +97,13 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     public ChatView()
     {
+        Controls.Add(welcomeAvatar);
+        copiedReset.Tick += (_, _) =>
+        {
+            copiedReset.Stop();
+            copiedBlock = null;
+            Invalidate();
+        };
         uiContext = System.Threading.SynchronizationContext.Current; // installed by Control's constructor
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
@@ -144,7 +170,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         LastUserMessageAt = DateTime.UtcNow;
         var turnIndex = messages.Count(m => m.FromUser);
-        var message = new Message(fromUser: true) { TurnIndex = turnIndex };
+        var message = new Message(fromUser: true) { TurnIndex = turnIndex, At = DateTime.Now };
         foreach (var image in images)
         {
             if (DecodeThumbnail(image) is { } thumb)
@@ -306,7 +332,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             if (!string.IsNullOrWhiteSpace(turn.User))
             {
-                var user = new Message(fromUser: true) { TurnIndex = turnIdx };
+                var user = new Message(fromUser: true) { TurnIndex = turnIdx, At = DateTimeOffset.TryParse(turn.At, out var at) ? at.LocalDateTime : null };
                 user.Blocks.AddRange(UserBlocks(turn.User));
                 messages.Add(user);
             }
@@ -815,22 +841,33 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     private void Relayout(bool forceScroll)
     {
+        NotifyEmpty();
+        if (messages.Count == 0)
+        {
+            LayOutWelcome();
+        }
         var wasAtBottom = scrollBar.Value >= MaxScroll() - 8;
         var y = SideMargin;
         var width = MaxBubbleContentWidth;
-        foreach (var message in messages)
+        for (var i = 0; i < messages.Count; i++)
         {
+            var message = messages[i];
             if (message.LaidOutWidth != width)
             {
                 LayOut(message, width);
             }
             var bubbleWidth = message.ContentWidth + PadX * 2;
             var x = message.FromUser ? ViewportWidth - SideMargin - bubbleWidth : SideMargin;
-            // #1318: a step line has no "Mana" label above it.
-            var labelHeight = message.Steps is null ? labelFont.Height + LabelGap : 0;
-            var labelWidth = message.FromUser ? 60 : Math.Min(Math.Max(40, ViewportWidth - SideMargin * 2 - 200), Math.Max(60, Measure(message.Speaker, labelFont)));
-            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - 60 : x, y, labelWidth, labelHeight);
-            message.Bounds = new Rectangle(x, y + labelHeight, bubbleWidth, message.ContentHeight + PadY * 2);
+            message.Bounds = new Rectangle(x, y, bubbleWidth, message.ContentHeight + PadY * 2);
+            // The mockups: no name over the bubbles. Her bubbles in a row sit together; under the last of a run (and
+            // under each of yours) a footer line: your message's time, or her name, with the actions, on hover.
+            var continues = i + 1 < messages.Count && GroupsWith(message, messages[i + 1]);
+            var footerHeight = message.Steps is null && !continues ? labelFont.Height + LabelGap : 0;
+            var footerTop = message.Bounds.Bottom + (footerHeight > 0 ? LabelGap : 0);
+            var labelText = message.FromUser ? (message.At is { } at ? Stamp(at, DateTime.Now) : "") : message.Speaker;
+            var labelWidth = message.FromUser ? Measure(labelText, stampFont) : Math.Min(Math.Max(40, ViewportWidth - SideMargin * 2 - 200), Math.Max(60, Measure(labelText, stampFont)));
+            message.LabelBounds = new Rectangle(message.FromUser ? x + bubbleWidth - labelWidth : x, footerTop, labelWidth, footerHeight);
+            y = footerTop;
 
             // #1322: Action and version stepper button layout
             message.EditBtnBounds = Rectangle.Empty;
@@ -840,7 +877,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             message.VersionNextBounds = Rectangle.Empty;
             message.VersionLabelBounds = Rectangle.Empty;
 
-            if (message.Steps is null && message.TurnIndex >= 0)
+            if (message.Steps is null && message.TurnIndex >= 0 && footerHeight > 0)
             {
                 var btnHeight = labelFont.Height + 2;
                 if (message.FromUser)
@@ -902,7 +939,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                 }
             }
 
-            y = message.Bounds.Bottom + MessageGap;
+            y = continues ? message.Bounds.Bottom + RunGap : footerTop + footerHeight + MessageGap;
         }
         contentHeight = y;
 
@@ -944,6 +981,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         var widest = 0;
         message.Cells.Clear();
         message.ImageBounds.Clear();
+        message.CodeBlocks.Clear();
         message.ThoughtHeaderBounds = Rectangle.Empty;
         message.ThoughtLines.Clear();
 
@@ -1043,6 +1081,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             if (block.Type == MarkdownBlockType.CodeBlock)
             {
                 var sourceLines = string.Concat(block.Runs.Select(r => r.Text)).Replace("\r", "").Split('\n');
+                var codeTop = y;
+                // The mockups' code card: a bar with the language and Copy, then the lines.
+                var language = CodeLabel(block.Info);
+                widest = Math.Max(widest, Measure(language, stampFont) + CopyWidth + 28);
+                y += CodeBarHeight;
                 for (var li = 0; li < sourceLines.Length; li++)
                 {
                     if (li > 0)
@@ -1058,6 +1101,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                         y += codeFont.Height + 2;
                     }
                 }
+                y += 4;
+                message.CodeBlocks.Add((codeTop - 1, y - 1, string.Join("\n", sourceLines), language));
                 continue;
             }
 
@@ -1298,11 +1343,11 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     {
         if (DarkTheme.IsGlass && FindForm() is { } form)
         {
-            (Size Size, Point Offset, Size Window, int Theme) key = (ClientSize, form.PointToClient(PointToScreen(Point.Empty)), form.ClientSize, DarkTheme.Version);
+            (Size Size, Point Offset, Size Window, int Theme, (Point, bool, int) Backdrop) key = (ClientSize, form.PointToClient(PointToScreen(Point.Empty)), form.ClientSize, DarkTheme.Version, GlassSurface.BackdropKey(form));
             if (glow is null || key != glowKey)
             {
                 glow?.Dispose();
-                glow = GlassSurface.RenderGlow(key.Size, key.Offset, key.Window);
+                glow = GlassSurface.RenderGlow(key.Size, key.Offset, key.Window, form: form);
                 glowKey = key;
             }
             e.Graphics.DrawImageUnscaled(glow, 0, 0);
@@ -1322,6 +1367,29 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         r.Width < 3 || r.Height < 3 ? new GraphicsPath()
         : SettingsRows.Rounded(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1f, r.Height - 1f), Math.Max(0.5f, Math.Min(radius, (r.Height - 1) / 2f)));
 
+    // The mockups' bubbles: 14px corners, but the one nearest the speaker small -- bottom left on hers (and top left too
+    // when it follows one of hers), bottom right on yours. Request cards keep even corners.
+    private const float SpeechRadius = 14;
+    private const float TailRadius = 4;
+
+    private static GraphicsPath BubbleShape(Rectangle r, Message message, bool followsHers)
+    {
+        if (message.ApprovalId is not null)
+        {
+            return Round(r, BubbleRadius);
+        }
+        var big = Math.Min(SpeechRadius, (r.Height - 1) / 2f);
+        var (tl, tr, br, bl) = message.FromUser ? (big, big, TailRadius, big) : (followsHers ? TailRadius : big, big, big, TailRadius);
+        var rect = new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1f, r.Height - 1f);
+        var path = new GraphicsPath();
+        path.AddArc(rect.X, rect.Y, tl * 2, tl * 2, 180, 90);
+        path.AddArc(rect.Right - tr * 2, rect.Y, tr * 2, tr * 2, 270, 90);
+        path.AddArc(rect.Right - br * 2, rect.Bottom - br * 2, br * 2, br * 2, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - bl * 2, bl * 2, bl * 2, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
     private static void FillRound(Graphics g, Brush brush, Rectangle r, float radius)
     {
         using var shape = Round(r, radius);
@@ -1335,34 +1403,157 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     }
 
     // A new chat's card: how to start, and a few things she can do.
-    internal const string EmptyStateText = "Say \"Mana\" or type below to start.\n\n"
-        + "A few things she can do:\n"
-        + "•  chat, and answer questions\n"
-        + "•  look at your screen (\"what's this?\", \"translate my screen\")\n"
-        + "•  look things up and research a topic\n"
-        + "•  remember what you tell her about yourself";
+    // ---- Welcome (mockup B) ---------------------------------------------
+    // An empty chat opens on her: her live model in the middle (the window moves it here from her card, through
+    // WelcomeAvatarSlot), a greeting for the time of day, a hint, and up to three things to start with.
 
-    private void PaintEmptyState(Graphics g)
+    // The mockups' line under the greeting, by the hour like it.
+    internal static string WelcomeAsk(int hour) => hour switch
     {
-        const TextFormatFlags flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix;
-        var width = Math.Min(420, ClientSize.Width - 48);
-        if (width <= 0)
-        {
-            return;
-        }
-        var text = TextRenderer.MeasureText(g, EmptyStateText, bodyFont, new Size(width - (PadX * 2), int.MaxValue), flags);
-        var card = new Rectangle((ClientSize.Width - width) / 2, Math.Max(24, (ClientSize.Height - text.Height) / 3), width, text.Height + (PadY * 2));
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var fill = new SolidBrush(DarkTheme.ManaBubble))
-        {
-            FillRound(g, fill, card, BubbleRadius);
-        }
-        using (var border = new Pen(DarkTheme.Border))
-        {
-            DrawRound(g, border, card, BubbleRadius);
-        }
-        TextRenderer.DrawText(g, EmptyStateText, bodyFont, Rectangle.Inflate(card, -PadX, -PadY), DarkTheme.Text, flags);
+        >= 5 and < 12 => "What are we starting with?",
+        >= 12 and < 17 => "What are we working on?",
+        _ => "What are we doing tonight?",
+    };
+
+    private readonly Panel welcomeAvatar = new() { BackColor = Color.Transparent, Visible = false };
+    private IReadOnlyList<(string Label, Action Run)> welcomeSuggestions = Array.Empty<(string, Action)>();
+    private readonly List<Rectangle> suggestionBounds = new();
+    private int hotSuggestion = -1;
+    private bool? wasEmpty;
+    private Rectangle greetingBounds;
+    private Rectangle hintBounds;
+
+    // True when the chat turns empty (a new chat), false when its first message arrives.
+    public event Action<bool>? EmptyChanged;
+
+    public bool IsEmpty => messages.Count == 0;
+
+    public Control WelcomeAvatarSlot => welcomeAvatar;
+
+    internal IReadOnlyList<Rectangle> SuggestionBounds => suggestionBounds;
+
+    // What the welcome offers, first to last (three at most).
+    public void SetWelcomeSuggestions(IReadOnlyList<(string Label, Action Run)> suggestions)
+    {
+        welcomeSuggestions = suggestions.Take(3).ToList();
+        LayOutWelcome();
+        Invalidate();
     }
+
+    // Her greeting by the hour: morning from 5, afternoon from 12, evening from 17, and a night-owl one after 22.
+    // What she calls you (Settings > General > Your name), for the welcome; null or blank: no name.
+    public static string? UserName { get; set; }
+
+    internal static string Greeting(int hour, string? name = null)
+    {
+        name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        return hour switch
+        {
+            >= 5 and < 12 => name is null ? "Good morning~" : $"Good morning, {name}~",
+            >= 12 and < 17 => name is null ? "Good afternoon~" : $"Good afternoon, {name}~",
+            >= 17 and < 22 => name is null ? "Good evening~" : $"Good evening, {name}~",
+            _ => name is null ? "Hi, night owl~" : $"Hi, {name}~ Up late?",
+        };
+    }
+
+    private void NotifyEmpty()
+    {
+        var empty = messages.Count == 0;
+        welcomeAvatar.Visible = empty && welcomeAvatar.Height > 0;
+        if (empty != wasEmpty)
+        {
+            wasEmpty = empty;
+            EmptyChanged?.Invoke(empty);
+            LayOutWelcome();
+        }
+    }
+
+    // Her in the middle, the greeting and hint under her, the cards under those; centred as a block. On a short
+    // window she gets smaller, and goes back to her card if there's no room.
+    private void LayOutWelcome()
+    {
+        suggestionBounds.Clear();
+        var width = ClientSize.Width;
+        var height = ClientSize.Height;
+        var greetingHeight = greetingFont.Height;
+        var hintHeight = bodyFont.Height;
+        var cardHeight = LogicalToDeviceUnits(76); // icon, then two lines
+        var gap = LogicalToDeviceUnits(10);
+        var count = welcomeSuggestions.Count;
+        var textBlock = greetingHeight + gap / 2 + hintHeight + (count > 0 ? gap * 2 + cardHeight : 0);
+        var avatarHeight = Math.Min(LogicalToDeviceUnits(230), height - textBlock - gap * 4);
+        if (avatarHeight < LogicalToDeviceUnits(110))
+        {
+            avatarHeight = 0;
+        }
+        var avatarWidth = avatarHeight * 200 / 230;
+        var top = Math.Max(gap, (height - (avatarHeight + (avatarHeight > 0 ? gap : 0) + textBlock)) / 2);
+        welcomeAvatar.Bounds = new Rectangle((width - avatarWidth) / 2, top, avatarWidth, avatarHeight);
+        welcomeAvatar.Visible = messages.Count == 0 && avatarHeight > 0;
+        var y = top + avatarHeight + (avatarHeight > 0 ? gap : 0);
+        greetingBounds = new Rectangle(0, y, width, greetingHeight);
+        y += greetingHeight + gap / 2;
+        hintBounds = new Rectangle(0, y, width, hintHeight);
+        y += hintHeight + gap * 2;
+        if (count > 0)
+        {
+            var cardWidth = Math.Min(LogicalToDeviceUnits(170), (width - SideMargin * 2 - gap * (count - 1)) / count);
+            var x = (width - (cardWidth * count + gap * (count - 1))) / 2;
+            for (var i = 0; i < count; i++)
+            {
+                suggestionBounds.Add(new Rectangle(x + i * (cardWidth + gap), y, cardWidth, cardHeight));
+            }
+        }
+    }
+
+    private void PaintWelcome(Graphics g)
+    {
+        const TextFormatFlags centred = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+        TextRenderer.DrawText(g, Greeting(DateTime.Now.Hour, UserName), greetingFont, greetingBounds, DarkTheme.Text, centred);
+        TextRenderer.DrawText(g, WelcomeAsk(DateTime.Now.Hour), bodyFont, hintBounds, DarkTheme.Muted, centred);
+        for (var i = 0; i < suggestionBounds.Count && i < welcomeSuggestions.Count; i++)
+        {
+            var card = suggestionBounds[i];
+            using (var fill = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(i == hotSuggestion ? 215 : 165) : i == hotSuggestion ? DarkTheme.Border : DarkTheme.Panel2))
+            {
+                FillRound(g, fill, card, BubbleRadius);
+            }
+            using (var border = new Pen(i == hotSuggestion ? DarkTheme.Accent : DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border))
+            {
+                DrawRound(g, border, card, BubbleRadius);
+            }
+            // The mockups' cards: an accent icon at the top left, the words under it.
+            var label = welcomeSuggestions[i].Label;
+            var icon = new RectangleF(card.X + 12, card.Y + 11, 15, 15);
+            var smoothing = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var pen = new Pen(DarkTheme.Accent, 1.3f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                var state = g.Save();
+                g.TranslateTransform(icon.X, icon.Y);
+                g.ScaleTransform(icon.Width / 16f, icon.Height / 16f);
+                pen.Width = 1.3f * 16f / icon.Width;
+                if (label.StartsWith("What did I miss", StringComparison.Ordinal))
+                {
+                    // An inbox tray.
+                    g.DrawLines(pen, new PointF[] { new(2, 9), new(4, 3), new(12, 3), new(14, 9), new(14, 13), new(2, 13), new(2, 9) });
+                    g.DrawLines(pen, new PointF[] { new(2, 9), new(5.5f, 9), new(6.5f, 10.5f), new(9.5f, 10.5f), new(10.5f, 9), new(14, 9) });
+                }
+                else
+                {
+                    // A spark.
+                    g.DrawPolygon(pen, new PointF[] { new(8, 1.5f), new(9.4f, 5.6f), new(13.5f, 7), new(9.4f, 8.4f), new(8, 12.5f), new(6.6f, 8.4f), new(2.5f, 7), new(6.6f, 5.6f) });
+                }
+                g.Restore(state);
+            }
+            g.SmoothingMode = smoothing;
+            var words = new Rectangle(card.X + 12, (int)icon.Bottom + 6, card.Width - 24, card.Bottom - (int)icon.Bottom - 12);
+            TextRenderer.DrawText(g, label, bodyFont, words, DarkTheme.Text,
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    private int SuggestionAt(Point point) => messages.Count == 0 ? suggestionBounds.FindIndex(r => r.Contains(point)) : -1;
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -1370,7 +1561,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         g.SmoothingMode = SmoothingMode.AntiAlias; // #1449: the rounded corners
         if (messages.Count == 0)
         {
-            PaintEmptyState(g);
+            PaintWelcome(g);
         }
         var scroll = scrolling ? scrollBar.Value : 0;
         for (var i = 0; i < messages.Count; i++)
@@ -1383,12 +1574,25 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             if (message.Steps is not null)
             {
+                // The mockups' tool-steps chip: a dashed pill around the line (rounder than a card once it's open).
+                var chip = Rectangle.Inflate(bubble, -4, -5);
+                using (var dashed = new Pen(DarkTheme.IsGlass ? Color.FromArgb(70, DarkTheme.Accent) : DarkTheme.Border) { DashPattern = new[] { 3f, 2.5f } })
+                {
+                    var smoothing = g.SmoothingMode;
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    DrawRound(g, dashed, chip, message.StepsOpen ? BubbleRadius : chip.Height / 2f);
+                    g.SmoothingMode = smoothing;
+                }
                 PaintStepLine(g, message, new Point(bubble.X + PadX, bubble.Y + PadY));
                 continue;
             }
             var label = message.LabelBounds with { Y = message.LabelBounds.Y - scroll };
-            TextRenderer.DrawText(g, message.Speaker, labelFont, label, DarkTheme.Muted,
-                TextFlags | TextFormatFlags.EndEllipsis | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
+            var hovered = hoveredIndex == i || selected == i;
+            if (message.FromUser ? message.At is { } at : hovered && label.Height > 0)
+            {
+                TextRenderer.DrawText(g, message.FromUser ? Stamp(message.At!.Value, DateTime.Now) : message.Speaker, stampFont, label, DarkTheme.Muted,
+                    TextFlags | TextFormatFlags.EndEllipsis | (message.FromUser ? TextFormatFlags.Right : TextFormatFlags.Left));
+            }
 
             // #1322: Draw version stepper controls if multiple versions exist
             if (message.Versions != null && message.Versions.Count > 1)
@@ -1441,18 +1645,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
 
             var fill = message.FromUser ? DarkTheme.UserBubble : DarkTheme.ManaBubble;
-            if (DarkTheme.IsGlass)
+            using (var shape = BubbleShape(bubble, message, i > 0 && GroupsWith(messages[i - 1], message)))
             {
-                using var glass = new SolidBrush(Color.FromArgb(175, fill));
-                FillRound(g, glass, bubble, BubbleRadius);
-                GlassSurface.PaintGlassEdges(g, bubble, message.FromUser ? null : GlassSurface.SheenProgress(this), BubbleRadius); // #652: her bubbles shimmer
-            }
-            else
-            {
-                using var solid = new SolidBrush(fill);
-                FillRound(g, solid, bubble, BubbleRadius);
-                using var border = new Pen(DarkTheme.Border);
-                DrawRound(g, border, bubble, BubbleRadius);
+                var smoothing = g.SmoothingMode;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using var solid = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(235, fill) : fill);
+                g.FillPath(solid, shape);
+                if (!DarkTheme.IsGlass)
+                {
+                    using var border = new Pen(DarkTheme.Border);
+                    g.DrawPath(border, shape);
+                }
+                g.SmoothingMode = smoothing;
             }
             if (message.ApprovalId is not null)
             {
@@ -1528,13 +1732,12 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
                     g.DrawRectangle(grid, rect);
                 }
             }
+            for (var k = 0; k < message.CodeBlocks.Count; k++)
+            {
+                PaintCodeCard(g, message, k, origin, copied: copiedBlock == (i, k));
+            }
             foreach (var line in message.Lines)
             {
-                if (line.Code)
-                {
-                    using var codeBack = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 110 : 60, DarkTheme.IsLight ? Color.White : Color.Black));
-                    g.FillRectangle(codeBack, origin.X, origin.Y + line.Y - 1, message.ContentWidth, line.Height);
-                }
                 if (line.Quote)
                 {
                     using var bar = new SolidBrush(Color.FromArgb(160, DarkTheme.Accent));
@@ -1560,6 +1763,44 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
+    // The mockups' code card: rounded, edged, a tinted bar over the lines with the language on the left and a Copy
+    // (a copy icon and the word) on the right.
+    private void PaintCodeCard(Graphics g, Message message, int block, Point origin, bool copied)
+    {
+        var (top, bottom, _, language) = message.CodeBlocks[block];
+        var card = new Rectangle(origin.X, origin.Y + top, message.ContentWidth, bottom - top);
+        var light = DarkTheme.IsLight;
+        var smoothing = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var shape = Round(card, 8))
+        {
+            using var back = new SolidBrush(light ? Color.FromArgb(180, 255, 255, 255) : Color.FromArgb(120, 12, 12, 24));
+            g.FillPath(back, shape);
+            var clip = g.Clip;
+            g.SetClip(shape, CombineMode.Intersect);
+            using var bar = new SolidBrush(Color.FromArgb(light ? 34 : 30, DarkTheme.Accent));
+            g.FillRectangle(bar, card.X, card.Y, card.Width, CodeBarHeight);
+            g.Clip = clip;
+            using var edge = new Pen(Color.FromArgb(light ? 40 : 46, DarkTheme.Accent));
+            g.DrawPath(edge, shape);
+        }
+        var barRect = new Rectangle(card.X + 10, card.Y, card.Width - 20, CodeBarHeight);
+        TextRenderer.DrawText(g, language, stampFont, barRect, DarkTheme.Muted, TextFlags | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+        var copy = CopyButton(message, block);
+        copy.Offset(origin);
+        var ink = copied ? DarkTheme.Accent : DarkTheme.Text;
+        var icon = new RectangleF(copy.X + 6, copy.Y + (copy.Height - 12) / 2f, 12, 12);
+        using (var pen = new Pen(ink, 1.1f))
+        {
+            // Two sheets, the front one whole.
+            g.DrawRectangle(pen, icon.X + 3.5f, icon.Y + 3.5f, 7.5f, 8);
+            g.DrawLines(pen, new[] { new PointF(icon.X + 1, icon.Y + 9), new PointF(icon.X + 1, icon.Y + 1), new PointF(icon.X + 8, icon.Y + 1) });
+        }
+        g.SmoothingMode = smoothing;
+        TextRenderer.DrawText(g, copied ? "Copied" : "Copy", stampFont, new Rectangle((int)icon.Right + 4, copy.Y, copy.Right - (int)icon.Right - 4, copy.Height), ink,
+            TextFlags | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+    }
+
     // #1318: a step-group line: grey text straight on the chat background,
     // its command/result blocks on the usual code shading.
     private void PaintStepLine(Graphics g, Message message, Point origin)
@@ -1580,6 +1821,69 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         }
     }
 
+    // A code block's Copy button, in content coordinates: its top right corner.
+    private Rectangle CopyButton(Message message, int block) =>
+        new(message.ContentWidth - CopyWidth - 4, message.CodeBlocks[block].Top + 3, CopyWidth, CodeBarHeight - 5);
+
+    private int CodeBarHeight => stampFont.Height + 9;
+    private int CopyWidth => TextRenderer.MeasureText("Copied", stampFont).Width + 26;
+
+    // The card bar's text for a fence's info: the language, then the file when the fence names one, as the mockups'
+    // "C#  SoftwareCanvas.cs". Takes "cs SoftwareCanvas.cs", "cs title=\"SoftwareCanvas.cs\"", "cs:SoftwareCanvas.cs" and
+    // a bare "SoftwareCanvas.cs" (its language from the extension).
+    internal static string CodeLabel(string? info)
+    {
+        var text = info?.Trim() ?? "";
+        var split = text.IndexOfAny([' ', '\t', ':']);
+        var language = split < 0 ? text : text[..split];
+        var rest = split < 0 ? "" : text[(split + 1)..].Trim();
+        if (rest.StartsWith("title=", StringComparison.OrdinalIgnoreCase)) rest = rest[6..];
+        var file = rest.Trim('"', '\'', ' ');
+        if (file.Length == 0 && language.Contains('.') && !language.StartsWith('.'))
+        {
+            (file, language) = (language, language[(language.LastIndexOf('.') + 1)..]);
+        }
+        var name = CodeLanguage(language.Length == 0 ? null : language);
+        return file.Length == 0 ? name : $"{name}   {file}";
+    }
+
+    // The bar's name for a fence language.
+    internal static string CodeLanguage(string? info) => info?.ToLowerInvariant() switch
+    {
+        null or "" => "Code",
+        "cs" or "csharp" or "c#" => "C#",
+        "js" or "javascript" or "mjs" => "JavaScript",
+        "ts" or "typescript" => "TypeScript",
+        "py" or "python" => "Python",
+        "sh" or "bash" or "shell" or "zsh" => "Shell",
+        "ps" or "ps1" or "powershell" or "pwsh" => "PowerShell",
+        "json" => "JSON",
+        "html" => "HTML",
+        "css" => "CSS",
+        "md" or "markdown" => "Markdown",
+        "diff" => "Diff",
+        _ => info!,
+    };
+
+    // The Copy button under `point` (control coordinates), on the hovered message only, where they show.
+    private (int Message, int Block)? CopyButtonAt(Point point)
+    {
+        if (hoveredIndex < 0 || hoveredIndex >= messages.Count)
+        {
+            return null;
+        }
+        var message = messages[hoveredIndex];
+        var content = new Point(point.X - message.Bounds.X - PadX, point.Y + (scrolling ? scrollBar.Value : 0) - message.Bounds.Y - PadY);
+        for (var k = 0; k < message.CodeBlocks.Count; k++)
+        {
+            if (CopyButton(message, k).Contains(content))
+            {
+                return (hoveredIndex, k);
+            }
+        }
+        return null;
+    }
+
     // ---- Input ----------------------------------------------------------
 
     internal void SimulateClick(Point point) =>
@@ -1587,10 +1891,18 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
 
     internal void SimulateKeyDown(KeyEventArgs e) => OnKeyDown(e);
 
+    internal void SimulateMouseMove(Point point) =>
+        OnMouseMove(new MouseEventArgs(MouseButtons.None, 0, point.X, point.Y, 0));
+
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
         Focus();
+        if (e.Button == MouseButtons.Left && SuggestionAt(e.Location) is var suggestion and >= 0 && suggestion < welcomeSuggestions.Count)
+        {
+            welcomeSuggestions[suggestion].Run();
+            return;
+        }
         if (e.Button == MouseButtons.Left && ActionAt(e.Location) is var (actionMsg, actionIndex, actionRect))
         {
             if (messages[actionMsg].Actions[actionIndex].Menu is not null && e.X >= actionRect.Right - MenuArrowWidth)
@@ -1600,6 +1912,22 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             else
             {
                 _ = RunActionAsync(actionMsg, actionIndex);
+            }
+            return;
+        }
+        if (e.Button == MouseButtons.Left && CopyButtonAt(e.Location) is var (copyMsg, copyBlock))
+        {
+            try
+            {
+                CopyText(messages[copyMsg].CodeBlocks[copyBlock].Code);
+                copiedBlock = (copyMsg, copyBlock);
+                copiedReset.Stop();
+                copiedReset.Start();
+                Invalidate();
+            }
+            catch (System.Runtime.InteropServices.ExternalException ex)
+            {
+                Console.WriteLine($"ChatView: copy failed. {ex.Message}"); // the clipboard is busy in another app
             }
             return;
         }
@@ -1705,6 +2033,17 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (messages.Count == 0)
+        {
+            var hot = SuggestionAt(e.Location);
+            if (hot != hotSuggestion)
+            {
+                hotSuggestion = hot;
+                Invalidate();
+            }
+            Cursor = hot >= 0 ? Cursors.Hand : Cursors.Default;
+            return;
+        }
         var link = LinkAt(e.Location);
         var label = messages.FirstOrDefault(message => !message.FromUser && message.LabelBounds.Contains(e.X, e.Y + (scrolling ? scrollBar.Value : 0)))?.Speaker;
         var tip = link ?? label;
@@ -1755,7 +2094,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             hoveredIndex = newHovered;
             Invalidate();
         }
-        Cursor = isActionButton || isThoughtHeader || ActionAt(e.Location) is not null || link is not null ? Cursors.Hand
+        Cursor = isActionButton || isThoughtHeader || ActionAt(e.Location) is not null || link is not null || CopyButtonAt(e.Location) is not null ? Cursors.Hand
             : HitTest(e.Location) >= 0 ? Cursors.IBeam : Cursors.Default;
         if (!pressed || (e.Button & MouseButtons.Left) == 0 || messages.Count == 0)
         {
@@ -1992,7 +2331,7 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             }
             else
             {
-                using var fill = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(190, 255, 255, 255) : DarkTheme.Panel2);
+                using var fill = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(190) : DarkTheme.Panel2);
                 FillRound(g, fill, rect, ButtonRadius);
                 using var border = new Pen(DarkTheme.Border);
                 DrawRound(g, border, rect, ButtonRadius);
@@ -2357,6 +2696,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
             headerFont.Dispose();
             codeFont.Dispose();
             labelFont.Dispose();
+            stampFont.Dispose();
+            greetingFont.Dispose();
             linkTip.Dispose();
             glow?.Dispose();
             ContextMenuStrip?.Dispose();
@@ -2377,6 +2718,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public bool FromUser { get; }
         // #914: the character's name on her messages (null: Mana).
         public string? Name { get; init; }
+        // When you sent it (your messages only), for the time under the bubble.
+        public DateTime? At { get; set; }
         public string? AnswerModel { get; set; }
         public bool CloudFallback { get; set; }
         public string Speaker => FromUser ? "You" : (Name ?? "Mana") + (AnswerModel is null ? "" : $" · {AnswerModel}{(CloudFallback ? " (fallback)" : "")}");
@@ -2396,6 +2739,8 @@ internal sealed class ChatView : Control, IChatLog, IArtifactSink
         public Rectangle NoteBounds { get; set; }
         public bool ActionRunning { get; set; }
         public List<(Rectangle Bounds, bool Header)> Cells { get; } = new(); // table cells, in content coordinates
+        // Mockup A: each code block's top and bottom (content coordinates) and its text, for its Copy button.
+        public List<(int Top, int Bottom, string Code, string Language)> CodeBlocks { get; } = new();
         public List<Bitmap> Images { get; } = new(); // #679: thumbnails of a user message's images
         public List<Rectangle> ImageBounds { get; } = new(); // in content coordinates
 

@@ -32,6 +32,11 @@ namespace Mana.NativeLauncher;
 // QuickEntryForm.
 internal sealed partial class SessionListForm : Form
 {
+    // The snapshot test opens the window without taking focus from whatever is in front (a game, say).
+    internal static bool OpenWithoutActivation { get; set; }
+
+    protected override bool ShowWithoutActivation => OpenWithoutActivation;
+
     private readonly ManaBackendClient backendClient;
     private readonly VoiceLoop voiceLoop;
     private readonly BackendLogBuffer backendLog;
@@ -46,6 +51,9 @@ internal sealed partial class SessionListForm : Form
     private System.Collections.Generic.IReadOnlyList<ManaSession> sessions = Array.Empty<ManaSession>();
     private readonly AvatarOverlayForm avatarOverlay;
     private readonly LiveAvatarPanel avatarVisual = new();
+
+    // The empty-chat welcome shows her from the top of her head down to her skirt's hem.
+    internal const float WelcomeFraction = 0.47f;
     private readonly Button avatarZoomButton = new();
     private readonly Label avatarNameLabel = new();
     private readonly Label avatarStatusLabel = new();
@@ -55,7 +63,7 @@ internal sealed partial class SessionListForm : Form
     private bool loadingChatModels;
     private string? modelsForSession;
     private int modelLoadVersion;
-    private readonly Font chatTitleFont = new("Segoe UI Semibold", 10.5f);
+    private readonly Font chatTitleFont = new("Segoe UI Semibold", 11.25f);
     private string? hearingText; // #619: live partial transcript, null when none
     private readonly Font avatarNameFont;
     private readonly Font avatarStatusFont;
@@ -73,7 +81,7 @@ internal sealed partial class SessionListForm : Form
     // the open chat, and 12px time) -- built once, not per row painted.
     private readonly Font sessionTitleFont = new("Segoe UI", 9.75f);
     private readonly Font activeSessionFont = new("Segoe UI Semibold", 9.75f);
-    private readonly Font sessionTimeFont = new("Segoe UI", 9f);
+    private readonly Font sessionTimeFont = new("Segoe UI", 8.25f);
     private readonly ImageList sessionRowHeight = new();
     private readonly Font messageBoxFont;
     private readonly MessageQueueStrip messageQueue = new();
@@ -83,6 +91,8 @@ internal sealed partial class SessionListForm : Form
     // Q11: flips Send to Stop while she's replying.
     // ponytail: polls VoiceLoop.IsIdle rather than an event on every mode change; 4 cheap reads a second.
     private readonly System.Windows.Forms.Timer sendButtonTimer = new() { Interval = 250 };
+    private readonly System.Windows.Forms.Timer runningTasksTimer = new() { Interval = 15000 };
+    private int runningTasks;
     private readonly System.Collections.Generic.HashSet<string> offeredProposalIds = new();
 
     // Mirrors VoiceLoop.CurrentSessionId -- null until something is
@@ -112,6 +122,7 @@ internal sealed partial class SessionListForm : Form
         this.voiceLoop = voiceLoop;
         this.avatarOverlay = avatarOverlay;
         this.backendLog = backendLog;
+        ChatView.UserName = ManaSettingsStore.Load().UserName; // Settings > General > Your name
         chatView = chatLog;
         // #1337: a sub-agent's or finished task's line in the chat.
         chatView.OpenTask = (id, title, running) =>
@@ -173,22 +184,17 @@ internal sealed partial class SessionListForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         DarkTheme.ApplyForm(this);
 
-        newChatButton.Text = "+ New chat";
+        // The mockups' New chat: an accent pill, a plus and the words centred.
+        newChatButton.Text = "New chat";
+        newChatButton.AccessibleName = "New chat";
         newChatButton.Dock = DockStyle.Top;
-        newChatButton.Height = 36;
-        newChatButton.TextAlign = ContentAlignment.MiddleLeft; // the #652 mockup's
-        newChatButton.Padding = new Padding(6, 0, 0, 0);
+        newChatButton.Height = 34;
         newChatButton.Click += async (_, _) => await StartNewChatAsync();
-        // #538's own new-chat button is a solid accent CTA, not the
-        // muted flat style DarkTheme.ApplyButton gives every other button
-        // in this window -- matched here instead of through that shared
-        // helper, which stays as-is for Settings' own buttons. The Mana
-        // preset draws it as glass instead.
         newChatButton.FlatStyle = FlatStyle.Flat;
-        newChatButton.BackColor = DarkTheme.Accent;
-        newChatButton.ForeColor = DarkTheme.OnAccent;
+        newChatButton.BackColor = DarkTheme.Background;
         newChatButton.FlatAppearance.BorderSize = 0;
-        GlassSurface.MakeGlassButton(newChatButton);
+        newChatButton.Cursor = Cursors.Hand;
+        newChatButton.Paint += (_, e) => PaintPillButton(e.Graphics, newChatButton);
 
         searchBox.Dock = DockStyle.Top;
         searchBox.PlaceholderText = "Search chats";
@@ -201,7 +207,7 @@ internal sealed partial class SessionListForm : Form
             await SearchContentAsync();
         };
 
-        list.Dock = DockStyle.Fill;
+        list.Dock = DockStyle.None;
         list.View = View.Details;
         list.HeaderStyle = ColumnHeaderStyle.None; // sidebar look, not a data grid
         list.FullRowSelect = true;
@@ -224,11 +230,18 @@ internal sealed partial class SessionListForm : Form
         // worse native experience than the sidebar's always-visible list
         // made single-click safe for.
         list.ItemActivate += (_, _) => SwitchToSelected(); // double-click or Enter
+        // A heading row (Tag null) is never selected, so every SelectedItems[0].Tag is a chat's id.
+        list.ItemSelectionChanged += (_, e) =>
+        {
+            if (e.IsSelected && e.Item?.Tag is null && e.Item is { } heading) heading.Selected = false;
+        };
         list.AfterLabelEdit += OnAfterLabelEdit;
 
         var contextMenu = new ContextMenuStrip();
         AddMoveToProjectMenu(contextMenu);
         contextMenu.Items.Add("Switch to session", null, (_, _) => SwitchToSelected());
+        var pinItem = contextMenu.Items.Add("Pin", null, (_, _) => TogglePinSelected());
+        contextMenu.Opening += (_, _) => pinItem.Text = list.SelectedItems.Count > 0 && pinnedChats.Contains((string)list.SelectedItems[0].Tag!) ? "Unpin" : "Pin";
         contextMenu.Items.Add("Rename", null, (_, _) =>
         {
             if (list.SelectedItems.Count > 0)
@@ -272,7 +285,7 @@ internal sealed partial class SessionListForm : Form
         // avatarCard here, which isn't declared yet at this point in the
         // constructor. Anchor (Top|Right) below keeps it glued to
         // avatarCard's right edge on every later resize.
-        avatarZoomButton.Location = new Point(220 - 20 - 8, 8);
+        avatarZoomButton.Location = new Point(220 - 20 - 6, 6);
         avatarZoomButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         avatarZoomButton.FlatStyle = FlatStyle.Flat;
         avatarZoomButton.BackColor = DarkTheme.Panel2;
@@ -325,8 +338,8 @@ internal sealed partial class SessionListForm : Form
         // Width matches the sidebar's starting width so avatarZoomButton's
         // right-edge anchor is measured against the width it's placed for
         // (a Panel starts 200 wide, which anchored the button off the card).
-        var avatarCard = new Panel { Dock = DockStyle.Bottom, Width = 220, Height = 62 + avatarVisual.Height, BackColor = DarkTheme.Panel, Padding = new Padding(10) };
-        avatarCard.Paint += OnPaintAvatarCardBorder;
+        // The mockups' card: her in a rounded gradient tile at the top of the sidebar, her name and status under it.
+        var avatarCard = new Panel { Dock = DockStyle.Top, Width = 220, Height = 46 + avatarVisual.Height, BackColor = DarkTheme.Background, Padding = new Padding(0, 0, 0, 2) };
         // WinForms docks the LAST-added child first (see the main
         // Controls.Add block below), so visual/name/status -- top to
         // bottom, the reference's own markup order -- go in reversed. The
@@ -343,11 +356,74 @@ internal sealed partial class SessionListForm : Form
         // fire into disposed controls on every future avatar state change.
         avatarOverlay.StateChanged += OnAvatarStateChanged;
 
+        // Mockup B: while the chat is empty she stands in the middle of it and her card steps aside, so she's never
+        // drawn twice; the first message sends her back to the card.
+        var cardHeight = avatarVisual.Height;
+        void ShowWelcomeAvatar(bool empty)
+        {
+            if (IsDisposed || empty == (avatarVisual.Parent == chatView.WelcomeAvatarSlot))
+            {
+                return;
+            }
+            SuspendLayout();
+            if (empty)
+            {
+                cardHeight = avatarVisual.Height;
+                avatarVisual.Fraction = WelcomeFraction;
+                avatarVisual.Dock = DockStyle.Fill;
+                chatView.WelcomeAvatarSlot.Controls.Add(avatarVisual);
+                avatarCard.Visible = false;
+            }
+            else
+            {
+                avatarVisual.Fraction = null;
+                avatarVisual.Dock = DockStyle.Top;
+                avatarVisual.Height = cardHeight;
+                avatarCard.Controls.Add(avatarVisual); // last added docks first: back on top of the card
+                avatarCard.Visible = true;
+            }
+            ResumeLayout(true);
+            UpdateAvatarMirror();
+        }
+        chatView.EmptyChanged += ShowWelcomeAvatar;
+        ShowWelcomeAvatar(chatView.IsEmpty);
+        UpdateWelcomeSuggestions();
+
         // 10px around and between everything, as in the #652 mockup.
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = DarkTheme.Background, Padding = new Padding(10) };
-        var searchField = GlassSurface.Field(searchBox, new Padding(10, 8, 10, 0));
-        searchField.Dock = DockStyle.Top;
-        searchField.Height = 32;
+        // The mockups' search: a pill with a magnifier.
+        searchBox.BorderStyle = BorderStyle.None;
+        searchBox.Dock = DockStyle.Fill;
+        var searchField = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(32, 8, 36, 0), BackColor = Color.Transparent, Cursor = Cursors.IBeam };
+        searchField.Controls.Add(searchBox);
+        var projectFilter = BuildProjectControls(); // the funnel at the pill's end
+        projectFilter.Size = new Size(26, 24);
+        searchField.Controls.Add(projectFilter);
+        searchField.Resize += (_, _) => projectFilter.Location = new Point(searchField.Width - 34, (searchField.Height - projectFilter.Height) / 2);
+        searchField.MouseDown += (_, _) => searchBox.Focus();
+        searchField.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            var bounds = searchField.ClientRectangle;
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, searchField, bounds);
+            }
+            else
+            {
+                using var clear = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(clear, bounds);
+            }
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var pill = new RectangleF(0.5f, 0.5f, bounds.Width - 1.5f, bounds.Height - 1.5f);
+            using var shape = RoundedRect(pill, pill.Height / 2);
+            using var fill = new SolidBrush(searchBox.BackColor);
+            g.FillPath(fill, shape);
+            using var edge = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
+            g.DrawPath(edge, shape);
+            StrokeIcon(g, new RectangleF(12, (bounds.Height - 14) / 2f, 14, 14), DarkTheme.Muted, IconSearch);
+        };
+        searchBox.BackColorChanged += (_, _) => searchField.Invalidate();
         Panel Gap(DockStyle dock) => new() { Dock = dock, Height = 8, BackColor = Color.Transparent };
         // Reverse dock order again (last added docks first): the avatar
         // card (bottom) and new-chat button (top) stake their strips before
@@ -363,14 +439,19 @@ internal sealed partial class SessionListForm : Form
         };
         listStatus.Controls.Add(listStatusLabel);
         listStatus.Controls.Add(listRetryButton);
-        sidebar.Controls.Add(list);
+        // Top to bottom, as in the mockups: her card, search (with the project filter), New chat, the list.
+        // The list control leaves a 2px strip over its first row and a 1px column down its left edge in its own
+        // background, which shows as lines on the glass; its host tucks those out of sight.
+        var listHost = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        listHost.Controls.Add(list);
+        listHost.Resize += (_, _) => list.Bounds = new Rectangle(-1, -2, listHost.Width + 1, listHost.Height + 2);
+        sidebar.Controls.Add(listHost);
         sidebar.Controls.Add(listStatus);
+        sidebar.Controls.Add(Gap(DockStyle.Top));
+        sidebar.Controls.Add(newChatButton);
         sidebar.Controls.Add(Gap(DockStyle.Top));
         sidebar.Controls.Add(searchField);
         sidebar.Controls.Add(Gap(DockStyle.Top));
-        sidebar.Controls.Add(newChatButton);
-        sidebar.Controls.Add(BuildProjectControls());
-        sidebar.Controls.Add(Gap(DockStyle.Bottom));
         sidebar.Controls.Add(avatarCard);
 
         // Drag-resizable. MinSize (200) is the floor: below that the
@@ -380,7 +461,15 @@ internal sealed partial class SessionListForm : Form
         // rest of the window (tool rail/panel + chat) to stay usable.
         // Splitter has no built-in max, so SplitterMoved clamps the
         // other end (380) after each drag.
+        // Drawn as the glass behind it in the glass presets: the chat pane's own edge is the divider there.
         var sidebarSplitter = new Splitter { Dock = DockStyle.Left, Width = 4, BackColor = DarkTheme.Border, MinSize = 200, MinExtra = 300 };
+        sidebarSplitter.Paint += (_, e) =>
+        {
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(e.Graphics, sidebarSplitter, sidebarSplitter.ClientRectangle);
+            }
+        };
         sidebarSplitter.SplitterMoved += (_, _) =>
         {
             if (sidebar.Width > 380)
@@ -396,6 +485,40 @@ internal sealed partial class SessionListForm : Form
         // Settings docked at the bottom.
         // #1426: Settings is its own window again, so its cog opens that
         // rather than a tool in the panel.
+        // Mockup D: Focus mode, for long sessions -- Mana night with the chat list put away, until it's pressed again.
+        // The saved theme isn't touched; leaving puts the window back as it was.
+        string? focusReturnPreset = null;
+        var sidebarBeforeFocus = true;
+        var focusButton = MakeRailButton("focus", "Focus mode: Mana night, chat list put away", active: () => focusReturnPreset is not null);
+        focusButton.Dock = DockStyle.Bottom;
+        focusButton.Click += (_, _) =>
+        {
+            var theme = ManaThemeSettings.Load();
+            if (focusReturnPreset is null)
+            {
+                focusReturnPreset = theme.Preset;
+                sidebarBeforeFocus = sidebar.Visible;
+                DarkTheme.ApplyPresetLive("manaNight", theme.AccentHex);
+                sidebar.Visible = sidebarSplitter.Visible = false;
+            }
+            else
+            {
+                DarkTheme.ApplyPresetLive(focusReturnPreset, theme.AccentHex);
+                focusReturnPreset = null;
+                sidebar.Visible = sidebarSplitter.Visible = sidebarBeforeFocus;
+            }
+            focusButton.Invalidate();
+        };
+        toolRail.Controls.Add(focusButton);
+        // The mockups keep the sidebar toggle on the rail, just above Settings (not inside the sidebar it hides).
+        var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
+        sidebarToggleButton.Dock = DockStyle.Bottom;
+        sidebarToggleButton.Click += (_, _) =>
+        {
+            sidebar.Visible = !sidebar.Visible;
+            sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
+        };
+        toolRail.Controls.Add(sidebarToggleButton);
         var settingsButton = MakeRailButton("settings", "Settings");
         settingsButton.Dock = DockStyle.Bottom;
         settingsButton.Click += (_, _) => OpenSettings();
@@ -412,7 +535,26 @@ internal sealed partial class SessionListForm : Form
         });
         artifacts.Added += OnArtifactAdded;
         // #1125: its Self-work section opens the "What I'm working on" window (#1016).
-        RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient));
+        // The mockups' count on its icon: how many are running (polled every 15 s while the window shows).
+        var tasksButton = RegisterRailTool("background-tasks", "tasks", "Background tasks", () => new BackgroundTasksPanel(backendClient), badge: () => runningTasks);
+        runningTasksTimer.Tick += async (_, _) =>
+        {
+            if (!Visible || WindowState == FormWindowState.Minimized) return;
+            try
+            {
+                var running = (await backendClient.GetBackgroundTasksAsync()).Count(t => t.Status == "running");
+                if (!IsDisposed && running != runningTasks)
+                {
+                    runningTasks = running;
+                    tasksButton.Invalidate();
+                }
+            }
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+            {
+                // the backend isn't up (or this one has no tasks route): no count
+            }
+        };
+        runningTasksTimer.Start();
         // #1121: the commands Mana runs, and my own shells in the repo folder.
         RegisterRailTool("terminal", "terminal", "Terminal",
             () => new TerminalTool(backendClient, ManaApplicationContext.FindRootDirectory(), text => _ = SendToManaAsync(text)));
@@ -429,6 +571,7 @@ internal sealed partial class SessionListForm : Form
         waitingButton.Dock = DockStyle.Bottom;
 
         var chatArea = new Panel { Dock = DockStyle.Fill, BackColor = DarkTheme.Background };
+        GlassSurface.SetPane(this, chatArea);
         // #1118: clicking back into the chat closes an unpinned tool panel.
         // (The chat takes focus on a click; MouseDown covers a click while
         // it already has it.)
@@ -463,36 +606,7 @@ internal sealed partial class SessionListForm : Form
             RefreshAvatarCard(avatarOverlay.CurrentState);
         };
 
-        // Same collapse toggle as Claude's own UI, and the design
-        // reference's own #sidebarToggleBtn -- in the chat header (not a
-        // child of `sidebar` itself, which is what gets hidden; a button
-        // that disappears along with the panel it opens would have no way
-        // to bring it back).
-        var sidebarToggleButton = MakeRailButton("sidebar", "Toggle sidebar");
-        sidebarToggleButton.Dock = DockStyle.Left;
-        sidebarToggleButton.Width = 34;
-        sidebarToggleButton.Click += (_, _) =>
-        {
-            sidebar.Visible = !sidebar.Visible;
-            sidebarSplitter.Visible = sidebar.Visible; // otherwise the splitter bar is left stranded when the sidebar is hidden
-        };
-
-        // #681: same toggle as the tray's Start/Stop listening item. Its
-        // label follows VoiceLoop on the status timer, since the tray and the
-        // mic button can flip it too.
-        var listenButton = new Button { Dock = DockStyle.Right, Width = 120 };
-        DarkTheme.ApplyButton(listenButton);
-        GlassSurface.MakeGlassButton(listenButton);
-        void RefreshListenButton() => listenButton.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
-        listenButton.Click += (_, _) =>
-        {
-            voiceLoop.ToggleListening();
-            RefreshListenButton();
-        };
-        sendButtonTimer.Tick += (_, _) => RefreshListenButton();
-        RefreshListenButton();
-
-        // #642: the context meter, just left of the listen toggle. Hover for
+        // #642: the context meter, at the header's right. Hover for
         // the breakdown; held up to 30s since it's several lines to read.
         contextMeterLabel.Dock = DockStyle.Right;
         contextMeterLabel.AutoSize = true;
@@ -513,15 +627,56 @@ internal sealed partial class SessionListForm : Form
         chatTitleLabel.ForeColor = DarkTheme.Text;
         chatTitleLabel.BackColor = DarkTheme.Background;
         chatTitleLabel.Text = "New chat";
-        var chatHeader = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = DarkTheme.Background, Padding = new Padding(12, 4, 12, 4) };
+        var chatHeader = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = DarkTheme.Background, Padding = new Padding(8, 9, 12, 9) };
         chatHeader.Paint += (_, e) =>
         {
-            using var line = new Pen(DarkTheme.IsGlass ? Color.FromArgb(36, 106, 95, 184) : DarkTheme.Border);
-            e.Graphics.DrawLine(line, 0, chatHeader.Height - 1, chatHeader.Width, chatHeader.Height - 1);
+            if (!DarkTheme.IsGlass) // the glass chat is its own panel; flat themes keep the rule
+            {
+                using var line = new Pen(DarkTheme.Border);
+                e.Graphics.DrawLine(line, 0, chatHeader.Height - 1, chatHeader.Width, chatHeader.Height - 1);
+            }
         };
-        // Last added docks first: toggle left, listen toggle outermost right.
+        // The mockups' model chip: the chat's model in a soft accent pill, opening the models to pick from. The combo
+        // stays as the state, hidden.
+        var modelChip = new Button { Dock = DockStyle.Right, FlatStyle = FlatStyle.Flat, BackColor = DarkTheme.Background, Cursor = Cursors.Hand, AccessibleName = "Chat model", UseMnemonic = false };
+        modelChip.FlatAppearance.BorderSize = 0;
+        void FitModelChip()
+        {
+            modelChip.Text = chatModelPicker.SelectedItem is ManaChatModel picked ? picked.Label : "Model";
+            modelChip.Width = TextRenderer.MeasureText(modelChip.Text, ChipFont).Width + 22;
+            modelChip.Invalidate();
+        }
+        modelChip.Paint += (_, e) => PaintModelChip(e.Graphics, modelChip);
+        var modelMenu = new ContextMenuStrip();
+        modelChip.Disposed += (_, _) => modelMenu.Dispose();
+        modelChip.Click += async (_, _) =>
+        {
+            await RefreshChatModelsAsync();
+            if (IsDisposed)
+            {
+                return;
+            }
+            modelMenu.Items.Clear();
+            foreach (var model in chatModelPicker.Items.OfType<ManaChatModel>())
+            {
+                var pick = new ToolStripMenuItem(model.Label) { Checked = Equals(chatModelPicker.SelectedItem, model), Enabled = chatModelPicker.Enabled };
+                pick.Click += (_, _) => chatModelPicker.SelectedItem = model;
+                modelMenu.Items.Add(pick);
+            }
+            if (modelMenu.Items.Count == 0)
+            {
+                modelMenu.Items.Add(new ToolStripMenuItem("Couldn't load the models") { Enabled = false });
+            }
+            modelMenu.Show(modelChip, new Point(modelChip.Width - modelMenu.PreferredSize.Width, modelChip.Height + 2));
+        };
+        chatModelPicker.SelectedIndexChanged += (_, _) => FitModelChip();
+        chatModelPicker.EnabledChanged += (_, _) => modelChip.Enabled = chatModelPicker.Enabled;
+        chatModelPicker.Visible = false;
+        FitModelChip();
+        // Last added docks first: the title fills; the chip, meter and mic on the right.
         chatHeader.Controls.Add(chatTitleLabel);
         chatHeader.Controls.Add(chatModelPicker);
+        chatHeader.Controls.Add(modelChip);
         chatModelPicker.BackColor = DarkTheme.Panel2;
         chatModelPicker.ForeColor = DarkTheme.Text;
         chatModelPicker.DropDown += async (_, _) => await RefreshChatModelsAsync();
@@ -535,8 +690,6 @@ internal sealed partial class SessionListForm : Form
             finally { if (!IsDisposed) { chatModelPicker.Enabled = true; await RefreshChatModelsAsync(); } }
         };
         chatHeader.Controls.Add(contextMeterLabel);
-        chatHeader.Controls.Add(listenButton);
-        chatHeader.Controls.Add(sidebarToggleButton);
         chatArea.Controls.Add(chatHeader);
 
         // Dock order matters, and WinForms docks in REVERSE of the Controls
@@ -567,9 +720,8 @@ internal sealed partial class SessionListForm : Form
         // -- directly). Same pattern as ArtifactViewerForm/QuickEntryForm.
         _ = Handle;
 
-        // The #652 mockup's shimmer and its delays: title strip, Mana's
-        // bubbles, the open chat's card, the avatar card, the rail.
-        GlassSurface.Shimmer(this, 0, () => new Rectangle(0, 0, ClientSize.Width, CaptionHeight));
+        // The #652 mockup's shimmer and its delays: Mana's bubbles, the open
+        // chat's card, the avatar card, the rail. (The title has no strip to shine.)
         // ponytail: repaints the whole chat during its sweep; limit it to her visible bubbles if that ever shows up in CPU use.
         GlassSurface.Shimmer(chatLog, 1100);
         GlassSurface.Shimmer(list, 2200, () => list.Items.Cast<ListViewItem>().FirstOrDefault(i => (string?)i.Tag == activeSessionId)?.Bounds ?? Rectangle.Empty);
@@ -620,12 +772,46 @@ internal sealed partial class SessionListForm : Form
         send.Paint += (_, e) => DrawSendButton(e.Graphics, send, box.BackColor);
         railToolTip.SetToolTip(send, MessageBoxHint);
 
-        // The #652 mockup's push-to-talk button: counts as saying her name,
-        // like clicking her on the overlay (listening comes on if it was off).
-        var mic = ToolbarIconButton("Push to talk");
-        mic.Paint += (_, e) => { ShrinkToolbarIcon(e.Graphics, mic); DrawMicIcon(e.Graphics, mic.ClientRectangle, mic.ForeColor); };
-        mic.Click += (_, _) => voiceLoop.Wake();
-        railToolTip.SetToolTip(mic, "Talk to Mana: the next thing you say is for her");
+        // The mockups' one mic (the header's listening toggle folded in, #681): while she isn't listening it's struck
+        // through and a click turns listening on with the next thing you say for her, like saying her name; while she
+        // listens it's in the accent and a click stops listening. Its menu has both, whatever the state.
+        var mic = ToolbarIconButton("Start listening");
+        mic.Paint += (_, e) =>
+        {
+            ShrinkToolbarIcon(e.Graphics, mic);
+            var listening = voiceLoop.IsListening;
+            var color = listening ? DarkTheme.Accent : mic.ForeColor;
+            DrawMicIcon(e.Graphics, mic.ClientRectangle, color);
+            if (!listening)
+            {
+                using var pen = new Pen(color, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                e.Graphics.DrawLine(pen, mic.Width * 0.26f, mic.Height * 0.24f, mic.Width * 0.74f, mic.Height * 0.76f);
+            }
+        };
+        void RefreshMic()
+        {
+            var text = voiceLoop.IsListening ? "Stop listening" : "Talk to Mana: start listening, the next thing you say is for her";
+            if (mic.AccessibleName != text)
+            {
+                mic.AccessibleName = text;
+                railToolTip.SetToolTip(mic, text);
+                mic.Invalidate();
+            }
+        }
+        mic.Click += (_, _) =>
+        {
+            if (voiceLoop.IsListening) voiceLoop.ToggleListening();
+            else voiceLoop.Wake(); // turns listening on too
+            RefreshMic();
+        };
+        var micMenu = new ContextMenuStrip();
+        micMenu.Items.Add("Talk to Mana now", null, (_, _) => { voiceLoop.Wake(); RefreshMic(); });
+        var listenItem = micMenu.Items.Add("Stop listening", null, (_, _) => { voiceLoop.ToggleListening(); RefreshMic(); });
+        micMenu.Opening += (_, _) => listenItem.Text = voiceLoop.IsListening ? "Stop listening" : "Start listening";
+        mic.ContextMenuStrip = micMenu;
+        mic.Disposed += (_, _) => micMenu.Dispose();
+        sendButtonTimer.Tick += (_, _) => RefreshMic(); // the tray, a hotkey or the overlay can flip it too
+        RefreshMic();
 
         // #1325: Attach button (paperclip) for documents and images
         var attach = ToolbarIconButton("Attach files");
@@ -660,9 +846,10 @@ internal sealed partial class SessionListForm : Form
         void ShowThinkingChip()
         {
             var shown = manaThinkingOn && ThinkingLevelPicker.IndexOf(thinkingLevel) < ThinkingLevelPicker.IndexOf("high") ? "high" : thinkingLevel;
-            think.Text = $"Thinking: {ThinkingLevelPicker.LabelOf(shown)}";
-            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 28;
-            railToolTip.SetToolTip(think, manaThinkingOn ? "Mana turned deep thinking on; pick a lower level to end it" : "How hard she thinks before answering");
+            think.Text = ThinkingLevelPicker.LabelOf(shown);
+            think.AccessibleName = $"Thinking: {think.Text}";
+            think.Width = TextRenderer.MeasureText(think.Text, think.Font).Width + 34; // the spark, the words, the pill's ends
+            railToolTip.SetToolTip(think, manaThinkingOn ? "Thinking: Mana turned deep thinking on; pick a lower level to end it" : "Thinking: how hard she thinks before answering");
         }
         ShowThinkingChip();
         think.Click += (_, _) =>
@@ -710,9 +897,9 @@ internal sealed partial class SessionListForm : Form
         // message starts a research job in this chat instead of a reply;
         // its progress shows beside the toggle, the round button stops it,
         // and the report arrives as her message. Not saved, like Think.
-        var research = ToolbarToggle("Deep research", "Deep research");
+        var research = ToolbarToggle("Deep research");
         railToolTip.SetToolTip(research, "Deep research: your next message becomes a research job -- she reads the web and comes back with a cited report");
-        var researchStatus = new Label { Dock = DockStyle.Left, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(8, 3, 0, 0), BackColor = Color.Transparent, Font = ToolbarFont };
+        var researchStatus = new Label { Dock = DockStyle.Right, AutoSize = true, ForeColor = DarkTheme.Muted, Padding = new Padding(0, 0, 6, 0), TextAlign = ContentAlignment.MiddleRight, Font = ToolbarFont };
         string? researchJobId = null;
         async Task ResearchAsync(string question)
         {
@@ -930,39 +1117,63 @@ internal sealed partial class SessionListForm : Form
             await sending;
         };
 
-        // #1426: like Claude's composer -- a rounded field holding the text
-        // and the round send button, then a row of small controls under it.
+        // The mockups' composer: one pill holding everything -- the paperclip, the text, then the thinking chip, Deep
+        // research, the mic and the round send button. It rounds less as it grows past a line.
         box.BorderStyle = BorderStyle.None;
-        var sendHost = new Panel { Dock = DockStyle.Right, Width = 40, BackColor = Color.Transparent };
-        sendHost.Controls.Add(send);
-        sendHost.Resize += (_, _) => send.Location = new Point(sendHost.Width - send.Width, sendHost.Height - send.Height);
-        var field = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 8, 8), BackColor = Color.Transparent };
+        var field = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 7, 7, 7), BackColor = Color.Transparent };
         field.Paint += (_, e) =>
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var shape = RoundedRect(new RectangleF(0.5f, 0.5f, field.Width - 1.5f, field.Height - 1.5f), 14);
+            var bounds = new RectangleF(0.5f, 0.5f, field.Width - 1.5f, field.Height - 1.5f);
+            using var shape = RoundedRect(bounds, Math.Min(bounds.Height / 2, 22));
             using var fill = new SolidBrush(box.BackColor);
             e.Graphics.FillPath(fill, shape);
-            using var edge = new Pen(DarkTheme.IsGlass ? Color.FromArgb(70, 106, 95, 184) : DarkTheme.Border);
+            using var edge = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
             e.Graphics.DrawPath(edge, shape);
         };
         field.Resize += (_, _) => field.Invalidate();
         field.MouseDown += (_, _) => box.Focus();
-        field.Controls.Add(box);
-        field.Controls.Add(sendHost);
+        // Each one on the field's own colour, so the pill reads as one piece.
+        foreach (var control in new Control[] { attach, mic, send, think, research, researchStatus })
+        {
+            control.BackColor = box.BackColor;
+            box.BackColorChanged += (_, _) => control.BackColor = box.BackColor;
+        }
+        foreach (var button in new[] { attach, mic, send })
+        {
+            button.FlatAppearance.MouseOverBackColor = button.FlatAppearance.MouseDownBackColor = box.BackColor;
+        }
         box.BackColorChanged += (_, _) => field.Invalidate();
-
-        Panel Gap() => new() { Dock = DockStyle.Left, Width = 6, BackColor = Color.Transparent };
-        var toolbar = new Panel { Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(4, 4, 4, 0), BackColor = Color.Transparent };
-        // Docked last-added first: attach on the left, then mic, Think, Deep research and its progress.
-        toolbar.Controls.Add(researchStatus);
-        toolbar.Controls.Add(research);
-        toolbar.Controls.Add(Gap());
-        toolbar.Controls.Add(think);
-        toolbar.Controls.Add(Gap());
-        toolbar.Controls.Add(mic);
-        toolbar.Controls.Add(attach);
-        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(32, 10, 32, 10), BackColor = DarkTheme.Background };
+        // Buttons keep to the pill's first line; the text wraps beside them.
+        Panel Slot(Control control, int width)
+        {
+            var slot = new Panel { Width = width, BackColor = Color.Transparent };
+            control.Dock = DockStyle.None;
+            control.Bounds = new Rectangle(width - control.Width, 0, control.Width, 30);
+            slot.Controls.Add(control);
+            return slot;
+        }
+        send.Size = new Size(30, 30);
+        attach.Width = mic.Width = research.Width = 28;
+        var left = Slot(attach, 32);
+        left.Dock = DockStyle.Left;
+        var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = Padding.Empty };
+        think.Height = research.Height = mic.Height = 30;
+        foreach (var control in new Control[] { think, research, mic, send })
+        {
+            control.Dock = DockStyle.None;
+            control.Margin = new Padding(control == send ? 4 : 2, 0, 0, 0);
+            right.Controls.Add(control);
+        }
+        // Last added docks first: the buttons claim the right, the text the rest.
+        box.Margin = Padding.Empty;
+        var text = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 6, 4, 0), BackColor = Color.Transparent };
+        text.Controls.Add(box);
+        field.Controls.Add(text);
+        field.Controls.Add(researchStatus);
+        field.Controls.Add(right);
+        field.Controls.Add(left);
+        var panel = new Panel { Dock = DockStyle.Bottom, Height = ComposerHeight(1, box.Font.Height), Padding = new Padding(28, 6, 28, 14), BackColor = DarkTheme.Background };
         // Grows with what's typed up to MaxComposerLines, then scrolls.
         // (Changing ScrollBars recreates the box's handle, so only on a change.)
         void FitComposer()
@@ -978,7 +1189,6 @@ internal sealed partial class SessionListForm : Form
         box.TextChanged += (_, _) => FitComposer();
         box.SizeChanged += (_, _) => FitComposer(); // wrapping follows the width
         panel.Controls.Add(field);
-        panel.Controls.Add(toolbar);
         return panel;
     }
 
@@ -1005,12 +1215,13 @@ internal sealed partial class SessionListForm : Form
             return;
         }
         using var pen = new Pen(DarkTheme.OnAccent, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-        g.DrawLine(pen, cx, cy + 6, cx, cy - 6);
-        g.DrawLines(pen, new[] { new PointF(cx - 5, cy - 1), new PointF(cx, cy - 6), new PointF(cx + 5, cy - 1) });
+        // The mockups' arrow, pointing on.
+        g.DrawLine(pen, cx - 5.5f, cy, cx + 5, cy);
+        g.DrawLines(pen, new[] { new PointF(cx + 0.5f, cy - 4.5f), new PointF(cx + 5, cy), new PointF(cx + 0.5f, cy + 4.5f) });
     }
 
     // #1426: the row under the field, a size smaller than the message box.
-    private static readonly Font ToolbarFont = new("Segoe UI", 7.5f);
+    private static readonly Font ToolbarFont = new("Segoe UI", 8.25f);
 
     // The mic and paperclip are drawn 18px; the row draws them 16px.
     private static void ShrinkToolbarIcon(Graphics g, Control button)
@@ -1066,30 +1277,24 @@ internal sealed partial class SessionListForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (DarkTheme.IsGlass)
+            using (var clear = new SolidBrush(ComposerFill(chip)))
             {
-                GlassSurface.PaintGlowBehind(g, chip, chip.ClientRectangle);
-            }
-            else
-            {
-                using var clear = new SolidBrush(DarkTheme.Background);
                 g.FillRectangle(clear, chip.ClientRectangle);
             }
-            var pill = new RectangleF(0.5f, 2.5f, chip.Width - 1.5f, chip.Height - 5.5f);
+            // The mockups' "Auto" chip: a thin pill, a spark and the level, in the accent.
+            var pill = new RectangleF(0.5f, 4.5f, chip.Width - 1.5f, chip.Height - 9.5f);
             using var shape = RoundedRect(pill, pill.Height / 2);
             if (hovered)
             {
-                using var fill = new SolidBrush(DarkTheme.Panel2);
+                using var fill = new SolidBrush(Color.FromArgb(28, DarkTheme.Accent));
                 g.FillPath(fill, shape);
             }
-            using var edge = new Pen(DarkTheme.Border);
+            using var edge = new Pen(Color.FromArgb(70, DarkTheme.Accent));
             g.DrawPath(edge, shape);
-            var text = Rectangle.Round(pill) with { Width = (int)pill.Width - 14 };
-            TextRenderer.DrawText(g, chip.Text, chip.Font, text, DarkTheme.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-            using var pen = new Pen(DarkTheme.Muted, 1.4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            var cx = pill.Right - 14;
-            var cy = pill.Top + pill.Height / 2;
-            g.DrawLines(pen, new[] { new PointF(cx - 3, cy + 1.5f), new PointF(cx, cy - 1.5f), new PointF(cx + 3, cy + 1.5f) });
+            var icon = new RectangleF(pill.X + 8, pill.Y + (pill.Height - 12) / 2, 12, 12);
+            StrokeIcon(g, icon, DarkTheme.Accent, IconSpark);
+            var text = Rectangle.Round(pill) with { X = (int)icon.Right + 3, Width = (int)(pill.Right - icon.Right - 9) };
+            TextRenderer.DrawText(g, chip.Text, chip.Font, text, DarkTheme.Accent, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             if (chip.Focused && GlassSurface.ShowsFocusCues(chip))
             {
                 ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
@@ -1098,24 +1303,17 @@ internal sealed partial class SessionListForm : Form
         return chip;
     }
 
-    // ... and its toggles: an outlined pill sized to its words, filled with
-    // the accent while on.
-    private static CheckBox ToolbarToggle(string text, string name)
+    // ... and Deep research: the mockups' magnifier with a plus, in a soft accent circle while on.
+    private static CheckBox ToolbarToggle(string name)
     {
         var toggle = new CheckBox
         {
             Appearance = Appearance.Button,
-            Text = text,
-            Dock = DockStyle.Left,
             FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.Background,
-            ForeColor = DarkTheme.Muted,
             AccessibleName = name,
             Cursor = Cursors.Hand,
-            Font = ToolbarFont,
         };
         toggle.FlatAppearance.BorderSize = 0;
-        toggle.Width = TextRenderer.MeasureText(text, toggle.Font).Width + 16;
         var hovered = false;
         toggle.MouseEnter += (_, _) => { hovered = true; toggle.Invalidate(); };
         toggle.MouseLeave += (_, _) => { hovered = false; toggle.Invalidate(); };
@@ -1124,40 +1322,67 @@ internal sealed partial class SessionListForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (DarkTheme.IsGlass)
+            using (var clear = new SolidBrush(ComposerFill(toggle)))
             {
-                GlassSurface.PaintGlowBehind(g, toggle, toggle.ClientRectangle);
-            }
-            else
-            {
-                using var clear = new SolidBrush(DarkTheme.Background);
                 g.FillRectangle(clear, toggle.ClientRectangle);
             }
-            var pill = new RectangleF(0.5f, 2.5f, toggle.Width - 1.5f, toggle.Height - 5.5f);
-            using var shape = RoundedRect(pill, pill.Height / 2);
-            if (toggle.Checked || hovered)
+            var side = Math.Min(toggle.Width, toggle.Height) - 2;
+            var circle = new RectangleF((toggle.Width - side) / 2f, (toggle.Height - side) / 2f, side, side);
+            if (toggle.Checked)
             {
-                using var fill = new SolidBrush(toggle.Checked ? DarkTheme.Accent : DarkTheme.Panel2);
-                g.FillPath(fill, shape);
+                using var fill = new SolidBrush(Color.FromArgb(48, DarkTheme.Accent));
+                g.FillEllipse(fill, circle);
             }
-            using var edge = new Pen(toggle.Checked ? DarkTheme.Accent : DarkTheme.Border);
-            g.DrawPath(edge, shape);
-            TextRenderer.DrawText(g, toggle.Text, toggle.Font, Rectangle.Round(pill), toggle.Checked ? DarkTheme.OnAccent : DarkTheme.Text,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            var icon = RectangleF.Inflate(circle, -(side - 16) / 2f, -(side - 16) / 2f);
+            StrokeIcon(g, icon, toggle.Checked ? DarkTheme.Accent : hovered ? DarkTheme.Text : DarkTheme.Muted, IconZoomPlus);
             if (toggle.Focused && GlassSurface.ShowsFocusCues(toggle))
             {
-                ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Rectangle.Round(pill), -3, -3));
+                ControlPaint.DrawFocusRectangle(g, Rectangle.Round(circle));
             }
         };
         return toggle;
     }
 
+    // The composer's own colour behind a control on it (the glass presets make a button's own colour see-through).
+    private static Color ComposerFill(Control control) =>
+        control.BackColor.A == 255 ? control.BackColor : DarkTheme.IsLight ? Color.White : DarkTheme.Panel2;
+
+    // The mockups' icons, on their 16-unit grid.
+    private static void IconSpark(Graphics g, Pen pen) =>
+        g.DrawPolygon(pen, new PointF[] { new(8, 1.5f), new(9.4f, 5.6f), new(13.5f, 7), new(9.4f, 8.4f), new(8, 12.5f), new(6.6f, 8.4f), new(2.5f, 7), new(6.6f, 5.6f) });
+
+    private static void IconSearch(Graphics g, Pen pen)
+    {
+        g.DrawEllipse(pen, 2.5f, 2.5f, 9, 9);
+        g.DrawLine(pen, 10.5f, 10.5f, 14, 14);
+    }
+
+    private static void IconZoomPlus(Graphics g, Pen pen)
+    {
+        g.DrawEllipse(pen, 2.5f, 2.5f, 9, 9);
+        g.DrawLine(pen, 10.5f, 10.5f, 14, 14);
+        g.DrawLine(pen, 5, 7, 9, 7);
+        g.DrawLine(pen, 7, 5, 7, 9);
+    }
+
+    // Strokes a 16-unit icon into `bounds`, 1.3px lines whatever the size.
+    private static void StrokeIcon(Graphics g, RectangleF bounds, Color color, Action<Graphics, Pen> draw)
+    {
+        var state = g.Save();
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TranslateTransform(bounds.X, bounds.Y);
+        var scale = bounds.Width / 16f;
+        g.ScaleTransform(scale, scale);
+        using var pen = new Pen(color, 1.3f / scale) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        draw(g, pen);
+        g.Restore(state);
+    }
+
     private const int MaxComposerLines = 8;
 
-    // #1426: 100px for one line (the field, the row under it and the
-    // margins), a line taller per wrapped or typed line up to MaxComposerLines.
+    // The one-line pill and its margins (64px), a line taller per wrapped or typed line up to MaxComposerLines.
     internal static int ComposerHeight(int lines, int lineHeight) =>
-        100 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
+        64 + ((Math.Clamp(lines, 1, MaxComposerLines) - 1) * lineHeight);
 
 
     // #652 part 6: when a reply finishes, any edits Mana proposed during
@@ -1444,7 +1669,8 @@ internal sealed partial class SessionListForm : Form
                 using var lit = new SolidBrush(DarkTheme.IsGlass ? Color.FromArgb(217, 238, 231, 248) : DarkTheme.Panel2);
                 e.Graphics.FillRectangle(lit, button.ClientRectangle);
             }
-            DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : button.ForeColor, icon);
+            // The mockups' rail icons are a soft periwinkle on the glass, not the grey text colour.
+            DrawRailIcon(e.Graphics, button.ClientRectangle, open ? DarkTheme.Accent : DarkTheme.IsGlass ? Color.FromArgb(190, DarkTheme.Accent) : button.ForeColor, icon);
             if (highlighted?.Invoke() == true)
             {
                 // #1120: something new inside -- an accent dot at the icon's top right.
@@ -1502,6 +1728,17 @@ internal sealed partial class SessionListForm : Form
                 Frame();
                 g.DrawLines(pen, new[] { new PointF(x + 5, y + 6.5f), new PointF(x + 8, y + 9), new PointF(x + 5, y + 11.5f) });
                 g.DrawLine(pen, x + 9.5f, y + 11.5f, x + 13, y + 11.5f);
+                break;
+
+            case "focus": // a crescent moon: Mana night
+                using (var moon = new GraphicsPath())
+                {
+                    // Her body: the outer circle round the left and bottom; the bite: a smaller circle up and right.
+                    moon.AddArc(x + 2.5f, y + 2.5f, 13, 13, 10.4f, 249.2f);
+                    moon.AddArc(x + 7, y, 11, 11, 211.7f, -153.4f);
+                    moon.CloseFigure();
+                    g.DrawPath(pen, moon);
+                }
                 break;
 
             case "artifacts": // a panel on the right
@@ -1607,19 +1844,32 @@ internal sealed partial class SessionListForm : Form
     // last error), except while the avatar shows an activity it doesn't
     // track (dreaming, working, waiting, done). Sentence case ("Idle", not
     // "idle" or "IDLE") matches the reference mock-up's status text.
-    private string StatusLine(AvatarState state)
+    private string StatusLine(AvatarState state) => StatusLine(state, voiceLoop.StatusText, hearingText, moodSummary);
+
+    // The mockups' "happy · working on Folio": at rest (or busy with something of her own) her mood comes first, then
+    // what she's doing; what she hears, says or thinks, and errors, show as they are.
+    internal static string StatusLine(AvatarState state, string voiceStatus, string? hearing, string? mood)
     {
-        if (hearingText is not null)
+        if (hearing is not null)
         {
-            return $"Hearing: \"{hearingText}\"";
+            return $"Hearing: \"{hearing}\"";
         }
-        if (state is AvatarState.Dreaming or AvatarState.Working or AvatarState.Waiting or AvatarState.Done)
+        string? doing = state is AvatarState.Dreaming or AvatarState.Working or AvatarState.Waiting or AvatarState.Done
+            ? state.ToString().ToLowerInvariant()
+            : voiceStatus switch { "Not listening" => "mic off", "Waiting for Mana..." => "listening", _ => null };
+        if (doing is null)
         {
-            var text = state.ToString();
-            return char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant();
+            return voiceStatus;
         }
-        return voiceLoop.StatusText;
+        if (string.IsNullOrWhiteSpace(mood))
+        {
+            return doing == "mic off" ? voiceStatus : char.ToUpperInvariant(doing[0]) + doing[1..];
+        }
+        return $"{mood} · {doing}";
     }
+
+    // Part of #700: her mood in words ("tired, chatty"), read with the chats (RefreshAsync); null until then.
+    private string? moodSummary;
 
     // Same abstract gradient + rounded "silhouette" the reference mock-up
     // uses in place of real Live2D art (see this card's own constructor
@@ -1640,9 +1890,40 @@ internal sealed partial class SessionListForm : Form
             return;
         }
 
-        using (var bgBrush = new LinearGradientBrush(rect, DarkTheme.Panel2, DarkTheme.Panel, LinearGradientMode.Vertical))
+        if (avatarVisual.Parent == chatView.WelcomeAvatarSlot)
         {
-            g.FillRectangle(bgBrush, rect);
+            // In the welcome (mockup B) she stands on the chat's own background, not in a card.
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, avatarVisual, rect);
+            }
+            else
+            {
+                using var plain = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(plain, rect);
+            }
+        }
+        else
+        {
+            // The mockups' tile: lavender to sky (navy-violet at night), rounded, a faint edge.
+            if (DarkTheme.IsGlass)
+            {
+                GlassSurface.PaintGlowBehind(g, avatarVisual, rect);
+            }
+            else
+            {
+                using var plain = new SolidBrush(DarkTheme.Background);
+                g.FillRectangle(plain, rect);
+            }
+            var tile = new RectangleF(0.5f, 0.5f, rect.Width - 1.5f, rect.Height - 1.5f);
+            using var shape = RoundedRect(tile, 14);
+            var (from, to) = DarkTheme.IsLight
+                ? (Color.FromArgb(140, 198, 170, 224), Color.FromArgb(140, 163, 210, 250))
+                : (Color.FromArgb(115, 118, 109, 190), Color.FromArgb(102, 37, 90, 160));
+            using var bgBrush = new LinearGradientBrush(rect, from, to, 160f);
+            g.FillPath(bgBrush, shape);
+            using var edge = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
+            g.DrawPath(edge, shape);
         }
         if (avatarVisual.HasFrame)
         {
@@ -1668,6 +1949,78 @@ internal sealed partial class SessionListForm : Form
         using var blobPath = RoundedRect(blobRect, radius);
         using var blobBrush = new LinearGradientBrush(blobRect, ControlPaint.Light(DarkTheme.Accent, 0.25f), DarkTheme.Accent, LinearGradientMode.Vertical);
         g.FillPath(blobBrush, blobPath);
+    }
+
+    private static readonly Font PillFont = new("Segoe UI Semibold", 9.75f);
+    private static readonly Font ChipFont = new("Segoe UI", 8.25f);
+
+    private static void ClearToBackground(Graphics g, Control control)
+    {
+        if (DarkTheme.IsGlass)
+        {
+            GlassSurface.PaintGlowBehind(g, control, control.ClientRectangle);
+            return;
+        }
+        using var clear = new SolidBrush(DarkTheme.Background);
+        g.FillRectangle(clear, control.ClientRectangle);
+    }
+
+    // The mockups' chip: a soft lavender pill, its words in the accent.
+    private static void PaintModelChip(Graphics g, Button chip)
+    {
+        ClearToBackground(g, chip);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var hot = chip.Enabled && chip.ClientRectangle.Contains(chip.PointToClient(Control.MousePosition));
+        var pill = new RectangleF(0.5f, (chip.Height - 24) / 2f, chip.Width - 1.5f, 24);
+        using (var shape = RoundedRect(pill, 12))
+        using (var fill = new SolidBrush(Color.FromArgb(hot ? 64 : 38, DarkTheme.Accent)))
+        {
+            g.FillPath(fill, shape);
+        }
+        TextRenderer.DrawText(g, chip.Text, ChipFont, Rectangle.Round(pill), chip.Enabled ? DarkTheme.Accent : DarkTheme.Muted,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+        if (chip.Focused && GlassSurface.ShowsFocusCues(chip))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Round(pill));
+        }
+    }
+
+
+    // An accent pill with a plus before its words (the mockups' New chat).
+    private static void PaintPillButton(Graphics g, Button button)
+    {
+        var bounds = button.ClientRectangle;
+        if (DarkTheme.IsGlass)
+        {
+            GlassSurface.PaintGlowBehind(g, button, bounds);
+        }
+        else
+        {
+            using var clear = new SolidBrush(DarkTheme.Background);
+            g.FillRectangle(clear, bounds);
+        }
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var hot = button.Enabled && bounds.Contains(button.PointToClient(Control.MousePosition));
+        var pill = new RectangleF(0.5f, 0.5f, bounds.Width - 1.5f, bounds.Height - 1.5f);
+        using (var shape = RoundedRect(pill, pill.Height / 2))
+        using (var fill = new SolidBrush(!button.Enabled ? Color.FromArgb(140, DarkTheme.Accent) : hot ? ControlPaint.Light(DarkTheme.Accent, 0.2f) : DarkTheme.Accent))
+        {
+            g.FillPath(fill, shape);
+        }
+        var text = TextRenderer.MeasureText(g, button.Text, PillFont, bounds.Size, TextFormatFlags.NoPadding);
+        const int icon = 10, gap = 7;
+        var left = (bounds.Width - (icon + gap + text.Width)) / 2f;
+        var cy = bounds.Height / 2f;
+        using (var pen = new Pen(DarkTheme.OnAccent, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawLine(pen, left, cy, left + icon, cy);
+            g.DrawLine(pen, left + icon / 2f, cy - icon / 2f, left + icon / 2f, cy + icon / 2f);
+        }
+        TextRenderer.DrawText(g, button.Text, PillFont, new Point((int)(left + icon + gap), (bounds.Height - text.Height) / 2), DarkTheme.OnAccent, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+        if (button.Focused && GlassSurface.ShowsFocusCues(button))
+        {
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(bounds, -3, -3));
+        }
     }
 
     private static GraphicsPath RoundedRect(RectangleF rect, float radius)
@@ -2189,6 +2542,15 @@ internal sealed partial class SessionListForm : Form
         listError = null; // loaded, so an earlier load error is stale
         ShowSessions();
         _ = ReadArtifactHistoryAsync();
+        try
+        {
+            moodSummary = (await backendClient.GetMoodAsync()).Summary;
+            if (!IsDisposed) RefreshAvatarCard(avatarOverlay.CurrentState);
+        }
+        catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or System.Collections.Generic.KeyNotFoundException)
+        {
+            Console.WriteLine($"SessionListForm: couldn't read her mood. {ex.Message}");
+        }
     }
 
     private void SetListError(string? error, Func<Task>? retry = null)
@@ -2256,25 +2618,53 @@ internal sealed partial class SessionListForm : Form
     {
         list.BeginUpdate();
         list.Items.Clear();
-        list.Groups.Clear();
-        foreach (var session in sessions.Where(s => MatchesProject(s) && (SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId))))
+        MarkActiveChatSeen();
+        var now = DateTimeOffset.Now;
+        // The mockups' sidebar: Pinned, then Today, Yesterday and Earlier, each under a small heading row.
+        var shown = sessions.Where(s => MatchesProject(s) && (SessionListFormatter.MatchesSearch(s, searchBox.Text) || contentMatches.Contains(s.SessionId)));
+        foreach (var section in shown.GroupBy(s => SessionListFormatter.Section(s, pinnedChats.Contains(s.SessionId), now))
+                     .OrderBy(g => Array.IndexOf(SessionListFormatter.Sections, g.Key)))
         {
-            var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
+            list.Items.Add(new ListViewItem(section.Key)); // a heading: no Tag
+            foreach (var session in section)
             {
-                Tag = session.SessionId,
-                ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
-            };
-            item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, DateTimeOffset.Now));
-            var groupKey = session.ProjectId is { } id ? $"project:{id}" : "ungrouped";
-            var group = list.Groups[groupKey];
-            if (group is null) { group = new ListViewGroup(groupKey, session.ProjectName ?? "Ungrouped"); list.Groups.Add(group); }
-            item.Group = group;
-            list.Items.Add(item);
+                var item = new ListViewItem(SessionListFormatter.FormatDisplayName(session))
+                {
+                    Tag = session.SessionId,
+                    ToolTipText = SessionListFormatter.FormatUpdatedAt(session.UpdatedAt),
+                };
+                item.SubItems.Add(SessionListFormatter.FormatRelative(session.UpdatedAt, now));
+                list.Items.Add(item);
+            }
         }
         list.EndUpdate();
         FitSessionColumn();
         UpdateListStatus();
         ShowChatTitle();
+        UpdateWelcomeSuggestions();
+    }
+
+    // Mockup B's cards: pick up your two most recent chats, or ask what you missed (put in the box, to send or edit).
+    private void UpdateWelcomeSuggestions()
+    {
+        var suggestions = sessions
+            .Where(session => session.SessionId != activeSessionId && !string.IsNullOrWhiteSpace(session.Name))
+            .OrderByDescending(session => session.UpdatedAt ?? "", StringComparer.Ordinal)
+            .Take(2)
+            .Select(session => ($"Pick up \u201c{SessionListFormatter.FormatDisplayName(session)}\u201d", (Action)(() => SwitchTo(session.SessionId))))
+            .ToList();
+        suggestions.Add(("What did I miss today?", () => PrefillMessage("What did I miss today?")));
+        chatView.SetWelcomeSuggestions(suggestions);
+    }
+
+    private void PrefillMessage(string text)
+    {
+        if (messageInputBox is { } box)
+        {
+            box.Text = text;
+            box.SelectionStart = box.Text.Length;
+            box.Focus();
+        }
     }
 
     private void ShowChatTitle()
@@ -2305,7 +2695,7 @@ internal sealed partial class SessionListForm : Form
     internal static string ChatTitle(System.Collections.Generic.IReadOnlyList<ManaSession> sessions, string? activeSessionId) =>
         sessions.FirstOrDefault(s => s.SessionId == activeSessionId) is { } open ? SessionListFormatter.FormatDisplayName(open) : "New chat";
 
-    private const int SessionRowHeight = 52; // 8px padding, title, 2px, time, 8px padding, 2px between rows
+    private const int SessionRowHeight = 36; // one line, 2px between rows
 
     private void FitSessionColumn()
     {
@@ -2315,9 +2705,9 @@ internal sealed partial class SessionListForm : Form
         }
     }
 
-    // A chat row: its title over the relative time. The open chat is a
-    // bright glass card with a semibold title in the Mana preset (accent and
-    // semibold in the others); a selected row gets a fainter fill.
+    // A chat row, as in the mockups: one line, rounded, the title and then how long ago, small and muted, on the
+    // right. The open chat is a bright card with an edge in the glass presets (accent and semibold in the others); a
+    // selected row gets a fainter fill.
     private void OnDrawSessionItem(object? sender, DrawListViewItemEventArgs e)
     {
         var g = e.Graphics;
@@ -2327,39 +2717,115 @@ internal sealed partial class SessionListForm : Form
         if (DarkTheme.IsGlass)
         {
             GlassSurface.PaintGlowBehind(g, list, bounds);
-            if (active || e.Item.Selected)
-            {
-                using var fill = new SolidBrush(Color.FromArgb(active ? 179 : 90, 255, 255, 255));
-                g.FillRectangle(fill, card);
-            }
-            if (active)
-            {
-                GlassSurface.PaintGlassEdges(g, card, GlassSurface.SheenProgress(list));
-            }
         }
         else
         {
             using var back = new SolidBrush(list.BackColor);
             g.FillRectangle(back, bounds);
-            if (e.Item.Selected)
+        }
+        if (e.Item.Tag is null)
+        {
+            // A heading: small and muted, sitting on the rows below it.
+            var headingPad = LogicalToDeviceUnits(4);
+            TextRenderer.DrawText(g, e.Item.Text, sessionTimeFont, new Rectangle(bounds.X + headingPad, bounds.Y, bounds.Width - headingPad, bounds.Height - LogicalToDeviceUnits(4)),
+                DarkTheme.Muted, TextFormatFlags.Bottom | TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            return;
+        }
+        if (active || e.Item.Selected)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var shape = RoundedRect(new RectangleF(card.X + 0.5f, card.Y + 0.5f, card.Width - 1.5f, card.Height - 1.5f), 9);
+            using var fill = new SolidBrush(DarkTheme.IsGlass ? GlassSurface.Veil(active ? 179 : 90) : Color.FromArgb(active ? 56 : 30, DarkTheme.Accent));
+            g.FillPath(fill, shape);
+            if (active && DarkTheme.IsGlass)
             {
-                using var tint = new SolidBrush(Color.FromArgb(56, DarkTheme.Accent)); // reads on every preset, High contrast too
-                g.FillRectangle(tint, card);
+                using var edge = new Pen(GlassSurface.Outline);
+                g.DrawPath(edge, shape);
             }
         }
 
         var pad = LogicalToDeviceUnits(10);
         var titleFont = active ? activeSessionFont : sessionTitleFont;
         var titleColor = active && !DarkTheme.IsGlass ? DarkTheme.Accent : DarkTheme.Text;
-        var gap = LogicalToDeviceUnits(2);
-        var top = card.Y + (card.Height - titleFont.Height - gap - sessionTimeFont.Height) / 2;
-        const TextFormatFlags flags = TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
-        TextRenderer.DrawText(g, e.Item.Text, titleFont, new Rectangle(card.X + pad, top, card.Width - pad * 2, titleFont.Height), titleColor, flags);
+        const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
         var time = e.Item.SubItems.Count > 1 ? e.Item.SubItems[1].Text : "";
-        TextRenderer.DrawText(g, time, sessionTimeFont, new Rectangle(card.X + pad, top + titleFont.Height + gap, card.Width - pad * 2, sessionTimeFont.Height), DarkTheme.Muted, flags);
+        var timeWidth = time.Length == 0 ? 0 : TextRenderer.MeasureText(g, time, sessionTimeFont, card.Size, TextFormatFlags.NoPadding).Width;
+        TextRenderer.DrawText(g, time, sessionTimeFont, new Rectangle(card.Right - pad - timeWidth, card.Y, timeWidth, card.Height), DarkTheme.Muted, flags | TextFormatFlags.Right | TextFormatFlags.NoPadding);
+        if (sessions.FirstOrDefault(s => s.SessionId == (string?)e.Item.Tag) is { } shown && IsUnread(shown))
+        {
+            // The mockups' unread dot, just left of the time.
+            var dot = LogicalToDeviceUnits(7);
+            timeWidth += dot + LogicalToDeviceUnits(6);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var brush = new SolidBrush(DarkTheme.Accent);
+            g.FillEllipse(brush, card.Right - pad - timeWidth, card.Y + (card.Height - dot) / 2f, dot, dot);
+        }
+        TextRenderer.DrawText(g, e.Item.Text, titleFont, new Rectangle(card.X + pad, card.Y, card.Width - pad * 2 - timeWidth - (timeWidth > 0 ? 8 : 0), card.Height), titleColor, flags | TextFormatFlags.Left);
         if (e.Item.Focused && list.Focused && GlassSurface.ShowsFocusCues(list))
         {
             ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -2, -1));
+        }
+    }
+
+    // Pins and what I've read are the launcher's own (the backend keeps neither), saved in settings.
+    private readonly HashSet<string> pinnedChats = new(ManaSettingsStore.Load().PinnedChats ?? []);
+
+    private void TogglePinSelected()
+    {
+        if (list.SelectedItems.Count == 0)
+        {
+            return;
+        }
+        var id = (string)list.SelectedItems[0].Tag!;
+        if (!pinnedChats.Remove(id))
+        {
+            pinnedChats.Add(id);
+        }
+        SaveChatState(s => s.PinnedChats = pinnedChats.Count == 0 ? null : pinnedChats.ToList());
+        ShowSessions();
+    }
+
+    private bool IsUnread(ManaSession session)
+    {
+        var settings = chatState ??= ManaSettingsStore.Load();
+        return session.SessionId != activeSessionId
+               && SessionListFormatter.IsUnread(session.UpdatedAt, settings.SeenChats?.GetValueOrDefault(session.SessionId), settings.ChatsSeenSince);
+    }
+
+    // The open chat is read as it is now; the first run starts the tracking.
+    private void MarkActiveChatSeen()
+    {
+        var settings = chatState ??= ManaSettingsStore.Load();
+        var open = sessions.FirstOrDefault(s => s.SessionId == activeSessionId);
+        var startTracking = settings.ChatsSeenSince is null;
+        var seenNow = open?.UpdatedAt is { } at && settings.SeenChats?.GetValueOrDefault(open.SessionId) != at;
+        if (startTracking || seenNow)
+        {
+            SaveChatState(s =>
+            {
+                s.ChatsSeenSince ??= DateTimeOffset.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+                if (seenNow)
+                {
+                    (s.SeenChats ??= new())[open!.SessionId] = open.UpdatedAt!;
+                }
+            });
+        }
+    }
+
+    private ManaSettingsStore? chatState; // the last loaded or saved settings, for the unread dots
+
+    private void SaveChatState(Action<ManaSettingsStore> change)
+    {
+        try
+        {
+            var latest = ManaSettingsStore.Load();
+            change(latest);
+            latest.Save();
+            chatState = latest;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"SessionListForm: couldn't save the chat list's pins or read state. {ex.Message}");
         }
     }
 
@@ -2431,6 +2897,7 @@ internal sealed partial class SessionListForm : Form
             railToolTip.Dispose();
             messageQueueTimer.Dispose();
             sendButtonTimer.Dispose();
+            runningTasksTimer.Dispose();
         }
         base.Dispose(disposing);
     }

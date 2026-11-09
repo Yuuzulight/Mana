@@ -9,39 +9,89 @@ internal sealed partial class SessionListForm
     private bool loadingProjects;
     private ManaProject? SelectedProject => projectPicker.SelectedItem as ManaProject;
 
+    // The mockups have no project heading over the list, so the filter is a small funnel at the end of the search
+    // pill: muted while every chat shows, in the accent while it's narrowed to a project (the search's placeholder
+    // names it too). It opens the projects to pick from and the project commands. (projectPicker stays the state,
+    // hidden.) Sized and placed by the caller.
     private Control BuildProjectControls()
     {
-        var panel = new Panel { Dock = DockStyle.Top, Height = 66, Padding = new Padding(0, 3, 0, 3) };
-        var commands = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 30, WrapContents = false };
-        var menu = new ContextMenuStrip();
-        var manage = new Button { Text = "Projects...", AutoSize = true, Margin = new Padding(0) };
-        DarkTheme.ApplyButton(manage);
-        manage.Click += (_, _) => menu.Show(manage, new System.Drawing.Point(0, manage.Height));
-        manage.Disposed += (_, _) => menu.Dispose();
-        commands.Controls.Add(manage);
-        foreach (var (text, action) in new (string, Func<Task>)[] {
-            ("New project", () => EditProjectAsync(null)),
-            ("Edit", () => SelectedProject is { } project ? EditProjectAsync(project) : Task.CompletedTask),
-            ("Delete", DeleteProjectAsync),
-        })
+        var heading = new Button
         {
-            var item = new ToolStripMenuItem(text);
-            item.Click += async (_, _) =>
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.Background,
+            AccessibleName = "Project filter: All projects",
+            Cursor = Cursors.Hand,
+            UseMnemonic = false,
+            TabStop = true,
+        };
+        heading.FlatAppearance.BorderSize = 0;
+        var hovered = false;
+        heading.MouseEnter += (_, _) => { hovered = true; heading.Invalidate(); };
+        heading.MouseLeave += (_, _) => { hovered = false; heading.Invalidate(); };
+        heading.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            using (var clear = new System.Drawing.SolidBrush(searchBox.BackColor)) // the pill's own fill
             {
-                commands.Enabled = false;
-                try { await action(); }
-                catch (Exception ex) { if (!IsDisposed) SetListError(ex.Message); }
-                finally { if (!IsDisposed) commands.Enabled = true; }
-            };
-            menu.Items.Add(item);
-        }
+                g.FillRectangle(clear, heading.ClientRectangle);
+            }
+            var filtered = projectPicker.SelectedIndex > 0;
+            var color = filtered ? DarkTheme.Accent : hovered ? DarkTheme.Text : DarkTheme.Muted;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using var pen = new System.Drawing.Pen(color, 1.4f) { LineJoin = System.Drawing.Drawing2D.LineJoin.Round, StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
+            float cx = heading.Width / 2f, cy = heading.Height / 2f;
+            // A funnel: a wide top narrowing to a short spout.
+            g.DrawLines(pen, new System.Drawing.PointF[] { new(cx - 6, cy - 5), new(cx + 6, cy - 5), new(cx + 1.5f, cy + 0.5f), new(cx + 1.5f, cy + 5), new(cx - 1.5f, cy + 3.5f), new(cx - 1.5f, cy + 0.5f), new(cx - 6, cy - 5) });
+            if (heading.Focused && GlassSurface.ShowsFocusCues(heading))
+            {
+                ControlPaint.DrawFocusRectangle(g, heading.ClientRectangle);
+            }
+        };
+        var menu = new ContextMenuStrip();
+        heading.Disposed += (_, _) => menu.Dispose();
+        heading.Click += (_, _) =>
+        {
+            menu.Items.Clear();
+            for (var i = 0; i < projectPicker.Items.Count; i++)
+            {
+                var index = i;
+                var pick = new ToolStripMenuItem(projectPicker.GetItemText(projectPicker.Items[i])) { Checked = projectPicker.SelectedIndex == i };
+                pick.Click += (_, _) => projectPicker.SelectedIndex = index;
+                menu.Items.Add(pick);
+            }
+            menu.Items.Add(new ToolStripSeparator());
+            foreach (var (text, action, enabled) in new (string, Func<Task>, bool)[] {
+                ("New project…", () => EditProjectAsync(null), true),
+                ("Edit project…", () => SelectedProject is { } project ? EditProjectAsync(project) : Task.CompletedTask, SelectedProject is not null),
+                ("Delete project…", DeleteProjectAsync, SelectedProject is not null),
+            })
+            {
+                var item = new ToolStripMenuItem(text) { Enabled = enabled };
+                item.Click += async (_, _) =>
+                {
+                    try { await action(); }
+                    catch (Exception ex) { if (!IsDisposed) SetListError(ex.Message); }
+                };
+                menu.Items.Add(item);
+            }
+            menu.Show(heading, new System.Drawing.Point(0, heading.Height));
+        };
         projectPicker.Items.Add("All projects");
         projectPicker.Items.Add("Ungrouped");
         projectPicker.SelectedIndex = 0;
-        projectPicker.SelectedIndexChanged += (_, _) => { if (!loadingProjects) ShowSessions(); };
-        panel.Controls.Add(projectPicker);
-        panel.Controls.Add(commands);
-        return panel;
+        projectPicker.SelectedIndexChanged += (_, _) =>
+        {
+            heading.Invalidate();
+            var name = projectPicker.Text;
+            heading.AccessibleName = $"Project filter: {name}";
+            railToolTip.SetToolTip(heading, $"Showing {(projectPicker.SelectedIndex == 0 ? "all projects" : name)}: click to pick a project");
+            searchBox.PlaceholderText = projectPicker.SelectedIndex switch { 0 => "Search chats", 1 => "Search ungrouped chats", _ => $"Search {name}" };
+            if (!loadingProjects) ShowSessions();
+        };
+        railToolTip.SetToolTip(heading, "Showing all projects: click to pick a project");
+        projectPicker.Visible = false;
+        heading.Controls.Add(projectPicker);
+        return heading;
     }
 
     private void UpdateProjects(IReadOnlyList<ManaProject> loaded)

@@ -345,7 +345,7 @@ internal sealed class SettingsPanel : UserControl
         var header = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = DarkTheme.Background, Padding = new Padding(12, 4, 12, 4) };
         header.Paint += (_, e) =>
         {
-            using var line = new Pen(DarkTheme.IsGlass ? Color.FromArgb(36, 106, 95, 184) : DarkTheme.Border);
+            using var line = new Pen(DarkTheme.IsGlass ? GlassSurface.Outline : DarkTheme.Border);
             e.Graphics.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
         };
         titleLabel.Dock = DockStyle.Left;
@@ -797,11 +797,22 @@ internal sealed class SettingsPanel : UserControl
 
         var parts = new List<Control>
         {
+            SettingsRows.Section("You"),
+            BuildUserNameRow(),
             SettingsRows.Section("Startup"),
             BuildStartWithWindowsRow(changed: Changed),
             SettingsRows.Section("Appearance"),
             themeRow,
             accentRow,
+            SwitchRow("Wallpaper glass", "Her glass shows your wallpaper, like Windows 11's Mica, instead of her painted glows", "mica wallpaper glass backdrop glow",
+                ManaThemeSettings.Load().WallpaperGlass, on =>
+                {
+                    var theme = ManaThemeSettings.Load();
+                    theme.WallpaperGlass = on;
+                    theme.Save();
+                    GlassSurface.WallpaperGlass = on;
+                    DarkTheme.ApplyPresetLive(theme.Preset, theme.AccentHex); // redraws every open window's glass
+                }),
             SettingsRows.Section("Avatar"),
             SwitchRow("Hide with the chat window", "She leaves the desktop while the chat window is open", "overlay hide",
                 saved.AvatarHidesWithChat, on => SaveAvatar(s => s.AvatarHidesWithChat = on)),
@@ -1589,6 +1600,28 @@ internal sealed class SettingsPanel : UserControl
     {
         var scores = VoiceDebugLog.RecentSpeakerScores(path: logPath);
         return scores.Count == 0 ? "" : $"Recent: {string.Join(", ", scores.Select(s => s.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}";
+    }
+
+    // What she calls you in the chat's welcome; blank = no name.
+    private static SettingsRow BuildUserNameRow()
+    {
+        var box = new TextBox
+        {
+            Width = 200,
+            PlaceholderText = "Your name",
+            Text = ManaSettingsStore.Load().UserName ?? "",
+            BackColor = DarkTheme.Panel,
+            ForeColor = DarkTheme.Text,
+            AccessibleName = "Your name",
+        };
+        box.TextChanged += (_, _) =>
+        {
+            var latest = ManaSettingsStore.Load();
+            latest.UserName = string.IsNullOrWhiteSpace(box.Text) ? null : box.Text.Trim();
+            latest.Save();
+            ChatView.UserName = latest.UserName;
+        };
+        return new SettingsRow("Your name", "What she calls you when she greets you", "name call me greeting welcome", box);
     }
 
     // #962: where "save that" puts a snapshot; blank = Pictures\Mana.

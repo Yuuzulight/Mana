@@ -157,31 +157,14 @@ internal sealed partial class SessionListForm
         }
     }
 
-    private static readonly Color CaptionTopEdge = Color.FromArgb(242, 255, 255, 255);
-    private static readonly Color CaptionBottomEdge = Color.FromArgb(199, 255, 255, 255);
-    private static readonly Color CaptionOutline = Color.FromArgb(18, 106, 95, 184);
     private static readonly Color CloseHover = Color.FromArgb(0xc4, 0x2b, 0x1c);
 
     private void PaintCaption(Graphics g)
     {
+        // No strip of its own, as in the mockups: her crystal, the name and the buttons sit straight on the window's
+        // glass, which runs on into the sidebar and the chat below.
         var height = CaptionHeight;
         var width = ClientSize.Width;
-        using (var glass = new SolidBrush(GlassSurface.GlassFill))
-        {
-            g.FillRectangle(glass, 0, 0, width, height);
-        }
-        if (GlassSurface.SheenProgress(this) is float sheen)
-        {
-            GlassSurface.PaintSheen(g, new Rectangle(0, 0, width, height), sheen);
-        }
-        using (var top = new Pen(CaptionTopEdge))
-        using (var bottom = new Pen(CaptionBottomEdge))
-        using (var outline = new Pen(CaptionOutline))
-        {
-            g.DrawLine(top, 0, 0, width, 0);
-            g.DrawLine(bottom, 0, height - 2, width, height - 2);
-            g.DrawLine(outline, 0, height - 1, width, height - 1);
-        }
 
         var active = ActiveForm == this;
         var ink = active ? DarkTheme.Text : DarkTheme.Muted;
@@ -195,7 +178,7 @@ internal sealed partial class SessionListForm
         var buttonWidth = LogicalToDeviceUnits(CaptionButtonLogicalWidth);
         foreach (var (hit, index) in new[] { (HtClose, 1), (HtMaxButton, 2), (HtMinButton, 3) })
         {
-            var bounds = new Rectangle(width - buttonWidth * index, 0, buttonWidth, height - 1);
+            var bounds = new Rectangle(width - buttonWidth * index, 0, buttonWidth, height);
             var glyph = ink;
             if (hoveredCaptionButton == hit || pressedCaptionButton == hit)
             {

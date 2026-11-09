@@ -19,10 +19,16 @@ namespace Mana.NativeLauncher;
 // shows. Only attached when DarkTheme.IsGlass (the Mana preset).
 internal static class GlassSurface
 {
-    internal static readonly Color GlassFill = Color.FromArgb(135, 255, 255, 255);
-    private static readonly Color GlassHover = Color.FromArgb(200, 255, 255, 255);
-    private static readonly Color TopEdge = Color.FromArgb(240, 255, 255, 255);
-    private static readonly Color Outline = Color.FromArgb(34, 106, 95, 184);
+    // Light glass is frosted white; dark glass (Mana night) is a faint white veil with lavender edges.
+    internal static Color GlassFill => DarkTheme.IsLight ? Color.FromArgb(135, 255, 255, 255) : Color.FromArgb(30, 255, 255, 255);
+    private static Color GlassHover => DarkTheme.IsLight ? Color.FromArgb(200, 255, 255, 255) : Color.FromArgb(56, 255, 255, 255);
+    private static Color TopEdge => DarkTheme.IsLight ? Color.FromArgb(240, 255, 255, 255) : Color.FromArgb(40, 255, 255, 255);
+    internal static Color Outline => DarkTheme.IsLight ? Color.FromArgb(34, 106, 95, 184) : Color.FromArgb(60, 169, 158, 240);
+
+    // A white veil of `lightAlpha` on light glass, and the matching faint one on dark glass, where the same white
+    // would glare.
+    internal static Color Veil(int lightAlpha) =>
+        DarkTheme.IsLight ? Color.FromArgb(lightAlpha, 255, 255, 255) : Color.FromArgb(Math.Clamp(lightAlpha / 5, 10, 60), 255, 255, 255);
 
     // #688: everything Attach/Style changed, per control, so Detach can put
     // each control back exactly as the theme left it (live theme switching).
@@ -34,6 +40,71 @@ internal static class GlassSurface
     }
 
     private static readonly ConditionalWeakTable<Form, Attachment> Attached = new();
+    private static readonly ConditionalWeakTable<Form, Control> Panes = new();
+
+    // The mockups' chat pane: a lighter sheet over the glass, its top-left corner rounded, with a bright top and left
+    // edge. It's drawn into the window's background (and every slice of it), so whatever sits on the pane shows it.
+    public static void SetPane(Form form, Control pane)
+    {
+        Panes.AddOrUpdate(form, pane);
+        pane.SizeChanged += (_, _) =>
+        {
+            if (IsAttached(form) && !form.IsDisposed)
+            {
+                Swap(form, RenderGlow(form.ClientSize, Point.Empty, form.ClientSize, form: form));
+                BackdropShifted?.Invoke(form);
+                form.Invalidate(true);
+            }
+        };
+    }
+
+    // Where `control` sits in `form`'s client area, with or without handles.
+    private static Rectangle BoundsIn(Form form, Control control)
+    {
+        if (form.IsHandleCreated && control.IsHandleCreated)
+        {
+            return new Rectangle(form.PointToClient(control.PointToScreen(Point.Empty)), control.Size);
+        }
+        var location = Point.Empty;
+        for (var c = control; c is not null && c != form; c = c.Parent)
+        {
+            location.Offset(c.Location);
+        }
+        return new Rectangle(location, control.Size);
+    }
+
+    internal const int PaneRadius = 12;
+
+    private static void PaintPane(Graphics g, Form form, Point offset)
+    {
+        if (!Panes.TryGetValue(form, out var pane) || !pane.Visible || pane.Width <= 0)
+        {
+            return;
+        }
+        var r = BoundsIn(form, pane);
+        r.Offset(-offset.X, -offset.Y);
+        var light = DarkTheme.IsLight;
+        const int d = PaneRadius * 2;
+        using var path = new GraphicsPath();
+        path.AddArc(r.X, r.Y, d, d, 180, 90);
+        path.AddLine(r.X + PaneRadius, r.Y, r.Right + 1, r.Y);
+        path.AddLine(r.Right + 1, r.Y, r.Right + 1, r.Bottom + 1);
+        path.AddLine(r.Right + 1, r.Bottom + 1, r.X, r.Bottom + 1);
+        path.CloseFigure();
+        var smoothing = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var fill = new SolidBrush(light ? Color.FromArgb(102, 255, 255, 255) : Color.FromArgb(12, 255, 255, 255)))
+        {
+            g.FillPath(fill, path);
+        }
+        using (var edge = new Pen(light ? Color.FromArgb(150, 255, 255, 255) : Color.FromArgb(20, 255, 255, 255)))
+        {
+            g.DrawArc(edge, r.X + 0.5f, r.Y + 0.5f, d, d, 180, 90);
+            g.DrawLine(edge, r.X + PaneRadius, r.Y + 0.5f, r.Right + 1, r.Y + 0.5f);
+            g.DrawLine(edge, r.X + 0.5f, r.Y + PaneRadius, r.X + 0.5f, r.Bottom + 1);
+        }
+        g.SmoothingMode = smoothing;
+    }
 
     // Records how to put `control` back; dropped when it's disposed.
     private static void Record(Dictionary<Control, List<Action>>? undo, Control control, Action restore)
@@ -69,8 +140,29 @@ internal static class GlassSurface
         form.BackgroundImageLayout = ImageLayout.None;
         // ponytail: re-renders the whole glow on every resize step; cache per
         // size or debounce if dragging a big window ever feels sluggish.
-        void RefreshGlow() => Swap(form, RenderGlow(form.ClientSize, Point.Empty, form.ClientSize));
+        void RefreshGlow() => Swap(form, RenderGlow(form.ClientSize, Point.Empty, form.ClientSize, form: form));
         EventHandler onResize = (_, _) => RefreshGlow();
+        // Mica's look: the wallpaper under the window, so it follows the window when a move ends (a drag, a snap, a
+        // keyboard move), and goes plain while the window isn't the active one.
+        var settle = new System.Windows.Forms.Timer { Interval = 120 };
+        void Shift()
+        {
+            settle.Stop();
+            if (!form.IsDisposed && UsesWallpaper)
+            {
+                RefreshGlow();
+                BackdropShifted?.Invoke(form);
+                form.Invalidate(true);
+            }
+        }
+        settle.Tick += (_, _) => Shift();
+        EventHandler onMove = (_, _) => { if (UsesWallpaper) { settle.Stop(); settle.Start(); } };
+        EventHandler onFocus = (_, _) => Shift();
+        Action onWallpaper = () => form.BeginInvoke(Shift);
+        form.LocationChanged += onMove;
+        form.Activated += onFocus;
+        form.Deactivate += onFocus;
+        WallpaperBackdrop.Changed += onWallpaper;
         EventHandler onLoad = (_, _) => StyleChildren(form, attachment.Shimmer, undo);
         FormClosedEventHandler onClosed = (_, _) => attachment.Shimmer.Dispose();
         RefreshGlow();
@@ -80,6 +172,11 @@ internal static class GlassSurface
         Record(undo, form, () =>
         {
             form.Resize -= onResize;
+            form.LocationChanged -= onMove;
+            form.Activated -= onFocus;
+            form.Deactivate -= onFocus;
+            WallpaperBackdrop.Changed -= onWallpaper;
+            settle.Dispose();
             form.Load -= onLoad;
             form.FormClosed -= onClosed;
             Swap(form, image);
@@ -121,22 +218,71 @@ internal static class GlassSurface
 
     internal static bool IsAttached(Form form) => Attached.TryGetValue(form, out _);
 
+    // The wallpaper look (Settings, on by default): Mica's wallpaper-under-the-window instead of her painted glows.
+    public static bool WallpaperGlass { get; set; } = true;
+
+    private static bool UsesWallpaper => WallpaperGlass && WallpaperBackdrop.Current is not null;
+
+    // A window that's been moved or focused or unfocused with the wallpaper look on: what draws its own slice of the
+    // background (a list, a page, the chat) redraws it.
+    public static event Action<Form>? BackdropShifted;
+
+    // The snapshot test's window isn't the active one and sits off-screen: it asks for the active look, and for the
+    // wallpaper as if the window sat ScreenShift further along.
+    internal static bool TreatAsActive { get; set; }
+
+    internal static Point ScreenShift { get; set; }
+
+    private static bool IsActive(Form form) => TreatAsActive || Form.ActiveForm == form;
+
+    // What a cached background depends on beyond its size and place in the window: where the window is on screen,
+    // whether it's active, and which wallpaper.
+    public static (Point Screen, bool Active, int Wallpaper) BackdropKey(Form form) =>
+        UsesWallpaper && form.IsHandleCreated ? (form.PointToScreen(Point.Empty), IsActive(form), WallpaperBackdrop.Version) : default;
+
     // The glows for a `size` area sitting at `offset` inside a window of
     // `windowSize` -- so a control that can't be see-through (a ListView)
     // can paint exactly the slice of the window's glows behind it.
-    internal static Bitmap RenderGlow(Size size, Point offset, Size windowSize, bool frosted = false)
+    // form: the window it's for; given, and with the wallpaper look on, the background is the wallpaper under that
+    // part of the window, tinted, or the plain tint while the window isn't active.
+    internal static Bitmap RenderGlow(Size size, Point offset, Size windowSize, bool frosted = false, Form? form = null)
     {
         var bitmap = new Bitmap(Math.Max(1, size.Width), Math.Max(1, size.Height));
         using var g = Graphics.FromImage(bitmap);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(DarkTheme.Background);
+        if (form is not null && UsesWallpaper && WallpaperBackdrop.Current is { } wallpaper)
+        {
+            if (IsActive(form))
+            {
+                var origin = (form.IsHandleCreated ? form.PointToScreen(offset) : offset) + (Size)ScreenShift;
+                WallpaperBackdrop.Draw(g, wallpaper, new Rectangle(origin, bitmap.Size));
+                using var tint = new SolidBrush(Color.FromArgb(DarkTheme.IsLight ? 184 : 204, DarkTheme.Background));
+                g.FillRectangle(tint, 0, 0, bitmap.Width, bitmap.Height);
+            }
+            // Her colours over any wallpaper (a warm one reads cream under the tint alone), as in the mockups.
+            using (var wash = new SolidBrush(DarkTheme.IsLight ? Color.FromArgb(46, 150, 160, 235) : Color.FromArgb(30, 60, 52, 120)))
+            {
+                g.FillRectangle(wash, 0, 0, bitmap.Width, bitmap.Height);
+            }
+            g.TranslateTransform(-offset.X, -offset.Y);
+            FillGlows(g, windowSize, strength: 1f);
+            g.ResetTransform();
+            PaintPane(g, form, offset);
+            if (frosted)
+            {
+                using var veil = new SolidBrush(GlassFill);
+                g.FillRectangle(veil, 0, 0, bitmap.Width, bitmap.Height);
+            }
+            return bitmap;
+        }
         g.TranslateTransform(-offset.X, -offset.Y);
-        var w = Math.Max(1, windowSize.Width);
-        var h = Math.Max(1, windowSize.Height);
-        var span = Math.Max(w, h);
-        FillGlow(g, new PointF(w * 0.05f, h * 0.02f), span * 0.55f, Color.FromArgb(150, 198, 170, 224)); // lavender, top left
-        FillGlow(g, new PointF(w * 0.98f, h * 1.02f), span * 0.62f, Color.FromArgb(160, 163, 210, 250)); // sky blue, bottom right
-        FillGlow(g, new PointF(w * 0.55f, h * 0.45f), span * 0.35f, Color.FromArgb(40, 118, 109, 190));  // faint periwinkle
+        FillGlows(g, windowSize, strength: 1f);
+        if (form is not null)
+        {
+            g.ResetTransform();
+            PaintPane(g, form, offset);
+        }
         if (frosted)
         {
             g.ResetTransform();
@@ -144,6 +290,18 @@ internal static class GlassSurface
             g.FillRectangle(frost, 0, 0, bitmap.Width, bitmap.Height);
         }
         return bitmap;
+    }
+
+    private static void FillGlows(Graphics g, Size windowSize, float strength)
+    {
+        var w = Math.Max(1, windowSize.Width);
+        var h = Math.Max(1, windowSize.Height);
+        var span = Math.Max(w, h);
+        var light = DarkTheme.IsLight;
+        Color C(int a, int r, int gr, int b) => Color.FromArgb((int)(a * strength), r, gr, b);
+        FillGlow(g, new PointF(w * 0.05f, h * 0.02f), span * 0.55f, light ? C(150, 198, 170, 224) : C(70, 118, 109, 190)); // lavender, top left
+        FillGlow(g, new PointF(w * 0.98f, h * 1.02f), span * 0.62f, light ? C(160, 163, 210, 250) : C(60, 37, 110, 190)); // sky blue, bottom right
+        FillGlow(g, new PointF(w * 0.55f, h * 0.45f), span * 0.35f, light ? C(40, 118, 109, 190) : C(24, 169, 158, 240));  // faint periwinkle
     }
 
     private static void FillGlow(Graphics g, PointF center, float radius, Color color)
@@ -199,14 +357,22 @@ internal static class GlassSurface
                 var pageImage = page.BackgroundImage;
                 page.UseVisualStyleBackColor = false;
                 page.BackgroundImageLayout = ImageLayout.None;
-                void RefreshPage() => Swap(page, RenderGlow(page.ClientSize, Point.Empty, page.ClientSize));
+                void RefreshPage()
+                {
+                    var pageForm = page.FindForm();
+                    var pageOffset = pageForm is not null && page.IsHandleCreated ? pageForm.PointToClient(page.PointToScreen(Point.Empty)) : Point.Empty;
+                    Swap(page, RenderGlow(page.ClientSize, UsesWallpaper ? pageOffset : Point.Empty, page.ClientSize, form: pageForm));
+                }
                 EventHandler onPageResize = (_, _) => RefreshPage();
+                Action<Form> onPageShift = shifted => { if (page.FindForm() == shifted) { RefreshPage(); } };
                 RefreshPage();
                 page.Resize += onPageResize;
+                BackdropShifted += onPageShift;
                 page.Disposed += (_, _) => page.BackgroundImage?.Dispose();
                 Record(undo, page, () =>
                 {
                     page.Resize -= onPageResize;
+                    BackdropShifted -= onPageShift;
                     Swap(page, pageImage);
                     page.BackgroundImageLayout = pageLayout;
                     page.UseVisualStyleBackColor = useVisualStyle;
@@ -225,7 +391,7 @@ internal static class GlassSurface
                     var (over, down, border) = (appearance.MouseOverBackColor, appearance.MouseDownBackColor, appearance.BorderColor);
                     appearance.MouseOverBackColor = GlassHover;
                     appearance.MouseDownBackColor = GlassHover;
-                    appearance.BorderColor = Color.FromArgb(200, 255, 255, 255);
+                    appearance.BorderColor = Veil(200);
                     Record(undo, flat, () =>
                     {
                         appearance.MouseOverBackColor = over;
@@ -282,9 +448,11 @@ internal static class GlassSurface
             }
             var offset = form.PointToClient(list.PointToScreen(Point.Empty));
             // A background-coloured list (the chat list) sits straight on the glows.
-            Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: list.BackColor != DarkTheme.Background));
+            Swap(list, RenderGlow(list.ClientSize, offset, form.ClientSize, frosted: list.BackColor != DarkTheme.Background, form: form));
         }
         EventHandler onChange = (_, _) => Refresh();
+        Action<Form> onShift = shifted => { if (list.FindForm() == shifted) { Refresh(); } };
+        BackdropShifted += onShift;
         EnableDoubleBuffering(list); // the shimmer repaints the open chat's row every frame
         list.BackgroundImageTiled = false;
         list.SizeChanged += onChange;
@@ -297,6 +465,7 @@ internal static class GlassSurface
             list.SizeChanged -= onChange;
             list.LocationChanged -= onChange;
             list.HandleCreated -= onChange;
+            BackdropShifted -= onShift;
             Swap(list, image);
             list.BackgroundImageTiled = tiled;
         });
@@ -380,7 +549,9 @@ internal static class GlassSurface
         {
             InterpolationColors = new ColorBlend
             {
-                Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), Color.FromArgb(153, 255, 255, 255), Color.FromArgb(128, 227, 241, 253), Color.FromArgb(0, 227, 241, 253), Color.FromArgb(0, 227, 241, 253) },
+                Colors = DarkTheme.IsLight
+                    ? new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), Color.FromArgb(153, 255, 255, 255), Color.FromArgb(128, 227, 241, 253), Color.FromArgb(0, 227, 241, 253), Color.FromArgb(0, 227, 241, 253) }
+                    : new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), Color.FromArgb(40, 255, 255, 255), Color.FromArgb(36, 163, 210, 250), Color.FromArgb(0, 163, 210, 250), Color.FromArgb(0, 163, 210, 250) },
                 Positions = new[] { 0f, 0.38f, 0.48f, 0.52f, 0.62f, 1f },
             },
         };
@@ -402,7 +573,7 @@ internal static class GlassSurface
         };
     }
 
-    private static readonly Color GlassOn = Color.FromArgb(217, 238, 231, 248);
+    private static Color GlassOn => DarkTheme.IsLight ? Color.FromArgb(217, 238, 231, 248) : Color.FromArgb(64, 169, 158, 240);
 
     private static void PaintGlassButton(Graphics g, ButtonBase button, bool gloss)
     {
@@ -439,7 +610,7 @@ internal static class GlassSurface
         else
         {
             var on = button is CheckBox { Checked: true };
-            using (var fill = new SolidBrush(on ? GlassOn : down ? Color.FromArgb(215, 255, 255, 255) : hot ? GlassHover : Color.FromArgb(133, 255, 255, 255)))
+            using (var fill = new SolidBrush(on ? GlassOn : down ? Veil(215) : hot ? GlassHover : Veil(133)))
             {
                 g.FillRectangle(fill, bounds);
             }

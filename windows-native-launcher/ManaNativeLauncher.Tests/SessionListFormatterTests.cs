@@ -104,4 +104,25 @@ public class SessionListFormatterTests
         var session = new ManaSession { SessionId = "s1-fork", Name = "Branched topic", ForkedFrom = "s1" };
         Assert.Equal("↳ Branched topic", SessionListFormatter.FormatDisplayName(session));
     }
+
+    [Theory]
+    [InlineData("2026-11-08T09:00:00+08:00", false, "Today")]
+    [InlineData("2026-11-07T23:30:00+08:00", false, "Yesterday")]
+    [InlineData("2026-11-01T10:00:00+08:00", false, "Earlier")]
+    [InlineData("2026-11-01T10:00:00+08:00", true, "Pinned")]
+    [InlineData(null, false, "Earlier")]
+    public void SidebarSections_PinnedThenByDay(string? updatedAt, bool pinned, string expected)
+    {
+        var now = new DateTimeOffset(2026, 11, 8, 15, 0, 0, TimeSpan.FromHours(8));
+        Assert.Equal(expected, SessionListFormatter.Section(new ManaSession { SessionId = "a", UpdatedAt = updatedAt }, pinned, now.ToLocalTime()));
+    }
+
+    [Theory]
+    [InlineData("2026-11-08T10:00:00Z", "2026-11-08T09:00:00Z", null, true)]   // changed since I saw it
+    [InlineData("2026-11-08T10:00:00Z", "2026-11-08T10:00:00Z", null, false)]  // seen as it is
+    [InlineData("2026-11-08T10:00:00Z", null, "2026-11-08T08:00:00Z", true)]   // new since tracking began
+    [InlineData("2026-11-01T10:00:00Z", null, "2026-11-08T08:00:00Z", false)]  // older than tracking
+    [InlineData("2026-11-08T10:00:00Z", null, null, false)]
+    public void UnreadMeansChangedSinceSeen(string updatedAt, string? seen, string? since, bool unread) =>
+        Assert.Equal(unread, SessionListFormatter.IsUnread(updatedAt, seen, since));
 }
