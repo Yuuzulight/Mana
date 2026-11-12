@@ -8,6 +8,7 @@ const path = require('node:path');
 const http = require('node:http');
 const plugin = require('../index');
 const { resolveCli } = require('../arcana-engine');
+const express = require('../../../node-bot/node_modules/express');
 
 const real = process.env.MANA_ARCANA_TEST_REAL === '1';
 
@@ -49,6 +50,79 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
     assert.match((await reopened.navigate(url)).text, /Persisted local storage/);
   } finally {
     await plugin.closeSession();
+    site.closeAllConnections();
+    await new Promise(resolve => site.close(resolve));
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('real Arcana: M4 manual control forwards frame, mouse, keyboard, scroll and annotation', { skip: !real, timeout: 120000 }, async () => {
+  assert.ok(resolveCli(process.env), 'Arcana CLI not found: run tools/install-arcana.ps1 or set MANA_ARCANA_CLI');
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-m4-'));
+  const site = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<!doctype html><html><head><title>Arcana M4 manual control</title>
+      <style>body{margin:0;height:2400px}#name{position:absolute;left:20px;top:20px;width:220px}
+      #apply{position:absolute;left:20px;top:180px;width:300px;height:100px}#status{position:absolute;left:20px;top:320px}</style></head>
+      <body><label for="name">Name</label><input id="name" autocomplete="name">
+      <button id="apply" onclick="status.textContent='Applied '+name.value">Apply</button>
+      <p id="status">Ready</p><script>addEventListener('scroll',()=>status.dataset.scroll=String(scrollY));</script></body></html>`);
+  });
+  await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${site.address().port}`;
+  const app = express();
+  app.use(express.json());
+  const deps = {
+    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
+    ramPercent: () => 50,
+    isGaming: () => false,
+    isLocalRestartRequest: () => true,
+  };
+  plugin._resetForTests();
+  plugin.registerRoutes(app, deps);
+  const server = http.createServer(app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const post = async (pathName, body, token) => {
+    const response = await fetch(`${baseUrl}${pathName}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { 'x-mana-manual-token': token } : {}) },
+      body: JSON.stringify(body || {}),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200, `${pathName}: ${JSON.stringify(payload)}`);
+    return payload;
+  };
+  try {
+    const started = await post('/browser/manual/start', { url });
+    assert.ok(started.token, 'manual control returned an ownership token');
+    const token = started.token;
+    const frame = await fetch(`${baseUrl}/browser/manual/frame`, { headers: { 'x-mana-manual-token': token } });
+    assert.equal(frame.status, 200);
+    const framePayload = await frame.json();
+    assert.ok(framePayload.image.length > 100, 'manual frame reached the panel');
+    assert.ok(framePayload.width > 0 && framePayload.height > 0);
+
+    await post('/browser/manual/input', { action: 'click', x: 80, y: 35 }, token);
+    await post('/browser/manual/input', { action: 'text', text: 'Manual user' }, token);
+    await post('/browser/manual/input', { action: 'key', key: 'Tab' }, token);
+    await post('/browser/manual/input', { action: 'key', key: 'Enter' }, token);
+    await post('/browser/manual/input', { action: 'click', x: 100, y: 220 }, token);
+    const annotation = await post('/browser/manual/annotate', { x: 100, y: 220 }, token);
+    assert.equal(annotation.selector, '#apply');
+    assert.equal(annotation.role, 'button');
+    assert.equal(annotation.name, 'Apply');
+    assert.equal(annotation.rect.fallback, false);
+    await post('/browser/manual/input', { action: 'scroll', dy: 500 }, token);
+    await post('/browser/manual/done', {}, token);
+
+    const session = await plugin.getSession(deps);
+    const state = await session.devtools({ do: 'run_js', code: "({ text: document.getElementById('status').textContent, scroll: document.getElementById('status').dataset.scroll })" });
+    assert.match(JSON.stringify(state), /Manual user/);
+    assert.match(JSON.stringify(state), /[1-9]/);
+  } finally {
+    await plugin.closeSession();
+    await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     site.closeAllConnections();
     await new Promise(resolve => site.close(resolve));
     fs.rmSync(temporary, { recursive: true, force: true });
