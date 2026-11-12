@@ -3510,6 +3510,34 @@ public class ManaBackendClientTests
     }
 
     [Fact]
+    public async Task StreamBrowserAutomationActivityAsync_ParsesServerSentEvents()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/browser-automation/activity/stream", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "data: {\"log\":[],\"screenshot\":{\"base64\":\"live-frame\"},\"takeOver\":{\"active\":false}}\n\n",
+                    Encoding.UTF8,
+                    "text/event-stream"),
+            };
+        });
+        var client = new ManaBackendClient(handler);
+        var received = new List<ManaBrowserAutomationActivity>();
+
+        await client.StreamBrowserAutomationActivityAsync(activity =>
+        {
+            received.Add(activity);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+
+        Assert.Single(received);
+        Assert.Equal("live-frame", received[0].ScreenshotBase64);
+        Assert.False(received[0].TakenOver);
+    }
+
+    [Fact]
     public async Task StartResearchAsync_PostsTheQuestionAndReturnsTheJobId()
     {
         string? path = null;
