@@ -2332,11 +2332,11 @@ async function refreshBrowserAutomationActivity() {
 
 function renderBrowserAutomationActivity(activity) {
     const lastEntry = activity.log?.[activity.log.length - 1];
-    if (lastEntry) {
-      lastKnownBrowserActivityAt = new Date(lastEntry.at).getTime();
-    }
+    const lastEntryAt = lastEntry ? new Date(lastEntry.at).getTime() : 0;
+    const screenshotAt = activity.screenshot?.at ? new Date(activity.screenshot.at).getTime() : 0;
+    lastKnownBrowserActivityAt = Math.max(lastEntryAt, screenshotAt, lastKnownBrowserActivityAt);
 
-    if (!lastEntry || Date.now() - lastKnownBrowserActivityAt > BROWSER_AUTOMATION_ACTIVITY_STALE_MS) {
+    if ((!lastEntry && !activity.screenshot?.base64) || Date.now() - lastKnownBrowserActivityAt > BROWSER_AUTOMATION_ACTIVITY_STALE_MS) {
       browserAutomationActivityEl.hidden = true;
       return;
     }

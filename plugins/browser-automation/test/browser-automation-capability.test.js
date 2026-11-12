@@ -106,6 +106,46 @@ test('#704: manual takeover permits page media without dropping ownership or lau
   } finally { await browserAutomationPlugin.closeSession(); }
 });
 
+test("M3: manual annotation is exposed through the authenticated route", async () => {
+  const fake = createFakeChromium({
+    viewportSize: () => ({ width: 800, height: 600 }),
+    async evaluate(fn, args) {
+      if (String(fn).includes("elementFromPoint")) {
+        assert.deepEqual(args, { x: 120, y: 80 });
+        return {
+          selector: "#continue",
+          role: "button",
+          name: "Continue",
+          markup: '<button id="continue">Continue</button>',
+          rect: { x: 100, y: 60, width: 120, height: 40, fallback: false },
+        };
+      }
+      if (fn === extractTextInPage) return "page text";
+      throw new Error("unexpected evaluate() call in annotation test");
+    },
+  });
+  const app = buildApp({ isLocalRestartRequest: () => true, env: FAKE_ENV, chromium: fake.chromium, ramPercent: () => 50 });
+  try {
+    await withServer(app, async (baseUrl) => {
+      const started = await postJson(`${baseUrl}/browser/manual/start`, {});
+      assert.equal(started.response.status, 200);
+      const response = await fetch(`${baseUrl}/browser/manual/annotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-mana-manual-token": started.payload.token },
+        body: JSON.stringify({ x: 120, y: 80 }),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        selector: "#continue",
+        role: "button",
+        name: "Continue",
+        markup: '<button id="continue">Continue</button>',
+        rect: { x: 100, y: 60, width: 120, height: 40, fallback: false },
+      });
+    });
+  } finally { await browserAutomationPlugin.closeSession(); }
+});
+
 test("POST /browser/navigate surfaces a clear error when no browser executable is configured", async () => {
   const app = buildApp({
     isLocalRestartRequest: () => true,
