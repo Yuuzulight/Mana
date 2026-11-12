@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -61,6 +62,8 @@ internal sealed class BrowserTool : Panel
     // still holds the old page).
     private string? endedAtStep;
     private bool polling;
+    private CancellationTokenSource? activityStreamCts;
+    private bool activityStreamConnected;
 
     // Tests swap this out so nothing opens a real browser.
     // Tests swap this out so no dialog opens.
@@ -171,8 +174,10 @@ internal sealed class BrowserTool : Panel
             pollTimer.Enabled = Visible;
             if (Visible)
             {
+                StartActivityStream();
                 _ = RefreshAsync();
             }
+            else StopActivityStream();
         };
         Render();
     }
@@ -187,7 +192,7 @@ internal sealed class BrowserTool : Panel
         polling = true;
         try
         {
-            activity = await client.GetBrowserAutomationActivityAsync();
+            if (!activityStreamConnected) activity = await client.GetBrowserAutomationActivityAsync();
             if (manualToken is not null)
             {
                 var token = manualToken;
@@ -214,6 +219,48 @@ internal sealed class BrowserTool : Panel
         {
             Render();
         }
+    }
+
+    private void StartActivityStream()
+    {
+        if (activityStreamCts is not null) return;
+        activityStreamCts = new CancellationTokenSource();
+        var token = activityStreamCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await client.StreamBrowserAutomationActivityAsync(next =>
+                {
+                    if (IsDisposed) return Task.CompletedTask;
+                    activityStreamConnected = true;
+                    BeginInvoke(() =>
+                    {
+                        if (!IsDisposed) { activity = next; Render(); }
+                    });
+                    return Task.CompletedTask;
+                }, token);
+                if (!token.IsCancellationRequested)
+                {
+                    activityStreamConnected = false;
+                    if (!IsDisposed) BeginInvoke(Render);
+                }
+            }
+            catch when (token.IsCancellationRequested) { }
+            catch
+            {
+                activityStreamConnected = false;
+                if (!IsDisposed) BeginInvoke(Render);
+            }
+        }, token);
+    }
+
+    private void StopActivityStream()
+    {
+        activityStreamConnected = false;
+        activityStreamCts?.Cancel();
+        activityStreamCts?.Dispose();
+        activityStreamCts = null;
     }
 
     private async Task StopAsync()
@@ -456,6 +503,7 @@ internal sealed class BrowserTool : Panel
             manualToken = null;
             if (token is not null) _ = client.BrowserManualAsync("done", token).ContinueWith(task => { _ = task.Exception; }, TaskScheduler.Default);
             pollTimer.Dispose();
+            StopActivityStream();
             screenshotBox.Image?.Dispose();
             titleFont.Dispose();
         }

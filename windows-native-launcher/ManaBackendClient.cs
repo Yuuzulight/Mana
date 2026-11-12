@@ -2893,7 +2893,11 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var document = await JsonDocument.ParseAsync(stream);
-        var root = document.RootElement;
+        return ParseBrowserAutomationActivity(document.RootElement);
+    }
+
+    private static ManaBrowserAutomationActivity ParseBrowserAutomationActivity(JsonElement root)
+    {
 
         var log = new List<ManaBrowserAutomationLogEntry>();
         if (root.TryGetProperty("log", out var logElement) && logElement.ValueKind == JsonValueKind.Array)
@@ -2951,6 +2955,24 @@ internal sealed class ManaBackendClient
             BlockedUrl = blocked is { } b ? Text(b, "url") : null,
             BlockedCount = blocked is { } c && c.TryGetProperty("count", out var count) && count.TryGetInt32(out var n2) ? n2 : 0,
         };
+    }
+
+    // M3: receive screencast/activity updates as they happen. The polling
+    // endpoint remains available for older clients and reconnect fallback.
+    public async Task StreamBrowserAutomationActivityAsync(Func<ManaBrowserAutomationActivity, Task> onActivity, CancellationToken cancellationToken)
+    {
+        using var response = await http.GetAsync("/browser-automation/activity/stream", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new System.IO.StreamReader(stream);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line is null) break;
+            if (!line.StartsWith("data: ", StringComparison.Ordinal)) continue;
+            using var document = JsonDocument.Parse(line[6..]);
+            await onActivity(ParseBrowserAutomationActivity(document.RootElement));
+        }
     }
 
     // #1122: Stop in the Browser tool -- ends her browser session
