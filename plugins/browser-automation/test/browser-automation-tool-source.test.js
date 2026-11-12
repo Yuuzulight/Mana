@@ -152,6 +152,21 @@ test("executeTool runs the real session action once the approval gate always-all
   assert.equal(approvalGate.listPending().length, 0);
 });
 
+test("a Browser-panel annotation is pinned into the next agent result once", async () => {
+  const approvalGate = createApprovalGate({ dataDir: createTempDir() });
+  const { source } = createSource({ approvalGate });
+  await source.executeTool("browser_automation__navigate", { url: "https://example.com" }).catch(() => {});
+  const [pending] = approvalGate.listPending();
+  await approvalGate.decide(pending.id, "always-allow");
+
+  source.activityLog.recordAnnotation({ selector: "#continue", role: "button", name: "Continue", markup: "<button>Continue</button>" });
+  const first = await source.executeTool("browser_automation__snapshot", {});
+  assert.match(first, /User pinned an element from the Browser panel/);
+  assert.match(first, /selector=#continue/);
+  const second = await source.executeTool("browser_automation__snapshot", {});
+  assert.doesNotMatch(second, /User pinned an element from the Browser panel/);
+});
+
 // Issue #418: the human-facing activity feed, entirely separate from what
 // executeTool returns to the model.
 test("executeTool records a successful action and its screenshot in the activity log", async () => {

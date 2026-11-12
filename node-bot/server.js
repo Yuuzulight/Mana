@@ -2804,6 +2804,7 @@ function registerRoutes(app, upload, deps = {}) {
     (deps.notifyTray || notifyTray)({ type: "background_task_done", sessionId, ...event });
   }
   const capabilityContext = {
+    browserAutomationToolSource: activeBrowserAutomationToolSource,
     documentAccess,
     projectsStore: activeProjectsStore,
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,

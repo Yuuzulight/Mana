@@ -49,8 +49,9 @@ function createBrowserActivityLog(options = {}) {
   // #1168: the page that may need the ads/trackers her browser blocked
   // ({ url, count } | null), for the panel's "Open in my browser".
   let blocked = null;
+  let annotation = null;
   const subscribers = new Set();
-  function snapshot() { return { log, screenshot: latestScreenshot, page, turnPages, blocked, siteTest: siteTest && { title: siteTest.title, at: siteTest.at } }; }
+  function snapshot() { return { log, screenshot: latestScreenshot, page, turnPages, blocked, annotation, siteTest: siteTest && { title: siteTest.title, at: siteTest.at } }; }
   function notify() { const value = snapshot(); for (const listener of subscribers) { try { listener(value); } catch {} } }
 
   function recordActivity({ action, args, status, error } = {}) {
@@ -85,6 +86,18 @@ function createBrowserActivityLog(options = {}) {
     if (!frame || typeof frame.data !== "string") return;
     latestScreenshot = { base64: frame.data, at: now(), source: "screencast", width: frame.width, height: frame.height };
     notify();
+  }
+
+  // M3: a manual click can be pinned into the next browser-tool result so
+  // the agent receives the element metadata the user selected.
+  function recordAnnotation(value) {
+    annotation = value && typeof value === "object" ? { ...value, at: now() } : null;
+    notify();
+  }
+  function consumeAnnotation() {
+    const value = annotation;
+    annotation = null;
+    return value;
   }
 
   // Every browser step's result is a page snapshot; only its url/title are kept.
@@ -124,6 +137,7 @@ function createBrowserActivityLog(options = {}) {
   function reset() {
     log = [];
     latestScreenshot = null;
+    annotation = null;
     page = null;
     turnPages = [];
     lastReadAt = -Infinity;
@@ -131,7 +145,7 @@ function createBrowserActivityLog(options = {}) {
   }
 
   function subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); }
-  return { recordActivity, recordScreenshot, recordScreencastFrame, recordPage, recordTurnPages, recordBlocked, recordSiteTest, getSiteTest, getActivity, subscribe, isWatched, reset };
+  return { recordActivity, recordScreenshot, recordScreencastFrame, recordAnnotation, consumeAnnotation, recordPage, recordTurnPages, recordBlocked, recordSiteTest, getSiteTest, getActivity, subscribe, isWatched, reset };
 }
 
 module.exports = { createBrowserActivityLog, describeBrowserAction, MAX_LOG_ENTRIES };

@@ -670,7 +670,10 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
   });
   for (const [method, url, run] of [
     ['get', '/browser/manual/frame', req => manualControl.frame(req.get('x-mana-manual-token'))],
-    ['post', '/browser/manual/annotate', req => manualControl.annotate(req.get('x-mana-manual-token'), req.body)],
+    ['post', '/browser/manual/annotate', req => manualControl.annotate(req.get('x-mana-manual-token'), req.body).then(result => {
+      deps.browserAutomationToolSource?.activityLog?.recordAnnotation(result);
+      return result;
+    })],
     ['post', '/browser/manual/input', req => manualControl.input(req.get('x-mana-manual-token'), req.body)],
     ['post', '/browser/manual/done', req => manualControl.handBack(req.get('x-mana-manual-token'))],
   ]) {

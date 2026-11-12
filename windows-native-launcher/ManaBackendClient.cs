@@ -2995,7 +2995,7 @@ internal sealed class ManaBackendClient
 
     public async Task<JsonElement> BrowserManualAsync(string action, string? token = null, object? payload = null)
     {
-        if (action is not ("start" or "frame" or "input" or "done")) throw new ArgumentException("Unknown browser action", nameof(action));
+        if (action is not ("start" or "frame" or "annotate" or "input" or "done")) throw new ArgumentException("Unknown browser action", nameof(action));
         using var request = new HttpRequestMessage(action == "frame" ? HttpMethod.Get : HttpMethod.Post, $"/browser/manual/{action}");
         if (token is not null) request.Headers.Add("X-Mana-Manual-Token", token);
         if (action != "frame") request.Content = new StringContent(JsonSerializer.Serialize(payload ?? new { }), Encoding.UTF8, "application/json");

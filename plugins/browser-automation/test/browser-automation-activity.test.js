@@ -60,6 +60,16 @@ test("activity subscribers receive screencast updates", () => {
   assert.deepEqual(seen, ["screencast"]);
 });
 
+test("annotations are exposed to the panel and consumed once", () => {
+  const log = createBrowserActivityLog({ now: () => "2026-11-13T00:00:00.000Z" });
+  log.recordAnnotation({ selector: "#continue", role: "button", name: "Continue" });
+  assert.deepEqual(log.getActivity().annotation, {
+    selector: "#continue", role: "button", name: "Continue", at: "2026-11-13T00:00:00.000Z",
+  });
+  assert.equal(log.consumeAnnotation().selector, "#continue");
+  assert.equal(log.consumeAnnotation(), null);
+});
+
 test("reset clears both the log and the latest screenshot", () => {
   const log = createBrowserActivityLog();
   log.recordActivity({ action: "navigate", args: { url: "https://example.com" } });

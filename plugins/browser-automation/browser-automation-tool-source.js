@@ -308,6 +308,18 @@ function createBrowserAutomationToolSource(options = {}) {
     return TOOL_SCHEMAS;
   }
 
+  function withPinnedAnnotation(text, annotation) {
+    if (!annotation) return text;
+    const details = [
+      annotation.selector && `selector=${annotation.selector}`,
+      annotation.role && `role=${annotation.role}`,
+      annotation.name && `name=${annotation.name}`,
+      annotation.markup && `markup=${annotation.markup}`,
+      annotation.rect && `rect=${JSON.stringify(annotation.rect)}`,
+    ].filter(Boolean).join("; ");
+    return `User pinned an element from the Browser panel: ${details || "no element metadata was available"}.\n${text}`;
+  }
+
   async function executeTool(qualifiedName, args, sessionId) {
     // isGranted, not isAlwaysAllowed: an "allow for this session" (#669)
     // counts too.
@@ -336,17 +348,19 @@ function createBrowserAutomationToolSource(options = {}) {
       throw new Error(`unknown browser-automation tool: ${qualifiedName}`);
     }
 
+    const pinnedAnnotation = activityLog.consumeAnnotation?.();
+
     if (action === "hand_over") {
       requestHandOver(args?.reason, sessionDeps);
       activityLog.recordActivity({ action, args, status: "ok" });
-      return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
+      return withPinnedAnnotation("The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.", pinnedAnnotation);
     }
     // #1137: her page loads images only while the Browser panel watches.
     const session = await getSession({ ...sessionDeps, sessionId, isWatched: activityLog.isWatched, onDownload, onScreencastFrame: (frame) => activityLog.recordScreencastFrame(frame) });
-    if (action === "batch") return runBatch(session, args?.steps);
+    if (action === "batch") return withPinnedAnnotation(await runBatch(session, args?.steps), pinnedAnnotation);
     const result = await act(session, action, args);
     await recordScreenshot(session);
-    return describeForModel(result);
+    return withPinnedAnnotation(describeForModel(result), pinnedAnnotation);
   }
 
   // #1160: each step as if called alone (site permission, activity feed);
