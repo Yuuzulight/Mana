@@ -192,7 +192,7 @@ async function launch(deps, options) {
 
 // One tab: its page, with the resource blocking and health counters, and
 // the session that reads and acts on it.
-async function setUpTab(page) {
+async function setUpTab(page, deps = {}) {
   const health = { blockedAds: 0 };
   // #1161: the current page's console and network, for her dev tools.
   const log = { console: [], network: [] };
@@ -255,6 +255,22 @@ async function setUpTab(page) {
     }
     return route.continue();
   });
+  // M3: drive the live Browser panel from CDP screencast events. The frame
+  // acknowledgement is sent immediately so a slow panel cannot stall the
+  // engine; the host receives decoded metadata and the base64 image.
+  let screencastSession = null;
+  if (typeof deps.onScreencastFrame === "function" && page.context?.().newCDPSession) {
+    try {
+      screencastSession = await page.context().newCDPSession(page);
+      await screencastSession.send("Page.enable");
+      screencastSession.on("Page.screencastFrame", async (event) => {
+        await screencastSession.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch(() => {});
+        deps.onScreencastFrame({ data: event.data, sessionId: event.sessionId, width: event.metadata?.deviceWidth, height: event.metadata?.deviceHeight });
+      });
+      await screencastSession.send("Page.startScreencast", { format: "jpeg", quality: 60, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 });
+      page.once?.("close", () => screencastSession?.send("Page.stopScreencast").catch(() => {}));
+    } catch { screencastSession = null; }
+  }
   // #704: her cursor shows while I'm watching: the Browser panel, or her
   // window (MANA_BROWSER_HEADLESS=0). Take over closes this page, so my
   // window never has it.
@@ -269,7 +285,7 @@ async function startSession(deps) {
   ctx.on("close", () => context === ctx && forget());
   let tab;
   try {
-    tab = await setUpTab(ctx.pages()[0] || (await ctx.newPage()));
+    tab = await setUpTab(ctx.pages()[0] || (await ctx.newPage()), deps);
     // #1139: after I hand back, she carries on where I left off.
     if (resumeUrl) await tab.page.goto(resumeUrl).catch(() => {});
     resumeUrl = null;
@@ -314,7 +330,7 @@ function tabbedSession(deps) {
     // The RAM gate applies to every tab she adds.
     const blocked = blocker(gateDeps);
     if (blocked) throw new Error(`no new tab while ${blocked}`);
-    const tab = await setUpTab(await context.newPage());
+    const tab = await setUpTab(await context.newPage(), deps);
     try {
       const result = await tab.session.navigate(url);
       tabs.push(tab);
@@ -654,6 +670,7 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
   });
   for (const [method, url, run] of [
     ['get', '/browser/manual/frame', req => manualControl.frame(req.get('x-mana-manual-token'))],
+    ['post', '/browser/manual/annotate', req => manualControl.annotate(req.get('x-mana-manual-token'), req.body)],
     ['post', '/browser/manual/input', req => manualControl.input(req.get('x-mana-manual-token'), req.body)],
     ['post', '/browser/manual/done', req => manualControl.handBack(req.get('x-mana-manual-token'))],
   ]) {

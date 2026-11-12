@@ -73,6 +73,14 @@ function createBrowserActivityLog(options = {}) {
     latestScreenshot = base64 ? { base64, at: now() } : null;
   }
 
+  // M3: screencast frames replace screenshot polling for the live Browser panel.
+  // Keep the same wire shape as the existing screenshot field so older panels
+  // continue to render the latest frame while newer panels can use dimensions.
+  function recordScreencastFrame(frame) {
+    if (!frame || typeof frame.data !== "string") return;
+    latestScreenshot = { base64: frame.data, at: now(), source: "screencast", width: frame.width, height: frame.height };
+  }
+
   // Every browser step's result is a page snapshot; only its url/title are kept.
   function recordPage(result) {
     page = result && typeof result.url === "string" ? { url: result.url, title: String(result.title || "") } : null;
@@ -116,7 +124,7 @@ function createBrowserActivityLog(options = {}) {
     blocked = null;
   }
 
-  return { recordActivity, recordScreenshot, recordPage, recordTurnPages, recordBlocked, recordSiteTest, getSiteTest, getActivity, isWatched, reset };
+  return { recordActivity, recordScreenshot, recordScreencastFrame, recordPage, recordTurnPages, recordBlocked, recordSiteTest, getSiteTest, getActivity, isWatched, reset };
 }
 
 module.exports = { createBrowserActivityLog, describeBrowserAction, MAX_LOG_ENTRIES };

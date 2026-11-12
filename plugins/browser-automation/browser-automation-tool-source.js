@@ -342,7 +342,7 @@ function createBrowserAutomationToolSource(options = {}) {
       return "The Browser panel now asks the user to take over. Tell them what's needed and wait; once they press Done, the browser is yours again with their login kept.";
     }
     // #1137: her page loads images only while the Browser panel watches.
-    const session = await getSession({ ...sessionDeps, sessionId, isWatched: activityLog.isWatched, onDownload });
+    const session = await getSession({ ...sessionDeps, sessionId, isWatched: activityLog.isWatched, onDownload, onScreencastFrame: (frame) => activityLog.recordScreencastFrame(frame) });
     if (action === "batch") return runBatch(session, args?.steps);
     const result = await act(session, action, args);
     await recordScreenshot(session);

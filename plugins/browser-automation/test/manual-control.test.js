@@ -66,3 +66,9 @@ test('invalid viewport coordinates and unbounded key or text input are rejected'
   const { token } = await control.takeOver({});
   for (const command of [{ action: 'click', x: 800, y: 1 }, { action: 'click', x: NaN, y: 1 }, { action: 'scroll', dy: 2001 }, { action: 'key', key: 'F99' }, { action: 'text', text: 'x'.repeat(4097) }]) await assert.rejects(control.input(token, command));
 });
+
+test('annotation rejects points outside the live viewport', async () => {
+  const { control } = fixture();
+  const { token } = await control.takeOver({});
+  await assert.rejects(() => control.annotate(token, { x: 800, y: 1 }), /outside the page/);
+});

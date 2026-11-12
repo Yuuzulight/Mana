@@ -44,6 +44,12 @@ test("recordScreenshot stores and clears the latest screenshot", () => {
   assert.equal(log.getActivity().screenshot, null);
 });
 
+test("recordScreencastFrame updates the live panel frame with dimensions", () => {
+  const log = createBrowserActivityLog({ now: () => "2026-11-13T00:00:00.000Z" });
+  log.recordScreencastFrame({ data: "jpeg-frame", width: 320, height: 240 });
+  assert.deepEqual(log.getActivity().screenshot, { base64: "jpeg-frame", at: "2026-11-13T00:00:00.000Z", source: "screencast", width: 320, height: 240 });
+});
+
 test("reset clears both the log and the latest screenshot", () => {
   const log = createBrowserActivityLog();
   log.recordActivity({ action: "navigate", args: { url: "https://example.com" } });
