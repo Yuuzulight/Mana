@@ -50,6 +50,16 @@ test("recordScreencastFrame updates the live panel frame with dimensions", () =>
   assert.deepEqual(log.getActivity().screenshot, { base64: "jpeg-frame", at: "2026-11-13T00:00:00.000Z", source: "screencast", width: 320, height: 240 });
 });
 
+test("activity subscribers receive screencast updates", () => {
+  const log = createBrowserActivityLog();
+  const seen = [];
+  const stop = log.subscribe(activity => seen.push(activity.screenshot?.source));
+  log.recordScreencastFrame({ data: "frame" });
+  stop();
+  log.recordScreencastFrame({ data: "later" });
+  assert.deepEqual(seen, ["screencast"]);
+});
+
 test("reset clears both the log and the latest screenshot", () => {
   const log = createBrowserActivityLog();
   log.recordActivity({ action: "navigate", args: { url: "https://example.com" } });
