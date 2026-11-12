@@ -27,9 +27,10 @@ Every engine choice is appended to `arcana-events.jsonl` in the browser profile
 (or `MANA_ARCANA_EVENTS_FILE`): `arcana_started`, `arcana_start_failed`,
 `arcana_disconnected` (Arcana died unasked) and `edge_requested` (Take over or
 `MANA_BROWSER_ENGINE=edge`). `tools/m2-fallback-report.ps1` summarises the last
-seven days for Arcana's M2 exit, a week with no unexplained fallback to Edge. It
-reports `insufficient_observation` until the log is a week old and Arcana has
-started at least five times in it (`-MinStarts`), so an empty or new log is never read as a clean week.
+72 hours for Arcana's M2 exit, with no unexplained fallback to Edge. It reports
+`insufficient_observation` until the log is three days old and Arcana has
+started at least five times in it (`-MinStarts`), so an empty or new log is never
+read as a clean observation window.
 
 ## Browser: Edge by default, override with an env var
 

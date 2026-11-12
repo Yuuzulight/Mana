@@ -1,10 +1,10 @@
-# Summarises Mana's browser engine log for Arcana's M2 exit: a week of runs with
+# Summarises Mana's browser engine log for Arcana's M2 exit: 72 hours of runs with
 # no unexplained fallback to Edge. An Edge start that was asked for (Take over,
 # MANA_BROWSER_ENGINE=edge) is explained; Arcana failing to start or dying is not.
 param(
   [string]$Path = (Join-Path $PSScriptRoot '..\node-bot\data\browser-profile\arcana-events.jsonl'),
-  [int]$Days = 7,
-  # One start in a quiet week is not evidence; clean needs at least this many.
+  [int]$Days = 3,
+  # One start in a quiet observation window is not evidence; clean needs at least this many.
   [int]$MinStarts = 5
 )
 
