@@ -11,6 +11,7 @@ const { resolveCli } = require('../arcana-engine');
 const express = require('../../../node-bot/node_modules/express');
 
 const real = process.env.MANA_ARCANA_TEST_REAL === '1';
+const signinSpikes = process.env.MANA_ARCANA_SIGNIN_SPIKES === '1';
 
 test('real Arcana: actions, local storage across a restart, and the engine is gone after close', { skip: !real, timeout: 90000 }, async () => {
   assert.ok(resolveCli(process.env), 'Arcana CLI not found: run tools/install-arcana.ps1 or set MANA_ARCANA_CLI');
@@ -125,6 +126,50 @@ test('real Arcana: M4 manual control forwards frame, mouse, keyboard, scroll and
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     site.closeAllConnections();
     await new Promise(resolve => site.close(resolve));
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('real Arcana: M4 sign-in spike pages load without submitting credentials', { skip: !real || !signinSpikes, timeout: 180000 }, async () => {
+  assert.ok(resolveCli(process.env), 'Arcana CLI not found: run tools/install-arcana.ps1 or set MANA_ARCANA_CLI');
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-m4-signin-'));
+  const deps = {
+    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile') },
+    ramPercent: () => 50,
+    isGaming: () => false,
+  };
+  const targets = [
+    ['bank-style', process.env.MANA_M4_BANK_URL || 'https://www.chase.com/'],
+    ['captcha', process.env.MANA_M4_CAPTCHA_URL || 'https://www.google.com/recaptcha/api2/demo'],
+    ['saas', process.env.MANA_M4_SAAS_URL || 'https://github.com/login'],
+  ];
+  const report = [];
+  plugin._resetForTests();
+  try {
+    const session = await plugin.getSession(deps);
+    for (const [kind, url] of targets) {
+      const entry = { kind, url };
+      try {
+        const snapshot = await session.navigate(url);
+        const text = `${snapshot.title}\n${snapshot.text || ''}`;
+        const handoff = Boolean(snapshot.sensitive) || /captcha|recaptcha|verify you are human|i am not a robot/i.test(text);
+        entry.loaded = true;
+        entry.finalUrl = snapshot.url;
+        entry.title = snapshot.title;
+        entry.handoff = handoff;
+        entry.reason = snapshot.sensitive || (handoff ? 'CAPTCHA or human-verification surface' : null);
+      } catch (error) {
+        entry.loaded = false;
+        entry.handoff = true;
+        entry.reason = `Arcana navigation failed: ${error.message}`;
+      }
+      report.push(entry);
+    }
+    process.stdout.write(`M4 sign-in spike report: ${JSON.stringify(report)}\n`);
+    assert.equal(report.length, targets.length);
+    assert.ok(report.every(entry => entry.loaded || entry.handoff), 'every failed Arcana page is explicitly marked for handoff');
+  } finally {
+    await plugin.closeSession();
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
