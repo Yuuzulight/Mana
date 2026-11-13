@@ -3,12 +3,25 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, execSync } = require('node:child_process');
 
 const scriptPath = path.resolve(__dirname, '../../tools/m2-fallback-report.ps1');
 
+function resolvePowershell() {
+  if (process.platform === 'win32') return 'powershell';
+  try {
+    execSync('which pwsh', { stdio: 'ignore' });
+    return 'pwsh';
+  } catch {
+    return null;
+  }
+}
+
+const psBinary = resolvePowershell();
+
 function runReport(args) {
-  const result = execFileSync('powershell', [
+  if (!psBinary) return null;
+  const result = execFileSync(psBinary, [
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
@@ -19,7 +32,7 @@ function runReport(args) {
   return JSON.parse(result.trim());
 }
 
-test('fallback report: non-existent file produces insufficient_observation', () => {
+test('fallback report: non-existent file produces insufficient_observation', { skip: !psBinary }, () => {
   const missing = path.join(os.tmpdir(), `nonexistent-${Date.now()}.jsonl`);
   const report = runReport(['-Path', missing, '-Days', '3', '-MinStarts', '5']);
   assert.equal(report.status, 'insufficient_observation');
@@ -27,7 +40,7 @@ test('fallback report: non-existent file produces insufficient_observation', () 
   assert.equal(report.unexplainedFallbacks, 0);
 });
 
-test('fallback report: stale events outside run window are excluded', () => {
+test('fallback report: stale events outside run window are excluded', { skip: !psBinary }, () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'arcana-soak-stale-'));
   const log = path.join(tmp, 'arcana-events.jsonl');
   const now = new Date();
@@ -51,7 +64,7 @@ test('fallback report: stale events outside run window are excluded', () => {
   }
 });
 
-test('fallback report: unexplained fallbacks inside window yield investigate verdict', () => {
+test('fallback report: unexplained fallbacks inside window yield investigate verdict', { skip: !psBinary }, () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'arcana-soak-fail-'));
   const log = path.join(tmp, 'arcana-events.jsonl');
   const now = new Date();
@@ -76,7 +89,7 @@ test('fallback report: unexplained fallbacks inside window yield investigate ver
   }
 });
 
-test('fallback report: clean 72h window with sufficient starts yields clean', () => {
+test('fallback report: clean 72h window with sufficient starts yields clean', { skip: !psBinary }, () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'arcana-soak-clean-'));
   const log = path.join(tmp, 'arcana-events.jsonl');
   const now = new Date();
@@ -101,7 +114,7 @@ test('fallback report: clean 72h window with sufficient starts yields clean', ()
   }
 });
 
-test('fallback report: validates preserved AWS run evidence as unverified/failed', () => {
+test('fallback report: validates preserved AWS run evidence as unverified/failed', { skip: !psBinary }, () => {
   const awsLog = 'C:\\ManaAI\\Mana-soak\\node-bot\\data\\browser-profile\\arcana-events.jsonl';
   if (fs.existsSync(awsLog)) {
     const report = runReport(['-Path', awsLog, '-Days', '3', '-MinStarts', '5']);
@@ -111,18 +124,14 @@ test('fallback report: validates preserved AWS run evidence as unverified/failed
   }
 });
 
-test('soak runner: elapsed time reaching deadline with non-clean fallback yields failure', () => {
+test('soak runner: elapsed time reaching deadline with non-clean fallback yields failure', { skip: !psBinary }, () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'arcana-soak-verdict-'));
   const events = path.join(tmp, 'arcana-events.jsonl');
-  const summary = path.join(tmp, 'summary.json');
-  // Write a failing event into the log
   fs.writeFileSync(events, JSON.stringify({ at: new Date().toISOString(), type: 'arcana_start_failed', reason: 'Crash' }) + '\n');
 
-  // Verify that evaluating this log through fallback report produces investigate
   const report = runReport(['-Path', events, '-Days', '3', '-MinStarts', '5']);
   assert.equal(report.status, 'investigate');
 
-  // Verify verdict logic: even if deadline elapsed, status cannot be complete if fallback is not clean
   const deadline = new Date(Date.now() - 1000);
   const verdictStatus = (report.status === 'clean' && Date.now() >= deadline) ? 'complete' : 'failed';
   assert.equal(verdictStatus, 'failed');
