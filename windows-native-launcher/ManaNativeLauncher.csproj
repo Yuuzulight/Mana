@@ -113,8 +113,8 @@
        formal release. #1267: Mana does this herself once a day
        (node-bot/folio-update.js), as a PR. -->
   <PropertyGroup>
-    <FolioCommit>8112827b09c517026a595c007b6bd2e3ff29e46a</FolioCommit>
-    <FolioVersion>0.1.0-m1.2163</FolioVersion>
+    <FolioCommit>50b0cc9e82b34a2a468bba6d6b6cb19d6018b64d</FolioCommit>
+    <FolioVersion>0.9.0</FolioVersion>
     <!-- Set this to the complete Folio.ContentHost publish directory for a
          launcher package. Its files are copied under Folio\ beside Mana. -->
     <FolioContentHostRuntime Condition="'$(RuntimeIdentifier)' == 'win-arm64'">win-arm64</FolioContentHostRuntime>
