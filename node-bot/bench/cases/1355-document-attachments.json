@@ -1,5 +1,6 @@
 {
   "id": "1355-document-attachments",
+  "minRounds": 26,
   "kind": "multi-file",
   "pr": 1355,
   "issue": 1325,
@@ -23,6 +24,6 @@
     "plugins/document-reader/test/document-reader.test.js"
   ],
   "testCommand": "node --test ..\\plugins\\document-reader\\test\\document-reader.test.js",
-  "interface": "document-reader extracts attached PDF, Word, Excel, PowerPoint and CSV content for chat context.",
+  "interface": "document-reader extracts attached PDF, Word, Excel, PowerPoint and CSV content for chat context. The tests call: `plugins/document-reader/document-extract.js` (new) exports `extractDocument(filePathOrBuffer, options)`, `extractDocx(buffer)`, `extractXlsx(buffer)`, `extractPptx(buffer)`, `extractCsv(input)`, `extractText(input, type)` and `chunkDocument(text, options)`; `plugins/document-reader/pdf-text.js` (new) exports `extractPdfTextWithOcr(buffer, options)`; the plugin is `plugins/document-reader/document-reader.js`.",
   "why": "Document attachment support is one of the capability-roadmap items and forces multi-file backend/frontend reasoning."
 }
