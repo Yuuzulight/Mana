@@ -61,6 +61,45 @@ test("GET /browser-automation/activity returns an empty log and null screenshot 
   });
 });
 
+test("GET /browser-automation/activity/stream sends an initial snapshot and live screencast updates", async () => {
+  const activityLog = createBrowserActivityLog({ now: () => "2026-01-01T00:00:00.000Z" });
+  const app = createApp({ browserAutomationToolSource: makeFakeToolSource(activityLog) });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/browser-automation/activity/stream`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /text\/event-stream/);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    async function nextEvent() {
+      while (!buffered.includes("\n\n")) {
+        const chunk = await reader.read();
+        assert.equal(chunk.done, false);
+        buffered += decoder.decode(chunk.value, { stream: true });
+      }
+      const [event, ...rest] = buffered.split("\n\n");
+      buffered = rest.join("\n\n");
+      return JSON.parse(event.replace(/^data: /, ""));
+    }
+
+    const initial = await nextEvent();
+    assert.deepEqual(initial.log, []);
+    assert.equal(initial.screenshot, null);
+
+    activityLog.recordScreencastFrame({ data: "live-frame", width: 640, height: 360 });
+    const update = await nextEvent();
+    assert.deepEqual(update.screenshot, {
+      base64: "live-frame",
+      at: "2026-01-01T00:00:00.000Z",
+      source: "screencast",
+      width: 640,
+      height: 360,
+    });
+    await reader.cancel();
+  });
+});
+
 test("#1161: GET /browser-automation/site-test serves the latest report in the reader's shape, 404 before one", async () => {
   const activityLog = createBrowserActivityLog();
   const app = createApp({ browserAutomationToolSource: makeFakeToolSource(activityLog) });

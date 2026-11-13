@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -61,6 +62,8 @@ internal sealed class BrowserTool : Panel
     // still holds the old page).
     private string? endedAtStep;
     private bool polling;
+    private CancellationTokenSource? activityStreamCts;
+    private bool activityStreamConnected;
 
     // Tests swap this out so nothing opens a real browser.
     // Tests swap this out so no dialog opens.
@@ -117,7 +120,10 @@ internal sealed class BrowserTool : Panel
         {
             var point = BrowserPageView.PagePoint(e.Location, screenshotBox.ClientSize, manualViewport);
             if (manualToken is not null && point is Point p)
-                QueueInput(new { action = "click", x = p.X, y = p.Y, button = e.Button == MouseButtons.Right ? "right" : "left" });
+            {
+                if ((ModifierKeys & Keys.Control) != 0) _ = AnnotateAsync(p);
+                else QueueInput(new { action = "click", x = p.X, y = p.Y, button = e.Button == MouseButtons.Right ? "right" : "left" });
+            }
         };
         screenshotBox.MouseWheel += (_, e) => { if (manualToken is not null) QueueInput(new { action = "scroll", dy = Math.Clamp(-e.Delta * 3, -2000, 2000) }); };
         screenshotBox.KeyPress += (_, e) =>
@@ -168,8 +174,10 @@ internal sealed class BrowserTool : Panel
             pollTimer.Enabled = Visible;
             if (Visible)
             {
+                StartActivityStream();
                 _ = RefreshAsync();
             }
+            else StopActivityStream();
         };
         Render();
     }
@@ -184,7 +192,7 @@ internal sealed class BrowserTool : Panel
         polling = true;
         try
         {
-            activity = await client.GetBrowserAutomationActivityAsync();
+            if (!activityStreamConnected) activity = await client.GetBrowserAutomationActivityAsync();
             if (manualToken is not null)
             {
                 var token = manualToken;
@@ -211,6 +219,48 @@ internal sealed class BrowserTool : Panel
         {
             Render();
         }
+    }
+
+    private void StartActivityStream()
+    {
+        if (activityStreamCts is not null) return;
+        activityStreamCts = new CancellationTokenSource();
+        var token = activityStreamCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await client.StreamBrowserAutomationActivityAsync(next =>
+                {
+                    if (IsDisposed) return Task.CompletedTask;
+                    activityStreamConnected = true;
+                    BeginInvoke(() =>
+                    {
+                        if (!IsDisposed) { activity = next; Render(); }
+                    });
+                    return Task.CompletedTask;
+                }, token);
+                if (!token.IsCancellationRequested)
+                {
+                    activityStreamConnected = false;
+                    if (!IsDisposed) BeginInvoke(Render);
+                }
+            }
+            catch when (token.IsCancellationRequested) { }
+            catch
+            {
+                activityStreamConnected = false;
+                if (!IsDisposed) BeginInvoke(Render);
+            }
+        }, token);
+    }
+
+    private void StopActivityStream()
+    {
+        activityStreamConnected = false;
+        activityStreamCts?.Cancel();
+        activityStreamCts?.Dispose();
+        activityStreamCts = null;
     }
 
     private async Task StopAsync()
@@ -304,6 +354,22 @@ internal sealed class BrowserTool : Panel
             try { if (!IsDisposed && manualToken == token) await client.BrowserManualAsync("input", token, command); }
             catch (Exception ex) { if (!IsDisposed) BeginInvoke(() => { note = $"Browser input failed: {ex.Message}"; Render(); }); }
         }, TaskScheduler.Default).Unwrap();
+    }
+
+    private async Task AnnotateAsync(Point point)
+    {
+        var token = manualToken;
+        if (token is null || returningBrowser) return;
+        try
+        {
+            var result = await client.BrowserManualAsync("annotate", token, new { x = point.X, y = point.Y });
+            var selector = result.TryGetProperty("selector", out var selectorElement) ? selectorElement.GetString() : null;
+            var role = result.TryGetProperty("role", out var roleElement) ? roleElement.GetString() : null;
+            var name = result.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null;
+            note = $"Pinned {(role ?? "element")} {name ?? ""}{(selector is null ? "" : $" ({selector})")}. Mana will see it on her next browser step.";
+        }
+        catch (Exception ex) { note = $"Couldn't annotate that element: {ex.Message}"; }
+        if (!IsDisposed) Render();
     }
 
     private async Task ConnectChromeAsync()
@@ -437,6 +503,7 @@ internal sealed class BrowserTool : Panel
             manualToken = null;
             if (token is not null) _ = client.BrowserManualAsync("done", token).ContinueWith(task => { _ = task.Exception; }, TaskScheduler.Default);
             pollTimer.Dispose();
+            StopActivityStream();
             screenshotBox.Image?.Dispose();
             titleFont.Dispose();
         }

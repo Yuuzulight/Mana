@@ -1180,7 +1180,7 @@ compareCancelBtnEl?.addEventListener("click", () => {
 setAvatarState("idle");
 setInterval(checkServices, 5000);
 setInterval(refreshPerfStatus, PERF_STATUS_POLL_MS);
-setInterval(refreshBrowserAutomationActivity, BROWSER_AUTOMATION_ACTIVITY_POLL_MS);
+let browserAutomationActivityFallbackTimer = null;
 refreshModelStatus();
 setInterval(refreshModelStatus, MODEL_STATUS_POLL_MS);
 if (SCREEN_SENSING_ENABLED) {
@@ -2322,12 +2322,21 @@ async function refreshBrowserAutomationActivity() {
       return;
     }
     const activity = await response.json();
-    const lastEntry = activity.log?.[activity.log.length - 1];
-    if (lastEntry) {
-      lastKnownBrowserActivityAt = new Date(lastEntry.at).getTime();
-    }
+    renderBrowserAutomationActivity(activity);
+  } catch (error) {
+    // Ambient, best-effort indicator -- no error surfaced (same as
+    // researchProgress's own loop), but staleness still has to be re-checked.
+    hideBrowserAutomationActivityIfStale();
+  }
+}
 
-    if (!lastEntry || Date.now() - lastKnownBrowserActivityAt > BROWSER_AUTOMATION_ACTIVITY_STALE_MS) {
+function renderBrowserAutomationActivity(activity) {
+    const lastEntry = activity.log?.[activity.log.length - 1];
+    const lastEntryAt = lastEntry ? new Date(lastEntry.at).getTime() : 0;
+    const screenshotAt = activity.screenshot?.at ? new Date(activity.screenshot.at).getTime() : 0;
+    lastKnownBrowserActivityAt = Math.max(lastEntryAt, screenshotAt, lastKnownBrowserActivityAt);
+
+    if ((!lastEntry && !activity.screenshot?.base64) || Date.now() - lastKnownBrowserActivityAt > BROWSER_AUTOMATION_ACTIVITY_STALE_MS) {
       browserAutomationActivityEl.hidden = true;
       return;
     }
@@ -2348,13 +2357,23 @@ async function refreshBrowserAutomationActivity() {
         browserAutomationActivityScreenshotEl.hidden = true;
       }
     }
-  } catch (error) {
-    // Ambient, best-effort indicator -- no error surfaced (same as
-    // researchProgress's own loop), but staleness still has to be
-    // re-checked, same reasoning as the non-ok branch above.
-    hideBrowserAutomationActivityIfStale();
-  }
 }
+
+function startBrowserAutomationActivityStream() {
+  if (typeof EventSource !== "function") {
+    browserAutomationActivityFallbackTimer = setInterval(refreshBrowserAutomationActivity, BROWSER_AUTOMATION_ACTIVITY_POLL_MS);
+    return;
+  }
+  const stream = new EventSource(`${BACKEND_BASE_URL}/browser-automation/activity/stream`);
+  stream.onmessage = (event) => {
+    try { renderBrowserAutomationActivity(JSON.parse(event.data)); } catch { hideBrowserAutomationActivityIfStale(); }
+  };
+  stream.onerror = () => {
+    if (!browserAutomationActivityFallbackTimer) browserAutomationActivityFallbackTimer = setInterval(refreshBrowserAutomationActivity, BROWSER_AUTOMATION_ACTIVITY_POLL_MS);
+  };
+}
+
+startBrowserAutomationActivityStream();
 
 // Startup loading screen (issue #138): driven by main.js's
 // runStartupSequence() over IPC. get-startup-status catches up on any

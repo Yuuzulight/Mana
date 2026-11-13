@@ -2804,6 +2804,7 @@ function registerRoutes(app, upload, deps = {}) {
     (deps.notifyTray || notifyTray)({ type: "background_task_done", sessionId, ...event });
   }
   const capabilityContext = {
+    browserAutomationToolSource: activeBrowserAutomationToolSource,
     documentAccess,
     projectsStore: activeProjectsStore,
     acpMemoryStore: deps.acpMemoryStore || acpMemoryStore,
@@ -3044,6 +3045,14 @@ function registerRoutes(app, upload, deps = {}) {
   app.get("/browser-automation/activity", (req, res) => {
     // #1139: plus whether I've taken over, or she's asking me to.
     return res.json({ ...activeBrowserAutomationToolSource.activityLog.getActivity(), takeOver: browserAutomationPlugin.takeOverStatus() });
+  });
+  app.get("/browser-automation/activity/stream", (req, res) => {
+    res.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+    res.flushHeaders?.();
+    const send = (activity) => res.write(`data: ${JSON.stringify({ ...activity, takeOver: browserAutomationPlugin.takeOverStatus() })}\n\n`);
+    send(activeBrowserAutomationToolSource.activityLog.getActivity());
+    const unsubscribe = activeBrowserAutomationToolSource.activityLog.subscribe(send);
+    req.on("close", () => unsubscribe());
   });
 
   // #1161: the latest "Test this site" report, in /web/read's shape so the

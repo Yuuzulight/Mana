@@ -70,6 +70,50 @@ function createManualControl({ prepare, getContext, getPage, resume, touch = () 
     return result;
   }
 
+  async function annotate(token, command = {}) {
+    const current = requireOwner(token);
+    touch();
+    const page = getPage();
+    const viewport = await viewportOf(page);
+    if (!Number.isFinite(command.x) || !Number.isFinite(command.y) || command.x < 0 || command.y < 0 || command.x >= viewport.width || command.y >= viewport.height) throw new Error('Annotation point is outside the page');
+    const result = await page.evaluate(({ x, y }) => {
+      const element = document.elementFromPoint(x, y);
+      if (!element) return null;
+      const sensitive = /password|one-time|otp|token|secret|card|cvv|ssn/i.test(`${element.getAttribute('type') || ''} ${element.getAttribute('name') || ''} ${element.getAttribute('autocomplete') || ''} ${element.getAttribute('aria-label') || ''}`);
+      const rect = element.getBoundingClientRect();
+      let box = { x: rect.x, y: rect.y, width: rect.width, height: rect.height, fallback: false };
+      if (box.width <= 0 || box.height <= 0) {
+        const parent = element.parentElement?.getBoundingClientRect();
+        if (parent && parent.width > 0 && parent.height > 0) box = { x: parent.x, y: parent.y, width: parent.width, height: parent.height, fallback: true };
+        else box = { x: Math.max(0, x - 2), y: Math.max(0, y - 2), width: 4, height: 4, fallback: true };
+      }
+      const selector = element.getAttribute('aria-ref') ? `[aria-ref="${element.getAttribute('aria-ref')}"]` : element.id ? `#${CSS.escape(element.id)}` : element.tagName.toLowerCase();
+      const rootIsContentEditable = element.isContentEditable;
+      const clone = element.cloneNode(true);
+      if (clone instanceof HTMLElement) {
+        const clearValue = (node, forceContentEditable = false) => {
+          const tag = node.tagName?.toLowerCase();
+          if (tag === 'input') {
+            node.value = '';
+            node.removeAttribute('value');
+            node.removeAttribute('checked');
+          } else if (tag === 'textarea' || forceContentEditable || node.isContentEditable || ['true', 'plaintext-only'].includes(node.getAttribute('contenteditable')?.toLowerCase())) {
+            node.value = '';
+            node.textContent = '';
+            node.removeAttribute('value');
+          }
+        };
+        if (clone.matches('input,textarea,[contenteditable]') || rootIsContentEditable) clearValue(clone, rootIsContentEditable);
+        clone.querySelectorAll('input,textarea,[contenteditable]').forEach((node) => clearValue(node));
+        clone.querySelectorAll('[hidden],[type="password"]').forEach((node) => node.remove());
+      }
+      const name = sensitive ? '[redacted]' : element.getAttribute('aria-label') || element.getAttribute('name') || (clone.textContent || '').trim().slice(0, 200);
+      return { selector, role: element.getAttribute('role') || element.tagName.toLowerCase(), name, markup: sensitive ? `<${element.tagName.toLowerCase()} [redacted]>` : clone.outerHTML.slice(0, 2000), rect: box };
+    }, { x: command.x, y: command.y });
+    if (requireOwner(token) !== current) throw new Error('Manual browser ownership changed');
+    return result || { rect: { x: command.x, y: command.y, width: 4, height: 4, fallback: true }, selector: null, role: null, name: null, markup: null };
+  }
+
   async function handBack(token) {
     if (transition) throw new Error('Browser control is already changing');
     const current = requireOwner(token);
@@ -89,7 +133,7 @@ function createManualControl({ prepare, getContext, getPage, resume, touch = () 
   }
 
   return {
-    takeOver, frame, input, handBack,
+    takeOver, frame, input, annotate, handBack,
     clear: () => { generation += 1; if (owner) owner.revoked = true; owner = null; },
     isActive: () => Boolean(transition || (owner && owner.context === getContext())),
   };

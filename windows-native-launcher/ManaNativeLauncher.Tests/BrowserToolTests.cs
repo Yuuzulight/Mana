@@ -38,7 +38,7 @@ public class BrowserToolTests
          "images":{"/start.png":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","https://t.test/p.png":"https://t.test/p.png"}}
         """;
 
-    private static ManaBackendClient Backend(List<string> requests, Func<string> activity, string? readerPage = ReaderPage) =>
+    private static ManaBackendClient Backend(List<string> requests, Func<string> activity, string? readerPage = ReaderPage, string? activityStream = null) =>
         new(new FakeHttpMessageHandler(request =>
         {
             var path = request.RequestUri!.AbsolutePath;
@@ -47,6 +47,7 @@ public class BrowserToolTests
             var json = path switch
             {
                 "/browser-automation/activity" => activity(),
+                "/browser-automation/activity/stream" => activityStream,
                 "/browser/close" => """{"ok":true}""",
                 "/browser/take-over" or "/browser/hand-back" => NotTakenOver,
                 "/browser/manual/start" => """{"token":"manual-test-token"}""",
@@ -59,7 +60,7 @@ public class BrowserToolTests
             };
             return json is null
                 ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, path.EndsWith("/stream", StringComparison.Ordinal) ? "text/event-stream" : "application/json") };
         }));
 
     [Fact]
@@ -135,6 +136,22 @@ public class BrowserToolTests
             lastAt = "t2";
             Pump(tool.RefreshAsync());
             Assert.Contains(tool.Controls.OfType<Label>(), l => l.Text == "Cart");
+        });
+    }
+
+    [Fact]
+    public void Tool_RendersAStreamedScreencastFrameWithoutWaitingForPolling()
+    {
+        RunSta(() =>
+        {
+            const string pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADGgGAWjR9awAAAABJRU5ErkJggg==";
+            var streamed = Activity("t2").Replace("\"screenshot\":null", $"\"screenshot\":{{\"base64\":\"{pixel}\",\"at\":\"t2\"}}", StringComparison.Ordinal).Replace("\r", "", StringComparison.Ordinal).Replace("\n", "", StringComparison.Ordinal);
+            using var tool = new BrowserTool(Backend([], () => Activity("t1"), activityStream: $"data: {streamed}\n\n"));
+            tool.CreateControl();
+            typeof(BrowserTool).GetMethod("StartActivityStream", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(tool, null);
+            Pump(() => typeof(BrowserTool).GetField("activity", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(tool) is not null);
+            tool.Refresh();
+            Assert.Equal(pixel, typeof(BrowserTool).GetField("shownScreenshot", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(tool));
         });
     }
 

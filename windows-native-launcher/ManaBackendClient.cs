@@ -2893,7 +2893,11 @@ internal sealed class ManaBackendClient
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync();
         using var document = await JsonDocument.ParseAsync(stream);
-        var root = document.RootElement;
+        return ParseBrowserAutomationActivity(document.RootElement);
+    }
+
+    private static ManaBrowserAutomationActivity ParseBrowserAutomationActivity(JsonElement root)
+    {
 
         var log = new List<ManaBrowserAutomationLogEntry>();
         if (root.TryGetProperty("log", out var logElement) && logElement.ValueKind == JsonValueKind.Array)
@@ -2953,6 +2957,24 @@ internal sealed class ManaBackendClient
         };
     }
 
+    // M3: receive screencast/activity updates as they happen. The polling
+    // endpoint remains available for older clients and reconnect fallback.
+    public async Task StreamBrowserAutomationActivityAsync(Func<ManaBrowserAutomationActivity, Task> onActivity, CancellationToken cancellationToken)
+    {
+        using var response = await http.GetAsync("/browser-automation/activity/stream", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new System.IO.StreamReader(stream);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line is null) break;
+            if (!line.StartsWith("data: ", StringComparison.Ordinal)) continue;
+            using var document = JsonDocument.Parse(line[6..]);
+            await onActivity(ParseBrowserAutomationActivity(document.RootElement));
+        }
+    }
+
     // #1122: Stop in the Browser tool -- ends her browser session
     // (plugins/browser-automation's POST /browser/close).
     public async Task CloseBrowserSessionAsync()
@@ -2995,7 +3017,7 @@ internal sealed class ManaBackendClient
 
     public async Task<JsonElement> BrowserManualAsync(string action, string? token = null, object? payload = null)
     {
-        if (action is not ("start" or "frame" or "input" or "done")) throw new ArgumentException("Unknown browser action", nameof(action));
+        if (action is not ("start" or "frame" or "annotate" or "input" or "done")) throw new ArgumentException("Unknown browser action", nameof(action));
         using var request = new HttpRequestMessage(action == "frame" ? HttpMethod.Get : HttpMethod.Post, $"/browser/manual/{action}");
         if (token is not null) request.Headers.Add("X-Mana-Manual-Token", token);
         if (action != "frame") request.Content = new StringContent(JsonSerializer.Serialize(payload ?? new { }), Encoding.UTF8, "application/json");

@@ -25,15 +25,19 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
   });
   await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${site.address().port}`;
+  const frames = [];
   const deps = {
     env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
     ramPercent: () => 50, isGaming: () => false,
+    onScreencastFrame: frame => frames.push(frame),
   };
   plugin._resetForTests();
   try {
     const session = await plugin.getSession(deps);
     const snapshot = await session.navigate(url);
     assert.equal(snapshot.title, 'Arcana in Mana');
+    for (let i = 0; i < 20 && !frames.length; i += 1) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(frames.some(frame => typeof frame.data === 'string' && frame.data.length > 100), 'Arcana screencast frame reached the host');
     const ref = role => /\[ref=([^\]]+)\]/.exec(snapshot.elements.find(line => line.startsWith(role)))[1];
     await session.type(ref('textbox'), 'Agent input');
     const clicked = await session.click(ref('button'));

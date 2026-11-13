@@ -214,6 +214,9 @@ same page `{url, title, added, removed, text?}`.
 - `POST /browser/manual/start` -- `{ url? }`, returns a manual token.
 - `GET /browser/manual/frame`, `POST /browser/manual/input`, and
   `POST /browser/manual/done` -- manual token in `X-Mana-Manual-Token`.
+- `POST /browser/manual/annotate` -- `{ x, y }` with the manual token; returns
+  the selected element's selector, role, accessible name, redacted markup, and
+  a rectangle. Empty inline rectangles receive a parent or point fallback box.
 - `POST /browser/personal/start` -- `{ sessionId, origins? }`, returns a
   single-use extension connection code; `GET /browser/personal/status` reads status.
 
@@ -223,6 +226,10 @@ it's exactly the kind of route that shouldn't be reachable from a
 network-adjacent caller.
 
 ## Verification note
+
+The live panel receives JPEG screencast frames from Arcana CDP events while a
+session is active; frame acknowledgements are sent immediately and the
+activity feed keeps the newest frame for existing panel clients.
 
 Deterministic tests cover page actions, authentication, approvals, ownership,
 transport limits and cleanup. Two opt-in integrations also exercise a real
