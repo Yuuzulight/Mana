@@ -156,6 +156,132 @@ public class BrowserToolTests
     }
 
     [Fact]
+    public void Tool_CoalescesRapidActivityUpdatesAndKeepsLatestActionAndAnnotation()
+    {
+        RunSta(() =>
+        {
+            using var tool = new BrowserTool(Backend([], () => Activity("poll")));
+            tool.Visible = false;
+            _ = tool.Handle;
+            var queueUpdate = typeof(BrowserTool).GetMethod("QueueActivityStreamUpdate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var pendingField = typeof(BrowserTool).GetField("pendingActivity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var scheduledField = typeof(BrowserTool).GetField("activityDrainScheduled", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var activityField = typeof(BrowserTool).GetField("activity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var stream = new CancellationTokenSource();
+            typeof(BrowserTool).GetField("activityStreamCts", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(tool, stream);
+            ManaBrowserAutomationActivity Update(string at, string name) => new()
+            {
+                Log = [new ManaBrowserAutomationLogEntry { Action = "click", Status = "ok", Summary = $"Clicked {name}", At = at }],
+                ScreenshotBase64 = $"frame-{at}",
+                Annotation = new ManaBrowserAnnotation { At = at, Selector = $"#{name.ToLowerInvariant()}", Role = "button", Name = name },
+            };
+
+            queueUpdate.Invoke(tool, [Update("t1", "First"), stream]);
+            queueUpdate.Invoke(tool, [Update("t2", "Second"), stream]);
+            var latest = Update("t3", "Continue");
+            queueUpdate.Invoke(tool, [latest, stream]);
+
+            Assert.True((bool)scheduledField.GetValue(tool)!);
+            Assert.Same(latest, pendingField.GetValue(tool));
+            Assert.Null(activityField.GetValue(tool));
+            Pump(() => ReferenceEquals(activityField.GetValue(tool), latest));
+            Assert.Equal("Clicked Continue", latest.Log.Single().Summary);
+            Assert.Equal("Continue", latest.Annotation?.Name);
+            Assert.Equal("frame-t3", latest.ScreenshotBase64);
+            Assert.False((bool)scheduledField.GetValue(tool)!);
+        });
+    }
+
+    [Fact]
+    public void Tool_DropsPendingActivityWhenPanelIsDisposed()
+    {
+        RunSta(() =>
+        {
+            var tool = new BrowserTool(Backend([], () => Activity("poll")));
+            tool.Visible = false;
+            _ = tool.Handle;
+            var queueUpdate = typeof(BrowserTool).GetMethod("QueueActivityStreamUpdate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var pendingField = typeof(BrowserTool).GetField("pendingActivity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var activityField = typeof(BrowserTool).GetField("activity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var stream = new CancellationTokenSource();
+            typeof(BrowserTool).GetField("activityStreamCts", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(tool, stream);
+            queueUpdate.Invoke(tool, [new ManaBrowserAutomationActivity { ScreenshotBase64 = "queued-frame" }, stream]);
+            Assert.NotNull(pendingField.GetValue(tool));
+
+            tool.Dispose();
+            Application.DoEvents();
+
+            Assert.Null(pendingField.GetValue(tool));
+            Assert.Null(activityField.GetValue(tool));
+            queueUpdate.Invoke(tool, [new ManaBrowserAutomationActivity { ScreenshotBase64 = "late-frame" }, stream]);
+            Assert.Null(pendingField.GetValue(tool));
+        });
+    }
+
+    [Fact]
+    public void Tool_IgnoresActivityFromStoppedStreamAfterRestart()
+    {
+        RunSta(() =>
+        {
+            using var tool = new BrowserTool(Backend([], () => Activity("poll")));
+            tool.Visible = false;
+            _ = tool.Handle;
+            var queueUpdate = typeof(BrowserTool).GetMethod("QueueActivityStreamUpdate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var stopStream = typeof(BrowserTool).GetMethod("StopActivityStream", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var pendingField = typeof(BrowserTool).GetField("pendingActivity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var connectedField = typeof(BrowserTool).GetField("activityStreamConnected", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var activityField = typeof(BrowserTool).GetField("activity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var streamField = typeof(BrowserTool).GetField("activityStreamCts", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+            var stoppedStream = new CancellationTokenSource();
+            streamField.SetValue(tool, stoppedStream);
+            var oldActivity = new ManaBrowserAutomationActivity { ScreenshotBase64 = "old-frame" };
+            queueUpdate.Invoke(tool, [oldActivity, stoppedStream]);
+            Assert.Same(oldActivity, pendingField.GetValue(tool));
+
+            stopStream.Invoke(tool, null);
+            Assert.Null(pendingField.GetValue(tool));
+            Assert.False((bool)connectedField.GetValue(tool)!);
+
+            var restartedStream = new CancellationTokenSource();
+            streamField.SetValue(tool, restartedStream);
+            queueUpdate.Invoke(tool, [oldActivity, stoppedStream]);
+            Assert.Null(pendingField.GetValue(tool));
+            Assert.False((bool)connectedField.GetValue(tool)!);
+
+            var currentActivity = new ManaBrowserAutomationActivity { ScreenshotBase64 = "current-frame" };
+            queueUpdate.Invoke(tool, [currentActivity, restartedStream]);
+            Assert.Same(currentActivity, pendingField.GetValue(tool));
+            Assert.True((bool)connectedField.GetValue(tool)!);
+            Pump(() => ReferenceEquals(activityField.GetValue(tool), currentActivity));
+        });
+    }
+
+    [Fact]
+    public void Tool_RepaintsWhenAConnectedActivityStreamDisconnects()
+    {
+        RunSta(() =>
+        {
+            using var tool = new BrowserTool(Backend([], () => Activity("poll")));
+            tool.Visible = false;
+            _ = tool.Handle;
+            var stream = new CancellationTokenSource();
+            typeof(BrowserTool).GetField("activityStreamCts", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(tool, stream);
+            typeof(BrowserTool).GetField("activityStreamConnected", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(tool, true);
+            typeof(BrowserTool).GetField("activity", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(tool, new ManaBrowserAutomationActivity
+            {
+                PageUrl = "https://shop.test/final",
+                PageTitle = "Final streamed page",
+            });
+
+            typeof(BrowserTool).GetMethod("FinishActivityStream", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(tool, [stream]);
+
+            Pump(() => tool.Controls.OfType<Label>().Last().Text == "Final streamed page");
+            Assert.False((bool)typeof(BrowserTool).GetField("activityStreamConnected", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(tool)!);
+        });
+    }
+
+    [Fact]
     public void Tool_TakesOverInsideMana_ShowsWhySheAsked_AndHandsBackOnDone()
     {
         RunSta(() =>

@@ -3518,7 +3518,7 @@ public class ManaBackendClientTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    "data: {\"log\":[],\"screenshot\":{\"base64\":\"live-frame\"},\"takeOver\":{\"active\":false}}\n\n",
+                    "data: {\"log\":[{\"action\":\"click\",\"status\":\"ok\",\"summary\":\"Clicked Continue\",\"at\":\"t2\"}],\"screenshot\":{\"base64\":\"live-frame\"},\"takeOver\":{\"active\":false},\"annotation\":{\"at\":\"t2\",\"selector\":\"#continue\",\"role\":\"button\",\"name\":\"Continue\",\"markup\":\"<button>Continue</button>\",\"rect\":{\"x\":1,\"y\":2,\"width\":3,\"height\":4,\"fallback\":true}}}\n\n",
                     Encoding.UTF8,
                     "text/event-stream"),
             };
@@ -3535,6 +3535,9 @@ public class ManaBackendClientTests
         Assert.Single(received);
         Assert.Equal("live-frame", received[0].ScreenshotBase64);
         Assert.False(received[0].TakenOver);
+        Assert.Equal("Clicked Continue", received[0].Log.Single().Summary);
+        Assert.Equal("Continue", received[0].Annotation?.Name);
+        Assert.True(received[0].Annotation?.Fallback);
     }
 
     [Fact]
