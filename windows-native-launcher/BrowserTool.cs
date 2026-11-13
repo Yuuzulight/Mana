@@ -226,37 +226,36 @@ internal sealed class BrowserTool : Panel
 
     private void StartActivityStream()
     {
-        if (activityStreamCts is not null) return;
-        activityStreamCts = new CancellationTokenSource();
-        var token = activityStreamCts.Token;
+        CancellationTokenSource stream;
+        lock (activityStreamGate)
+        {
+            if (activityStreamCts is not null || IsDisposed) return;
+            stream = new CancellationTokenSource();
+            activityStreamCts = stream;
+        }
+        var token = stream.Token;
         _ = Task.Run(async () =>
         {
             try
             {
                 await client.StreamBrowserAutomationActivityAsync(next =>
                 {
-                    QueueActivityStreamUpdate(next);
+                    QueueActivityStreamUpdate(next, stream);
                     return Task.CompletedTask;
                 }, token);
-                if (!token.IsCancellationRequested)
-                {
-                    activityStreamConnected = false;
-                }
             }
             catch when (token.IsCancellationRequested) { }
-            catch
-            {
-                activityStreamConnected = false;
-            }
+            catch { }
+            finally { FinishActivityStream(stream); }
         }, token);
     }
 
-    private void QueueActivityStreamUpdate(ManaBrowserAutomationActivity next)
+    private void QueueActivityStreamUpdate(ManaBrowserAutomationActivity next, CancellationTokenSource stream)
     {
         var scheduleDrain = false;
         lock (activityStreamGate)
         {
-            if (IsDisposed) return;
+            if (IsDisposed || !ReferenceEquals(activityStreamCts, stream)) return;
             activityStreamConnected = true;
             pendingActivity = next;
             if (!activityDrainScheduled)
@@ -266,6 +265,26 @@ internal sealed class BrowserTool : Panel
             }
         }
         if (scheduleDrain) PostActivityStreamDrain();
+    }
+
+    private void FinishActivityStream(CancellationTokenSource stream)
+    {
+        var repaint = false;
+        lock (activityStreamGate)
+        {
+            if (!ReferenceEquals(activityStreamCts, stream))
+            {
+                stream.Dispose();
+                return;
+            }
+            activityStreamCts = null;
+            repaint = activityStreamConnected;
+            activityStreamConnected = false;
+        }
+        stream.Dispose();
+        if (!repaint || IsDisposed) return;
+        try { BeginInvoke((Action)Render); }
+        catch (InvalidOperationException) { }
     }
 
     private void PostActivityStreamDrain()
@@ -324,11 +343,16 @@ internal sealed class BrowserTool : Panel
 
     private void StopActivityStream()
     {
-        activityStreamConnected = false;
-        lock (activityStreamGate) pendingActivity = null;
-        activityStreamCts?.Cancel();
-        activityStreamCts?.Dispose();
-        activityStreamCts = null;
+        CancellationTokenSource? stream;
+        lock (activityStreamGate)
+        {
+            stream = activityStreamCts;
+            activityStreamCts = null;
+            activityStreamConnected = false;
+            pendingActivity = null;
+        }
+        stream?.Cancel();
+        stream?.Dispose();
     }
 
     private async Task StopAsync()
