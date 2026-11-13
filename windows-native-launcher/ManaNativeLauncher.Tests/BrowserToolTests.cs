@@ -156,6 +156,65 @@ public class BrowserToolTests
     }
 
     [Fact]
+    public void Tool_CoalescesRapidActivityUpdatesAndKeepsLatestActionAndAnnotation()
+    {
+        RunSta(() =>
+        {
+            using var tool = new BrowserTool(Backend([], () => Activity("poll")));
+            tool.Visible = false;
+            _ = tool.Handle;
+            var queueUpdate = typeof(BrowserTool).GetMethod("QueueActivityStreamUpdate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var pendingField = typeof(BrowserTool).GetField("pendingActivity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var scheduledField = typeof(BrowserTool).GetField("activityDrainScheduled", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var activityField = typeof(BrowserTool).GetField("activity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            ManaBrowserAutomationActivity Update(string at, string name) => new()
+            {
+                Log = [new ManaBrowserAutomationLogEntry { Action = "click", Status = "ok", Summary = $"Clicked {name}", At = at }],
+                ScreenshotBase64 = $"frame-{at}",
+                Annotation = new ManaBrowserAnnotation { At = at, Selector = $"#{name.ToLowerInvariant()}", Role = "button", Name = name },
+            };
+
+            queueUpdate.Invoke(tool, [Update("t1", "First")]);
+            queueUpdate.Invoke(tool, [Update("t2", "Second")]);
+            var latest = Update("t3", "Continue");
+            queueUpdate.Invoke(tool, [latest]);
+
+            Assert.True((bool)scheduledField.GetValue(tool)!);
+            Assert.Same(latest, pendingField.GetValue(tool));
+            Assert.Null(activityField.GetValue(tool));
+            Pump(() => ReferenceEquals(activityField.GetValue(tool), latest));
+            Assert.Equal("Clicked Continue", latest.Log.Single().Summary);
+            Assert.Equal("Continue", latest.Annotation?.Name);
+            Assert.Equal("frame-t3", latest.ScreenshotBase64);
+            Assert.False((bool)scheduledField.GetValue(tool)!);
+        });
+    }
+
+    [Fact]
+    public void Tool_DropsPendingActivityWhenPanelIsDisposed()
+    {
+        RunSta(() =>
+        {
+            var tool = new BrowserTool(Backend([], () => Activity("poll")));
+            tool.Visible = false;
+            _ = tool.Handle;
+            var queueUpdate = typeof(BrowserTool).GetMethod("QueueActivityStreamUpdate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var pendingField = typeof(BrowserTool).GetField("pendingActivity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var activityField = typeof(BrowserTool).GetField("activity", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            queueUpdate.Invoke(tool, [new ManaBrowserAutomationActivity { ScreenshotBase64 = "queued-frame" }]);
+            Assert.NotNull(pendingField.GetValue(tool));
+
+            tool.Dispose();
+            Application.DoEvents();
+
+            Assert.Null(pendingField.GetValue(tool));
+            Assert.Null(activityField.GetValue(tool));
+            queueUpdate.Invoke(tool, [new ManaBrowserAutomationActivity { ScreenshotBase64 = "late-frame" }]);
+            Assert.Null(pendingField.GetValue(tool));
+        });
+    }
+
+    [Fact]
     public void Tool_TakesOverInsideMana_ShowsWhySheAsked_AndHandsBackOnDone()
     {
         RunSta(() =>

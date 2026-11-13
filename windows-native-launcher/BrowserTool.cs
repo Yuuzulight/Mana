@@ -63,7 +63,10 @@ internal sealed class BrowserTool : Panel
     private string? endedAtStep;
     private bool polling;
     private CancellationTokenSource? activityStreamCts;
-    private bool activityStreamConnected;
+    private volatile bool activityStreamConnected;
+    private readonly object activityStreamGate = new();
+    private ManaBrowserAutomationActivity? pendingActivity;
+    private bool activityDrainScheduled;
 
     // Tests swap this out so nothing opens a real browser.
     // Tests swap this out so no dialog opens.
@@ -232,32 +235,97 @@ internal sealed class BrowserTool : Panel
             {
                 await client.StreamBrowserAutomationActivityAsync(next =>
                 {
-                    if (IsDisposed) return Task.CompletedTask;
-                    activityStreamConnected = true;
-                    BeginInvoke(() =>
-                    {
-                        if (!IsDisposed) { activity = next; Render(); }
-                    });
+                    QueueActivityStreamUpdate(next);
                     return Task.CompletedTask;
                 }, token);
                 if (!token.IsCancellationRequested)
                 {
                     activityStreamConnected = false;
-                    if (!IsDisposed) BeginInvoke(Render);
                 }
             }
             catch when (token.IsCancellationRequested) { }
             catch
             {
                 activityStreamConnected = false;
-                if (!IsDisposed) BeginInvoke(Render);
             }
         }, token);
+    }
+
+    private void QueueActivityStreamUpdate(ManaBrowserAutomationActivity next)
+    {
+        var scheduleDrain = false;
+        lock (activityStreamGate)
+        {
+            if (IsDisposed) return;
+            activityStreamConnected = true;
+            pendingActivity = next;
+            if (!activityDrainScheduled)
+            {
+                activityDrainScheduled = true;
+                scheduleDrain = true;
+            }
+        }
+        if (scheduleDrain) PostActivityStreamDrain();
+    }
+
+    private void PostActivityStreamDrain()
+    {
+        try
+        {
+            if (IsDisposed || !IsHandleCreated) throw new InvalidOperationException("Browser panel has no live window handle");
+            BeginInvoke((Action)DrainActivityStreamUpdates);
+        }
+        catch (InvalidOperationException)
+        {
+            lock (activityStreamGate)
+            {
+                pendingActivity = null;
+                activityDrainScheduled = false;
+                activityStreamConnected = false;
+            }
+        }
+    }
+
+    private void DrainActivityStreamUpdates()
+    {
+        ManaBrowserAutomationActivity? next;
+        lock (activityStreamGate)
+        {
+            if (IsDisposed)
+            {
+                pendingActivity = null;
+                activityDrainScheduled = false;
+                return;
+            }
+            next = pendingActivity;
+            pendingActivity = null;
+        }
+
+        if (next is not null)
+        {
+            activity = next;
+            Render();
+        }
+
+        var scheduleAnotherDrain = false;
+        lock (activityStreamGate)
+        {
+            if (IsDisposed)
+            {
+                pendingActivity = null;
+                activityDrainScheduled = false;
+                return;
+            }
+            if (pendingActivity is null) activityDrainScheduled = false;
+            else scheduleAnotherDrain = true;
+        }
+        if (scheduleAnotherDrain) PostActivityStreamDrain();
     }
 
     private void StopActivityStream()
     {
         activityStreamConnected = false;
+        lock (activityStreamGate) pendingActivity = null;
         activityStreamCts?.Cancel();
         activityStreamCts?.Dispose();
         activityStreamCts = null;
