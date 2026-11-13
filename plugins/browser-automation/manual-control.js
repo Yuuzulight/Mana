@@ -88,12 +88,27 @@ function createManualControl({ prepare, getContext, getPage, resume, touch = () 
         else box = { x: Math.max(0, x - 2), y: Math.max(0, y - 2), width: 4, height: 4, fallback: true };
       }
       const selector = element.getAttribute('aria-ref') ? `[aria-ref="${element.getAttribute('aria-ref')}"]` : element.id ? `#${CSS.escape(element.id)}` : element.tagName.toLowerCase();
+      const rootIsContentEditable = element.isContentEditable;
       const clone = element.cloneNode(true);
       if (clone instanceof HTMLElement) {
-        clone.querySelectorAll('input,textarea,[contenteditable="true"]').forEach((node) => { node.value = ''; node.textContent = ''; node.removeAttribute('value'); });
+        const clearValue = (node, forceContentEditable = false) => {
+          const tag = node.tagName?.toLowerCase();
+          if (tag === 'input') {
+            node.value = '';
+            node.removeAttribute('value');
+            node.removeAttribute('checked');
+          } else if (tag === 'textarea' || forceContentEditable || node.isContentEditable || ['true', 'plaintext-only'].includes(node.getAttribute('contenteditable')?.toLowerCase())) {
+            node.value = '';
+            node.textContent = '';
+            node.removeAttribute('value');
+          }
+        };
+        if (clone.matches('input,textarea,[contenteditable]') || rootIsContentEditable) clearValue(clone, rootIsContentEditable);
+        clone.querySelectorAll('input,textarea,[contenteditable]').forEach((node) => clearValue(node));
         clone.querySelectorAll('[hidden],[type="password"]').forEach((node) => node.remove());
       }
-      return { selector, role: element.getAttribute('role') || element.tagName.toLowerCase(), name: element.getAttribute('aria-label') || element.getAttribute('name') || (sensitive ? '[redacted]' : (element.textContent || '').trim().slice(0, 200)), markup: sensitive ? `<${element.tagName.toLowerCase()} [redacted]>` : clone.outerHTML.slice(0, 2000), rect: box };
+      const name = sensitive ? '[redacted]' : element.getAttribute('aria-label') || element.getAttribute('name') || (clone.textContent || '').trim().slice(0, 200);
+      return { selector, role: element.getAttribute('role') || element.tagName.toLowerCase(), name, markup: sensitive ? `<${element.tagName.toLowerCase()} [redacted]>` : clone.outerHTML.slice(0, 2000), rect: box };
     }, { x: command.x, y: command.y });
     if (requireOwner(token) !== current) throw new Error('Manual browser ownership changed');
     return result || { rect: { x: command.x, y: command.y, width: 4, height: 4, fallback: true }, selector: null, role: null, name: null, markup: null };
