@@ -9,22 +9,38 @@ const path = require("path");
 const http = require("http");
 const { spawn, execFile } = require("child_process");
 
-const DEFAULT_ARCANA_DIR = "C:\\ManaAI\\Arcana";
 // What tools/install-arcana.ps1 publishes.
 const INSTALLED_CLI = path.resolve(__dirname, "../../node-bot/runtime/arcana/Arcana.Cli.dll");
+const INSTALLED_MANIFEST = path.resolve(__dirname, "../../node-bot/runtime/arcana/arcana-install.json");
+const ARCANA_PIN = path.resolve(__dirname, "../../tools/arcana.lock.json");
 const READY_TIMEOUT_MS = 15000;
 
-// MANA_ARCANA_CLI: the Arcana.Cli.dll to run; else a build under
-// MANA_ARCANA_DIR; else the pinned install; else a build at the default dir.
-function resolveCli(env, fsLike = fs) {
+// Explicit CLI/build overrides remain useful for development. The ordinary
+// production path accepts only the installed artifact whose manifest agrees
+// with this checkout's lock file; never silently run an unpinned local build.
+function resolveCli(env, fsLike = fs, paths = {}) {
+  const installedCli = paths.installedCli || INSTALLED_CLI;
+  const installedManifest = paths.installedManifest || INSTALLED_MANIFEST;
+  const arcanaPin = paths.arcanaPin || ARCANA_PIN;
   if (env.MANA_ARCANA_CLI) return fsLike.existsSync(env.MANA_ARCANA_CLI) ? env.MANA_ARCANA_CLI : null;
-  if (!env.MANA_ARCANA_DIR && fsLike.existsSync(INSTALLED_CLI)) return INSTALLED_CLI;
-  const bin = path.join(env.MANA_ARCANA_DIR || DEFAULT_ARCANA_DIR, "src", "Arcana.Cli", "bin");
-  for (const config of ["Release", "Debug"]) {
-    const dll = path.join(bin, config, "net10.0", "Arcana.Cli.dll");
-    if (fsLike.existsSync(dll)) return dll;
+  if (env.MANA_ARCANA_DIR) {
+    const bin = path.join(env.MANA_ARCANA_DIR, "src", "Arcana.Cli", "bin");
+    for (const config of ["Release", "Debug"]) {
+      const dll = path.join(bin, config, "net10.0", "Arcana.Cli.dll");
+      if (fsLike.existsSync(dll)) return dll;
+    }
+    return null;
   }
-  return null;
+
+  if (!fsLike.existsSync(installedCli) || !fsLike.existsSync(installedManifest) || !fsLike.existsSync(arcanaPin)) return null;
+  try {
+    const installed = JSON.parse(fsLike.readFileSync(installedManifest, "utf8"));
+    const pinned = JSON.parse(fsLike.readFileSync(arcanaPin, "utf8"));
+    if (!installed || !pinned || installed.repository !== pinned.repository || installed.commit !== pinned.commit || installed.engineVersion !== pinned.engineVersion) return null;
+    return installedCli;
+  } catch {
+    return null;
+  }
 }
 
 function freePort() {
@@ -62,7 +78,7 @@ function killTree(child) {
 // a page can't reach Mana's own services. storageDir keeps local storage.
 async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
   const cli = resolveCli(env);
-  if (!cli) throw new Error("Arcana isn't installed -- run tools/install-arcana.ps1, set MANA_ARCANA_CLI, or build it at " + (env.MANA_ARCANA_DIR || DEFAULT_ARCANA_DIR));
+  if (!cli) throw new Error("The pinned Arcana install isn't available -- run tools/install-arcana.ps1, or explicitly set MANA_ARCANA_CLI or MANA_ARCANA_DIR for development");
   const port = await freePort();
   // --arcana-parent-pid: Arcana stops itself if this process dies without cleaning up.
   const args = [cli, "serve", `--port=${port}`, "--quiet", `--arcana-parent-pid=${process.pid}`];

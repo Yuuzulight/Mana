@@ -12,14 +12,16 @@ Her browser is [Arcana](https://github.com/Yuuzulight/Arcana) (Obscura inside):
 `arcana-engine.js` runs its `serve` endpoint on a free loopback port and
 Playwright attaches over CDP, so everything below works unchanged. Headless
 only, with private-network pages off and local storage kept in
-`browser-profile/arcana`. Edge opens only for Take over, or when Arcana isn't
-built or won't start (one warning in the log), or `MANA_BROWSER_ENGINE=edge`.
-Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
+`browser-profile/arcana`. The normal headless path uses only the installed
+Arcana runtime whose manifest matches the commit and engine version pinned in
+`tools/arcana.lock.json`. Edge opens for Take over, when that pinned install is
+missing or won't start (one warning in the log), or when explicitly selected
+with `MANA_BROWSER_ENGINE=edge`. Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
 `tools/arcana.lock.json` (the CLI, plus the engine built from its pinned source commit; needs git,
 .NET 10 and a Rust toolchain) into
-`node-bot/runtime/arcana`. To use another build, point `MANA_ARCANA_CLI` at an
-`Arcana.Cli.dll`, or `MANA_ARCANA_DIR` at a checkout (default
-`C:\ManaAI\Arcana`, Release or Debug build). Set
+`node-bot/runtime/arcana`. For development only, point `MANA_ARCANA_CLI` at an
+`Arcana.Cli.dll`, or explicitly set `MANA_ARCANA_DIR` to a checkout containing
+a Release or Debug build. Set
 `MANA_ARCANA_ALLOW_PRIVATE_NETWORK=1` to let pages reach localhost and LAN
 hosts, for example a dev server (off by default).
 

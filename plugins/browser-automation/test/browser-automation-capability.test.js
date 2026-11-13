@@ -742,6 +742,41 @@ test("Arcana is told which process to outlive, so a crashed Mana can't leave it 
   assert.ok(seen.includes(`--arcana-parent-pid=${process.pid}`));
 });
 
+test("the default Arcana CLI must match the checked-in runtime pin; explicit dev overrides remain available", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { resolveCli } = require("../arcana-engine");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mana-arcana-pin-"));
+  const cli = path.join(dir, "Arcana.Cli.dll");
+  const manifest = path.join(dir, "arcana-install.json");
+  const pinFile = path.join(dir, "arcana.lock.json");
+  const pin = { repository: "https://example.test/Arcana.git", commit: "abc123", engineVersion: "main-abc123+arcana1" };
+  try {
+    fs.writeFileSync(cli, "installed");
+    fs.writeFileSync(manifest, JSON.stringify(pin));
+    fs.writeFileSync(pinFile, JSON.stringify(pin));
+    const paths = { installedCli: cli, installedManifest: manifest, arcanaPin: pinFile };
+    assert.equal(resolveCli({}, fs, paths), cli);
+
+    fs.writeFileSync(manifest, JSON.stringify({ ...pin, commit: "older" }));
+    assert.equal(resolveCli({}, fs, paths), null);
+    fs.writeFileSync(manifest, "not json");
+    assert.equal(resolveCli({}, fs, paths), null);
+
+    const explicitCli = path.join(dir, "dev-cli.dll");
+    fs.writeFileSync(explicitCli, "dev");
+    assert.equal(resolveCli({ MANA_ARCANA_CLI: explicitCli }, fs, paths), explicitCli);
+
+    const devBuild = path.join(dir, "src", "Arcana.Cli", "bin", "Release", "net10.0", "Arcana.Cli.dll");
+    fs.mkdirSync(path.dirname(devBuild), { recursive: true });
+    fs.writeFileSync(devBuild, "dev build");
+    assert.equal(resolveCli({ MANA_ARCANA_DIR: dir }, fs, paths), devBuild);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("every engine choice is logged, so a week of use can be counted", async () => {
   const fs = require("node:fs");
   const os = require("node:os");

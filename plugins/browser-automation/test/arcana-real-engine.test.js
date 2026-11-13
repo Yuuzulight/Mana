@@ -1,5 +1,5 @@
 // Drives the plugin against a real Arcana build (CI: tools/install-arcana.ps1;
-// locally: MANA_ARCANA_TEST_REAL=1, with MANA_ARCANA_CLI or an installed build).
+// locally: MANA_ARCANA_TEST_REAL=1, with the checked-in pinned install).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -14,7 +14,14 @@ const real = process.env.MANA_ARCANA_TEST_REAL === '1';
 const signinSpikes = process.env.MANA_ARCANA_SIGNIN_SPIKES === '1';
 
 test('real Arcana: actions, local storage across a restart, and the engine is gone after close', { skip: !real, timeout: 90000 }, async () => {
-  assert.ok(resolveCli(process.env), 'Arcana CLI not found: run tools/install-arcana.ps1 or set MANA_ARCANA_CLI');
+  const env = {
+    ...process.env,
+    MANA_ARCANA_CLI: '',
+    MANA_ARCANA_DIR: '',
+    MANA_BROWSER_ENGINE: '',
+    MANA_BROWSER_HEADLESS: '1',
+  };
+  assert.ok(resolveCli(env), 'the checked-in Arcana pin is not installed; run tools/install-arcana.ps1');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-real-'));
   const site = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
@@ -28,14 +35,18 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
   await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${site.address().port}`;
   const frames = [];
+  const eventsFile = path.join(temporary, 'arcana-events.jsonl');
   const deps = {
-    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
+    env: { ...env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventsFile, MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
     ramPercent: () => 50, isGaming: () => false,
     onScreencastFrame: frame => frames.push(frame),
   };
   plugin._resetForTests();
   try {
     const session = await plugin.getSession(deps);
+    const engineEvents = fs.readFileSync(eventsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(engineEvents.some(event => event.type === 'arcana_started'), 'the ordinary headless entry path must start pinned Arcana');
+    assert.ok(!engineEvents.some(event => event.type === 'arcana_start_failed'), 'the default engine path must not silently pass through Edge fallback');
     const snapshot = await session.navigate(url);
     assert.equal(snapshot.title, 'Arcana in Mana');
     for (let i = 0; i < 20 && !frames.length; i += 1) await new Promise(resolve => setTimeout(resolve, 50));
