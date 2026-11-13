@@ -64,16 +64,29 @@ while ([DateTime]::UtcNow -lt $deadline) {
 }
 
 $reportScript = Join-Path $PSScriptRoot 'm2-fallback-report.ps1'
-$report = & powershell -NoProfile -ExecutionPolicy Bypass -File $reportScript -Path $events -Days 3 -MinStarts 5 | Out-String
+$report = & powershell -NoProfile -ExecutionPolicy Bypass -File $reportScript -Path $events -Days ([math]::Max(1, [int]($Hours / 24))) -Since $startedAt -Until [DateTime]::UtcNow -MinStarts 5 | Out-String
+$fallbackVerdict = try { $report.Trim() | ConvertFrom-Json } catch { $null }
+
+# Require clean fallback evidence: elapsed time alone CANNOT produce a pass.
+$verdictStatus = if ($failure) {
+  'failed'
+} elseif ([DateTime]::UtcNow -lt $deadline) {
+  'incomplete'
+} elseif ($null -eq $fallbackVerdict -or $fallbackVerdict.status -ne 'clean') {
+  'failed'
+} else {
+  'complete'
+}
+
 $final = [ordered]@{
   startedAt = $startedAt.ToString('o')
   finishedAt = [DateTime]::UtcNow.ToString('o')
   deadline = $deadline.ToString('o')
   cycles = $cycle
   runnerFailure = $failure
-  fallbackReport = $report.Trim() | ConvertFrom-Json
-  status = if ($failure) { 'failed' } elseif ([DateTime]::UtcNow -ge $deadline) { 'complete' } else { 'incomplete' }
+  fallbackReport = $fallbackVerdict
+  status = $verdictStatus
 }
 $final | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $summary -Encoding UTF8
 $final | ConvertTo-Json -Depth 6
-if ($failure) { exit 1 }
+if ($verdictStatus -ne 'complete') { exit 1 }
