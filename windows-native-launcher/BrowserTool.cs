@@ -274,7 +274,6 @@ internal sealed class BrowserTool : Panel
         {
             if (!ReferenceEquals(activityStreamCts, stream))
             {
-                stream.Dispose();
                 return;
             }
             activityStreamCts = null;
