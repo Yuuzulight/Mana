@@ -1,5 +1,8 @@
 # Arcana M4 acceptance matrix
 
+Status: **complete** for the Obscura-backed Arcana path (2026-11-13).
+Release code signing is intentionally postponed and is not part of this acceptance.
+
 Run date: 2026-11-13
 
 ## Manual takeover
@@ -46,3 +49,7 @@ OS default browser.
 M4's ordinary-page manual-help requirement is met. The sign-in spike result is
 explicit: all three classes require user handoff for the sensitive step, while
 Arcana remains usable for navigation up to that boundary.
+
+M3 is also complete: live screencast frames, approval-visible activity, and
+one-shot annotation pinning are covered by the activity/route tests and the real
+Arcana manual-control test.
