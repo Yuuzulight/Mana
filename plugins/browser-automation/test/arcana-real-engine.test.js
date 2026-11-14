@@ -21,6 +21,14 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
     MANA_BROWSER_ENGINE: '',
     MANA_BROWSER_HEADLESS: '1',
   };
+  const pin = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../tools/arcana.lock.json'), 'utf8'));
+  const installed = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../node-bot/runtime/arcana/arcana-install.json'), 'utf8'));
+  assert.equal(pin.commit, '012caed9ac3b961e50feec62ef55048eeea30d8e', 'Mana should pin Arcana #23');
+  assert.deepEqual(
+    { repository: installed.repository, commit: installed.commit, engineVersion: installed.engineVersion },
+    { repository: pin.repository, commit: pin.commit, engineVersion: pin.engineVersion },
+    'installed Arcana metadata must match the checked-in pin',
+  );
   assert.ok(resolveCli(env), 'the checked-in Arcana pin is not installed; run tools/install-arcana.ps1');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-real-'));
   const site = http.createServer((req, res) => {
