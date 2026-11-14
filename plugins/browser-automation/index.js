@@ -163,8 +163,9 @@ async function launch(deps, options) {
   await closing;
   const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
   if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
-  // Arcana is her browser. Edge is for what Arcana can't do yet -- a visible
-  // window (Take over) -- or when MANA_BROWSER_ENGINE=edge or Arcana won't start.
+  // Arcana is her browser. Edge is only an explicit choice (MANA_BROWSER_ENGINE=edge)
+  // or the user-owned visible window. A failed Arcana start must not silently
+  // switch the automation path to Playwright over Edge.
   // Each engine choice is logged (arcana-events.jsonl, or MANA_ARCANA_EVENTS_FILE;
   // tools/m2-fallback-report.ps1 reads it). A test double never writes the real log.
   const eventsFile = env.MANA_ARCANA_EVENTS_FILE || (deps.chromium ? null : path.join(profileDir, "arcana-events.jsonl"));
@@ -176,7 +177,7 @@ async function launch(deps, options) {
       return ctx;
     } catch (e) {
       event("arcana_start_failed", { reason: String(e.message) });
-      console.warn(`[browser-automation] Arcana unavailable, using Edge: ${e.message}`);
+      throw new Error(`Arcana couldn't start: ${e.message}. Edge fallback requires an explicit MANA_BROWSER_ENGINE=edge choice.`);
     }
   } else {
     event("edge_requested", { reason: options.headless === false ? "take over or visible window" : "MANA_BROWSER_ENGINE=edge" });

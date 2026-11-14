@@ -14,9 +14,10 @@ Playwright attaches over CDP, so everything below works unchanged. Headless
 only, with private-network pages off and local storage kept in
 `browser-profile/arcana`. The normal headless path uses only the installed
 Arcana runtime whose manifest matches the commit and engine version pinned in
-`tools/arcana.lock.json`. Edge opens for Take over, when that pinned install is
-missing or won't start (one warning in the log), or when explicitly selected
-with `MANA_BROWSER_ENGINE=edge`. Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
+`tools/arcana.lock.json`. Edge opens for a visible user takeover or when
+explicitly selected with `MANA_BROWSER_ENGINE=edge`. If the pinned install is
+missing or won't start, the headless automation request fails visibly instead
+of switching to Edge. Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
 `tools/arcana.lock.json` (the CLI, plus the engine built from its pinned source commit; needs git,
 .NET 10 and a Rust toolchain) into
 `node-bot/runtime/arcana`. For development only, point `MANA_ARCANA_CLI` at an

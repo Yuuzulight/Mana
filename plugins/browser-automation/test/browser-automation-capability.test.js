@@ -149,7 +149,7 @@ test("M3: manual annotation is exposed through the authenticated route", async (
 test("POST /browser/navigate surfaces a clear error when no browser executable is configured", async () => {
   const app = buildApp({
     isLocalRestartRequest: () => true,
-    env: { MANA_BROWSER_EXECUTABLE_PATH: "" },
+    env: { MANA_BROWSER_ENGINE: "edge", MANA_BROWSER_EXECUTABLE_PATH: "" },
     ramPercent: () => 50,
   });
   // Force "not found" by pointing at a path that can't exist.
@@ -206,7 +206,7 @@ function createFakeChromium(pageOverrides = {}) {
   return { chromium, launches, context, page };
 }
 
-const FAKE_ENV = { MANA_BROWSER_EXECUTABLE_PATH: "C:\\fake\\msedge.exe" };
+const FAKE_ENV = { MANA_BROWSER_ENGINE: "edge", MANA_BROWSER_EXECUTABLE_PATH: "C:\\fake\\msedge.exe" };
 
 test("POST /browser/navigate drives an injected fake chromium/page end to end", async () => {
   const { chromium } = createFakeChromium();
@@ -713,7 +713,7 @@ test("#1204: pathsIn finds POSIX paths too, quoted or not, on any platform", () 
   assert.deepEqual(browserAutomationPlugin.pathsIn("and/or https://a.test/x"), []);
 });
 
-test("her browser is Arcana; Edge only when Arcana can't start or Take over needs a window", async () => {
+test("her browser is Arcana; Edge is only an explicit choice or a visible takeover", async () => {
   browserAutomationPlugin._resetForTests();
   const { chromium, launches, context } = createFakeChromium();
   const arcanaCalls = [];
@@ -726,7 +726,11 @@ test("her browser is Arcana; Edge only when Arcana can't start or Take over need
 
   browserAutomationPlugin._resetForTests();
   const down = { ...deps, launchArcana: async () => { throw new Error("Arcana isn't built"); } };
-  await browserAutomationPlugin.getSession(down);
+  await assert.rejects(browserAutomationPlugin.getSession(down), /Edge fallback requires an explicit MANA_BROWSER_ENGINE=edge choice/);
+  assert.equal(launches.length, 0);
+
+  browserAutomationPlugin._resetForTests();
+  await browserAutomationPlugin.getSession({ ...deps, env: { ...env, MANA_BROWSER_ENGINE: "edge" } });
   assert.equal(launches.length, 1);
   browserAutomationPlugin._resetForTests();
 });
@@ -793,7 +797,10 @@ test("every engine choice is logged, so a week of use can be counted", async () 
     browserAutomationPlugin._resetForTests();
     await browserAutomationPlugin.getSession(deps);
     browserAutomationPlugin._resetForTests();
-    await browserAutomationPlugin.getSession({ ...deps, launchArcana: async () => { throw new Error("Arcana isn't built"); } });
+    await assert.rejects(
+      browserAutomationPlugin.getSession({ ...deps, launchArcana: async () => { throw new Error("Arcana isn't built"); } }),
+      /Edge fallback requires an explicit MANA_BROWSER_ENGINE=edge choice/,
+    );
     browserAutomationPlugin._resetForTests();
     await browserAutomationPlugin.getSession({ ...deps, env: { ...env, MANA_BROWSER_ENGINE: "edge" } });
     browserAutomationPlugin._resetForTests();
