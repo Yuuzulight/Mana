@@ -692,7 +692,7 @@ module.exports = {
   category: "Web",
   defaultEnabled: true,
   description:
-    "Navigate/click/type/read a live page in Arcana (Edge for Take over, or if Arcana will not start) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
+    "Navigate/click/type/read a live page in Arcana (Edge only for explicit user fallback or Take over) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
   registerRoutes: registerBrowserAutomationRoutes,
   // Issue #188: exported so the tool-calling adapter
   // (browser-automation-tool-source.js) shares this exact singleton

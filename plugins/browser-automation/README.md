@@ -35,12 +35,12 @@ Every engine choice is appended to `arcana-events.jsonl` in the browser profile
 started at least five times in it (`-MinStarts`), so an empty or new log is never
 read as a clean observation window.
 
-## Browser: Edge by default, override with an env var
+## Explicit Edge fallback
 
-Windows ships Edge (Chromium-based) on every install, so this plugin
-launches it by default instead of asking anyone to separately install a
-browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
-`playwright install chromium`-downloaded browser, instead.
+For a user-directed fallback, set `MANA_BROWSER_ENGINE=edge`; Windows ships
+Edge (Chromium-based) on every install. Set `MANA_BROWSER_EXECUTABLE_PATH` to
+point at Chrome, or a `playwright install chromium`-downloaded browser,
+instead. Arcana startup failures remain visible and do not trigger this path.
 `MANA_BROWSER_HEADLESS=0` shows the window instead of running headless.
 While I'm watching (the Browser panel, or that window), a pink cursor and
 outline show where she's about to click, type, select, hover or drag
