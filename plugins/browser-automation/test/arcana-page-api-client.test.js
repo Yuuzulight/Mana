@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
+const { once } = require("node:events");
 const http = require("node:http");
 const test = require("node:test");
+const { WebSocketServer } = require("../../../node-bot/node_modules/ws");
 const { ArcanaPageApiClient, ArcanaPageApiError } = require("../arcana-page-api-client");
 
 async function withApiServer(handler, fn) {
@@ -26,6 +28,37 @@ async function readBody(request) {
   for await (const chunk of request) body += chunk;
   return body ? JSON.parse(body) : null;
 }
+
+test("Arcana event sockets authenticate without putting the token in the URL", async () => {
+  const server = http.createServer();
+  const sockets = new WebSocketServer({ server });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const client = new ArcanaPageApiClient({
+    endpoint: `http://127.0.0.1:${server.address().port}`,
+    token: "test-token",
+  });
+  const event = { name: "Page.screencastFrame", data: { data: "frame" } };
+  let request;
+  sockets.on("connection", (socket, upgrade) => {
+    request = upgrade;
+    socket.send(JSON.stringify(event));
+  });
+  const socket = client.connectEvents("page&1");
+  try {
+    const [message] = await once(socket, "message");
+    assert.equal(request.url, "/v1/events?pageId=page%261");
+    assert.equal(request.headers.authorization, "Bearer test-token");
+    assert.equal(request.headers.origin, undefined);
+    assert.deepEqual(JSON.parse(message), event);
+  } finally {
+    socket.terminate();
+    for (const peer of sockets.clients) peer.terminate();
+    await Promise.all([
+      new Promise((resolve) => sockets.close(resolve)),
+      new Promise((resolve) => server.close(resolve)),
+    ]);
+  }
+});
 
 test("Arcana API client accepts only an authenticated loopback endpoint", async () => {
   assert.throws(() => new ArcanaPageApiClient({ endpoint: "https://127.0.0.1:5000", token: "secret" }), /HTTP on loopback/);

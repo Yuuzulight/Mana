@@ -1,3 +1,5 @@
+const WebSocket = require("../../node-bot/node_modules/ws");
+
 const API_VERSION = "v1";
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost"]);
 
@@ -36,7 +38,7 @@ class ArcanaPageApiClient {
       throw new TypeError("Arcana API requests must stay on the authenticated v1 loopback endpoint");
     }
     const headers = { Authorization: `Bearer ${this.token}`, Accept: responseType === "bytes" ? "image/png, image/jpeg" : "application/json" };
-    const options = { method, headers, signal };
+    const options = { method, headers, signal, redirect: "error" };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(body);
@@ -102,6 +104,18 @@ class ArcanaPageApiClient {
   storage(pageId, options) { return this.request("GET", this.pageRoute(pageId, "storage"), options); }
   setCookies(pageId, cookies, options) { return this.request("PUT", this.pageRoute(pageId, "cookies"), { ...options, body: cookies }); }
   setStorage(pageId, storage, options) { return this.request("PUT", this.pageRoute(pageId, "storage"), { ...options, body: storage }); }
+
+  connectEvents(pageId) {
+    this.pageRoute(pageId);
+    const url = new URL("/v1/events", this.endpoint);
+    url.protocol = "ws:";
+    url.searchParams.set("pageId", pageId);
+    return new WebSocket(url, {
+      headers: { Authorization: `Bearer ${this.token}` },
+      followRedirects: false,
+      handshakeTimeout: 10000,
+    });
+  }
 
   async screenshot(pageId, { format = "png", quality, ...options } = {}) {
     if (format !== "png" && format !== "jpeg") throw new TypeError("Screenshot format must be png or jpeg");
