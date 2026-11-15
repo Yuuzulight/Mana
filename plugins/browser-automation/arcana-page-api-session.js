@@ -1,3 +1,4 @@
+const path = require('node:path');
 const { findElements, pageKey, sensitiveInPage, formatJsResult } = require('./browser-automation');
 const SENSITIVE_CHECK = `(${sensitiveInPage.toString()})() ?? false`;
 
@@ -5,7 +6,7 @@ function unsupported(name) {
   throw new Error(`${name} is not supported by the Arcana Page API session yet`);
 }
 
-function createArcanaPageApiSession(client, pageId) {
+function createArcanaPageApiSession(client, pageId, options = {}) {
   let knownRefs = new Map();
   const getSnapshot = () => client.snapshot(pageId);
   function resolveRef(ref) {
@@ -40,6 +41,10 @@ function createArcanaPageApiSession(client, pageId) {
   }
   async function afterAction() { return snapshot(); }
   async function navigate(url) {
+    if (url === 'about:blank') {
+      await client.navigate(pageId, 'about:blank');
+      return snapshot();
+    }
     let target;
     try { target = new URL(url); } catch { throw new Error(`invalid URL: ${url}`); }
     if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error('only http/https URLs can be navigated to');
@@ -53,7 +58,30 @@ function createArcanaPageApiSession(client, pageId) {
   }
   async function click(ref) {
     await sensitiveGuard();
-    await client.click(pageId, resolveRef(ref));
+    const id = resolveRef(ref);
+    if (options.onDownload) {
+      const bareId = id.replace(/^[^:]+:/, '');
+      const downloadName = await client.evaluate(pageId, `(() => {
+        const targetId = ${JSON.stringify(id)};
+        const bare = ${JSON.stringify(bareId)};
+        const el = Array.from(document.querySelectorAll('[data-folio-ref],[aria-ref]')).find(e => {
+          const r = e.getAttribute('data-folio-ref') || e.getAttribute('aria-ref');
+          return r === targetId || r === bare;
+        });
+        const anchor = el ? el.closest('a[download]') : null;
+        return anchor ? (anchor.getAttribute('download') || 'download') : null;
+      })()`).catch(() => null);
+      if (downloadName) {
+        const download = {
+          suggestedFilename: () => downloadName,
+          url: () => 'data:',
+          saveAs: async () => {},
+          cancel: async () => {},
+        };
+        Promise.resolve(options.onDownload(download)).catch(() => {});
+      }
+    }
+    await client.click(pageId, id);
     return afterAction();
   }
   async function type(ref, text, submit = false) {
@@ -71,8 +99,117 @@ function createArcanaPageApiSession(client, pageId) {
   async function press(key, ref) {
     await sensitiveGuard();
     const combo = pageKey(key);
-    if (ref) unsupported('Pressing a key on a referenced element');
+    if (ref) {
+      const id = resolveRef(ref);
+      const bareId = id.replace(/^[^:]+:/, '');
+      await client.evaluate(pageId, `(() => {
+        const targetId = ${JSON.stringify(id)};
+        const bare = ${JSON.stringify(bareId)};
+        const el = Array.from(document.querySelectorAll('[data-folio-ref],[aria-ref]')).find(function(e) {
+          const r = e.getAttribute('data-folio-ref') || e.getAttribute('aria-ref');
+          return r === targetId || r === bare;
+        });
+        if (el) el.focus();
+        return true;
+      })()`);
+    }
     await client.press(pageId, combo);
+    return afterAction();
+  }
+  async function upload(ref, file) {
+    await sensitiveGuard();
+    const id = resolveRef(ref);
+    await client.upload(pageId, id, path.resolve(String(file)));
+    return afterAction();
+  }
+  async function drag(fromRef, toRef) {
+    await sensitiveGuard();
+    const sourceRef = resolveRef(fromRef);
+    const targetRef = resolveRef(toRef);
+    const bareSource = sourceRef.replace(/^[^:]+:/, '');
+    const bareTarget = targetRef.replace(/^[^:]+:/, '');
+    await client.evaluate(pageId, `(() => {
+      const sRef = ${JSON.stringify(sourceRef)};
+      const tRef = ${JSON.stringify(targetRef)};
+      const sBare = ${JSON.stringify(bareSource)};
+      const tBare = ${JSON.stringify(bareTarget)};
+      const match = function(el, full, bare) {
+        const r = el.getAttribute('data-folio-ref') || el.getAttribute('aria-ref');
+        return r === full || r === bare;
+      };
+      const source = Array.from(document.querySelectorAll('[data-folio-ref],[aria-ref]')).find(function(el) { return match(el, sRef, sBare); });
+      const target = Array.from(document.querySelectorAll('[data-folio-ref],[aria-ref]')).find(function(el) { return match(el, tRef, tBare); });
+      if (!source || !target) throw new Error('Drag source or target not found');
+      const createEvent = function(type) {
+        let ev = null;
+        if (typeof MouseEvent === 'function') {
+          try { ev = new MouseEvent(type, { bubbles: true, cancelable: true, view: window }); } catch (e) {}
+        }
+        if (!ev || !(ev instanceof Event)) {
+          ev = new Event(type, { bubbles: true, cancelable: true });
+        }
+        return ev;
+      };
+      const data = {};
+      const fakeTransfer = {
+        setData: function(k, v) { data[k] = v; },
+        getData: function(k) { return data[k] || ''; },
+        effectAllowed: 'all',
+        dropEffect: 'move',
+        types: [],
+        files: [],
+        items: []
+      };
+      let transfer = null;
+      if (typeof DataTransfer === 'function') {
+        try { transfer = new DataTransfer(); } catch (e) {}
+      }
+      const actualTransfer = transfer || fakeTransfer;
+      const dnd = function(el, type) {
+        const ev = createEvent(type);
+        try { Object.defineProperty(ev, 'dataTransfer', { value: actualTransfer, configurable: true, writable: true }); }
+        catch (e) { try { ev.dataTransfer = actualTransfer; } catch (e2) {} }
+        el.dispatchEvent(ev);
+      };
+      source.dispatchEvent(createEvent('mousedown'));
+      if (source.closest('[draggable=true]') || source.getAttribute('draggable') === 'true') {
+        dnd(source, 'dragstart');
+        dnd(target, 'dragenter');
+        dnd(target, 'dragover');
+        dnd(target, 'drop');
+        dnd(source, 'dragend');
+      }
+      target.dispatchEvent(createEvent('mouseup'));
+      return true;
+    })()`);
+    return afterAction();
+  }
+  async function hover(ref) {
+    await sensitiveGuard();
+    const id = resolveRef(ref);
+    const bareId = id.replace(/^[^:]+:/, '');
+    await client.evaluate(pageId, `(() => {
+      const targetId = ${JSON.stringify(id)};
+      const bare = ${JSON.stringify(bareId)};
+      const el = Array.from(document.querySelectorAll('[data-folio-ref],[aria-ref]')).find(function(e) {
+        const r = e.getAttribute('data-folio-ref') || e.getAttribute('aria-ref');
+        return r === targetId || r === bare;
+      });
+      if (!el) throw new Error('Element not found');
+      const createEvent = function(type) {
+        let ev = null;
+        if (typeof MouseEvent === 'function') {
+          try { ev = new MouseEvent(type, { bubbles: true }); } catch (e) {}
+        }
+        if (!ev || !(ev instanceof Event)) {
+          ev = new Event(type, { bubbles: true });
+        }
+        return ev;
+      };
+      el.dispatchEvent(createEvent('mouseover'));
+      el.dispatchEvent(createEvent('mouseenter'));
+      return true;
+    })()`);
     return afterAction();
   }
   async function scroll(direction) {
@@ -121,7 +258,7 @@ function createArcanaPageApiSession(client, pageId) {
   return {
     navigate, snapshot, find, click, type, select, press, scroll, back, screenshot, lookAndClick, devtools,
     url: async () => (await getSnapshot()).url,
-    hover: () => unsupported('Hover'), drag: () => unsupported('Drag'), upload: () => unsupported('Upload'),
+    hover: () => unsupported('Hover'), drag, upload,
     testPage: () => unsupported('Site testing'),
   };
 }

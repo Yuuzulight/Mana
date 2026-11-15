@@ -341,7 +341,7 @@ async function startSession(deps) {
         },
       };
       pages.add(page);
-      return { page, session: createArcanaPageApiSession(api.client, pageId) };
+      return { page, session: createArcanaPageApiSession(api.client, pageId, { onDownload: dl => Promise.resolve((deps.onDownload || gateDeps?.onDownload)?.(dl)) }) };
     }
     const apiContext = {
       transport: "page-api",

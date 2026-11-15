@@ -18,6 +18,8 @@ $source = [IO.Path]::GetFullPath((Join-Path $temporaryRoot ('mana-arcana-install
 try {
     & git clone --quiet --filter=blob:none --no-checkout $Repo $source
     if ($LASTEXITCODE -ne 0) { throw 'Could not clone Arcana.' }
+    & git -C $source config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+    & git -C $source fetch --quiet origin
     & git -C $source -c advice.detachedHead=false checkout --quiet $pin.commit
     if ($LASTEXITCODE -ne 0) { throw 'Could not check out the pinned Arcana commit.' }
     $folioSource = Join-Path $source 'folio-source'
@@ -28,7 +30,22 @@ try {
     & dotnet publish (Join-Path $source 'src\Arcana.Cli\Arcana.Cli.csproj') --configuration Release -p:ArcanaFolioOnly=true --output $Destination
     if ($LASTEXITCODE -ne 0) { throw 'Arcana publish failed. Close any running Arcana session before retrying.' }
     $folioDestination = Join-Path $Destination 'engines\folio\current'
-    & (Join-Path $folioSource 'tools\publish-content-host.ps1') -Destination $folioDestination -Runtime win-x64
+    $existingManifestPath = Join-Path $folioDestination 'native-build.json'
+    $existingBrokerPath = Join-Path $folioDestination 'Folio.ContentHost.exe'
+    $needsFolioBuild = $true
+    if ((Test-Path -LiteralPath $existingManifestPath) -and (Test-Path -LiteralPath $existingBrokerPath)) {
+        try {
+            $existingManifest = Get-Content -LiteralPath $existingManifestPath -Raw | ConvertFrom-Json
+            $existingHash = (Get-FileHash -LiteralPath $existingBrokerPath).Hash.ToLowerInvariant()
+            if ($existingManifest.sourceCommit -eq $folioCommit -and $existingManifest.sourceDirty -eq $false -and $existingManifest.executableSha256 -eq $existingHash) {
+                $needsFolioBuild = $false
+            }
+        } catch { }
+    }
+    if ($needsFolioBuild) {
+        if (Test-Path -LiteralPath $folioDestination) { Remove-Item -LiteralPath $folioDestination -Recurse -Force }
+        & (Join-Path $folioSource 'tools\publish-content-host.ps1') -Destination $folioDestination -Runtime win-x64
+    }
     $manifest = Get-Content -LiteralPath (Join-Path $folioDestination 'native-build.json') -Raw | ConvertFrom-Json
     $brokerHash = (Get-FileHash -LiteralPath (Join-Path $folioDestination 'Folio.ContentHost.exe')).Hash.ToLowerInvariant()
     if ($manifest.sourceCommit -cne $folioCommit -or $manifest.sourceDirty -ne $false -or $manifest.executableSha256 -cne $brokerHash) {
