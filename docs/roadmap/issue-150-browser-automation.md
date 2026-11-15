@@ -113,3 +113,13 @@ path, Opera GX passing is strong evidence Chrome would too.
 - `node-bot/test/server-routes.test.js` (62 tests): unaffected.
 - Manual: real end-to-end run against real Edge and real Opera GX (see
   above) -- no bugs found.
+
+## Arcana 1.0 Migration & Disposition of Edge / Playwright
+
+As of the Arcana 1.0 release (Arcana #36, Mana #1540):
+- **Default Engine:** Mana defaults to Arcana backed by the qualified Folio engine (`MANA_BROWSER_ENGINE=arcana`).
+- **Page API Adoption:** Mana drives the browser session exclusively over Arcana's versioned, authenticated loopback Page API (`/v1/`). Playwright and CDP are eliminated from the standard browser automation execution path.
+- **Edge Headless Retirement:** Mana no longer uses headless Edge or `playwright-core` launches for general automation. `playwright-core` is retained only as an optional dev dependency for legacy unit stubs.
+- **Explicit OS Default Browser Handoff:** For complex surfaces requiring a real user browser (such as bank logins, CAPTCHAs, or sensitive credential authentication), Mana triggers an explicit handoff opening the target URL in the user's OS default browser via Windows shell invocation (`ArcanaFallback.OpenDefaultBrowser`), ensuring user visibility, security, and zero credential scraping.
+- **Compatibility Engine:** Obscura is retained within Arcana as an optional compatibility backend (`--backend=obscura`) for one transitional release.
+
