@@ -1,5 +1,5 @@
 const { findElements, pageKey, sensitiveInPage, formatJsResult } = require('./browser-automation');
-const SENSITIVE_CHECK = `(${sensitiveInPage.toString()})()`;
+const SENSITIVE_CHECK = `(${sensitiveInPage.toString()})() ?? false`;
 
 function unsupported(name) {
   throw new Error(`${name} is not supported by the Arcana Page API session yet`);
@@ -16,7 +16,11 @@ function createArcanaPageApiSession(client, pageId) {
   }
   async function sensitiveGuard() {
     const reason = await client.evaluate(pageId, SENSITIVE_CHECK);
-    if (reason) throw new Error(`this page asks for ${reason}, so it's the user's to do: don't act on it, hand it over (browser_automation__hand_over)`);
+    if (reason === false) return;
+    if (typeof reason !== 'string' || !reason) {
+      throw new Error("Arcana could not check whether the page asks for credentials. Try again or hand it over.");
+    }
+    throw new Error(`this page asks for ${reason}, so it's the user's to do: don't act on it, hand it over (browser_automation__hand_over)`);
   }
   function elements(snapshot) {
     knownRefs = new Map((snapshot.elements || []).filter(element => element.reference).map(element => [String(element.reference), String(element.reference)]));

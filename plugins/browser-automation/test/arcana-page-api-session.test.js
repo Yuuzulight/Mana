@@ -4,7 +4,7 @@ const { createArcanaPageApiSession } = require('../arcana-page-api-session');
 
 function clientFor(overrides = {}) {
   const calls = [];
-  let sensitive = null;
+  let sensitive = false;
   let current = { url: 'about:blank', title: '', text: '', elements: [] };
   const client = {
     calls,
@@ -54,6 +54,8 @@ test('Page API session keeps the fresh sensitive-page credential gate fail close
   const session = createArcanaPageApiSession(client, 'page-1');
   await assert.rejects(session.type('e1', 'secret'), /the user's to do/);
   await assert.rejects(session.click('e2'), /the user's to do/);
+  client.setSensitive(null);
+  await assert.rejects(session.type('e1', 'secret'), /could not check/);
   assert.equal(client.calls.some(call => ['click', 'fill'].includes(call[0])), false);
 });
 
