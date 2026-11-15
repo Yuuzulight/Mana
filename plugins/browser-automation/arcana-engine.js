@@ -155,6 +155,21 @@ async function startArcanaPageApi(env, { storageDir, allowedOrigins = [] } = {})
   }
 }
 
+function openArcanaDefaultBrowser(env, url, execFileFn = execFile) {
+  const target = new URL(url);
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) {
+    throw new TypeError("Browser handoff requires an HTTP or HTTPS URL without embedded credentials");
+  }
+  const cli = resolveCli(env);
+  if (!cli) throw new Error("The pinned Arcana install isn't available. Run tools/install-arcana.ps1.");
+  const managed = /\.dll$/i.test(cli);
+  const args = managed ? [cli, "fallback", target.href] : ["fallback", target.href];
+  return new Promise((resolve, reject) => {
+    execFileFn(managed ? (env.MANA_DOTNET_PATH || "dotnet") : cli, args, { windowsHide: true, timeout: 10000 },
+      (error) => error ? reject(error) : resolve());
+  });
+}
+
 // One JSON line per engine event, so a week of use can be counted (Arcana's M2
 // exit: no unexplained fallback to Edge). Logging must never break browsing.
 function recordEvent(file, type, details = {}) {
@@ -195,4 +210,4 @@ async function launchArcana(chromium, env, options = {}) {
   }
 }
 
-module.exports = { launchArcana, startArcana, startArcanaPageApi, resolveCli, recordEvent };
+module.exports = { launchArcana, startArcana, startArcanaPageApi, openArcanaDefaultBrowser, resolveCli, recordEvent };

@@ -746,6 +746,24 @@ test("Arcana is told which process to outlive, so a crashed Mana can't leave it 
   assert.ok(seen.includes(`--arcana-parent-pid=${process.pid}`));
 });
 
+test("explicit Arcana handoff opens the OS browser without launching a managed session", async () => {
+  const { openArcanaDefaultBrowser } = require("../arcana-engine");
+  const env = { MANA_ARCANA_CLI: __filename };
+  const calls = [];
+  const exec = (command, args, options, done) => {
+    calls.push({ command, args, options });
+    done(null);
+  };
+  assert.throws(() => openArcanaDefaultBrowser(env, "file:///private.txt", exec), /requires an HTTP or HTTPS URL/);
+  assert.throws(() => openArcanaDefaultBrowser(env, "https://user:secret@example.test", exec), /without embedded credentials/);
+  await openArcanaDefaultBrowser(env, "https://example.test/login?a=1&b=2", exec);
+  assert.deepEqual(calls, [{
+    command: __filename,
+    args: ["fallback", "https://example.test/login?a=1&b=2"],
+    options: { windowsHide: true, timeout: 10000 },
+  }]);
+});
+
 test("the default Arcana CLI must match the checked-in runtime pin; explicit dev overrides remain available", () => {
   const fs = require("node:fs");
   const os = require("node:os");
