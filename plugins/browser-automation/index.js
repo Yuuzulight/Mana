@@ -1,7 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
-const { launchArcana, recordEvent } = require("./arcana-engine");
+const { launchArcana, startArcanaPageApi, recordEvent } = require("./arcana-engine");
+const { createArcanaPageApiSession } = require("./arcana-page-api-session");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
@@ -92,6 +93,7 @@ const manualControl = require('./manual-control').createManualControl({
         needsYou = null;
         return;
       }
+      if (context?.transport === "page-api") throw new Error("Embedded manual control is not supported by the Arcana Page API transport yet; use the browser handoff.");
       if (starting) await starting;
       if (!context) {
         starting ||= startSession({ ...deps, env: { ...(deps.env || process.env), MANA_BROWSER_HEADLESS: '1' } }).finally(() => { starting = null; });
@@ -281,6 +283,62 @@ async function setUpTab(page, deps = {}) {
 
 async function startSession(deps) {
   const env = deps.env || process.env;
+  if (env.MANA_ARCANA_TRANSPORT === "page-api") {
+    if (env.MANA_BROWSER_ENGINE === "edge" || env.MANA_BROWSER_HEADLESS === "0") {
+      throw new Error("The Arcana Page API transport is headless-only; choose the explicit Edge engine for a visible browser.");
+    }
+    const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
+    if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
+    const eventsFile = env.MANA_ARCANA_EVENTS_FILE || path.join(profileDir, "arcana-events.jsonl");
+    refuseIfLocalOnly("browser automation", env);
+    const api = await startArcanaPageApi(env, {
+      storageDir: path.join(profileDir, "arcana"),
+      allowedOrigins: deps.arcanaAllowedOrigins || [],
+    });
+    let closed = false;
+    let intentionalClose = false;
+    let childExited = false;
+    let created;
+    const apiContext = { transport: "page-api" };
+    api.child.once("exit", (code, signal) => {
+      childExited = true;
+      if (intentionalClose) return;
+      recordEvent(eventsFile, "arcana_disconnected", { code, signal });
+      if (context === apiContext) forget();
+    });
+    try {
+      // Internal fixture seam for real-engine tests; caller-provided chat text is never treated as HTML.
+      created = await api.client.createPage("about:blank", deps.arcanaPageApiInitialHtml === undefined ? {} : { html: String(deps.arcanaPageApiInitialHtml) });
+      if (childExited || api.child.exitCode !== null) throw new Error("Arcana exited while the Page API session was starting");
+    } catch (error) {
+      intentionalClose = true;
+      await api.stop();
+      throw error;
+    }
+    const pageId = created.pageId;
+    const page = {
+      title: async () => (await api.client.snapshot(pageId)).title,
+      url: async () => (await api.client.snapshot(pageId)).url,
+      close: async () => { if (!closed) { closed = true; await api.client.closePage(pageId).catch(() => {}); } },
+    };
+    Object.assign(apiContext, {
+      pages: () => closed ? [] : [page],
+      newPage: async () => { throw new Error("Opening additional tabs is not supported by the Arcana Page API transport yet"); },
+      close: async () => {
+        intentionalClose = true;
+        await page.close();
+        await api.stop();
+      },
+    });
+    recordEvent(eventsFile, "arcana_page_api_started", { backend: api.backend });
+    context = apiContext;
+    tabs = [{ page, session: createArcanaPageApiSession(api.client, pageId) }];
+    current = 0;
+    session = tabbedSession(deps);
+    checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
+    checkTimer.unref?.();
+    return session;
+  }
   const ctx = await launch(deps, { headless: env.MANA_BROWSER_HEADLESS !== "0" });
   // Edge went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());

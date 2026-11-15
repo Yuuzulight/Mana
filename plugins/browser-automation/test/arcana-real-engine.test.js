@@ -54,6 +54,37 @@ test('real Arcana Page API starts the pinned engine and acts on a rendered page'
   }
 });
 
+test('real Arcana Page API transport is reachable through Mana session entry and navigates and acts on rendered content', { skip: !real, timeout: 90000 }, async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-page-session-'));
+  const eventFile = path.join(temporary, 'arcana-events.jsonl');
+  const deps = {
+    env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventFile, MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
+    arcanaAllowedOrigins: ['https://example.com'],
+    arcanaPageApiInitialHtml: '<!doctype html><title>Mana Page API session</title><label for="q">Query</label><input id="q"><button onclick="result.textContent=q.value">Apply</button><p id="result">Ready</p>',
+    ramPercent: () => 50, isGaming: () => false,
+  };
+  plugin._resetForTests();
+  try {
+    const session = await plugin.getSession(deps);
+    const snapshot = await session.snapshot();
+    assert.equal(snapshot.title, 'Mana Page API session');
+    const ref = role => /\[ref=([^\]]+)\]/.exec(snapshot.elements.find(line => line.startsWith(role)))[1];
+    await session.type(ref('textbox'), 'API action');
+    const changed = await session.click(ref('button'));
+    assert.match(changed.text, /API action/);
+    assert.ok((await session.screenshot()).length > 50);
+    const event = JSON.parse(fs.readFileSync(eventFile, 'utf8').trim().split('\n')[0]);
+    assert.equal(event.type, 'arcana_page_api_started');
+    assert.equal(event.backend, 'folio');
+    const navigated = await session.navigate('https://example.com');
+    assert.match(navigated.url, /^https:\/\/example\.com\//i);
+    assert.match(navigated.title, /Example Domain/i);
+  } finally {
+    await plugin.closeSession();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test('real Arcana: actions, local storage across a restart, and the engine is gone after close', { skip: !real, timeout: 90000 }, async () => {
   const env = {
     ...process.env,
@@ -64,7 +95,8 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
   };
   const pin = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../tools/arcana.lock.json'), 'utf8'));
   const installed = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../node-bot/runtime/arcana/arcana-install.json'), 'utf8'));
-  assert.equal(pin.commit, 'ba060ce4e1ab9de479e786450f1029dce759418a', 'Mana should pin Arcana v1.0.0');
+  assert.match(pin.commit, /^[0-9a-f]{40}$/i, 'Mana should pin an immutable Arcana commit');
+  assert.match(pin.engineVersion, /^folio-/i, 'Mana production should use the Folio-only Arcana engine');
   assert.deepEqual(
     { repository: installed.repository, commit: installed.commit, engineVersion: installed.engineVersion },
     { repository: pin.repository, commit: pin.commit, engineVersion: pin.engineVersion },
