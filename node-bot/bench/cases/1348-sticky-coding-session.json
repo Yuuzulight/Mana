@@ -1,5 +1,6 @@
 {
   "id": "1348-sticky-coding-session",
+  "minRounds": 12,
   "kind": "multi-file",
   "pr": 1348,
   "issue": 1343,
@@ -17,6 +18,6 @@
     "node-bot/test/coding-session-routes.test.js"
   ],
   "testCommand": "node --test test/coding-session.test.js test/coding-session-routes.test.js",
-  "interface": "createCodingSessionManager exposes explicit start/stop/status behaviour, and /coding-session routes reflect it.",
+  "interface": "createCodingSessionManager exposes explicit start/stop/status behaviour, and /coding-session routes reflect it. The tests call: `node-bot/ai/coding-session.js` (new) exports `createCodingSessionManager(options)`, `isExitCommand(text)`, `isEnterCommand(text)` and `getMaskingPhrase()`; the manager has `isActive(sessionId)`.",
   "why": "Self-work needs stable engineering-mode routing without profile ping-pong between follow-up turns."
 }

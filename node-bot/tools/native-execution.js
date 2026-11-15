@@ -52,8 +52,17 @@ function copyTree(source, destination, { allowedRoots = [fs.realpathSync(source)
   walk(source, destination, new Set());
 }
 
+function executionTempDir() {
+  // .NET uses GetTempPath2 for SYSTEM services, which resolves to SystemTemp
+  // even when Node inherits the older TEMP=C:\\Windows\\TEMP value.
+  return process.platform === 'win32' && String(process.env.USERNAME || '').toUpperCase() === 'SYSTEM'
+    ? path.join(process.env.SystemRoot || 'C:\\Windows', 'SystemTemp')
+    : os.tmpdir();
+}
+
 function newWork() {
-  const work = path.join(os.tmpdir(), `Mana.Execution.${randomUUID().replaceAll('-', '')}`);
+  const temp = executionTempDir();
+  const work = path.join(temp, `Mana.Execution.${randomUUID().replaceAll('-', '')}`);
   fs.mkdirSync(work);
   return work;
 }
@@ -281,4 +290,4 @@ function runSandboxedTestCommand(command, cwd, options = {}) {
   return task;
 }
 
-module.exports = { launchNativeProcess, nativeSkillWorker, prepareTestExecution, prepareTestExecutionAsync, runSandboxedTestCommand, copyTree, parseArgs, approvedCopySources, isPrivateSandboxFile };
+module.exports = { launchNativeProcess, nativeSkillWorker, prepareTestExecution, prepareTestExecutionAsync, runSandboxedTestCommand, copyTree, parseArgs, approvedCopySources, isPrivateSandboxFile, executionTempDir, newWork };

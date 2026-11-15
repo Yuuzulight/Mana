@@ -1,5 +1,6 @@
 {
   "id": "1362-self-work-five-review-passes",
+  "guarded": "node-bot/self-work.js",
   "kind": "node-feature",
   "pr": 1362,
   "issue": 1202,

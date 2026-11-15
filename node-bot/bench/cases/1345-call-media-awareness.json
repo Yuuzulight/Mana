@@ -1,5 +1,6 @@
 {
   "id": "1345-call-media-awareness",
+  "guarded": "windows-native-launcher/ManaSettingsStore.cs",
   "kind": "launcher",
   "pr": 1345,
   "issue": 697,

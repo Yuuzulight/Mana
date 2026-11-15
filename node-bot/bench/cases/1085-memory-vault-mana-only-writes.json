@@ -1,5 +1,6 @@
 {
   "id": "1085-memory-vault-mana-only-writes",
+  "minRounds": 9,
   "kind": "node-feature",
   "pr": 1085,
   "issue": 1084,

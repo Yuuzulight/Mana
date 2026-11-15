@@ -7,10 +7,30 @@
 // chat model in a llama-server of the bench's own (never the backend's).
 //
 //   node bench/self-work-bench.js [--case <id>]... [--kind <kind>]...
-//     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--label <name>]
+//     [--repeat N] [--model <gguf>] [--context N] [--max-minutes N] [--no-time-limit] [--label <name>]
 //     [--server-args "<extra llama-server flags, space- or comma-separated>"] [--attempts N]
+//     [--round-scale X]   (each case's round budget times X, to see whether a budget held a model back)
+//     [--setup <name>]   (worktree folders bench-<name>-<case>, so setups can run side by side)
+//     [--orchestrate <model> [--worker <model>]]   (her loop run by <model> with no edit tool and a delegate tool; the worker, flash unless named, makes the edits)
+//     [--helper-model <model>]   (with --remote: that model also does her goal check and tool-call repair, and reviews her edits unless --reviewer says otherwise; nothing local runs)
+//     [--reviewer <model>]   (with --remote: that DeepSeek model reviews her edits, so no local model is loaded)
+//     [--no-round-cap]   (no round limit: the run ends when it hands in, is stuck, fills its context or runs out of time)
+//     [--time-warn-only]   (with --time-by-estimate: only the warning at the estimate; --max-minutes is then the stop, a guard against a hang)
+//     [--time-by-estimate]   (each case's time: a warning at its estimate, a hard stop at twice that; --max-minutes is ignored)
+//     [--no-time-limit]   (no wall-clock stop per case; estimates remain warnings only)
+//     [--no-ram-pause]   (remote-only runs: keep measuring RAM, but do not pause the agent loop for host RAM)
+//     [--ignore-peak-hours]   (remote runs may start and continue during peak pricing hours)
 //     [--out <dir>] [--verify]
 //     [--cases <dir>]   (bench/generated/cases for bench/gen's tasks)
+//     [--check]   (the preflight only: no model, no runs)
+//
+// #1467: before any GPU time, bench/preflight.js checks the harness (the
+// sandbox's copy-source approval, a real sandboxed test in a bench worktree,
+// the model file and --server-args) and that every case is sound (cached);
+// unsound cases are left out of the run and listed in the report. Once the
+// model is up, it must make one tool call the loop parses. A run a game or
+// RAM paused is run again, not scored; a harness error (the sandbox, not the
+// model) stops the bench. Every tool call goes in <run>.trace.jsonl.
 //
 // #1221: cases have a kind (node-bug, node-feature, multi-file, launcher,
 // live); each runs --repeat times (model output varies); --model and
@@ -30,24 +50,37 @@
 // bench's own llama-server (so --model, --context and --server-args still
 // pick that). It needs the DeepSeek key in Settings and spends real money:
 // each run's tokens and dollars go in the report and in API spending (use:
-// bench). Off-peak is half price.
+// bench). Off-peak is half price. --max-usd N stops the run once it has spent N.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { createSelfWork, testEnv, systemRamPercent } = require("../self-work");
-const { tokensOf, costOf, isPeak, createApiSpending } = require("../api-spending");
+const { tokensOf, costOf, isPeak, minutesToPeak, createApiSpending } = require("../api-spending");
 
 const CASES_DIR = path.join(__dirname, "cases");
 const HIDDEN_DIR = path.join(__dirname, "hidden");
 const RESULTS_DIR = path.join(__dirname, "results");
 const HIDDEN_TEST_TIMEOUT_MS = 10 * 60 * 1000;
+// Preflight must not hold an entire remote run hostage to one broken or slow
+// hidden test. A timeout excludes that case with evidence; it never blocks the
+// model benchmark indefinitely.
+const PREFLIGHT_TEST_TIMEOUT_MS = 2 * 60 * 1000;
 // Not the backend's 8090, so the two never share a server.
 const BENCH_LLAMA_PORT = "8097";
 const BACKEND_LLAMA_PORT = 8090;
 // The bench's own limit for starting a case (self-work's 85% inside her
 // run is unchanged).
 const BENCH_MAX_RAM_PERCENT = 90;
+// #1467: rounds to look around and test on top of the least a case takes.
+const EXPLORE_ROUNDS = 20;
+// A case's expected time: the rounds a run needs (the fix's, plus looking around) at the pace DeepSeek's thinking runs
+// went at in the 2026-10-11 run (6-86 s a round, 35 s on average, 45 s here to leave room), up to the next 5 minutes.
+const SECONDS_PER_ROUND = 45;
+const PEAK_HOLD_MINUTES = 30;
+function caseEstimateMs(c) {
+  return Math.ceil(((c.minRounds || 0) + EXPLORE_ROUNDS) * SECONDS_PER_ROUND / 300) * 300 * 1000;
+}
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -98,11 +131,53 @@ function benchTestGate(worktreesDir) {
   };
 }
 
+// A case's hidden tests are the bench's to run, not hers to change: a write to one is refused the way her other
+// guardrails are, so she can't make a test pass by editing it. Everything else is her usual guard.
+function hiddenTestGuard(c, wt) {
+  const base = require("../protected-paths");
+  const hidden = new Map((c.hiddenTests || []).map((rel) => [path.resolve(wt, rel).toLowerCase(), rel]));
+  const label = (rel) => `the case's hidden test ${rel}`;
+  return {
+    ...base,
+    protectedPathFor(full) {
+      const rel = hidden.get(path.resolve(full).toLowerCase());
+      return rel ? label(rel) : base.protectedPathFor(full);
+    },
+    protectedPathMessage(entry) {
+      return entry.startsWith("the case's hidden test ")
+        ? `${entry} is the bench's, not mine to change; change the code it tests`
+        : base.protectedPathMessage(entry);
+    },
+  };
+}
+
 function makeWorktree(repoRoot, wt, base) {
   if (fs.existsSync(wt)) removeWorktree(repoRoot, wt);
   git(repoRoot, "worktree", "add", "--detach", wt, base);
   const modules = path.join(repoRoot, "node-bot", "node_modules");
   if (fs.existsSync(modules)) fs.symlinkSync(fs.realpathSync(modules), path.join(wt, "node-bot", "node_modules"), "junction");
+  // #937: the launcher restores Folio from folio-feed\, which is gitignored, so a fresh worktree has none and
+  // NuGet fails on the missing source (NU1301). A copy, not a link: it's a few packages and stays inside the worktree.
+  const feed = path.join(repoRoot, "windows-native-launcher", "folio-feed");
+  if (fs.existsSync(feed)) fs.cpSync(feed, path.join(wt, "windows-native-launcher", "folio-feed"), { recursive: true });
+  // Its build fetches its ONNX models when they're missing (gitignored); a fetch outlives a timed-out test run
+  // and locks the next build out of its own files. The main checkout's copies make that a no-op.
+  const assets = path.join(repoRoot, "windows-native-launcher", "assets");
+  for (const rel of fs.existsSync(assets) ? fs.readdirSync(assets, { recursive: true }) : []) {
+    const to = path.join(wt, "windows-native-launcher", "assets", rel);
+    if (!rel.endsWith(".onnx") || fs.existsSync(to)) continue;
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(path.join(assets, rel), to);
+  }
+  // A case's base can predate the .gitignore lines for these copies; they're never part of her diff.
+  const exclude = path.resolve(wt, git(wt, "rev-parse", "--git-path", "info/exclude"));
+  const lines = ["/windows-native-launcher/folio-feed/", "/windows-native-launcher/assets/**/*.onnx"];
+  const have = fs.existsSync(exclude) ? fs.readFileSync(exclude, "utf8") : "";
+  const missing = lines.filter((l) => !have.split(/\r?\n/).includes(l));
+  if (missing.length) {
+    fs.mkdirSync(path.dirname(exclude), { recursive: true });
+    fs.appendFileSync(exclude, `${have && !have.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`);
+  }
 }
 
 // The junction goes first and on its own, so nothing recurses into the
@@ -122,7 +197,8 @@ function removeWorktree(repoRoot, wt) {
   try {
     git(repoRoot, "worktree", "remove", "--force", wt);
   } catch {
-    fs.rmSync(wt, { recursive: true, force: true });
+    // Windows frees a dotnet test host's files a moment after it exits (EBUSY/ENOTEMPTY).
+    fs.rmSync(wt, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
     git(repoRoot, "worktree", "prune");
   }
 }
@@ -150,19 +226,31 @@ function copyHiddenTests(repoRoot, wt, c) {
   }
 }
 
-function runHiddenTests(wt, c) {
+function runHiddenTests(wt, c, timeoutMs = HIDDEN_TEST_TIMEOUT_MS) {
   const started = Date.now();
-  const r = spawnSync(c.testCommand, {
-    cwd: path.join(wt, "node-bot"),
-    shell: true,
-    windowsHide: true,
-    encoding: "utf8",
-    env: testEnv(process.env),
-    timeout: HIDDEN_TEST_TIMEOUT_MS,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  let r;
+  try {
+    r = spawnSync(c.testCommand, {
+      cwd: path.join(wt, "node-bot"),
+      shell: true,
+      windowsHide: true,
+      encoding: "utf8",
+      env: testEnv(process.env),
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error) {
+    const output = `${error.stdout || ""}${error.stderr || ""}`;
+    const timedOut = error.code === "ETIMEDOUT" || /timed out/i.test(error.message || "");
+    return {
+      passed: false,
+      timedOut,
+      ms: Date.now() - started,
+      tail: `${timedOut ? `test timed out after ${timeoutMs}ms` : error.message}\n${output}`.slice(-1500),
+    };
+  }
   const output = `${r.stdout || ""}${r.stderr || ""}`;
-  return { passed: r.status === 0, ms: Date.now() - started, tail: output.slice(-1500) };
+  return { passed: r.status === 0, timedOut: false, ms: Date.now() - started, tail: output.slice(-1500) };
 }
 
 // Everything she changed against the base, as the PR would carry it.
@@ -181,9 +269,12 @@ function diffAgainst(wt, base) {
   return { files, added, removed, patch: git(wt, "diff", "--cached", base) };
 }
 
+const BENCH_GAMES = ["League of Legends.exe", "LeagueClient.exe"];
+
 function isGamingNow(repoRoot) {
   if (process.platform !== "win32") return false;
-  const names = require("../game-wikis").loadGameWikis(path.join(repoRoot, "node-bot", "data", "game-wikis.json")).processes;
+  // The bench pauses for the games the backend knows, and for these (League isn't in the wiki list yet).
+  const names = [...require("../game-wikis").loadGameWikis(path.join(repoRoot, "node-bot", "data", "game-wikis.json")).processes, ...BENCH_GAMES];
   const running = execFileSync("tasklist", ["/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true }).toLowerCase();
   return names.some((n) => running.includes(`"${n}"`));
 }
@@ -191,8 +282,11 @@ function isGamingNow(repoRoot) {
 // Why a case shouldn't start now, or null. The backend's own chat model
 // being up means she's in use: the bench's model would take the VRAM her
 // next reply needs.
+const GAMING = "a game is running";
+// Tool errors that are the harness's, not the model's.
+const HARNESS_ERROR = /Copy would leave the approved source|Invalid sandbox copy-source|Native execution helper is unavailable|AppContainer|Disposable workspace copy exceeds|Self-work tests require the approval gate|ENOSPC/i;
 async function blocker({ isGaming, ramPercent, backendModelUp }) {
-  if (isGaming()) return "a game is running";
+  if (isGaming()) return GAMING;
   const ram = ramPercent();
   if (ram > BENCH_MAX_RAM_PERCENT) return `RAM is at ${ram}%`;
   if (await backendModelUp()) return "the backend's chat model is loaded";
@@ -205,7 +299,7 @@ async function blocker({ isGaming, ramPercent, backendModelUp }) {
 // counter the model's fetch adds to).
 async function runCase(c, deps) {
   const { repoRoot, worktreesDir } = deps;
-  const wt = path.join(worktreesDir, `bench-${c.id}`);
+  const wt = path.join(worktreesDir, `${deps.prefix || "bench-"}${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
   const tokens = deps.tokens || { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
   tokens.peak = 0;
@@ -213,14 +307,20 @@ async function runCase(c, deps) {
   try {
     const start = applyMutation(wt, c);
     // Counted here, so a loop that throws still reports what it did.
-    const calls = { total: 0, errors: 0, editErrors: 0, samples: [] };
+    const calls = { total: 0, errors: 0, editErrors: 0, harness: [], samples: [], trace: [] };
+    const clip = (v) => (typeof v === "string" ? v : JSON.stringify(v) ?? "").slice(0, 2000);
     const counted = (policy) => ({
       ...policy,
       async executeTool(name, args) {
         calls.total += 1;
+        const at = Date.now();
         try {
-          return await policy.executeTool(name, args);
+          const out = await policy.executeTool(name, args);
+          calls.trace.push({ n: calls.total, ms: Date.now() - at, name, args: clip(args), result: clip(out) });
+          return out;
         } catch (e) {
+          calls.trace.push({ n: calls.total, ms: Date.now() - at, name, args: clip(args), error: clip(e.message) });
+          if (HARNESS_ERROR.test(e.message)) calls.harness.push(`${name}: ${String(e.message).slice(0, 200)}`);
           calls.errors += 1;
           if (name === "coding__propose_edit") calls.editErrors += 1;
           // What went wrong, for the report: the first few.
@@ -230,27 +330,38 @@ async function runCase(c, deps) {
       },
     });
     const peaks = watchPeaks(deps.sample);
+    const estimateMs = deps.timeByEstimate ? caseEstimateMs(c) : null;
+    const caseMaxMs = estimateMs && !deps.timeWarnOnly ? 2 * estimateMs : deps.maxMs;
+    const overTimer = estimateMs ? setTimeout(() => console.log(`[bench ${c.id}] past its ${estimateMs / 60000}-minute estimate${deps.timeWarnOnly ? "" : `; it stops at ${2 * estimateMs / 60000} minutes`}`), estimateMs) : null;
+    overTimer?.unref();
     const selfWork = createSelfWork({
       repoRoot,
       worktreesDir,
       // A wall-clock cap per run (goal mode ends gracefully at it), so one
       // run of full-suite test runs can't hold the batch for an hour.
-      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), deps.maxMs ? { ...opts, maxMs: deps.maxMs } : opts),
+      runLoop: (prompt, policy, opts) => deps.runLoop(prompt, counted(policy), { ...opts, ...(caseMaxMs ? { maxMs: caseMaxMs } : {}), benchCase: c }),
       reviewEdit: deps.reviewEdit,
       isGaming: deps.isGaming,
       ramPercent: deps.ramPercent,
       runTests: deps.runTests,
       approvalGate: deps.approvalGate,
+      protectedPaths: hiddenTestGuard(c, wt),
       onEvent: deps.onEvent || ((run, text) => console.log(`[bench ${c.id}] ${text}`)),
     });
     // The interface the hidden tests call (names, options, messages), when
     // the issue leaves it open, so a sound fix isn't failed on naming.
-    const body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
+    let body = c.interface ? `${c.body}\n\nThe tests for this will use: ${c.interface}` : c.body;
+    // The hidden tests are swapped in after the run and can't be edited: say so, so no round goes on trying.
+    if (deps.orchestrated) body += `\n\n${ORCHESTRATOR_NOTE}`;
+    if (c.hiddenTests?.length) body += `\n\n${c.hiddenTests.join(", ")} will be replaced by the real test${c.hiddenTests.length > 1 ? "s" : ""} and can't be edited: write any test of your own in a new file.`;
     const started = Date.now();
-    const issue = { number: c.issue, title: c.title, body };
+    // #1467: a case's minRounds is what its merged fix takes through her tools (the oracle); every run gets
+    // that and EXPLORE_ROUNDS more, so a budget never decides a case on its own.
+    const issue = { number: c.issue, title: c.title, body, ...(deps.noRoundCap ? { maxRounds: 1000 } : c.minRounds ? { maxRounds: Math.round((c.minRounds + EXPLORE_ROUNDS) * (deps.roundScale || 1)) } : {}) };
     // #1247: --attempts N is her best-of-N (where self-work has it).
     const { reply, run, error } = await selfWork.bench(issue, wt, { attempts: deps.attempts || 1 });
     const wallMs = Date.now() - started;
+    clearTimeout(overTimer);
     const peak = await peaks.stop();
     const contextSize = deps.contextSize ? await deps.contextSize() : null;
     const diff = diffAgainst(wt, start);
@@ -270,7 +381,10 @@ async function runCase(c, deps) {
       toolErrors: calls.errors,
       editErrors: calls.editErrors,
       errorSamples: calls.samples,
+      // The harness failing her (the sandbox, the test runner), not the model.
+      harnessErrors: calls.harness,
       wallMs,
+      ...(estimateMs ? { estimateMs, overEstimate: wallMs > estimateMs } : {}),
       peakVramMb: peak.vramMb,
       peakRamPercent: peak.ramPercent,
       contextSize,
@@ -285,7 +399,8 @@ async function runCase(c, deps) {
         tps: tokens.genMs > (before.genMs || 0) ? Math.round(((tokens.genN - (before.genN || 0)) / (tokens.genMs - (before.genMs || 0))) * 10000) / 10 : null,
       },
       diff: { files: diff.files, added: diff.added, removed: diff.removed },
-      outside: diff.files.filter((f) => !allowed.has(f)),
+      // #1467: tests she adds for her change aren't outside it.
+      outside: diff.files.filter((f) => !allowed.has(f) && !/(^|\/)tests?\/|\.test\.[cm]?js$|Tests?\.cs$/i.test(f)),
       // How her loop ended: finished, or why not.
       ended: error
         ? "error"
@@ -294,6 +409,7 @@ async function runCase(c, deps) {
       error: error ? error.slice(0, 300) : undefined,
       summary: String(reply?.content || "").slice(0, 600),
       patch: diff.patch,
+      trace: calls.trace,
       hiddenTail: hidden.passed ? "" : hidden.tail,
     };
     result.failure = failureKind(result, c);
@@ -307,6 +423,7 @@ async function runCase(c, deps) {
 // that touched files the real fix didn't (a passing one only notes it).
 function failureKind(r, c) {
   if (r.passed) return null;
+  if (r.harnessErrors?.length) return "harness error";
   const overflow = /outgrew the model's context|exceeds the available context/i.test(`${r.summary} ${r.error || ""}`);
   if (overflow || (r.contextSize && r.tokens.peak >= 0.78 * r.contextSize)) return "context overflow";
   if (r.ended === "stuck") return "stuck";
@@ -362,27 +479,48 @@ function sampleMachine() {
 
 // The case itself is sound: its hidden tests fail at the base and pass
 // once the fix's own files are in.
-function verifyCase(c, { repoRoot, worktreesDir }) {
-  const wt = path.join(worktreesDir, `bench-verify-${c.id}`);
+function verifyCase(c, { repoRoot, worktreesDir, verifyPrefix }) {
+  const wt = path.join(worktreesDir, `${verifyPrefix || "bench-verify-"}${c.id}`);
   makeWorktree(repoRoot, wt, c.base);
   try {
     applyMutation(wt, c);
     copyHiddenTests(repoRoot, wt, c);
-    const atBase = runHiddenTests(wt, c);
-    if (!c.fix) return { id: c.id, ok: !atBase.passed, failsAtBase: !atBase.passed, passesWithFix: null, tail: atBase.tail };
+    const atBase = runHiddenTests(wt, c, PREFLIGHT_TEST_TIMEOUT_MS);
+    if (!c.fix) return { id: c.id, ok: !atBase.passed && !atBase.timedOut, failsAtBase: !atBase.passed, passesWithFix: null, tail: atBase.tail };
     git(wt, "checkout", c.fix, "--", ...c.fixFiles);
-    const withFix = runHiddenTests(wt, c);
+    const withFix = runHiddenTests(wt, c, PREFLIGHT_TEST_TIMEOUT_MS);
     return { id: c.id, ok: !atBase.passed && withFix.passed, failsAtBase: !atBase.passed, passesWithFix: withFix.passed, tail: withFix.passed ? "" : withFix.tail };
   } finally {
-    removeWorktree(repoRoot, wt);
+    // A worktree left behind is a disk problem, not the case's verdict.
+    try {
+      removeWorktree(repoRoot, wt);
+    } catch (e) {
+      console.warn(`Couldn't remove ${wt}: ${e.message}`);
+    }
   }
 }
 
 // #1221: pass@1 (the mean over repeats), pass@k (passed in any repeat)
 // and the spread (fewest and most passes in one repeat), overall and by
 // kind; failure kinds; and the mean cost of a run.
+// What a case cost: the dollars a run added while it ran (a setup runs one case at a time), in total and per model.
+function spendDelta(before, after) {
+  const costByModel = {};
+  for (const [m, now] of Object.entries(after.byModel || {})) {
+    const usd = now.usd - (before.byModel?.[m]?.usd || 0);
+    if (usd) costByModel[m] = usd;
+  }
+  return { costUsd: (after.usd || 0) - (before.usd || 0), costByModel };
+}
+
 function summarize(results) {
   const repeats = [...new Set(results.map((r) => r.repeat || 1))];
+  // Dollars for some rows and what each solved case cost (null, not Infinity, when none solved).
+  const money = (rows) => {
+    const usd = rows.reduce((a, r) => a + (r.costUsd || 0), 0);
+    const solved = rows.filter((r) => r.passed).length;
+    return { usd, solved, usdPerSolved: solved ? usd / solved : null };
+  };
   const ids = [...new Set(results.map((r) => r.id))];
   const of = (rows) => {
     const cases = [...new Set(rows.map((r) => r.id))];
@@ -393,8 +531,13 @@ function summarize(results) {
       pass1: cases.length ? perRepeat.reduce((a, b) => a + b, 0) / repeats.length / cases.length : 0,
       passK: cases.length ? anyPass / cases.length : 0,
       spread: [Math.min(...perRepeat), Math.max(...perRepeat)],
+      ...money(rows),
     };
   };
+  const byModelUsd = {};
+  for (const r of results) for (const [m, usd] of Object.entries(r.costByModel || {})) byModelUsd[m] = (byModelUsd[m] || 0) + usd;
+  const endedBy = {};
+  for (const r of results) endedBy[r.ended] = (endedBy[r.ended] || 0) + 1;
   const kinds = [...new Set(results.map((r) => r.kind || ""))].sort();
   const failures = {};
   for (const r of results) if (r.failure) failures[r.failure] = (failures[r.failure] || 0) + 1;
@@ -409,6 +552,9 @@ function summarize(results) {
     overall: of(results),
     byKind: Object.fromEntries(kinds.map((k) => [k, of(results.filter((r) => (r.kind || "") === k))])),
     failures,
+    money: money(results),
+    byModelUsd,
+    endedBy,
     cost: {
       wallS: mean((r) => r.wallMs / 1000),
       rounds: mean((r) => r.rounds),
@@ -424,12 +570,14 @@ function summarize(results) {
 }
 
 const pct = (x) => `${Math.round(x * 100)}%`;
+const usd = (x) => `$${(x || 0).toFixed(2)}`;
 
 function writeReport(results, outDir, meta = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const name = (r) => (meta.repeats > 1 ? `${r.id}-r${r.repeat}` : r.id);
   for (const r of results) if (r.patch) fs.writeFileSync(path.join(outDir, `${name(r)}.diff`), r.patch + "\n");
-  const rows = results.map(({ patch, ...r }) => r);
+  for (const r of results) if (r.trace?.length) fs.writeFileSync(path.join(outDir, `${name(r)}.trace.jsonl`), r.trace.map((t) => JSON.stringify(t)).join("\n") + "\n");
+  const rows = results.map(({ patch, trace, ...r }) => r);
   const summary = summarize(rows);
   const passed = rows.filter((r) => r.passed).length;
   fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ ...meta, passed, total: rows.length, summary, results: rows }, null, 2));
@@ -439,13 +587,18 @@ function writeReport(results, outDir, meta = {}) {
   const md = [
     `# Self-work benchmark${meta.label ? `: ${meta.label}` : ""}`,
     "",
-    `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${meta.attempts > 1 ? `Best of ${meta.attempts} attempts. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
+    `${meta.model ? `Model: ${meta.model}. ` : ""}${meta.context ? `Context: ${meta.context}. ` : ""}${meta.attempts > 1 ? `Best of ${meta.attempts} attempts. ` : ""}${meta.roundScale > 1 ? `Round budgets x${meta.roundScale}. ` : ""}${summary.cases} cases x ${summary.repeats} repeat(s).`,
     "",
     `**pass@1 ${pct(o.pass1)}, pass@${summary.repeats} ${pct(o.passK)}**, passes per repeat ${o.spread[0]}-${o.spread[1]} of ${o.cases}. ${passed}/${rows.length} runs passed.`,
     "",
-    "| Kind | Cases | pass@1 | pass@k | Spread |",
-    "| --- | --- | --- | --- | --- |",
-    ...Object.entries(summary.byKind).map(([k, v]) => `| ${k || "-"} | ${v.cases} | ${pct(v.pass1)} | ${pct(v.passK)} | ${v.spread[0]}-${v.spread[1]} |`),
+    "| Kind | Cases | pass@1 | pass@k | Spread | Cost | $ per solved |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...Object.entries(summary.byKind).map(([k, v]) => `| ${k || "-"} | ${v.cases} | ${pct(v.pass1)} | ${pct(v.passK)} | ${v.spread[0]}-${v.spread[1]} | ${usd(v.usd)} | ${v.usdPerSolved == null ? "-" : usd(v.usdPerSolved)} |`),
+    "",
+    ...(rows.some((r) => typeof r.costUsd === "number")
+      ? [`Cost: ${usd(summary.money.usd)} in all, ${summary.money.usdPerSolved == null ? "nothing solved" : `${usd(summary.money.usdPerSolved)} per solved case`} (${summary.money.solved} solved). By model: ${Object.entries(summary.byModelUsd).map(([m, v]) => `${m} ${usd(v)}`).join(", ") || "none"}.`, ""]
+      : []),
+    `Ended by: ${Object.entries(summary.endedBy).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}.`,
     "",
     `Failures: ${Object.entries(summary.failures).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}.`,
     "",
@@ -455,7 +608,7 @@ function writeReport(results, outDir, meta = {}) {
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map(
       (r) =>
-        `| ${r.id} | ${r.kind || "-"} | ${r.repeat || 1} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.failure || "-"} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s | ${tok(r.tokens)} | ${r.tokens.textCalls ?? 0} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
+        `| ${r.id} | ${r.kind || "-"} | ${r.repeat || 1} | ${r.passed ? "pass" : "fail"} | ${r.ended} | ${r.failure || "-"} | ${r.rounds} | ${r.toolCalls} (${r.toolErrors}) | ${Math.round(r.wallMs / 1000)}s${r.estimateMs ? ` (est ${r.estimateMs / 60000}m${r.overEstimate ? ", over" : ""})` : ""} | ${tok(r.tokens)} | ${r.tokens.textCalls ?? 0} | +${r.diff.added}/-${r.diff.removed}, ${r.diff.files.length} | ${r.outside.length ? r.outside.join(", ") : "no"} |`,
     ),
     "",
   ].join("\n");
@@ -469,6 +622,33 @@ function benchEnv(repoRoot) {
   return { ...process.env, ...(fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {}) };
 }
 
+// What a run has spent: flat totals plus a split by model (a setup can use two). usd is the caller's price for these tokens.
+const SPEND_KEYS = ["cacheHit", "cacheMiss", "output", "reasoning"];
+function addSpend(spend, model, tokens, usd) {
+  const own = ((spend.byModel ||= {})[model] ||= { usd: 0, cacheHit: 0, cacheMiss: 0, output: 0, reasoning: 0 });
+  for (const k of SPEND_KEYS) {
+    const n = tokens[k] || 0;
+    spend[k] = (spend[k] || 0) + n;
+    own[k] += n;
+  }
+  spend.usd = (spend.usd || 0) + usd;
+  own.usd += usd;
+}
+
+// Each setup's worktrees get their own folder prefix (it must still start with "bench-" for benchTestGate), so setups
+// running side by side never share a folder for the same case.
+function worktreePrefix(setup) {
+  const name = String(setup || "").replace(/\W+/g, "-").replace(/^-+|-+$/g, "");
+  return name ? `bench-${name}-` : "bench-";
+}
+
+// What the orchestrator is told in the setup where it designs and a worker edits.
+const ORCHESTRATOR_NOTE = "You design the change and a worker makes it: you can read, search, plan and run tests, but you cannot edit. Work out the approach, then hand each piece to the worker with self_work__delegate and a brief that names the files, exactly what to change in each, and the tests that must pass. Check what comes back (run the tests yourself), delegate fixes, and finish only when the change is complete.";
+
+// The window her loop works to on a remote model: DeepSeek's documented 1M (v4-pro and flash), with replies up to
+// 128K tokens (their maximum is 384K).
+const REMOTE_CONTEXT = 1000000;
+const REMOTE_MAX_TOKENS = 131072;
 // #1406/#1411: her loop on a DeepSeek model, with her local reviewer (the
 // bench's own llama-server) and the key from Settings. spend adds up this
 // run's tokens and dollars; API spending gets each reply too (use: bench).
@@ -478,14 +658,52 @@ function remoteModel(repoRoot, tokens, spend, { model, thinking }, local = {}) {
   if (!settings.apiKey) throw new Error("there's no DeepSeek key in Settings");
   const ledger = createApiSpending({ file: path.join(process.env.MANA_ACP_MEMORY_DIR || path.join(repoRoot, "node-bot", "data", "acp-memory"), "api-spending.json") });
   const base = realModel(repoRoot, tokens, local);
-  const onResponse = (json) => {
-    const t = tokensOf(json?.usage || {});
-    for (const k of Object.keys(t)) spend[k] = (spend[k] || 0) + t[k];
-    spend.usd = (spend.usd || 0) + (costOf(model, t, isPeak()) || 0);
-    ledger.record({ model, use: "bench", usage: json?.usage || {} });
-  };
-  const loop = base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model, thinking, onResponse });
-  return { ...base, model: `${model} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, runLoop: loop };
+  const loopFor = (m) => base.runtime.remoteToolReply({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: m, thinking, contextSize: REMOTE_CONTEXT, maxTokens: REMOTE_MAX_TOKENS, retries: 12,
+    onResponse: (json) => {
+      const t = tokensOf(json?.usage || {});
+      addSpend(spend, m, t, costOf(m, t, isPeak()) || 0);
+      ledger.record({ model: m, use: "bench", usage: json?.usage || {} });
+    },
+    ...(local.helperModel ? { helperModel: local.helperModel, onHelperResponse: (json) => {
+      const t = tokensOf(json?.usage || {});
+      addSpend(spend, local.helperModel, t, costOf(local.helperModel, t, isPeak()) || 0);
+      ledger.record({ model: local.helperModel, use: "bench", usage: json?.usage || {} });
+    } } : {}) });
+  // --orchestrate: the orchestrator's loop (no edit tool, a delegate tool) and a worker's, each priced as its own model.
+  const worker = local.orchestrate ? local.worker || "deepseek-flash" : null;
+  const loop = local.orchestrate
+    ? require("./orchestrate").orchestrate({
+        orchestratorLoop: loopFor(local.orchestrate),
+        workerLoop: loopFor(worker),
+        onDelegate: (d) => console.log(`[bench delegate] ${d.status}: ${d.files.join(", ") || "no files"} -- ${d.brief.slice(0, 120).replace(/\s+/g, " ")}`),
+      })
+    : loopFor(model);
+  const setupLabel = local.orchestrate ? `${local.orchestrate} orchestrating ${worker}` : model;
+  const orchestrated = Boolean(local.orchestrate);
+  // The report's context-overflow check measures a run against the window its loop worked to: the remote model's,
+  // not the local reviewer's (--context only sizes that one).
+  // --reviewer <model>: that model reviews her edits through the same API (no thinking, short replies), and the bench
+  // loads no local model. Its tokens and dollars count in the run's spend.
+  const reviewer = local.reviewer;
+  if (reviewer) {
+    const { refuteEdit } = require("../ai/adversarial-verifier");
+    const review = async (prompt, maxTokens) => {
+      const resp = await globalThis.fetch(`${String(settings.baseUrl).replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+        body: JSON.stringify({ model: reviewer, messages: [{ role: "user", content: prompt }], max_tokens: maxTokens || 800, thinking: { type: "disabled" } }),
+      });
+      if (!resp.ok) return null;
+      const json = await resp.json();
+      const t = tokensOf(json?.usage || {});
+      addSpend(spend, reviewer, t, costOf(reviewer, t, isPeak()) || 0);
+      ledger.record({ model: reviewer, use: "bench", usage: json?.usage || {} });
+      return json?.choices?.[0]?.message?.content ?? null;
+    };
+    const env = benchEnv(repoRoot);
+    return { ...base, model: `${setupLabel} (thinking ${thinking ? "on" : "off"}; reviewer: ${reviewer})`, orchestrated, runLoop: loop, contextSize: async () => REMOTE_CONTEXT, start: async () => {}, reviewEdit: (proposal) => refuteEdit({ ...proposal, runLocalReply: review, env }) };
+  }
+  return { ...base, model: `${setupLabel} (thinking ${thinking ? "on" : "off"}; reviewer: ${base.model})`, orchestrated, runLoop: loop, contextSize: async () => REMOTE_CONTEXT };
 }
 
 // Her chat model in a llama-server of the bench's own, from node-bot/.env.
@@ -601,11 +819,13 @@ async function waitUp(server, healthy, sleep = (ms) => new Promise((resolve) => 
 // VRAM back; it's loaded again once the case can start (without
 // --server-args the runtime reloads it on the case's first request).
 // Returns why the case still can't start, or null.
-async function waitOut(c, gate, model, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
+async function waitOut(c, gate, model, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), { forever = false } = {}) {
   let why = await blocker(gate);
   if (!why) return null;
   await model.stop();
-  for (let waited = 0; why && waited < 20; waited += 1) {
+  // #1467: a game is waited out however long it lasts (a match runs past
+  // 20 minutes); RAM and her chat model still stop the run after 20.
+  for (let waited = 0; why && (waited < 20 || why === GAMING || forever); waited += 1) {
     console.log(`Waiting before ${c.id}: ${why}.`);
     await sleep(60000);
     why = await blocker(gate);
@@ -631,44 +851,109 @@ async function main(argv) {
   const outDir = opt("--out")[0] || path.join(RESULTS_DIR, label.replace(/[^\w.-]+/g, "-"));
   const repeats = Math.max(1, Number(opt("--repeat")[0]) || 1);
   const attempts = Math.max(1, Number(opt("--attempts")[0]) || 1);
+  const roundScale = Number(opt("--round-scale")[0]) || 1;
+  const setup = opt("--setup")[0];
+  const noRoundCap = process.argv.includes("--no-round-cap");
+  const noTimeLimit = process.argv.includes("--no-time-limit");
+  const noRamPause = process.argv.includes("--no-ram-pause");
+  const ignorePeakHours = process.argv.includes("--ignore-peak-hours");
+  const timeByEstimate = process.argv.includes("--time-by-estimate");
+  const timeWarnOnly = process.argv.includes("--time-warn-only");
   // The cap is per attempt.
-  const maxMs = (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
-  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0] };
-  const remote = opt("--remote")[0];
+  const maxMs = noTimeLimit ? Infinity : (Number(opt("--max-minutes")[0]) || 10) * 60 * 1000;
+  const config = { model: opt("--model")[0], context: Number(opt("--context")[0]) || undefined, serverArgs: opt("--server-args")[0], orchestrate: opt("--orchestrate")[0], worker: opt("--worker")[0], helperModel: opt("--helper-model")[0], reviewer: opt("--reviewer")[0] || opt("--helper-model")[0] };
+  const remote = opt("--remote")[0] || opt("--orchestrate")[0];
   const thinking = opt("--thinking")[0] !== "off";
   const spend = {};
+  const maxUsd = Number(opt("--max-usd")[0]) || 0;
   const approvalGate = benchTestGate(worktreesDir);
+  // Her loop and her reviewer both on the API: nothing of the bench's takes the GPU, so a game or her chat model being up is no reason to wait.
+  const noLocalModel = Boolean(remote && config.reviewer && config.helperModel);
+  const ignoreRamPause = Boolean(remote && noRamPause);
   const gate = {
-    isGaming: () => isGamingNow(repoRoot),
-    ramPercent: systemRamPercent,
-    backendModelUp: () =>
+    isGaming: () => !noLocalModel && isGamingNow(repoRoot),
+    ramPercent: ignoreRamPause ? () => 0 : systemRamPercent,
+    backendModelUp: () => noLocalModel ? Promise.resolve(false) :
       fetch(`http://127.0.0.1:${BACKEND_LLAMA_PORT}/health`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false),
   };
+
+  // #1467: the harness and the cases, before any GPU time.
+  const pre = require("./preflight");
+  const problems = [pre.copySourcesProblem(repoRoot), pre.helperProblem()];
+  if (config.model && !fs.existsSync(config.model)) problems.push(`no model file at ${config.model}`);
+  if (!problems.some(Boolean)) {
+    const preflightName = setup ? `bench-preflight-${worktreePrefix(setup).slice(6, -1)}` : `bench-preflight-${process.pid}`;
+    const wt = path.join(worktreesDir, preflightName);
+    makeWorktree(repoRoot, wt, cases[0].base);
+    try {
+      problems.push(await pre.sandboxProblem(wt));
+    } finally {
+      removeWorktree(repoRoot, wt);
+    }
+  }
+  if (problems.some(Boolean)) throw new Error(`The bench's preflight failed:\n- ${problems.filter(Boolean).join("\n- ")}`);
 
   if (argv.includes("--verify")) {
     for (const c of cases) {
       const why = await blocker(gate);
       if (why) throw new Error(`not verifying ${c.id}: ${why}`);
-      console.log(JSON.stringify(verifyCase(c, { repoRoot, worktreesDir })));
+      console.log(JSON.stringify(verifyCase(c, { repoRoot, worktreesDir, verifyPrefix: `bench-verify-${setup || process.pid}-` })));
     }
     return;
   }
 
+  // A case the oracle showed can't pass without changing her guardrails says so in its "guarded" (a fix that
+  // also touches one, but passes without it, stays in).
+  const guarded = (c) => (c.guarded ? `it needs a change to ${c.guarded}, one of her guardrails, which only a PR I approve may change` : null);
+  const verifyPrefix = `bench-verify-${setup || process.pid}-`;
+  const { sound, skipped } = await pre.soundCases(cases, (c) => verifyCase(c, { repoRoot, worktreesDir, verifyPrefix }), { guarded });
+  for (const s of skipped) console.log(`Leaving out ${s.id}: ${s.why}.`);
+  if (!sound.length) throw new Error("no sound cases to run");
+  if (argv.includes("--check")) {
+    console.log(`Preflight passed: ${sound.length} sound case(s), ${skipped.length} left out.`);
+    return;
+  }
+
   const tokens = { prompt: 0, completion: 0, peak: 0, textCalls: 0 };
-  const model = remote ? remoteModel(repoRoot, tokens, spend, { model: remote, thinking }, config) : realModel(repoRoot, tokens, config);
-  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, maxMinutes: maxMs / 60000, ...(remote ? { spend } : {}) };
+  // #1467: --oracle replays each case's merged fix through her tools: a case it can't pass is the harness's or the case's fault.
+  const oracle = argv.includes("--oracle");
+  const model = oracle ? require("./oracle").oracleModel(repoRoot) : remote ? remoteModel(repoRoot, tokens, spend, { model: remote, thinking }, config) : realModel(repoRoot, tokens, config);
+  if (!remote && !oracle) {
+    const bad = pre.serverArgsProblem(config.serverArgs, model.runtime.findLlamaServerBin());
+    if (bad) throw new Error(`The bench's preflight failed: ${bad}`);
+  }
+  const meta = { model: model.model, context: config.context, serverArgs: config.serverArgs, label, repeats, attempts, roundScale, noRoundCap, noTimeLimit, noRamPause: ignoreRamPause, ignorePeakHours, timeByEstimate, maxMinutes: Number.isFinite(maxMs) ? maxMs / 60000 : null, skipped, ...(remote ? { spend } : {}) };
   const results = [];
   const runs = [];
-  for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of cases) runs.push({ c, repeat });
+  for (let repeat = 1; repeat <= repeats; repeat += 1) for (const c of sound) runs.push({ c, repeat });
   try {
     await model.start();
+    const noCall = oracle ? null : await pre.toolCallProblem(model.runLoop);
+    if (noCall) throw new Error(`The bench's preflight failed: ${noCall}`);
+    let harnessStreak = 0;
     for (const { c, repeat } of runs) {
-      const why = await waitOut(c, gate, model);
-      if (why) {
-        console.log(`Stopping before ${c.id}: ${why}.`);
+      // A run a game or RAM paused isn't her result: wait it out, run it again.
+      const spendBefore = JSON.parse(JSON.stringify(spend));
+      let result = null;
+      let why = null;
+      // DeepSeek bills double at peak hours: a case waits for off-peak instead of starting in them or within 30 minutes of them.
+      for (let said = false; remote && !ignorePeakHours && minutesToPeak() < PEAK_HOLD_MINUTES; said = true) {
+        if (!said) console.log(`Peak hours (or under ${PEAK_HOLD_MINUTES} minutes away): waiting for off-peak before ${c.id}.`);
+        await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
+      }
+      for (let tries = 0; tries < 3 && !result; tries += 1) {
+        why = await waitOut(c, gate, model, undefined, { forever: noLocalModel });
+        if (why) break;
+        result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, roundScale, noRoundCap, timeByEstimate, timeWarnOnly, approvalGate, prefix: oracle ? "bench-oracle-" : worktreePrefix(setup) });
+        if (result.ended === "paused") {
+          console.log(`${c.id} was paused; running it again.`);
+          result = null;
+        }
+      }
+      if (!result) {
+        console.log(`Stopping before ${c.id}: ${why || "it was paused three times"}.`);
         break;
       }
-      const result = await runCase(c, { repoRoot, worktreesDir, ...gate, ...model, tokens, repeat, sample: sampleMachine, maxMs, attempts, approvalGate });
       if (model.aborted()) {
         console.log(`Stopping at ${c.id}: ${model.aborted()}.`);
         break;
@@ -679,8 +964,19 @@ async function main(argv) {
         console.log(`Stopping at ${c.id}: ${result.error}`);
         break;
       }
+      if (remote) Object.assign(result, spendDelta(spendBefore, spend));
       results.push(result);
       writeReport(results, outDir, meta);
+      if (maxUsd && spend.usd >= maxUsd) {
+        console.log(`Stopping after ${c.id}: $${spend.usd.toFixed(2)} spent, the cap is $${maxUsd}.`);
+        break;
+      }
+      // The harness failing one case (not the model) doesn't end an unattended run; three in a row means it's broken.
+      harnessStreak = result.harnessErrors.length ? harnessStreak + 1 : 0;
+      if (result.harnessErrors.length && (!noLocalModel || harnessStreak >= 3)) {
+        console.log(`Stopping at ${c.id}: the harness failed her, not the model: ${result.harnessErrors[0]}`);
+        break;
+      }
     }
   } finally {
     await model.stop();
@@ -696,4 +992,5 @@ if (require.main === module) {
   });
 }
 
-module.exports = { benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };
+module.exports = {
+  spendDelta, addSpend, worktreePrefix, caseEstimateMs, HARNESS_ERROR, hiddenTestGuard, benchTestGate, loadCases, runCase, verifyCase, writeReport, summarize, failureKind, makeWorktree, removeWorktree, waitOut, waitUp, realModel, remoteModel, blocker, isGamingNow, benchEnv };

@@ -76,3 +76,45 @@ test("another provider (thinking null): only the model, and no key header withou
   assert.equal(requests[0].body.max_tokens, undefined);
   assert.equal(requests[0].headers.Authorization, undefined);
 });
+
+test("a remote loop with retries waits out an overloaded API and a network error, then goes on", async () => {
+  const sent = [];
+  const waits = [];
+  const fetch = async (url, init) => {
+    sent.push(JSON.parse(init.body));
+    if (sent.length === 1) return { ok: false, status: 503, text: async () => "busy" };
+    if (sent.length === 2) throw new Error("fetch failed");
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "done" } }], usage: {} }) };
+  };
+  const runtime = createLlamaServerRuntime({ env: {}, fetch, spawn: () => { throw new Error("no llama-server"); }, sleep: async (ms) => { waits.push(ms); }, registerExitHandlers: false });
+  const reply = await runtime.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "sk-test", model: "deepseek-flash", retries: 3 })("hi", policy);
+  assert.equal(reply.content, "done");
+  assert.equal(sent.length, 3);
+  assert.deepEqual(waits, [5000, 10000]);
+  // Without retries (chat) the first failure ends it, as before.
+  sent.length = 0;
+  await assert.rejects(() => runtime.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "sk-test", model: "deepseek-flash" })("hi", policy), /503/);
+  assert.equal(sent.length, 1);
+});
+
+test("with a helper model the goal check goes to that model on the API, never to a local llama-server", async () => {
+  const requests = [];
+  const fetch = async (url, init) => {
+    if (new URL(url).host !== "api.deepseek.test") throw new Error(`unexpected request to ${url}`);
+    const body = JSON.parse(init.body);
+    requests.push(body);
+    const content = body.model === "deepseek-flash" ? '{"complete":true,"missing":[]}' : "All done.";
+    return { ok: true, json: async () => ({ choices: [{ message: { content } }], usage: { prompt_tokens: 5 } }) };
+  };
+  const runtime = createLlamaServerRuntime({ env: {}, fetch, spawn: () => { throw new Error("no llama-server"); }, sleep: async () => {}, registerExitHandlers: false });
+  const main = [];
+  const helper = [];
+  const run = runtime.remoteToolReply({ baseUrl: "https://api.deepseek.test", apiKey: "sk-test", model: "deepseek-v4-pro", thinking: false, helperModel: "deepseek-flash", onResponse: (j) => main.push(j.usage), onHelperResponse: (j) => helper.push(j.usage) });
+  const reply = await run("say hello", policy, { goal: "say hello" });
+  // Goal mode nudges a tool-less answer a couple of times first; what matters is the one check at the end is Flash's.
+  assert.equal(requests.at(-1).model, "deepseek-flash");
+  assert.equal(requests.filter((r) => r.model === "deepseek-flash").length, 1);
+  assert.match(reply.content, /All done/);
+  assert.equal(main.length, requests.length - 1, "the helper's tokens are not counted as the main model's");
+  assert.equal(helper.length, 1);
+});

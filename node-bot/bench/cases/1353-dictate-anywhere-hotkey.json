@@ -1,5 +1,7 @@
 {
   "id": "1353-dictate-anywhere-hotkey",
+  "guarded": "windows-native-launcher/ManaSettingsStore.cs",
+  "minRounds": 21,
   "kind": "launcher",
   "pr": 1353,
   "issue": 849,

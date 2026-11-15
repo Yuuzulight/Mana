@@ -1,5 +1,6 @@
 {
   "id": "1347-self-work-context-switch-proxy",
+  "minRounds": 9,
   "kind": "node-bug",
   "pr": 1347,
   "issue": 1281,
