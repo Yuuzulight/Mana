@@ -300,6 +300,7 @@ async function startSession(deps) {
     async function createTab(options) {
       const { pageId } = await api.client.createPage("about:blank", options);
       const page = {
+        useGeometryAnnotationFallback: api.backend === "folio",
         title: async () => (await api.client.snapshot(pageId)).title,
         url: async () => (await api.client.snapshot(pageId)).url,
         goto: url => api.client.navigate(pageId, url),

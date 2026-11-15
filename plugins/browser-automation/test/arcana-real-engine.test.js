@@ -101,7 +101,8 @@ test('real Folio Page API retains the tab through embedded manual control', { sk
     env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: temporary },
     arcanaPageApiInitialHtml: '<!doctype html><title>Folio manual input</title>'
       + '<input id="name" aria-label="Name" style="position:absolute;left:20px;top:20px;width:140px;height:30px">'
-      + '<p id="status">Ready</p><script>const input = document.querySelector("input");'
+      + '<input id="password" type="password" value="annotation-secret" style="position:absolute;left:200px;top:20px;width:140px;height:30px">'
+      + '<p id="status" style="position:absolute;left:20px;top:80px">Ready</p><script>const input = document.querySelector("input");'
       + 'input.addEventListener("input", () => document.querySelector("#status").textContent = input.value)</script>',
     ramPercent: () => 50, isGaming: () => false, isLocalRestartRequest: () => true,
   };
@@ -129,6 +130,10 @@ test('real Folio Page API retains the tab through embedded manual control', { sk
     const frame = await call('frame', null, token);
     assert.equal(frame.url, 'about:blank');
     assert.deepEqual(Buffer.from(frame.image, 'base64').subarray(0, 8), Buffer.from('89504e470d0a1a0a', 'hex'));
+    const annotation = await call('annotate', { x: 220, y: 35 }, token);
+    assert.equal(annotation.selector, '#password');
+    assert.equal(annotation.name, '[redacted]');
+    assert.doesNotMatch(annotation.markup, /annotation-secret/);
     await call('input', { action: 'click', x: 45, y: 35 }, token);
     await call('input', { action: 'text', text: 'Manual Folio input' }, token);
     await call('input', { action: 'key', key: 'Tab' }, token);
