@@ -14,13 +14,39 @@ const express = require('../../../node-bot/node_modules/express');
 const real = process.env.MANA_ARCANA_TEST_REAL === '1';
 const signinSpikes = process.env.MANA_ARCANA_SIGNIN_SPIKES === '1';
 
-test('real Arcana Page API launcher starts the pinned engine and creates a page', { skip: !real, timeout: 30000 }, async () => {
+test('real Arcana Page API starts the pinned engine and acts on a rendered page', { skip: !real, timeout: 30000 }, async () => {
   const api = await startArcanaPageApi(process.env);
   try {
+    if (!process.env.MANA_ARCANA_CLI && !process.env.MANA_ARCANA_DIR) {
+      const pin = require('../../../tools/arcana.lock.json');
+      assert.equal(api.backend, pin.engineVersion.startsWith('folio-') ? 'folio' : 'obscura');
+    }
     const { pageId } = await api.client.createPage();
     const snapshot = await api.client.snapshot(pageId);
     assert.equal(snapshot.url, 'about:blank');
     await api.client.closePage(pageId);
+    // Inline fixtures exercise Folio without opening an external origin.
+    if (api.backend === 'folio') {
+      const page = await api.client.createPage('about:blank', {
+        html: '<!doctype html><title>Arcana native actions</title><label for="name">Name</label>'
+          + '<input id="name"><button>Apply</button><p>Ready</p>'
+          + '<script>document.querySelector("button").onclick = () => '
+          + '{ document.querySelector("p").textContent = document.querySelector("input").value; };</script>',
+      });
+      const initial = await api.client.snapshot(page.pageId);
+      assert.equal(initial.title, 'Arcana native actions');
+      const input = initial.elements.find(element => element.tag === 'input');
+      const button = initial.elements.find(element => element.tag === 'button');
+      assert.ok(input?.reference && button?.reference);
+      await api.client.fill(page.pageId, input.reference, 'Page API input');
+      await api.client.click(page.pageId, button.reference);
+      const updated = await api.client.snapshot(page.pageId);
+      assert.match(updated.text, /Page API input/);
+      assert.equal(updated.elements.find(element => element.tag === 'button').reference, button.reference);
+      const screenshot = await api.client.screenshot(page.pageId);
+      assert.deepEqual(screenshot.subarray(0, 8), Buffer.from('89504e470d0a1a0a', 'hex'));
+      await api.client.closePage(page.pageId);
+    }
   } finally {
     const exited = once(api.child, 'exit');
     await api.stop();

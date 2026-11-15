@@ -80,7 +80,9 @@ class ArcanaPageApiClient {
   }
 
   tabs(options) { return this.request("GET", "/v1/tabs", options); }
-  createPage(url = "about:blank", options) { return this.request("POST", "/v1/pages", { ...options, body: { url } }); }
+  createPage(url = "about:blank", { html, ...options } = {}) {
+    return this.request("POST", "/v1/pages", { ...options, body: { url, html } });
+  }
   closePage(pageId, options) { return this.request("DELETE", this.pageRoute(pageId), options); }
   snapshot(pageId, options) { return this.request("GET", this.pageRoute(pageId, "snapshot"), options); }
   navigate(pageId, url, options) { return this.pageAction(pageId, "navigate", { url }, options); }
