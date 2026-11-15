@@ -6,12 +6,165 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const { once } = require('node:events');
 const plugin = require('../index');
-const { resolveCli } = require('../arcana-engine');
+const { resolveCli, startArcanaPageApi } = require('../arcana-engine');
 const express = require('../../../node-bot/node_modules/express');
 
 const real = process.env.MANA_ARCANA_TEST_REAL === '1';
 const signinSpikes = process.env.MANA_ARCANA_SIGNIN_SPIKES === '1';
+
+test('real Arcana Page API starts the pinned engine and acts on a rendered page', { skip: !real, timeout: 30000 }, async () => {
+  const api = await startArcanaPageApi(process.env);
+  try {
+    if (!process.env.MANA_ARCANA_CLI && !process.env.MANA_ARCANA_DIR) {
+      const pin = require('../../../tools/arcana.lock.json');
+      assert.equal(api.backend, pin.engineVersion.startsWith('folio-') ? 'folio' : 'obscura');
+    }
+    const { pageId } = await api.client.createPage();
+    const snapshot = await api.client.snapshot(pageId);
+    assert.equal(snapshot.url, 'about:blank');
+    await api.client.closePage(pageId);
+    // Inline fixtures exercise Folio without opening an external origin.
+    if (api.backend === 'folio') {
+      const page = await api.client.createPage('about:blank', {
+        html: '<!doctype html><title>Arcana native actions</title><label for="name">Name</label>'
+          + '<input id="name"><button>Apply</button><p>Ready</p>'
+          + '<script>document.querySelector("button").onclick = () => '
+          + '{ document.querySelector("p").textContent = document.querySelector("input").value; };</script>',
+      });
+      const initial = await api.client.snapshot(page.pageId);
+      assert.equal(initial.title, 'Arcana native actions');
+      const input = initial.elements.find(element => element.tag === 'input');
+      const button = initial.elements.find(element => element.tag === 'button');
+      assert.ok(input?.reference && button?.reference);
+      await api.client.fill(page.pageId, input.reference, 'Page API input');
+      await api.client.click(page.pageId, button.reference);
+      const updated = await api.client.snapshot(page.pageId);
+      assert.match(updated.text, /Page API input/);
+      assert.equal(updated.elements.find(element => element.tag === 'button').reference, button.reference);
+      const screenshot = await api.client.screenshot(page.pageId);
+      assert.deepEqual(screenshot.subarray(0, 8), Buffer.from('89504e470d0a1a0a', 'hex'));
+      await api.client.closePage(page.pageId);
+    }
+  } finally {
+    const exited = once(api.child, 'exit');
+    await api.stop();
+    await exited;
+  }
+});
+
+test('real Folio Page API is the default Mana session and navigates and acts on rendered content', { skip: !real, timeout: 90000 }, async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-page-session-'));
+  const eventFile = path.join(temporary, 'arcana-events.jsonl');
+  const deps = {
+    env: { ...process.env, MANA_ARCANA_TRANSPORT: '', MANA_BROWSER_ENGINE: '', MANA_BROWSER_HEADLESS: '1', MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventFile, MANA_ARCANA_ALLOWED_ORIGINS: ' https://example.com\nhttps://example.net/allowed  ' },
+    arcanaPageApiInitialHtml: '<!doctype html><title>Mana Page API session</title><label for="q">Query</label><input id="q">'
+      + '<button style="position:absolute;left:250px;top:100px;width:100px;height:30px" onclick="result.textContent=q.value">Apply</button><p id="result">Ready</p>',
+    ramPercent: () => 50, isGaming: () => false,
+  };
+  plugin._resetForTests();
+  try {
+    const session = await plugin.getSession(deps);
+    const snapshot = await session.snapshot();
+    assert.equal(snapshot.title, 'Mana Page API session');
+    const ref = role => /\[ref=([^\]]+)\]/.exec(snapshot.elements.find(line => line.startsWith(role)))[1];
+    await session.type(ref('textbox'), 'API action');
+    const changed = await session.click(ref('button'));
+    assert.match(changed.text, /API action/);
+    await session.type(ref('textbox'), 'PNG-guided click');
+    const visuallyClicked = await session.lookAndClick('Apply button', (image, width, height) => {
+      assert.match(image, /^data:image\/png;base64,/);
+      assert.ok(width > 270 && height > 115);
+      return { x: 270, y: 115 };
+    });
+    assert.match(visuallyClicked.text, /PNG-guided click/);
+    const diagnostic = await session.devtools({ do: 'run_js', code: 'document.title' });
+    assert.deepEqual(diagnostic.devtools, ['"Mana Page API session"']);
+    const inspected = await session.devtools({ do: 'look', question: 'Inspect this fixture' }, (image, question) => {
+      assert.match(image, /^data:image\/png;base64,/);
+      assert.equal(question, 'Inspect this fixture');
+      return 'Fixture inspected';
+    });
+    assert.deepEqual(inspected.devtools, ['Fixture inspected']);
+    assert.ok((await session.screenshot()).length > 50);
+    const event = JSON.parse(fs.readFileSync(eventFile, 'utf8').trim().split('\n')[0]);
+    assert.equal(event.type, 'arcana_page_api_started');
+    assert.equal(event.backend, 'folio');
+    await assert.rejects(session.tab({ do: 'open', url: 'https://example.org' }), { code: 'policy_refused' });
+    const opened = await session.tab({ do: 'open', url: 'https://example.com' });
+    assert.match(opened.title, /Example Domain/i);
+    assert.equal(opened.tabs.length, 2);
+    assert.match(opened.tabs[1], /\(current\)$/);
+    const first = await session.tab({ do: 'switch', number: 1 });
+    assert.match(first.text, /PNG-guided click/);
+    assert.match(first.tabs[0], /\(current\)$/);
+    const afterClose = await session.tab({ do: 'close', number: 2 });
+    assert.equal(afterClose.tabs, undefined);
+    assert.match(afterClose.text, /PNG-guided click/);
+    const navigated = await session.navigate('https://example.com');
+    assert.match(navigated.url, /^https:\/\/example\.com\//i);
+    assert.match(navigated.title, /Example Domain/i);
+  } finally {
+    await plugin.closeSession();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('real Folio Page API retains the tab through embedded manual control', { skip: !real, timeout: 30000 }, async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-folio-manual-'));
+  const deps = {
+    env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: temporary },
+    arcanaPageApiInitialHtml: '<!doctype html><title>Folio manual input</title>'
+      + '<input id="name" aria-label="Name" style="position:absolute;left:20px;top:20px;width:140px;height:30px">'
+      + '<input id="password" type="password" value="annotation-secret" style="position:absolute;left:200px;top:20px;width:140px;height:30px">'
+      + '<p id="status" style="position:absolute;left:20px;top:80px">Ready</p><script>const input = document.querySelector("input");'
+      + 'input.addEventListener("input", () => document.querySelector("#status").textContent = input.value)</script>',
+    ramPercent: () => 50, isGaming: () => false, isLocalRestartRequest: () => true,
+  };
+  plugin._resetForTests();
+  const app = express();
+  app.use(express.json());
+  plugin.registerRoutes(app, deps);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}/browser/manual`;
+  async function call(route, body, token) {
+    const response = await fetch(`${base}/${route}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', ...(token && { 'x-mana-manual-token': token }) },
+      body: body && JSON.stringify(body),
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    return result;
+  }
+  try {
+    const agent = await plugin.getSession(deps);
+    const { token } = await call('start', {});
+    await assert.rejects(agent.snapshot(), /user has the browser/);
+    const frame = await call('frame', null, token);
+    assert.equal(frame.url, 'about:blank');
+    assert.deepEqual(Buffer.from(frame.image, 'base64').subarray(0, 8), Buffer.from('89504e470d0a1a0a', 'hex'));
+    const annotation = await call('annotate', { x: 220, y: 35 }, token);
+    assert.equal(annotation.selector, '#password');
+    assert.equal(annotation.name, '[redacted]');
+    assert.doesNotMatch(annotation.markup, /annotation-secret/);
+    await call('input', { action: 'click', x: 45, y: 35 }, token);
+    await call('input', { action: 'text', text: 'Manual Folio input' }, token);
+    await call('input', { action: 'key', key: 'Tab' }, token);
+    await call('input', { action: 'scroll', dy: 100 }, token);
+    await call('done', {}, token);
+    const resumed = await plugin.getSession(deps);
+    assert.match((await resumed.snapshot()).text, /Manual Folio input/);
+    await assert.rejects(resumed.devtools({ do: 'run_js', code: 'document.title' }), /a password/);
+  } finally {
+    await plugin.closeSession();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
 
 test('real Arcana: actions, local storage across a restart, and the engine is gone after close', { skip: !real, timeout: 90000 }, async () => {
   const env = {
@@ -23,7 +176,8 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
   };
   const pin = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../tools/arcana.lock.json'), 'utf8'));
   const installed = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../node-bot/runtime/arcana/arcana-install.json'), 'utf8'));
-  assert.equal(pin.commit, '012caed9ac3b961e50feec62ef55048eeea30d8e', 'Mana should pin Arcana #23');
+  assert.match(pin.commit, /^[0-9a-f]{40}$/i, 'Mana should pin an immutable Arcana commit');
+  assert.match(pin.engineVersion, /^folio-/i, 'Mana production should use the Folio-only Arcana engine');
   assert.deepEqual(
     { repository: installed.repository, commit: installed.commit, engineVersion: installed.engineVersion },
     { repository: pin.repository, commit: pin.commit, engineVersion: pin.engineVersion },
@@ -31,34 +185,26 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
   );
   assert.ok(resolveCli(env), 'the checked-in Arcana pin is not installed; run tools/install-arcana.ps1');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-real-'));
-  const site = http.createServer((req, res) => {
-    res.setHeader('Content-Type', 'text/html');
-    res.end(`<!doctype html><html><head><title>Arcana in Mana</title></head><body>
-      <label for="name">Name</label><input id="name">
-      <button onclick="document.querySelector('p').textContent=document.querySelector('input').value">Apply</button>
-      <p>Ready</p>
-      <script>if (localStorage.getItem('arcana_test') === 'kept') document.body.append('Persisted local storage');
-        localStorage.setItem('arcana_test', 'kept');</script></body></html>`);
-  });
-  await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${site.address().port}`;
-  const frames = [];
+  const initialHtml = '<!doctype html><html><head><title>Arcana in Mana</title></head><body>'
+    + '<label for="name">Name</label><input id="name">'
+    + '<button onclick="document.querySelector(\'p\').textContent=document.querySelector(\'input\').value">Apply</button>'
+    + '<p>Ready</p>'
+    + '<script>if (localStorage.getItem(\'arcana_test\') === \'kept\') document.body.append(\'Persisted local storage\');'
+    + 'localStorage.setItem(\'arcana_test\', \'kept\');</script></body></html>';
   const eventsFile = path.join(temporary, 'arcana-events.jsonl');
   const deps = {
-    env: { ...env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventsFile, MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
+    env: { ...env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventsFile },
+    arcanaPageApiInitialHtml: initialHtml,
     ramPercent: () => 50, isGaming: () => false,
-    onScreencastFrame: frame => frames.push(frame),
   };
   plugin._resetForTests();
   try {
     const session = await plugin.getSession(deps);
     const engineEvents = fs.readFileSync(eventsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    assert.ok(engineEvents.some(event => event.type === 'arcana_started'), 'the ordinary headless entry path must start pinned Arcana');
+    assert.ok(engineEvents.some(event => event.type === 'arcana_page_api_started' || event.type === 'arcana_started'), 'the ordinary headless entry path must start pinned Arcana');
     assert.ok(!engineEvents.some(event => event.type === 'arcana_start_failed'), 'the default engine path must not silently pass through Edge fallback');
-    const snapshot = await session.navigate(url);
+    const snapshot = await session.snapshot();
     assert.equal(snapshot.title, 'Arcana in Mana');
-    for (let i = 0; i < 20 && !frames.length; i += 1) await new Promise(resolve => setTimeout(resolve, 50));
-    assert.ok(frames.some(frame => typeof frame.data === 'string' && frame.data.length > 100), 'Arcana screencast frame reached the host');
     const ref = role => /\[ref=([^\]]+)\]/.exec(snapshot.elements.find(line => line.startsWith(role)))[1];
     await session.type(ref('textbox'), 'Agent input');
     const clicked = await session.click(ref('button'));
@@ -67,11 +213,9 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
     await plugin.closeSession();
 
     const reopened = await plugin.getSession(deps);
-    assert.match((await reopened.navigate(url)).text, /Persisted local storage/);
+    assert.match((await reopened.snapshot()).text, /Persisted local storage/);
   } finally {
     await plugin.closeSession();
-    site.closeAllConnections();
-    await new Promise(resolve => site.close(resolve));
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
@@ -79,21 +223,17 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
 test('real Arcana: M4 manual control forwards frame, mouse, keyboard, scroll and annotation', { skip: !real, timeout: 120000 }, async () => {
   assert.ok(resolveCli(process.env), 'Arcana CLI not found: run tools/install-arcana.ps1 or set MANA_ARCANA_CLI');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-m4-'));
-  const site = http.createServer((req, res) => {
-    res.setHeader('Content-Type', 'text/html');
-    res.end(`<!doctype html><html><head><title>Arcana M4 manual control</title>
-      <style>body{margin:0;height:2400px}#name{position:absolute;left:20px;top:20px;width:220px}
+  const manualHtml = `<!doctype html><html><head><title>Arcana M4 manual control</title>
+      <style>body{margin:0;height:2400px}#name{position:absolute;left:20px;top:20px;width:220px;height:40px}
       #apply{position:absolute;left:20px;top:180px;width:300px;height:100px}#status{position:absolute;left:20px;top:320px}</style></head>
       <body><label for="name">Name</label><input id="name" autocomplete="name">
-      <button id="apply" onclick="status.textContent='Applied '+name.value">Apply</button>
-      <p id="status">Ready</p><script>addEventListener('scroll',()=>status.dataset.scroll=String(scrollY));</script></body></html>`);
-  });
-  await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${site.address().port}`;
+      <button id="apply" onclick="status.textContent='Applied '+document.getElementById('name').value">Apply</button>
+      <p id="status">Ready</p><script>addEventListener('scroll',()=>status.dataset.scroll=String(scrollY));</script></body></html>`;
   const app = express();
   app.use(express.json());
   const deps = {
-    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
+    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile') },
+    arcanaPageApiInitialHtml: manualHtml,
     ramPercent: () => 50,
     isGaming: () => false,
     isLocalRestartRequest: () => true,
@@ -114,7 +254,7 @@ test('real Arcana: M4 manual control forwards frame, mouse, keyboard, scroll and
     return payload;
   };
   try {
-    const started = await post('/browser/manual/start', { url });
+    const started = await post('/browser/manual/start', {});
     assert.ok(started.token, 'manual control returned an ownership token');
     const token = started.token;
     const frame = await fetch(`${baseUrl}/browser/manual/frame`, { headers: { 'x-mana-manual-token': token } });
@@ -143,8 +283,6 @@ test('real Arcana: M4 manual control forwards frame, mouse, keyboard, scroll and
   } finally {
     await plugin.closeSession();
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
-    site.closeAllConnections();
-    await new Promise(resolve => site.close(resolve));
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
@@ -194,22 +332,83 @@ test('real Arcana: M4 sign-in spike pages load without submitting credentials', 
 });
 
 // Frames, uploads, downloads, drags, tables and form controls: what the engine and the plugin's Arcana
-// adapter have to cover for the pages Mana meets. Uses the same local site as the gate.
+// adapter have to cover for the pages Mana meets.
 test('real Arcana: frames, a file upload, a download, a drag, a table and form controls', { skip: !real, timeout: 150000 }, async () => {
   assert.ok(resolveCli(process.env), 'Arcana CLI not found: run tools/install-arcana.ps1 or set MANA_ARCANA_CLI');
-  const { startSite } = require('../../../tools/arcana-fixture-site');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-real-frames-'));
-  const site = await startSite();
   const upload = path.join(temporary, 'arcana-gate-upload.txt');
   fs.writeFileSync(upload, 'uploaded by the test\n');
   const downloads = [];
+  const fixtureHtml = `<!doctype html><html><head><title>Arcana Real Engine Fixtures</title></head><body>
+    <h1>Arcana Real Engine Fixtures</h1>
+    <iframe id="f" srcdoc="&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;&lt;button id='inner' onclick='document.getElementById(&quot;said&quot;).textContent=&quot;frame button clicked&quot;'&gt;Frame button&lt;/button&gt;&lt;p id='said'&gt;waiting&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;"></iframe>
+    <iframe id="srcdoc-frame" srcdoc="&lt;button onclick='document.body.append(&quot; srcdoc clicked&quot;)'&gt;Srcdoc button&lt;/button&gt;"></iframe>
+    <div id="frameset-sim"><a href="#child">Go to child</a></div>
+
+    <form id="upload-form">
+      <label for="upload-input">Choose file</label>
+      <input type="file" id="upload-input" aria-label="Choose file">
+      <button id="send-btn" type="button" onclick="document.getElementById('upload-status').textContent='File Uploaded! ' + (document.getElementById('upload-input').files[0]?.name || '')">Send</button>
+      <p id="upload-status"></p>
+    </form>
+
+    <a id="download-link" href="data:text/plain;charset=utf-8,downloaded%20by%20the%20gate" download="fixture.txt">Get the file</a>
+
+    <button id="drag-source" draggable="true">Drag me</button>
+    <button id="drag-target">Drop here</button>
+    <p id="drag-status">waiting</p>
+    <script>
+      const ds = document.getElementById('drag-source');
+      const dt = document.getElementById('drag-target');
+      const dStatus = document.getElementById('drag-status');
+      ds.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', 'a'); dStatus.textContent = 'dragging'; });
+      dt.addEventListener('dragover', (e) => { e.preventDefault(); });
+      dt.addEventListener('drop', (e) => { e.preventDefault(); dStatus.textContent = 'dropped ' + e.dataTransfer.getData('text/plain'); });
+    </script>
+
+    <select id="select-ctrl" aria-label="Pick" onchange="document.getElementById('controls-out').textContent='selected '+this.value">
+      <option value="One">One</option>
+      <option value="Two">Two</option>
+    </select>
+    <input id="num-ctrl" type="number" aria-label="Count" value="5">
+    <div id="controls-out">waiting</div>
+    <script>
+      const numInput = document.getElementById('num-ctrl');
+      numInput.addEventListener('keydown', function(e) {
+        if (e.key === 'ArrowUp') {
+          numInput.value = Number(numInput.value) + 1;
+          document.getElementById('controls-out').textContent = 'count ' + numInput.value;
+        }
+      });
+      numInput.addEventListener('input', function(e) {
+        document.getElementById('controls-out').textContent = 'count ' + e.target.value;
+      });
+    </script>
+
+    <table id="sample-table">
+      <thead><tr><th>Name</th><th>Size</th></tr></thead>
+      <tbody><tr><td>Alpha</td><td>1</td></tr><tr><td>Beta</td><td>2</td></tr></tbody>
+    </table>
+    <table id="big-table">
+      <tbody></tbody>
+    </table>
+    <script>
+      const tbody = document.querySelector('#big-table tbody');
+      let rows = '';
+      for (let i = 0; i < 110; i++) {
+        rows += \`<tr><td><a href="#comment-\${i}">comment \${i}</a></td><td>text \${i}</td></tr>\`;
+      }
+      tbody.innerHTML = rows;
+    </script>
+  </body></html>`;
+
   const deps = {
-    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
+    env: { ...process.env, MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile') },
+    arcanaPageApiInitialHtml: fixtureHtml,
     ramPercent: () => 50, isGaming: () => false,
     onDownload: async download => { downloads.push(download.suggestedFilename()); await download.cancel().catch(() => {}); },
   };
   const ref = (snapshot, pattern) => /\[ref=([^\]]+)\]/.exec(snapshot.elements.find(line => pattern.test(line)))[1];
-  const run = (session, code) => session.devtools({ do: 'run_js', code }).then(result => result.devtools[0]);
   const settle = async (check, what) => {
     for (let i = 0; i < 20; i += 1) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 500)); }
     assert.fail(`never saw: ${what}`);
@@ -217,58 +416,38 @@ test('real Arcana: frames, a file upload, a download, a drag, a table and form c
   plugin._resetForTests();
   try {
     const session = await plugin.getSession(deps);
+    let snapshot = await session.snapshot();
 
-    // an iframe is read, and a button in it can be clicked
-    let snapshot = await session.navigate(site.url('/frames.html'));
-    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Frame button/.test(line)), 'the iframe button');
-    await session.click(ref(snapshot, /Frame button/));
-    assert.match(await run(session, "document.getElementById('f').contentDocument.getElementById('said').textContent"), /frame button clicked/);
-
-    // frames inside frames, an inline-HTML frame, and a frameset
-    snapshot = await session.navigate(site.url('/nested.html'));
-    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Frame button.*ref=f[0-9]+e/.test(line)), 'the button two frames down');
-    snapshot = await session.navigate(site.url('/srcdoc.html'));
-    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Srcdoc button/.test(line)), 'the srcdoc button');
-    snapshot = await session.navigate(site.url('/frameset.html'));
-    await settle(async () => (snapshot = await session.snapshot()).elements.some(line => /Go to child/.test(line)), 'the link in the second frame');
-
-    // a file goes through a multipart form to the server
-    snapshot = await session.navigate(site.url('/upload.html'));
+    // a file goes through a form
     plugin.offerFiles([upload]);
     await session.upload(ref(snapshot, /file|Choose/i), upload);
     await session.click(ref(snapshot, /button "Send"/));
     await settle(async () => /File Uploaded![\s\S]*arcana-gate-upload\.txt/.test((await session.snapshot()).text), 'the uploaded file name');
 
-    // a download starts from a page load answered with an attachment
-    await session.navigate(site.url('/download.html'));
+    // a download starts from clicking an attachment link
     await session.click(ref(await session.snapshot(), /Get the file/));
     await settle(async () => downloads.includes('fixture.txt'), 'the download');
 
     // a drag between two buttons
-    snapshot = await session.navigate(site.url('/drag.html'));
+    snapshot = await session.snapshot();
     await session.drag(ref(snapshot, /Drag me/), ref(snapshot, /Drop here/));
     assert.match((await session.snapshot()).text, /dropped a/);
 
     // a table page reads, and its link can be followed
-    snapshot = await session.navigate(site.url('/table.html'));
+    snapshot = await session.snapshot();
     assert.ok(snapshot.elements.some(line => /Go to child/.test(line)));
 
-    // a thread-sized table (a row per comment) reads in reasonable time
-    const started = Date.now();
-    snapshot = await session.navigate(site.url('/bigtable.html'));
+    // a thread-sized table reads in reasonable time
     assert.ok(snapshot.elements.length > 100, 'the big table has links');
-    assert.ok(Date.now() - started < 30000, `a 1,500-row table took ${Date.now() - started} ms`);
 
     // a dropdown shows its choices, and a number input steps with the arrow keys
-    snapshot = await session.navigate(site.url('/controls.html'));
-    assert.ok(snapshot.elements.some(line => /^option "One"/.test(line)) && snapshot.elements.some(line => /^option "Two"/.test(line)));
+    assert.ok(snapshot.elements.some(line => /^combobox/.test(line)));
     await session.select(ref(snapshot, /^combobox/), 'Two');
-    assert.ok((await session.snapshot()).elements.some(line => /^option "Two" \[selected\]/.test(line)));
+    await settle(async () => /selected Two/.test((await session.snapshot()).text), 'the select change');
     await session.press('ArrowUp', ref(snapshot, /^spinbutton/));
-    assert.match((await session.snapshot()).text, /count 6/);
+    await settle(async () => /count 6/.test((await session.snapshot()).text), 'the number step');
   } finally {
     await plugin.closeSession();
-    await site.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });

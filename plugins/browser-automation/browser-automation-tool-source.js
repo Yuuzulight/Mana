@@ -437,6 +437,9 @@ function createBrowserAutomationToolSource(options = {}) {
       // real error still propagates to the model unchanged.
       activityLog.recordActivity({ action, args, status: "error", error: err.message });
       if (err.blockedMayBreak) activityLog.recordBlocked(await session.url(), err.blockedMayBreak);
+      if (err.code === "policy_refused" && (action === "navigate" || (action === "tab" && args?.do === "open"))) {
+        requestHandOver("Arcana cannot open this destination under its navigation policy.", sessionDeps, args?.url);
+      }
       throw err;
     }
 

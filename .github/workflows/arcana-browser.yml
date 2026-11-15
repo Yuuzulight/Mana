@@ -38,11 +38,6 @@ jobs:
       - name: Install backend dependencies
         working-directory: node-bot
         run: npm ci
-      - name: Set up Rust toolchain
-        shell: pwsh
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
       - name: Install pinned Arcana and its engine
         shell: pwsh
         env:

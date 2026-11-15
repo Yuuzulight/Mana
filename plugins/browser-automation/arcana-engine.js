@@ -7,7 +7,9 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const http = require("http");
+const { createInterface } = require("node:readline");
 const { spawn, execFile } = require("child_process");
+const { API_VERSION, ArcanaPageApiClient } = require("./arcana-page-api-client");
 
 // What tools/install-arcana.ps1 publishes.
 const INSTALLED_CLI = path.resolve(__dirname, "../../node-bot/runtime/arcana/Arcana.Cli.dll");
@@ -69,7 +71,11 @@ function versionUp(port) {
 function killTree(child) {
   return new Promise((resolve) => {
     if (!child.pid || child.exitCode !== null) return resolve();
-    execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], () => resolve());
+    execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, timeout: 5000 }, (error) => {
+      // Arcana's job object owns the content workers if taskkill is unavailable.
+      if (error && child.exitCode === null) child.kill();
+      resolve();
+    });
   });
 }
 
@@ -108,6 +114,65 @@ async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
     await new Promise((r) => setTimeout(r, 100));
   }
   return { endpoint: `http://127.0.0.1:${port}`, stop, child };
+}
+
+async function startArcanaPageApi(env, { storageDir, allowedOrigins } = {}) {
+  const cli = resolveCli(env);
+  if (!cli) throw new Error("The pinned Arcana install isn't available. Run tools/install-arcana.ps1.");
+  const managed = /\.dll$/i.test(cli);
+  const args = managed ? [cli] : [];
+  args.push("api", "--port=0", `--arcana-parent-pid=${process.pid}`);
+  if (storageDir) args.push(`--profile=${storageDir}`);
+  if (env.MANA_ARCANA_ALLOW_PRIVATE_NETWORK === "1") args.push("--allow-private-network");
+  const destinations = allowedOrigins ?? (env.MANA_ARCANA_ALLOWED_ORIGINS || "").split(/\s+/).filter(Boolean);
+  for (const destination of destinations) args.push(`--folio-allow-origin=${destination}`);
+
+  const child = spawn(managed ? (env.MANA_DOTNET_PATH || "dotnet") : cli, args, {
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+  });
+  const lines = createInterface({ input: child.stdout });
+  const stop = () => killTree(child);
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-2000); });
+  try {
+    const ready = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Arcana Page API readiness timed out")), READY_TIMEOUT_MS);
+      const finish = (callback) => (value) => {
+        clearTimeout(timer);
+        callback(value);
+      };
+      lines.once("line", finish(resolve));
+      child.once("error", finish(reject));
+      child.once("close", finish((code) => reject(new Error(`Arcana Page API exited (${code}): ${stderr.trim()}`))));
+    });
+    const status = JSON.parse(ready);
+    if (status.apiVersion !== API_VERSION || !["folio", "obscura"].includes(status.backend)) {
+      throw new Error("Arcana returned an unsupported Page API readiness response");
+    }
+    const client = new ArcanaPageApiClient({ endpoint: status.endpoint, token: status.token });
+    await client.health({ signal: AbortSignal.timeout(5000) });
+    return { client, backend: status.backend, child, stop };
+  } catch (error) {
+    await stop();
+    throw error;
+  } finally {
+    lines.close();
+  }
+}
+
+function openArcanaDefaultBrowser(env, url, execFileFn = execFile) {
+  const target = new URL(url);
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) {
+    throw new TypeError("Browser handoff requires an HTTP or HTTPS URL without embedded credentials");
+  }
+  const cli = resolveCli(env);
+  if (!cli) throw new Error("The pinned Arcana install isn't available. Run tools/install-arcana.ps1.");
+  const managed = /\.dll$/i.test(cli);
+  const args = managed ? [cli, "fallback", target.href] : ["fallback", target.href];
+  return new Promise((resolve, reject) => {
+    execFileFn(managed ? (env.MANA_DOTNET_PATH || "dotnet") : cli, args, { windowsHide: true, timeout: 10000 },
+      (error) => error ? reject(error) : resolve());
+  });
 }
 
 // One JSON line per engine event, so a week of use can be counted (Arcana's M2
@@ -150,4 +215,4 @@ async function launchArcana(chromium, env, options = {}) {
   }
 }
 
-module.exports = { launchArcana, startArcana, resolveCli, recordEvent };
+module.exports = { launchArcana, startArcana, startArcanaPageApi, openArcanaDefaultBrowser, resolveCli, recordEvent };

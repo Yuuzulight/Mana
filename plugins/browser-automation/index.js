@@ -1,7 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
-const { launchArcana, recordEvent } = require("./arcana-engine");
+const { launchArcana, startArcanaPageApi, openArcanaDefaultBrowser, resolveCli, recordEvent } = require("./arcana-engine");
+const { createArcanaPageApiSession } = require("./arcana-page-api-session");
+const { engineVersion: pinnedArcanaEngine } = require("../../tools/arcana.lock.json");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
@@ -66,6 +68,12 @@ let takenOver = null;
 let opening = false;
 let resumeUrl = null;
 let needsYou = null;
+let pendingHandoffUrl = null;
+
+function clearHandOver() {
+  needsYou = null;
+  pendingHandoffUrl = null;
+}
 // #1161: a site test loads images whether or not the panel watches.
 let loadMedia = false;
 let epoch = 0;
@@ -89,7 +97,7 @@ const manualControl = require('./manual-control').createManualControl({
       await Promise.allSettled([...agentActions]);
       if (personalBrowser) {
         await personalBrowser.getSession({ ...deps, sessionId: personalBrowser.sessionId });
-        needsYou = null;
+        clearHandOver();
         return;
       }
       if (starting) await starting;
@@ -99,8 +107,8 @@ const manualControl = require('./manual-control').createManualControl({
       }
       gateDeps = deps;
       lastUsedAt = (deps.now || Date.now)();
-      if (/^https?:/i.test(fallbackUrl || '') && currentPage().url() === 'about:blank') await currentPage().goto(fallbackUrl);
-      needsYou = null;
+      if (/^https?:/i.test(fallbackUrl || '') && await currentPage().url() === 'about:blank') await currentPage().goto(fallbackUrl);
+      clearHandOver();
     } finally { opening = false; }
   },
   async resume() {
@@ -279,8 +287,98 @@ async function setUpTab(page, deps = {}) {
   return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }), pageLog: () => log, cursor }) };
 }
 
+function usesArcanaPageApi(deps, env) {
+  if (env.MANA_ARCANA_TRANSPORT === "page-api") return true;
+  return pinnedArcanaEngine.startsWith("folio-") &&
+    env.MANA_BROWSER_ENGINE !== "edge" && env.MANA_BROWSER_HEADLESS !== "0" &&
+    !deps.chromium && !deps.launchArcana;
+}
+
 async function startSession(deps) {
   const env = deps.env || process.env;
+  if (usesArcanaPageApi(deps, env)) {
+    if (env.MANA_BROWSER_ENGINE === "edge" || env.MANA_BROWSER_HEADLESS === "0") {
+      throw new Error("The Arcana Page API transport is headless-only; choose the explicit Edge engine for a visible browser.");
+    }
+    const profileDir = env.MANA_BROWSER_PROFILE_DIR || PROFILE_DIR;
+    if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
+    const eventsFile = env.MANA_ARCANA_EVENTS_FILE || path.join(profileDir, "arcana-events.jsonl");
+    refuseIfLocalOnly("browser automation", env);
+    await closing;
+    const api = await startArcanaPageApi(env, {
+      storageDir: path.join(profileDir, "arcana"),
+      allowedOrigins: deps.arcanaAllowedOrigins,
+    }).catch(error => {
+      recordEvent(eventsFile, "arcana_start_failed", { transport: "page-api", reason: String(error.message) });
+      throw error;
+    });
+    let intentionalClose = false;
+    let childExited = false;
+    const pages = new Set();
+    async function createTab(options) {
+      const { pageId } = await api.client.createPage("about:blank", { ...options, signal: AbortSignal.timeout(30000) });
+      const page = {
+        useGeometryAnnotationFallback: api.backend === "folio",
+        title: async () => (await api.client.snapshot(pageId)).title,
+        url: async () => (await api.client.snapshot(pageId)).url,
+        goto: url => api.client.navigate(pageId, url),
+        viewportSize: () => null,
+        evaluate: (fn, arg) => api.client.evaluate(pageId, `(${fn.toString()})(${arg === undefined ? "" : JSON.stringify(arg)})`),
+        screenshot: () => api.client.screenshot(pageId, { format: "png" }),
+        mouse: {
+          click(x, y, { button, clickCount }) {
+            if (button !== "left" || clickCount !== 1) throw new Error("Folio manual control supports a single left click");
+            return api.client.clickAt(pageId, x, y);
+          },
+          wheel: (x, y) => api.client.mouseWheel(pageId, x, y),
+        },
+        keyboard: {
+          insertText: text => api.client.typeText(pageId, text),
+          press: key => api.client.press(pageId, key),
+        },
+        close: async () => {
+          if (pages.delete(page)) await api.client.closePage(pageId, { signal: AbortSignal.timeout(5000) });
+        },
+      };
+      pages.add(page);
+      return { page, session: createArcanaPageApiSession(api.client, pageId, { onDownload: dl => Promise.resolve((deps.onDownload || gateDeps?.onDownload)?.(dl)) }) };
+    }
+    const apiContext = {
+      transport: "page-api",
+      pages: () => [...pages],
+      createTab,
+      async close() {
+        intentionalClose = true;
+        await Promise.allSettled([...pages].map(page => page.close()));
+        await api.stop();
+      },
+    };
+    api.child.once("exit", (code, signal) => {
+      childExited = true;
+      if (intentionalClose) return;
+      recordEvent(eventsFile, "arcana_disconnected", { code, signal });
+      if (context === apiContext) forget();
+    });
+    let initialTab;
+    try {
+      // Internal fixture seam for real-engine tests; caller-provided chat text is never treated as HTML.
+      initialTab = await createTab(deps.arcanaPageApiInitialHtml === undefined ? {} : { html: String(deps.arcanaPageApiInitialHtml) });
+      if (childExited || api.child.exitCode !== null) throw new Error("Arcana exited while the Page API session was starting");
+    } catch (error) {
+      intentionalClose = true;
+      await api.stop();
+      recordEvent(eventsFile, "arcana_start_failed", { transport: "page-api", reason: String(error.message) });
+      throw error;
+    }
+    recordEvent(eventsFile, "arcana_page_api_started", { backend: api.backend });
+    context = apiContext;
+    tabs = [initialTab];
+    current = 0;
+    session = tabbedSession(deps);
+    checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
+    checkTimer.unref?.();
+    return session;
+  }
   const ctx = await launch(deps, { headless: env.MANA_BROWSER_HEADLESS !== "0" });
   // Edge went away under us (crashed, killed): start fresh next call.
   ctx.on("close", () => context === ctx && forget());
@@ -313,6 +411,7 @@ function tabbedSession(deps) {
   const generation = epoch;
   const env = deps.env || process.env;
   const maxTabs = Math.min(5, Math.max(1, Math.floor(Number(env.MANA_BROWSER_MAX_TABS)) || DEFAULT_MAX_TABS));
+  let openingTabs = 0;
 
   async function withTabs(result) {
     if (tabs.length < 2) return result;
@@ -328,18 +427,24 @@ function tabbedSession(deps) {
 
   async function open(url) {
     if (tabs.length >= maxTabs) throw new Error(`${tabs.length} tabs are open, the most she may have; close one first`);
+    if (tabs.length + openingTabs >= maxTabs) throw new Error("The remaining tab slots are opening; wait before opening another");
     // The RAM gate applies to every tab she adds.
     const blocked = blocker(gateDeps);
     if (blocked) throw new Error(`no new tab while ${blocked}`);
-    const tab = await setUpTab(await context.newPage(), deps);
+    openingTabs += 1;
+    let tab;
     try {
+      tab = owner.transport === "page-api" ? await owner.createTab() : await setUpTab(await owner.newPage(), deps);
       const result = await tab.session.navigate(url);
+      if (context !== owner || epoch !== generation) throw new Error("this browser session has closed; obtain a fresh session");
       tabs.push(tab);
       current = tabs.length - 1;
       return withTabs(result);
     } catch (e) {
-      await tab.page.close().catch(() => {});
+      await tab?.page.close().catch(() => {});
       throw e;
+    } finally {
+      openingTabs -= 1;
     }
   }
 
@@ -466,6 +571,16 @@ async function takeOver(deps = {}, fallbackUrl = null) {
   if (takenOver || opening) return;
   opening = true;
   try {
+    const env = deps.env || process.env;
+    if (context?.transport === "page-api" || usesArcanaPageApi(deps, env)) {
+      refuseIfLocalOnly("browser handoff", env);
+      const target = pendingHandoffUrl || fallbackUrl || await currentPage()?.url();
+      if (!target) throw new Error("There is no web page to open in the default browser.");
+      await openArcanaDefaultBrowser(env, target);
+      await closeSession();
+      clearHandOver();
+      return;
+    }
     let url = currentPage() ? await currentPage().url() : null;
     if (!/^https?:/i.test(url || "")) url = /^https?:/i.test(fallbackUrl || "") ? fallbackUrl : null;
     await closeSession();
@@ -473,7 +588,7 @@ async function takeOver(deps = {}, fallbackUrl = null) {
     // by automated software" flag, which some sign-in pages refuse.
     const ctx = await launch(deps, { headless: false, viewport: null, ignoreDefaultArgs: ["--enable-automation"] });
     takenOver = ctx;
-    needsYou = null;
+    clearHandOver();
     resumeUrl = url;
     // Closing the window myself counts as Done.
     ctx.on("close", () => takenOver === ctx && (takenOver = null));
@@ -499,10 +614,18 @@ async function handBack() {
 // #1169: a new request also pops a toast with Take over (the launcher's
 // tray feed), except while a game runs: then it just waits in the panel.
 // She never opens the window herself.
-function requestHandOver(reason, deps = gateDeps) {
+function requestHandOver(reason, deps = gateDeps, destination) {
   const text = String(reason || "she needs you").slice(0, 200);
-  if (text === needsYou || takenOver) return;
+  let target = null;
+  if (destination) {
+    try {
+      const url = new URL(destination);
+      if (["http:", "https:"].includes(url.protocol) && !url.username && !url.password) target = url.href;
+    } catch { /* An invalid destination cannot become a handoff target. */ }
+  }
+  if ((text === needsYou && target === pendingHandoffUrl) || takenOver) return;
   needsYou = text;
+  pendingHandoffUrl = target;
   if (deps.isGaming?.()) return;
   (deps.notifyTray || trayNotifier.notifyTray)({ type: "browser-hand-over", title: "Mana needs you in her browser", text }).catch?.(() => {});
 }
@@ -607,7 +730,7 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
 
   app.post("/browser/close", async (req, res) => {
     if (!requireLocal(req, res)) return;
-    needsYou = null;
+    clearHandOver();
     await closeSession();
     return res.json({ ok: true });
   });
@@ -692,7 +815,7 @@ module.exports = {
   category: "Web",
   defaultEnabled: true,
   description:
-    "Navigate/click/type/read a live page in Arcana (Edge only for explicit user fallback or Take over) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
+    "Navigate, click, type, and read a live page in Arcana. Local-only routes.",
   registerRoutes: registerBrowserAutomationRoutes,
   // Issue #188: exported so the tool-calling adapter
   // (browser-automation-tool-source.js) shares this exact singleton
@@ -701,13 +824,15 @@ module.exports = {
   getSession,
   getHealth: (deps = {}) => {
     const env = deps.env || process.env;
-    const executablePath = resolveExecutablePath(env);
+    const useArcana = env.MANA_BROWSER_ENGINE !== "edge" && env.MANA_BROWSER_HEADLESS !== "0";
+    const executablePath = useArcana ? resolveCli(env) : resolveExecutablePath(env);
     return {
       status: executablePath ? "configured" : "unavailable",
       configured: Boolean(executablePath),
       message: executablePath
         ? `Browser automation ready (${executablePath})`
-        : "No browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
+        : useArcana ? "Arcana is unavailable. Run tools/install-arcana.ps1."
+          : "No browser executable found. Set MANA_BROWSER_EXECUTABLE_PATH or install Edge/Chrome.",
     };
   },
   resolveExecutablePath,
@@ -738,6 +863,6 @@ module.exports = {
     offered.clear();
     loadMedia = false;
     resumeUrl = null;
-    needsYou = null;
+    clearHandOver();
   },
 };

@@ -38,8 +38,9 @@ function createManualControl({ prepare, getContext, getPage, resume, touch = () 
     const page = getPage();
     const viewport = await viewportOf(page);
     const image = await page.screenshot({ type: 'jpeg', quality: 80, timeout: 10000 });
+    const url = await page.url();
     if (requireOwner(token) !== current) throw new Error('Manual browser ownership changed');
-    return { image: image.toString('base64'), width: viewport.width, height: viewport.height, url: page.url() };
+    return { image: image.toString('base64'), width: viewport.width, height: viewport.height, url };
   }
 
   async function input(token, command = {}) {
@@ -76,8 +77,23 @@ function createManualControl({ prepare, getContext, getPage, resume, touch = () 
     const page = getPage();
     const viewport = await viewportOf(page);
     if (!Number.isFinite(command.x) || !Number.isFinite(command.y) || command.x < 0 || command.y < 0 || command.x >= viewport.width || command.y >= viewport.height) throw new Error('Annotation point is outside the page');
-    const result = await page.evaluate(({ x, y }) => {
-      const element = document.elementFromPoint(x, y);
+    const result = await page.evaluate(({ x, y, useGeometryFallback }) => {
+      let element = document.elementFromPoint(x, y);
+      if (!element && useGeometryFallback) {
+        // Folio can return no native hit even while client rectangles are available.
+        // Only use geometry when all visible matches form one ancestor chain.
+        const nodes = document.querySelectorAll('*');
+        if (nodes.length <= 5000) {
+          for (const node of nodes) {
+            const style = getComputedStyle(node);
+            if (style.visibility !== 'visible' || style.pointerEvents === 'none' || node.getClientRects().length !== 1) continue;
+            const rect = node.getBoundingClientRect();
+            if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) continue;
+            if (element && !element.contains(node)) { element = null; break; }
+            element = node;
+          }
+        }
+      }
       if (!element) return null;
       const sensitive = /password|one-time|otp|token|secret|card|cvv|ssn/i.test(`${element.getAttribute('type') || ''} ${element.getAttribute('name') || ''} ${element.getAttribute('autocomplete') || ''} ${element.getAttribute('aria-label') || ''}`);
       const rect = element.getBoundingClientRect();
@@ -109,7 +125,7 @@ function createManualControl({ prepare, getContext, getPage, resume, touch = () 
       }
       const name = sensitive ? '[redacted]' : element.getAttribute('aria-label') || element.getAttribute('name') || (clone.textContent || '').trim().slice(0, 200);
       return { selector, role: element.getAttribute('role') || element.tagName.toLowerCase(), name, markup: sensitive ? `<${element.tagName.toLowerCase()} [redacted]>` : clone.outerHTML.slice(0, 2000), rect: box };
-    }, { x: command.x, y: command.y });
+    }, { x: command.x, y: command.y, ...(page.useGeometryAnnotationFallback && { useGeometryFallback: true }) });
     if (requireOwner(token) !== current) throw new Error('Manual browser ownership changed');
     return result || { rect: { x: command.x, y: command.y, width: 4, height: 4, fallback: true }, selector: null, role: null, name: null, markup: null };
   }
