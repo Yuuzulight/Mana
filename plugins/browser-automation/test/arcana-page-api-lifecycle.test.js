@@ -6,6 +6,7 @@ const engine = require('../arcana-engine');
 let starts = 0;
 const children = [];
 const handoffs = [];
+let beforePageClose = null;
 require.cache[enginePath].exports = {
   ...engine,
   async openArcanaDefaultBrowser(_env, url) { handoffs.push(url); },
@@ -19,7 +20,7 @@ require.cache[enginePath].exports = {
       backend: 'folio', child,
       client: {
         async createPage() { return { pageId }; },
-        async closePage() {},
+        async closePage(_pageId, options) { await beforePageClose?.(options); },
         async snapshot() { return { url: 'about:blank', title: `Page ${pageId}`, text: 'Ready', elements: [] }; },
         async evaluate() { return null; },
       },
@@ -28,6 +29,7 @@ require.cache[enginePath].exports = {
   },
 };
 const plugin = require('../index');
+test.after(() => { require.cache[enginePath].exports = engine; });
 
 test('unexpected Arcana Page API exit invalidates the cached session and next call restarts', async () => {
   const deps = {
@@ -67,6 +69,41 @@ test('explicit Page API takeover hands the requested URL to the OS browser and c
     assert.deepEqual(plugin.takeOverStatus(), { active: false, needsYou: null });
   } finally {
     await plugin.closeSession();
-    require.cache[enginePath].exports = engine;
+  }
+});
+
+test('Page API startup waits for the preceding browser to finish closing', async () => {
+  const deps = {
+    env: { MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: require('node:os').tmpdir() },
+    ramPercent: () => 20, isGaming: () => false,
+  };
+  plugin._resetForTests();
+  let release;
+  const pendingClose = new Promise(resolve => { release = resolve; });
+  let observed;
+  const closeStarted = new Promise(resolve => { observed = resolve; });
+  beforePageClose = async ({ signal }) => {
+    observed(signal);
+    await pendingClose;
+    throw new Error('Page close failed');
+  };
+  try {
+    await plugin.getSession(deps);
+    const previous = children.at(-1);
+    const startsBeforeClose = starts;
+    const closing = plugin.closeSession();
+    assert.ok(await closeStarted instanceof AbortSignal);
+    const reopening = plugin.getSession(deps);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(starts, startsBeforeClose);
+    release();
+    await closing;
+    await reopening;
+    assert.equal(previous.exitCode, 0);
+    assert.equal(starts, startsBeforeClose + 1);
+  } finally {
+    release();
+    beforePageClose = null;
+    await plugin.closeSession();
   }
 });

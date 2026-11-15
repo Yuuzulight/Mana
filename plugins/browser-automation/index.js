@@ -304,6 +304,7 @@ async function startSession(deps) {
     if (!path.isAbsolute(profileDir)) throw new Error("MANA_BROWSER_PROFILE_DIR must be an absolute path");
     const eventsFile = env.MANA_ARCANA_EVENTS_FILE || path.join(profileDir, "arcana-events.jsonl");
     refuseIfLocalOnly("browser automation", env);
+    await closing;
     const api = await startArcanaPageApi(env, {
       storageDir: path.join(profileDir, "arcana"),
       allowedOrigins: deps.arcanaAllowedOrigins,
@@ -315,7 +316,7 @@ async function startSession(deps) {
     let childExited = false;
     const pages = new Set();
     async function createTab(options) {
-      const { pageId } = await api.client.createPage("about:blank", options);
+      const { pageId } = await api.client.createPage("about:blank", { ...options, signal: AbortSignal.timeout(30000) });
       const page = {
         useGeometryAnnotationFallback: api.backend === "folio",
         title: async () => (await api.client.snapshot(pageId)).title,
@@ -336,7 +337,7 @@ async function startSession(deps) {
           press: key => api.client.press(pageId, key),
         },
         close: async () => {
-          if (pages.delete(page)) await api.client.closePage(pageId);
+          if (pages.delete(page)) await api.client.closePage(pageId, { signal: AbortSignal.timeout(5000) });
         },
       };
       pages.add(page);

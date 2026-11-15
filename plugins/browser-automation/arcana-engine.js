@@ -71,7 +71,11 @@ function versionUp(port) {
 function killTree(child) {
   return new Promise((resolve) => {
     if (!child.pid || child.exitCode !== null) return resolve();
-    execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], () => resolve());
+    execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, timeout: 5000 }, (error) => {
+      // Arcana's job object owns the content workers if taskkill is unavailable.
+      if (error && child.exitCode === null) child.kill();
+      resolve();
+    });
   });
 }
 
