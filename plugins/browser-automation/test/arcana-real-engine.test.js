@@ -54,11 +54,11 @@ test('real Arcana Page API starts the pinned engine and acts on a rendered page'
   }
 });
 
-test('real Arcana Page API transport is reachable through Mana session entry and navigates and acts on rendered content', { skip: !real, timeout: 90000 }, async () => {
+test('real Folio Page API is the default Mana session and navigates and acts on rendered content', { skip: !real, timeout: 90000 }, async () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-page-session-'));
   const eventFile = path.join(temporary, 'arcana-events.jsonl');
   const deps = {
-    env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventFile, MANA_ARCANA_ALLOWED_ORIGINS: ' https://example.com\nhttps://example.net/allowed  ' },
+    env: { ...process.env, MANA_ARCANA_TRANSPORT: '', MANA_BROWSER_ENGINE: '', MANA_BROWSER_HEADLESS: '1', MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventFile, MANA_ARCANA_ALLOWED_ORIGINS: ' https://example.com\nhttps://example.net/allowed  ' },
     arcanaPageApiInitialHtml: '<!doctype html><title>Mana Page API session</title><label for="q">Query</label><input id="q">'
       + '<button style="position:absolute;left:250px;top:100px;width:100px;height:30px" onclick="result.textContent=q.value">Apply</button><p id="result">Ready</p>',
     ramPercent: () => 50, isGaming: () => false,

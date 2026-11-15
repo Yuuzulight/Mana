@@ -13,19 +13,19 @@ builds Arcana and the Folio content host from their pinned source revisions
 and installs them under `node-bot/runtime/arcana`. Building requires Git,
 the .NET 10 SDK, and Windows C++ build tools.
 
-Set `MANA_ARCANA_TRANSPORT=page-api` to test the staged Folio session. Set
-`MANA_ARCANA_ALLOWED_ORIGINS` to a whitespace-separated list of HTTPS origins
+The pinned Folio runtime starts through the Page API on the normal headless
+path. Set `MANA_ARCANA_ALLOWED_ORIGINS` to a whitespace-separated list of HTTPS origins
 or path prefixes in the Mana process environment. Arcana enforces the list
 for navigation. With an empty list, the broker can render local fixtures and
 blank tabs. Explicit handoff opens the URL in the OS default browser.
 
-The staged transport remains opt-in while full Page API parity is under test.
+This release candidate still requires full Page API parity before merging.
 
 ## Legacy transport during migration
 
 The legacy headless path uses Arcana's `serve` endpoint and Playwright over
-CDP. It needs a development Arcana build with that command. Use the staged
-Page API transport with the Folio-only runtime. For local development, use
+CDP. It needs a development Arcana build and an explicit legacy session
+configuration. For local development, use
 `MANA_ARCANA_CLI` to point at a CLI binary or DLL, or `MANA_ARCANA_DIR` to
 select a source checkout. Startup errors are surfaced to the caller.
 

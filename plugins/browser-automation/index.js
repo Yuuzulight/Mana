@@ -3,6 +3,7 @@ const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
 const { launchArcana, startArcanaPageApi, openArcanaDefaultBrowser, resolveCli, recordEvent } = require("./arcana-engine");
 const { createArcanaPageApiSession } = require("./arcana-page-api-session");
+const { engineVersion: pinnedArcanaEngine } = require("../../tools/arcana.lock.json");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
 const { systemRamPercent, MAX_RAM_PERCENT } = require("../../node-bot/self-work");
@@ -280,9 +281,16 @@ async function setUpTab(page, deps = {}) {
   return { page, session: createBrowserSession({ page, pageHealth: () => ({ ...health }), pageLog: () => log, cursor }) };
 }
 
+function usesArcanaPageApi(deps, env) {
+  if (env.MANA_ARCANA_TRANSPORT === "page-api") return true;
+  return pinnedArcanaEngine.startsWith("folio-") &&
+    env.MANA_BROWSER_ENGINE !== "edge" && env.MANA_BROWSER_HEADLESS !== "0" &&
+    !deps.chromium && !deps.launchArcana;
+}
+
 async function startSession(deps) {
   const env = deps.env || process.env;
-  if (env.MANA_ARCANA_TRANSPORT === "page-api") {
+  if (usesArcanaPageApi(deps, env)) {
     if (env.MANA_BROWSER_ENGINE === "edge" || env.MANA_BROWSER_HEADLESS === "0") {
       throw new Error("The Arcana Page API transport is headless-only; choose the explicit Edge engine for a visible browser.");
     }
@@ -557,7 +565,7 @@ async function takeOver(deps = {}, fallbackUrl = null) {
   opening = true;
   try {
     const env = deps.env || process.env;
-    if (context?.transport === "page-api" || env.MANA_ARCANA_TRANSPORT === "page-api") {
+    if (context?.transport === "page-api" || usesArcanaPageApi(deps, env)) {
       refuseIfLocalOnly("browser handoff", env);
       const target = fallbackUrl || await currentPage()?.url();
       if (!target) throw new Error("There is no web page to open in the default browser.");
