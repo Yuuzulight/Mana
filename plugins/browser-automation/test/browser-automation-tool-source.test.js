@@ -387,6 +387,15 @@ test("#1139: landing on a password page flags it for the user, with a note outsi
   await assert.rejects(() => source.executeTool("browser_automation__type", { ref: "e2", text: "hunter2" }), /so it's the user's to do/);
 });
 
+test("Folio navigation refusal requests handoff for the rejected destination", async () => {
+  const requests = [];
+  const page = createFakePage();
+  page.goto = async () => { throw Object.assign(new Error("Folio refused navigation"), { code: "policy_refused" }); };
+  const source = await approvedSource(undefined, { page, requestHandOver: (reason, _deps, url) => requests.push([reason, url]) });
+  await assert.rejects(source.executeTool("browser_automation__navigate", { url: "https://example.test/login" }), /Folio refused navigation/);
+  assert.deepEqual(requests, [["Arcana cannot open this destination under its navigation policy.", "https://example.test/login"]]);
+});
+
 test("#1154: the first click on a site asks; reading doesn't, and allow once lets one action through", async () => {
   const calls = [];
   const source = await approvedSource(calls);

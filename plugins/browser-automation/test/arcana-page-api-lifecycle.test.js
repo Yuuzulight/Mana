@@ -58,8 +58,9 @@ test('explicit Page API takeover hands the requested URL to the OS browser and c
   try {
     const managed = await plugin.getSession(deps);
     const activeChild = children.at(-1);
+    plugin.requestHandOver('Folio refused navigation', { ...deps, isGaming: () => true }, 'https://example.test/login');
     assert.equal(handoffs.length, 0);
-    await plugin.takeOver(deps, 'https://example.test/login');
+    await plugin.takeOver(deps, 'https://old-page.test/');
     assert.deepEqual(handoffs, ['https://example.test/login']);
     assert.equal(activeChild.exitCode, 0);
     await assert.rejects(managed.snapshot(), /session has closed/);

@@ -68,6 +68,12 @@ let takenOver = null;
 let opening = false;
 let resumeUrl = null;
 let needsYou = null;
+let pendingHandoffUrl = null;
+
+function clearHandOver() {
+  needsYou = null;
+  pendingHandoffUrl = null;
+}
 // #1161: a site test loads images whether or not the panel watches.
 let loadMedia = false;
 let epoch = 0;
@@ -91,7 +97,7 @@ const manualControl = require('./manual-control').createManualControl({
       await Promise.allSettled([...agentActions]);
       if (personalBrowser) {
         await personalBrowser.getSession({ ...deps, sessionId: personalBrowser.sessionId });
-        needsYou = null;
+        clearHandOver();
         return;
       }
       if (starting) await starting;
@@ -102,7 +108,7 @@ const manualControl = require('./manual-control').createManualControl({
       gateDeps = deps;
       lastUsedAt = (deps.now || Date.now)();
       if (/^https?:/i.test(fallbackUrl || '') && await currentPage().url() === 'about:blank') await currentPage().goto(fallbackUrl);
-      needsYou = null;
+      clearHandOver();
     } finally { opening = false; }
   },
   async resume() {
@@ -567,11 +573,11 @@ async function takeOver(deps = {}, fallbackUrl = null) {
     const env = deps.env || process.env;
     if (context?.transport === "page-api" || usesArcanaPageApi(deps, env)) {
       refuseIfLocalOnly("browser handoff", env);
-      const target = fallbackUrl || await currentPage()?.url();
+      const target = pendingHandoffUrl || fallbackUrl || await currentPage()?.url();
       if (!target) throw new Error("There is no web page to open in the default browser.");
       await openArcanaDefaultBrowser(env, target);
       await closeSession();
-      needsYou = null;
+      clearHandOver();
       return;
     }
     let url = currentPage() ? await currentPage().url() : null;
@@ -581,7 +587,7 @@ async function takeOver(deps = {}, fallbackUrl = null) {
     // by automated software" flag, which some sign-in pages refuse.
     const ctx = await launch(deps, { headless: false, viewport: null, ignoreDefaultArgs: ["--enable-automation"] });
     takenOver = ctx;
-    needsYou = null;
+    clearHandOver();
     resumeUrl = url;
     // Closing the window myself counts as Done.
     ctx.on("close", () => takenOver === ctx && (takenOver = null));
@@ -607,10 +613,18 @@ async function handBack() {
 // #1169: a new request also pops a toast with Take over (the launcher's
 // tray feed), except while a game runs: then it just waits in the panel.
 // She never opens the window herself.
-function requestHandOver(reason, deps = gateDeps) {
+function requestHandOver(reason, deps = gateDeps, destination) {
   const text = String(reason || "she needs you").slice(0, 200);
-  if (text === needsYou || takenOver) return;
+  let target = null;
+  if (destination) {
+    try {
+      const url = new URL(destination);
+      if (["http:", "https:"].includes(url.protocol) && !url.username && !url.password) target = url.href;
+    } catch { /* An invalid destination cannot become a handoff target. */ }
+  }
+  if ((text === needsYou && target === pendingHandoffUrl) || takenOver) return;
   needsYou = text;
+  pendingHandoffUrl = target;
   if (deps.isGaming?.()) return;
   (deps.notifyTray || trayNotifier.notifyTray)({ type: "browser-hand-over", title: "Mana needs you in her browser", text }).catch?.(() => {});
 }
@@ -715,7 +729,7 @@ function registerBrowserAutomationRoutes(app, deps = {}) {
 
   app.post("/browser/close", async (req, res) => {
     if (!requireLocal(req, res)) return;
-    needsYou = null;
+    clearHandOver();
     await closeSession();
     return res.json({ ok: true });
   });
@@ -848,6 +862,6 @@ module.exports = {
     offered.clear();
     loadMedia = false;
     resumeUrl = null;
-    needsYou = null;
+    clearHandOver();
   },
 };

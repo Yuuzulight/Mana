@@ -91,7 +91,7 @@ test('real Folio Page API is the default Mana session and navigates and acts on 
     const event = JSON.parse(fs.readFileSync(eventFile, 'utf8').trim().split('\n')[0]);
     assert.equal(event.type, 'arcana_page_api_started');
     assert.equal(event.backend, 'folio');
-    await assert.rejects(session.tab({ do: 'open', url: 'https://example.org' }), /configured allow-origin policy/i);
+    await assert.rejects(session.tab({ do: 'open', url: 'https://example.org' }), { code: 'policy_refused' });
     const opened = await session.tab({ do: 'open', url: 'https://example.com' });
     assert.match(opened.title, /Example Domain/i);
     assert.equal(opened.tabs.length, 2);
