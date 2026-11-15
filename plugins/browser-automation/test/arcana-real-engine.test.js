@@ -80,6 +80,14 @@ test('real Arcana Page API transport is reachable through Mana session entry and
       return { x: 270, y: 115 };
     });
     assert.match(visuallyClicked.text, /PNG-guided click/);
+    const diagnostic = await session.devtools({ do: 'run_js', code: 'document.title' });
+    assert.deepEqual(diagnostic.devtools, ['"Mana Page API session"']);
+    const inspected = await session.devtools({ do: 'look', question: 'Inspect this fixture' }, (image, question) => {
+      assert.match(image, /^data:image\/png;base64,/);
+      assert.equal(question, 'Inspect this fixture');
+      return 'Fixture inspected';
+    });
+    assert.deepEqual(inspected.devtools, ['Fixture inspected']);
     assert.ok((await session.screenshot()).length > 50);
     const event = JSON.parse(fs.readFileSync(eventFile, 'utf8').trim().split('\n')[0]);
     assert.equal(event.type, 'arcana_page_api_started');
@@ -149,6 +157,7 @@ test('real Folio Page API retains the tab through embedded manual control', { sk
     await call('done', {}, token);
     const resumed = await plugin.getSession(deps);
     assert.match((await resumed.snapshot()).text, /Manual Folio input/);
+    await assert.rejects(resumed.devtools({ do: 'run_js', code: 'document.title' }), /a password/);
   } finally {
     await plugin.closeSession();
     server.closeAllConnections();

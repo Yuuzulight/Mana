@@ -1,4 +1,4 @@
-const { findElements, pageKey, sensitiveInPage } = require('./browser-automation');
+const { findElements, pageKey, sensitiveInPage, formatJsResult } = require('./browser-automation');
 const SENSITIVE_CHECK = `(${sensitiveInPage.toString()})()`;
 
 function unsupported(name) {
@@ -99,12 +99,26 @@ function createArcanaPageApiSession(client, pageId) {
     await client.clickAt(pageId, point.x, point.y);
     return { ...(await afterAction()), clickedAt: point };
   }
+  async function devtools(args = {}, look) {
+    if (args.do !== 'run_js' && args.do !== 'look') unsupported(`Devtools ${String(args.do || 'action')}`);
+    await sensitiveGuard();
+    const { url, title } = await getSnapshot();
+    if (args.do === 'run_js') {
+      const code = String(args.code || '').trim();
+      if (!code) throw new Error('code is required: a JavaScript expression to run on the page');
+      const value = await client.evaluate(pageId, code);
+      return { url, title, what: 'Result', devtools: [formatJsResult(value)] };
+    }
+    if (!look) throw new Error("looking at the page isn't available right now");
+    const png = await screenshot();
+    const seen = await look(`data:image/png;base64,${png}`, String(args.question || "Describe this page's layout and anything that looks broken."));
+    return { url, title, what: 'What she sees', devtools: [String(seen || '')] };
+  }
   return {
-    navigate, snapshot, find, click, type, select, press, scroll, back, screenshot, lookAndClick,
+    navigate, snapshot, find, click, type, select, press, scroll, back, screenshot, lookAndClick, devtools,
     url: async () => (await getSnapshot()).url,
     hover: () => unsupported('Hover'), drag: () => unsupported('Drag'), upload: () => unsupported('Upload'),
     testPage: () => unsupported('Site testing'),
-    devtools: () => unsupported('Devtools'),
   };
 }
 

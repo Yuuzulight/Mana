@@ -501,13 +501,7 @@ function createBrowserSession(options = {}) {
       const code = String(args.code || "").trim();
       if (!code) throw new Error("code is required: a JavaScript expression to run on the page");
       const value = await acting(() => page.evaluate(code));
-      let shown;
-      try {
-        shown = JSON.stringify(value) ?? "undefined";
-      } catch (e) {
-        shown = String(value);
-      }
-      return { url, title, what: "Result", devtools: [shown.slice(0, MAX_JS_RESULT_CHARS)] };
+      return { url, title, what: "Result", devtools: [formatJsResult(value)] };
     }
     if (args.do === "viewport") {
       const size = VIEWPORTS[args.size];
@@ -608,6 +602,11 @@ function createBrowserSession(options = {}) {
   return { navigate, click, type, select, scroll, hover, press, drag, upload, lookAndClick, devtools, testPage, back, find, snapshot, screenshot, url: () => page.url() };
 }
 
+function formatJsResult(value) {
+  try { return (JSON.stringify(value) ?? "undefined").slice(0, MAX_JS_RESULT_CHARS); }
+  catch { return String(value).slice(0, MAX_JS_RESULT_CHARS); }
+}
+
 module.exports = {
   MAX_PAGE_TEXT_CHARS,
   MAX_ELEMENTS,
@@ -622,4 +621,5 @@ module.exports = {
   VIEWPORTS,
   drawCursorInPage,
   clearCursorInPage,
+  formatJsResult,
 };
