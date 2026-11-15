@@ -764,6 +764,17 @@ test("explicit Arcana handoff opens the OS browser without launching a managed s
   }]);
 });
 
+test("managed browser health checks the Arcana installation instead of the desktop browser", () => {
+  const status = browserAutomationPlugin.getHealth({ env: { MANA_ARCANA_CLI: __filename } });
+  assert.equal(status.configured, true);
+  assert.match(status.message, /browser-automation-capability\.test\.js/);
+  const missing = browserAutomationPlugin.getHealth({
+    env: { MANA_ARCANA_CLI: `${__filename}.missing`, MANA_BROWSER_EXECUTABLE_PATH: __filename },
+  });
+  assert.equal(missing.configured, false);
+  assert.match(missing.message, /install-arcana/);
+});
+
 test("the default Arcana CLI must match the checked-in runtime pin; explicit dev overrides remain available", () => {
   const fs = require("node:fs");
   const os = require("node:os");

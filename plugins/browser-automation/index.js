@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
-const { launchArcana, startArcanaPageApi, openArcanaDefaultBrowser, recordEvent } = require("./arcana-engine");
+const { launchArcana, startArcanaPageApi, openArcanaDefaultBrowser, resolveCli, recordEvent } = require("./arcana-engine");
 const { createArcanaPageApiSession } = require("./arcana-page-api-session");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
@@ -293,6 +293,9 @@ async function startSession(deps) {
     const api = await startArcanaPageApi(env, {
       storageDir: path.join(profileDir, "arcana"),
       allowedOrigins: deps.arcanaAllowedOrigins || [],
+    }).catch(error => {
+      recordEvent(eventsFile, "arcana_start_failed", { transport: "page-api", reason: String(error.message) });
+      throw error;
     });
     let intentionalClose = false;
     let childExited = false;
@@ -349,6 +352,7 @@ async function startSession(deps) {
     } catch (error) {
       intentionalClose = true;
       await api.stop();
+      recordEvent(eventsFile, "arcana_start_failed", { transport: "page-api", reason: String(error.message) });
       throw error;
     }
     recordEvent(eventsFile, "arcana_page_api_started", { backend: api.backend });
@@ -788,7 +792,7 @@ module.exports = {
   category: "Web",
   defaultEnabled: true,
   description:
-    "Navigate/click/type/read a live page in Arcana (Edge only for explicit user fallback or Take over) -- for driving a specific site interaction, not general search-and-extract (see web-access.js for that). Local-only routes.",
+    "Navigate, click, type, and read a live page in Arcana. Local-only routes.",
   registerRoutes: registerBrowserAutomationRoutes,
   // Issue #188: exported so the tool-calling adapter
   // (browser-automation-tool-source.js) shares this exact singleton
@@ -797,13 +801,15 @@ module.exports = {
   getSession,
   getHealth: (deps = {}) => {
     const env = deps.env || process.env;
-    const executablePath = resolveExecutablePath(env);
+    const useArcana = env.MANA_BROWSER_ENGINE !== "edge" && env.MANA_BROWSER_HEADLESS !== "0";
+    const executablePath = useArcana ? resolveCli(env) : resolveExecutablePath(env);
     return {
       status: executablePath ? "configured" : "unavailable",
       configured: Boolean(executablePath),
       message: executablePath
         ? `Browser automation ready (${executablePath})`
-        : "No browser executable found -- set MANA_BROWSER_EXECUTABLE_PATH, or install Edge/Chrome",
+        : useArcana ? "Arcana is unavailable. Run tools/install-arcana.ps1."
+          : "No browser executable found. Set MANA_BROWSER_EXECUTABLE_PATH or install Edge/Chrome.",
     };
   },
   resolveExecutablePath,
