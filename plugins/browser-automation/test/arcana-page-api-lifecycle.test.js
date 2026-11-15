@@ -5,8 +5,10 @@ const enginePath = require.resolve('../arcana-engine');
 const engine = require('../arcana-engine');
 let starts = 0;
 const children = [];
+const handoffs = [];
 require.cache[enginePath].exports = {
   ...engine,
+  async openArcanaDefaultBrowser(_env, url) { handoffs.push(url); },
   async startArcanaPageApi() {
     starts += 1;
     const child = new EventEmitter();
@@ -42,6 +44,26 @@ test('unexpected Arcana Page API exit invalidates the cached session and next ca
     const restarted = await plugin.getSession(deps);
     assert.equal((await restarted.snapshot()).title, 'Page page-2');
     assert.equal(starts, 2);
+  } finally {
+    await plugin.closeSession();
+  }
+});
+
+test('explicit Page API takeover hands the requested URL to the OS browser and closes the managed session', async () => {
+  const deps = {
+    env: { MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: require('node:os').tmpdir() },
+    ramPercent: () => 20, isGaming: () => false,
+  };
+  plugin._resetForTests();
+  try {
+    const managed = await plugin.getSession(deps);
+    const activeChild = children.at(-1);
+    assert.equal(handoffs.length, 0);
+    await plugin.takeOver(deps, 'https://example.test/login');
+    assert.deepEqual(handoffs, ['https://example.test/login']);
+    assert.equal(activeChild.exitCode, 0);
+    await assert.rejects(managed.snapshot(), /session has closed/);
+    assert.deepEqual(plugin.takeOverStatus(), { active: false, needsYou: null });
   } finally {
     await plugin.closeSession();
     require.cache[enginePath].exports = engine;

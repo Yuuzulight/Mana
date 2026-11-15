@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { createBrowserSession } = require("./browser-automation");
-const { launchArcana, startArcanaPageApi, recordEvent } = require("./arcana-engine");
+const { launchArcana, startArcanaPageApi, openArcanaDefaultBrowser, recordEvent } = require("./arcana-engine");
 const { createArcanaPageApiSession } = require("./arcana-page-api-session");
 const { isAdHost } = require("./ad-hosts");
 const { refuseIfLocalOnly } = require("../../node-bot/local-only");
@@ -524,6 +524,16 @@ async function takeOver(deps = {}, fallbackUrl = null) {
   if (takenOver || opening) return;
   opening = true;
   try {
+    const env = deps.env || process.env;
+    if (context?.transport === "page-api" || env.MANA_ARCANA_TRANSPORT === "page-api") {
+      refuseIfLocalOnly("browser handoff", env);
+      const target = fallbackUrl || await currentPage()?.url();
+      if (!target) throw new Error("There is no web page to open in the default browser.");
+      await openArcanaDefaultBrowser(env, target);
+      await closeSession();
+      needsYou = null;
+      return;
+    }
     let url = currentPage() ? await currentPage().url() : null;
     if (!/^https?:/i.test(url || "")) url = /^https?:/i.test(fallbackUrl || "") ? fallbackUrl : null;
     await closeSession();
