@@ -78,11 +78,32 @@ function createArcanaPageApiSession(client, pageId) {
   }
   async function back() { await client.back(pageId); return snapshot(); }
   async function screenshot() { return (await client.screenshot(pageId, { format: 'png' })).toString('base64'); }
+  async function lookAndClick(description, locate) {
+    await sensitiveGuard();
+    const frame = await client.screenshot(pageId, { format: 'png' });
+    if (frame.length < 24 || frame.toString('hex', 0, 8) !== '89504e470d0a1a0a') {
+      throw new Error('Arcana did not return a valid PNG frame');
+    }
+    const width = frame.readUInt32BE(16);
+    const height = frame.readUInt32BE(20);
+    const point = await locate(`data:image/png;base64,${frame.toString('base64')}`, width, height);
+    if (!point) throw new Error(`she couldn't see "${description}" on the page`);
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y) ||
+      point.x < 0 || point.x >= width || point.y < 0 || point.y >= height) {
+      throw new Error('the selected point is outside the screenshot');
+    }
+    if (!frame.equals(await client.screenshot(pageId, { format: 'png' }))) {
+      throw new Error('the page changed while she was looking at it; try again');
+    }
+    await sensitiveGuard();
+    await client.clickAt(pageId, point.x, point.y);
+    return { ...(await afterAction()), clickedAt: point };
+  }
   return {
-    navigate, snapshot, find, click, type, select, press, scroll, back, screenshot,
+    navigate, snapshot, find, click, type, select, press, scroll, back, screenshot, lookAndClick,
     url: async () => (await getSnapshot()).url,
     hover: () => unsupported('Hover'), drag: () => unsupported('Drag'), upload: () => unsupported('Upload'),
-    lookAndClick: () => unsupported('Vision-guided click'), testPage: () => unsupported('Site testing'),
+    testPage: () => unsupported('Site testing'),
     devtools: () => unsupported('Devtools'),
   };
 }

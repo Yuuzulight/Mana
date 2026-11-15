@@ -60,7 +60,8 @@ test('real Arcana Page API transport is reachable through Mana session entry and
   const deps = {
     env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventFile, MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
     arcanaAllowedOrigins: ['https://example.com'],
-    arcanaPageApiInitialHtml: '<!doctype html><title>Mana Page API session</title><label for="q">Query</label><input id="q"><button onclick="result.textContent=q.value">Apply</button><p id="result">Ready</p>',
+    arcanaPageApiInitialHtml: '<!doctype html><title>Mana Page API session</title><label for="q">Query</label><input id="q">'
+      + '<button style="position:absolute;left:250px;top:100px;width:100px;height:30px" onclick="result.textContent=q.value">Apply</button><p id="result">Ready</p>',
     ramPercent: () => 50, isGaming: () => false,
   };
   plugin._resetForTests();
@@ -72,6 +73,13 @@ test('real Arcana Page API transport is reachable through Mana session entry and
     await session.type(ref('textbox'), 'API action');
     const changed = await session.click(ref('button'));
     assert.match(changed.text, /API action/);
+    await session.type(ref('textbox'), 'PNG-guided click');
+    const visuallyClicked = await session.lookAndClick('Apply button', (image, width, height) => {
+      assert.match(image, /^data:image\/png;base64,/);
+      assert.ok(width > 270 && height > 115);
+      return { x: 270, y: 115 };
+    });
+    assert.match(visuallyClicked.text, /PNG-guided click/);
     assert.ok((await session.screenshot()).length > 50);
     const event = JSON.parse(fs.readFileSync(eventFile, 'utf8').trim().split('\n')[0]);
     assert.equal(event.type, 'arcana_page_api_started');
@@ -81,11 +89,11 @@ test('real Arcana Page API transport is reachable through Mana session entry and
     assert.equal(opened.tabs.length, 2);
     assert.match(opened.tabs[1], /\(current\)$/);
     const first = await session.tab({ do: 'switch', number: 1 });
-    assert.match(first.text, /API action/);
+    assert.match(first.text, /PNG-guided click/);
     assert.match(first.tabs[0], /\(current\)$/);
     const afterClose = await session.tab({ do: 'close', number: 2 });
     assert.equal(afterClose.tabs, undefined);
-    assert.match(afterClose.text, /API action/);
+    assert.match(afterClose.text, /PNG-guided click/);
     const navigated = await session.navigate('https://example.com');
     assert.match(navigated.url, /^https:\/\/example\.com\//i);
     assert.match(navigated.title, /Example Domain/i);

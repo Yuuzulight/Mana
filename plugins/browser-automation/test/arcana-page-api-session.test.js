@@ -67,3 +67,19 @@ test('Page API session acts only on references in its latest snapshot', async ()
   await assert.rejects(session.click('e1'), /isn't a ref from the latest page snapshot/);
   assert.equal(client.calls.some(call => call[0] === 'click'), false);
 });
+
+test('Page API vision click rejects a changed frame before acting', async () => {
+  const png = Buffer.alloc(25);
+  Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+  png.writeUInt32BE(640, 16);
+  png.writeUInt32BE(480, 20);
+  const changed = Buffer.from(png);
+  changed[24] = 1;
+  let screenshots = 0;
+  const client = clientFor({
+    async screenshot() { return screenshots++ === 0 ? png : changed; },
+    async clickAt() { assert.fail('changed frame should not be clicked'); },
+  });
+  const session = createArcanaPageApiSession(client, 'page-1');
+  await assert.rejects(session.lookAndClick('button', () => ({ x: 10, y: 20 })), /page changed/);
+});
