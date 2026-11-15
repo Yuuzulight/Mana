@@ -16,7 +16,7 @@ $Destination = [IO.Path]::GetFullPath($Destination)
 $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $source = [IO.Path]::GetFullPath((Join-Path $temporaryRoot ('mana-arcana-install-' + [guid]::NewGuid().ToString('N'))))
 try {
-    & git clone --quiet --filter=blob:none --no-checkout $Repo $source
+    & git clone --quiet --no-checkout $Repo $source
     if ($LASTEXITCODE -ne 0) { throw 'Could not clone Arcana.' }
     & git -C $source config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
     & git -C $source fetch --quiet origin
