@@ -112,7 +112,7 @@ async function startArcana(env, { storageDir, spawnFn = spawn } = {}) {
   return { endpoint: `http://127.0.0.1:${port}`, stop, child };
 }
 
-async function startArcanaPageApi(env, { storageDir, allowedOrigins = [] } = {}) {
+async function startArcanaPageApi(env, { storageDir, allowedOrigins } = {}) {
   const cli = resolveCli(env);
   if (!cli) throw new Error("The pinned Arcana install isn't available. Run tools/install-arcana.ps1.");
   const managed = /\.dll$/i.test(cli);
@@ -120,7 +120,8 @@ async function startArcanaPageApi(env, { storageDir, allowedOrigins = [] } = {})
   args.push("api", "--port=0", `--arcana-parent-pid=${process.pid}`);
   if (storageDir) args.push(`--profile=${storageDir}`);
   if (env.MANA_ARCANA_ALLOW_PRIVATE_NETWORK === "1") args.push("--allow-private-network");
-  for (const origin of allowedOrigins) args.push(`--folio-allow-origin=${origin}`);
+  const destinations = allowedOrigins ?? (env.MANA_ARCANA_ALLOWED_ORIGINS || "").split(/\s+/).filter(Boolean);
+  for (const destination of destinations) args.push(`--folio-allow-origin=${destination}`);
 
   const child = spawn(managed ? (env.MANA_DOTNET_PATH || "dotnet") : cli, args, {
     stdio: ["ignore", "pipe", "pipe"], windowsHide: true,

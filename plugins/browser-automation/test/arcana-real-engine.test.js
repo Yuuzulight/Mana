@@ -58,8 +58,7 @@ test('real Arcana Page API transport is reachable through Mana session entry and
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-arcana-page-session-'));
   const eventFile = path.join(temporary, 'arcana-events.jsonl');
   const deps = {
-    env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventFile, MANA_ARCANA_ALLOW_PRIVATE_NETWORK: '1' },
-    arcanaAllowedOrigins: ['https://example.com'],
+    env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'), MANA_ARCANA_EVENTS_FILE: eventFile, MANA_ARCANA_ALLOWED_ORIGINS: ' https://example.com\nhttps://example.net/allowed  ' },
     arcanaPageApiInitialHtml: '<!doctype html><title>Mana Page API session</title><label for="q">Query</label><input id="q">'
       + '<button style="position:absolute;left:250px;top:100px;width:100px;height:30px" onclick="result.textContent=q.value">Apply</button><p id="result">Ready</p>',
     ramPercent: () => 50, isGaming: () => false,
@@ -92,6 +91,7 @@ test('real Arcana Page API transport is reachable through Mana session entry and
     const event = JSON.parse(fs.readFileSync(eventFile, 'utf8').trim().split('\n')[0]);
     assert.equal(event.type, 'arcana_page_api_started');
     assert.equal(event.backend, 'folio');
+    await assert.rejects(session.tab({ do: 'open', url: 'https://example.org' }), /configured allow-origin policy/i);
     const opened = await session.tab({ do: 'open', url: 'https://example.com' });
     assert.match(opened.title, /Example Domain/i);
     assert.equal(opened.tabs.length, 2);

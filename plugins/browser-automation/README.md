@@ -6,34 +6,31 @@ already has a session for), not general search-and-extract (that's
 `web-access.js`'s job and stays untouched). On by default; switch it off in
 Settings > Plugins.
 
-## Engine: Arcana first, Edge for Take over
+## Folio Page API release candidate
 
-Her browser is [Arcana](https://github.com/Yuuzulight/Arcana) (Obscura inside):
-`arcana-engine.js` runs its `serve` endpoint on a free loopback port and
-Playwright attaches over CDP, so everything below works unchanged. Headless
-only, with private-network pages off and local storage kept in
-`browser-profile/arcana`. The normal headless path uses only the installed
-Arcana runtime whose manifest matches the commit and engine version pinned in
-`tools/arcana.lock.json`. Edge opens for a visible user takeover or when
-explicitly selected with `MANA_BROWSER_ENGINE=edge`. If the pinned install is
-missing or won't start, the headless automation request fails visibly instead
-of switching to Edge. Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
-`tools/arcana.lock.json` (the CLI, plus the engine built from its pinned source commit; needs git,
-.NET 10 and a Rust toolchain) into
-`node-bot/runtime/arcana`. For development only, point `MANA_ARCANA_CLI` at an
-`Arcana.Cli.dll`, or explicitly set `MANA_ARCANA_DIR` to a checkout containing
-a Release or Debug build. Set
-`MANA_ARCANA_ALLOW_PRIVATE_NETWORK=1` to let pages reach localhost and LAN
-hosts, for example a dev server (off by default).
+Install the pinned Windows x64 runtime with `tools/install-arcana.ps1`. It
+builds Arcana and the Folio content host from their pinned source revisions
+and installs them under `node-bot/runtime/arcana`. Building requires Git,
+the .NET 10 SDK, and Windows C++ build tools.
 
-Every engine choice is appended to `arcana-events.jsonl` in the browser profile
-(or `MANA_ARCANA_EVENTS_FILE`): `arcana_started`, `arcana_start_failed`,
-`arcana_disconnected` (Arcana died unasked) and `edge_requested` (Take over or
-`MANA_BROWSER_ENGINE=edge`). `tools/m2-fallback-report.ps1` summarises the last
-72 hours for Arcana's M2 exit, with no unexplained fallback to Edge. It reports
-`insufficient_observation` until the log is three days old and Arcana has
-started at least five times in it (`-MinStarts`), so an empty or new log is never
-read as a clean observation window.
+Set `MANA_ARCANA_TRANSPORT=page-api` to test the staged Folio session. Set
+`MANA_ARCANA_ALLOWED_ORIGINS` to a whitespace-separated list of HTTPS origins
+or path prefixes in the Mana process environment. Arcana enforces the list
+for navigation. With an empty list, the broker can render local fixtures and
+blank tabs. Explicit handoff opens the URL in the OS default browser.
+
+The staged transport remains opt-in while full Page API parity is under test.
+
+## Legacy transport during migration
+
+The legacy headless path uses Arcana's `serve` endpoint and Playwright over
+CDP. It needs a development Arcana build with that command. Use the staged
+Page API transport with the Folio-only runtime. For local development, use
+`MANA_ARCANA_CLI` to point at a CLI binary or DLL, or `MANA_ARCANA_DIR` to
+select a source checkout. Startup errors are surfaced to the caller.
+
+Browser lifecycle events are appended to `arcana-events.jsonl` in the
+browser profile, or the path in `MANA_ARCANA_EVENTS_FILE`.
 
 ## Explicit Edge fallback
 

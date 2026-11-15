@@ -292,7 +292,7 @@ async function startSession(deps) {
     refuseIfLocalOnly("browser automation", env);
     const api = await startArcanaPageApi(env, {
       storageDir: path.join(profileDir, "arcana"),
-      allowedOrigins: deps.arcanaAllowedOrigins || [],
+      allowedOrigins: deps.arcanaAllowedOrigins,
     }).catch(error => {
       recordEvent(eventsFile, "arcana_start_failed", { transport: "page-api", reason: String(error.message) });
       throw error;
