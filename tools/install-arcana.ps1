@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([string]$Repo, [string]$Destination)
+param(
+    [string]$Repo,
+    [string]$Destination,
+    [string]$FolioRepo = 'https://github.com/Yuuzulight/Folio.git'
+)
 $ErrorActionPreference = 'Stop'
 $pin = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'arcana.lock.json') -Raw | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = $pin.repository }
@@ -12,11 +16,31 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not clone Arcana.' }
     & git -C $source -c advice.detachedHead=false checkout --quiet $pin.commit
     if ($LASTEXITCODE -ne 0) { throw 'Could not check out the pinned Arcana commit.' }
-    $enginePin = Get-Content -LiteralPath (Join-Path $source 'engine.lock.json') -Raw | ConvertFrom-Json
-    if ($enginePin.version -ne $pin.engineVersion) { throw 'Arcana engine version disagrees with the Mana pin.' }
+    $folioCommit = $null
+    if ($pin.engineVersion -cmatch '^folio-([0-9a-f]{40})$') {
+        $folioCommit = $Matches[1]
+        $folioSource = Join-Path $source 'folio-source'
+        & git clone --quiet --no-checkout $FolioRepo $folioSource
+        if ($LASTEXITCODE -ne 0) { throw 'Could not clone Folio.' }
+        & git -C $folioSource -c advice.detachedHead=false checkout --quiet $folioCommit
+        if ($LASTEXITCODE -ne 0) { throw "Could not check out the pinned Folio commit $folioCommit." }
+    } else {
+        $enginePin = Get-Content -LiteralPath (Join-Path $source 'engine.lock.json') -Raw | ConvertFrom-Json
+        if ($enginePin.version -ne $pin.engineVersion) { throw 'Arcana engine version disagrees with the Mana pin.' }
+    }
     & dotnet publish (Join-Path $source 'src\Arcana.Cli\Arcana.Cli.csproj') --configuration Release --output $Destination
     if ($LASTEXITCODE -ne 0) { throw 'Arcana publish failed. Close any running Arcana session before retrying.' }
-    & (Join-Path $source 'tools\fetch-engine.ps1') -Destination (Join-Path $Destination 'engines\obscura\current')
+    if ($folioCommit) {
+        $folioDestination = Join-Path $Destination 'engines\folio\current'
+        & (Join-Path $folioSource 'tools\publish-content-host.ps1') -Destination $folioDestination -Runtime win-x64
+        $manifest = Get-Content -LiteralPath (Join-Path $folioDestination 'native-build.json') -Raw | ConvertFrom-Json
+        $brokerHash = (Get-FileHash -LiteralPath (Join-Path $folioDestination 'Folio.ContentHost.exe')).Hash.ToLowerInvariant()
+        if ($manifest.sourceCommit -cne $folioCommit -or $manifest.sourceDirty -ne $false -or $manifest.executableSha256 -cne $brokerHash) {
+            throw 'The installed Folio broker did not match the pinned source and build manifest.'
+        }
+    } else {
+        & (Join-Path $source 'tools\fetch-engine.ps1') -Destination (Join-Path $Destination 'engines\obscura\current')
+    }
     Copy-Item -LiteralPath (Join-Path $source 'NOTICE') -Destination (Join-Path $Destination 'NOTICE')
     Copy-Item -LiteralPath (Join-Path $source 'LICENSE') -Destination (Join-Path $Destination 'LICENSE')
     $pin | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Destination 'arcana-install.json')
