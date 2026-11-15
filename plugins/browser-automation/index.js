@@ -295,44 +295,50 @@ async function startSession(deps) {
       storageDir: path.join(profileDir, "arcana"),
       allowedOrigins: deps.arcanaAllowedOrigins || [],
     });
-    let closed = false;
     let intentionalClose = false;
     let childExited = false;
-    let created;
-    const apiContext = { transport: "page-api" };
+    const pages = new Set();
+    async function createTab(options) {
+      const { pageId } = await api.client.createPage("about:blank", options);
+      const page = {
+        title: async () => (await api.client.snapshot(pageId)).title,
+        url: async () => (await api.client.snapshot(pageId)).url,
+        close: async () => {
+          if (pages.delete(page)) await api.client.closePage(pageId);
+        },
+      };
+      pages.add(page);
+      return { page, session: createArcanaPageApiSession(api.client, pageId) };
+    }
+    const apiContext = {
+      transport: "page-api",
+      pages: () => [...pages],
+      createTab,
+      async close() {
+        intentionalClose = true;
+        await Promise.allSettled([...pages].map(page => page.close()));
+        await api.stop();
+      },
+    };
     api.child.once("exit", (code, signal) => {
       childExited = true;
       if (intentionalClose) return;
       recordEvent(eventsFile, "arcana_disconnected", { code, signal });
       if (context === apiContext) forget();
     });
+    let initialTab;
     try {
       // Internal fixture seam for real-engine tests; caller-provided chat text is never treated as HTML.
-      created = await api.client.createPage("about:blank", deps.arcanaPageApiInitialHtml === undefined ? {} : { html: String(deps.arcanaPageApiInitialHtml) });
+      initialTab = await createTab(deps.arcanaPageApiInitialHtml === undefined ? {} : { html: String(deps.arcanaPageApiInitialHtml) });
       if (childExited || api.child.exitCode !== null) throw new Error("Arcana exited while the Page API session was starting");
     } catch (error) {
       intentionalClose = true;
       await api.stop();
       throw error;
     }
-    const pageId = created.pageId;
-    const page = {
-      title: async () => (await api.client.snapshot(pageId)).title,
-      url: async () => (await api.client.snapshot(pageId)).url,
-      close: async () => { if (!closed) { closed = true; await api.client.closePage(pageId).catch(() => {}); } },
-    };
-    Object.assign(apiContext, {
-      pages: () => closed ? [] : [page],
-      newPage: async () => { throw new Error("Opening additional tabs is not supported by the Arcana Page API transport yet"); },
-      close: async () => {
-        intentionalClose = true;
-        await page.close();
-        await api.stop();
-      },
-    });
     recordEvent(eventsFile, "arcana_page_api_started", { backend: api.backend });
     context = apiContext;
-    tabs = [{ page, session: createArcanaPageApiSession(api.client, pageId) }];
+    tabs = [initialTab];
     current = 0;
     session = tabbedSession(deps);
     checkTimer = setInterval(checkSession, CHECK_EVERY_MS);
@@ -371,6 +377,7 @@ function tabbedSession(deps) {
   const generation = epoch;
   const env = deps.env || process.env;
   const maxTabs = Math.min(5, Math.max(1, Math.floor(Number(env.MANA_BROWSER_MAX_TABS)) || DEFAULT_MAX_TABS));
+  let openingTabs = 0;
 
   async function withTabs(result) {
     if (tabs.length < 2) return result;
@@ -386,18 +393,24 @@ function tabbedSession(deps) {
 
   async function open(url) {
     if (tabs.length >= maxTabs) throw new Error(`${tabs.length} tabs are open, the most she may have; close one first`);
+    if (tabs.length + openingTabs >= maxTabs) throw new Error("The remaining tab slots are opening; wait before opening another");
     // The RAM gate applies to every tab she adds.
     const blocked = blocker(gateDeps);
     if (blocked) throw new Error(`no new tab while ${blocked}`);
-    const tab = await setUpTab(await context.newPage(), deps);
+    openingTabs += 1;
+    let tab;
     try {
+      tab = owner.transport === "page-api" ? await owner.createTab() : await setUpTab(await owner.newPage(), deps);
       const result = await tab.session.navigate(url);
+      if (context !== owner || epoch !== generation) throw new Error("this browser session has closed; obtain a fresh session");
       tabs.push(tab);
       current = tabs.length - 1;
       return withTabs(result);
     } catch (e) {
-      await tab.page.close().catch(() => {});
+      await tab?.page.close().catch(() => {});
       throw e;
+    } finally {
+      openingTabs -= 1;
     }
   }
 

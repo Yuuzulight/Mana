@@ -76,6 +76,16 @@ test('real Arcana Page API transport is reachable through Mana session entry and
     const event = JSON.parse(fs.readFileSync(eventFile, 'utf8').trim().split('\n')[0]);
     assert.equal(event.type, 'arcana_page_api_started');
     assert.equal(event.backend, 'folio');
+    const opened = await session.tab({ do: 'open', url: 'https://example.com' });
+    assert.match(opened.title, /Example Domain/i);
+    assert.equal(opened.tabs.length, 2);
+    assert.match(opened.tabs[1], /\(current\)$/);
+    const first = await session.tab({ do: 'switch', number: 1 });
+    assert.match(first.text, /API action/);
+    assert.match(first.tabs[0], /\(current\)$/);
+    const afterClose = await session.tab({ do: 'close', number: 2 });
+    assert.equal(afterClose.tabs, undefined);
+    assert.match(afterClose.text, /API action/);
     const navigated = await session.navigate('https://example.com');
     assert.match(navigated.url, /^https:\/\/example\.com\//i);
     assert.match(navigated.title, /Example Domain/i);
