@@ -38,8 +38,9 @@ function createManualControl({ prepare, getContext, getPage, resume, touch = () 
     const page = getPage();
     const viewport = await viewportOf(page);
     const image = await page.screenshot({ type: 'jpeg', quality: 80, timeout: 10000 });
+    const url = await page.url();
     if (requireOwner(token) !== current) throw new Error('Manual browser ownership changed');
-    return { image: image.toString('base64'), width: viewport.width, height: viewport.height, url: page.url() };
+    return { image: image.toString('base64'), width: viewport.width, height: viewport.height, url };
   }
 
   async function input(token, command = {}) {

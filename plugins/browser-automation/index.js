@@ -93,7 +93,6 @@ const manualControl = require('./manual-control').createManualControl({
         needsYou = null;
         return;
       }
-      if (context?.transport === "page-api") throw new Error("Embedded manual control is not supported by the Arcana Page API transport yet; use the browser handoff.");
       if (starting) await starting;
       if (!context) {
         starting ||= startSession({ ...deps, env: { ...(deps.env || process.env), MANA_BROWSER_HEADLESS: '1' } }).finally(() => { starting = null; });
@@ -101,7 +100,7 @@ const manualControl = require('./manual-control').createManualControl({
       }
       gateDeps = deps;
       lastUsedAt = (deps.now || Date.now)();
-      if (/^https?:/i.test(fallbackUrl || '') && currentPage().url() === 'about:blank') await currentPage().goto(fallbackUrl);
+      if (/^https?:/i.test(fallbackUrl || '') && await currentPage().url() === 'about:blank') await currentPage().goto(fallbackUrl);
       needsYou = null;
     } finally { opening = false; }
   },
@@ -303,6 +302,21 @@ async function startSession(deps) {
       const page = {
         title: async () => (await api.client.snapshot(pageId)).title,
         url: async () => (await api.client.snapshot(pageId)).url,
+        goto: url => api.client.navigate(pageId, url),
+        viewportSize: () => null,
+        evaluate: (fn, arg) => api.client.evaluate(pageId, `(${fn.toString()})(${arg === undefined ? "" : JSON.stringify(arg)})`),
+        screenshot: () => api.client.screenshot(pageId, { format: "png" }),
+        mouse: {
+          click(x, y, { button, clickCount }) {
+            if (button !== "left" || clickCount !== 1) throw new Error("Folio manual control supports a single left click");
+            return api.client.clickAt(pageId, x, y);
+          },
+          wheel: (x, y) => api.client.mouseWheel(pageId, x, y),
+        },
+        keyboard: {
+          insertText: text => api.client.typeText(pageId, text),
+          press: key => api.client.press(pageId, key),
+        },
         close: async () => {
           if (pages.delete(page)) await api.client.closePage(pageId);
         },

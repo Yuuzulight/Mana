@@ -95,6 +95,55 @@ test('real Arcana Page API transport is reachable through Mana session entry and
   }
 });
 
+test('real Folio Page API retains the tab through embedded manual control', { skip: !real, timeout: 30000 }, async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-folio-manual-'));
+  const deps = {
+    env: { ...process.env, MANA_ARCANA_TRANSPORT: 'page-api', MANA_BROWSER_PROFILE_DIR: temporary },
+    arcanaPageApiInitialHtml: '<!doctype html><title>Folio manual input</title>'
+      + '<input id="name" aria-label="Name" style="position:absolute;left:20px;top:20px;width:140px;height:30px">'
+      + '<p id="status">Ready</p><script>const input = document.querySelector("input");'
+      + 'input.addEventListener("input", () => document.querySelector("#status").textContent = input.value)</script>',
+    ramPercent: () => 50, isGaming: () => false, isLocalRestartRequest: () => true,
+  };
+  plugin._resetForTests();
+  const app = express();
+  app.use(express.json());
+  plugin.registerRoutes(app, deps);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}/browser/manual`;
+  async function call(route, body, token) {
+    const response = await fetch(`${base}/${route}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', ...(token && { 'x-mana-manual-token': token }) },
+      body: body && JSON.stringify(body),
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    return result;
+  }
+  try {
+    const agent = await plugin.getSession(deps);
+    const { token } = await call('start', {});
+    await assert.rejects(agent.snapshot(), /user has the browser/);
+    const frame = await call('frame', null, token);
+    assert.equal(frame.url, 'about:blank');
+    assert.deepEqual(Buffer.from(frame.image, 'base64').subarray(0, 8), Buffer.from('89504e470d0a1a0a', 'hex'));
+    await call('input', { action: 'click', x: 45, y: 35 }, token);
+    await call('input', { action: 'text', text: 'Manual Folio input' }, token);
+    await call('input', { action: 'key', key: 'Tab' }, token);
+    await call('input', { action: 'scroll', dy: 100 }, token);
+    await call('done', {}, token);
+    const resumed = await plugin.getSession(deps);
+    assert.match((await resumed.snapshot()).text, /Manual Folio input/);
+  } finally {
+    await plugin.closeSession();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test('real Arcana: actions, local storage across a restart, and the engine is gone after close', { skip: !real, timeout: 90000 }, async () => {
   const env = {
     ...process.env,
