@@ -6,12 +6,27 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const { once } = require('node:events');
 const plugin = require('../index');
-const { resolveCli } = require('../arcana-engine');
+const { resolveCli, startArcanaPageApi } = require('../arcana-engine');
 const express = require('../../../node-bot/node_modules/express');
 
 const real = process.env.MANA_ARCANA_TEST_REAL === '1';
 const signinSpikes = process.env.MANA_ARCANA_SIGNIN_SPIKES === '1';
+
+test('real Arcana Page API launcher starts the pinned engine and creates a page', { skip: !real, timeout: 30000 }, async () => {
+  const api = await startArcanaPageApi(process.env);
+  try {
+    const { pageId } = await api.client.createPage();
+    const snapshot = await api.client.snapshot(pageId);
+    assert.equal(snapshot.url, 'about:blank');
+    await api.client.closePage(pageId);
+  } finally {
+    const exited = once(api.child, 'exit');
+    await api.stop();
+    await exited;
+  }
+});
 
 test('real Arcana: actions, local storage across a restart, and the engine is gone after close', { skip: !real, timeout: 90000 }, async () => {
   const env = {
