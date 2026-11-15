@@ -12,14 +12,17 @@ Her browser is [Arcana](https://github.com/Yuuzulight/Arcana) (Obscura inside):
 `arcana-engine.js` runs its `serve` endpoint on a free loopback port and
 Playwright attaches over CDP, so everything below works unchanged. Headless
 only, with private-network pages off and local storage kept in
-`browser-profile/arcana`. Edge opens only for Take over, or when Arcana isn't
-built or won't start (one warning in the log), or `MANA_BROWSER_ENGINE=edge`.
-Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
+`browser-profile/arcana`. The normal headless path uses only the installed
+Arcana runtime whose manifest matches the commit and engine version pinned in
+`tools/arcana.lock.json`. Edge opens for a visible user takeover or when
+explicitly selected with `MANA_BROWSER_ENGINE=edge`. If the pinned install is
+missing or won't start, the headless automation request fails visibly instead
+of switching to Edge. Run `tools/install-arcana.ps1` to install the Arcana commit pinned in
 `tools/arcana.lock.json` (the CLI, plus the engine built from its pinned source commit; needs git,
 .NET 10 and a Rust toolchain) into
-`node-bot/runtime/arcana`. To use another build, point `MANA_ARCANA_CLI` at an
-`Arcana.Cli.dll`, or `MANA_ARCANA_DIR` at a checkout (default
-`C:\ManaAI\Arcana`, Release or Debug build). Set
+`node-bot/runtime/arcana`. For development only, point `MANA_ARCANA_CLI` at an
+`Arcana.Cli.dll`, or explicitly set `MANA_ARCANA_DIR` to a checkout containing
+a Release or Debug build. Set
 `MANA_ARCANA_ALLOW_PRIVATE_NETWORK=1` to let pages reach localhost and LAN
 hosts, for example a dev server (off by default).
 
@@ -32,12 +35,12 @@ Every engine choice is appended to `arcana-events.jsonl` in the browser profile
 started at least five times in it (`-MinStarts`), so an empty or new log is never
 read as a clean observation window.
 
-## Browser: Edge by default, override with an env var
+## Explicit Edge fallback
 
-Windows ships Edge (Chromium-based) on every install, so this plugin
-launches it by default instead of asking anyone to separately install a
-browser. Set `MANA_BROWSER_EXECUTABLE_PATH` to point at Chrome, or a
-`playwright install chromium`-downloaded browser, instead.
+For a user-directed fallback, set `MANA_BROWSER_ENGINE=edge`; Windows ships
+Edge (Chromium-based) on every install. Set `MANA_BROWSER_EXECUTABLE_PATH` to
+point at Chrome, or a `playwright install chromium`-downloaded browser,
+instead. Arcana startup failures remain visible and do not trigger this path.
 `MANA_BROWSER_HEADLESS=0` shows the window instead of running headless.
 While I'm watching (the Browser panel, or that window), a pink cursor and
 outline show where she's about to click, type, select, hover or drag
