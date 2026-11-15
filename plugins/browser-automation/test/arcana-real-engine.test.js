@@ -23,7 +23,7 @@ test('real Arcana: actions, local storage across a restart, and the engine is go
   };
   const pin = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../tools/arcana.lock.json'), 'utf8'));
   const installed = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../node-bot/runtime/arcana/arcana-install.json'), 'utf8'));
-  assert.equal(pin.commit, 'a828c028f32c505f4ed274c62e83713201a5f2f6', 'Mana should pin Arcana v1.0.0');
+  assert.equal(pin.commit, 'ba060ce4e1ab9de479e786450f1029dce759418a', 'Mana should pin Arcana v1.0.0');
   assert.deepEqual(
     { repository: installed.repository, commit: installed.commit, engineVersion: installed.engineVersion },
     { repository: pin.repository, commit: pin.commit, engineVersion: pin.engineVersion },
